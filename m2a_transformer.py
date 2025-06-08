@@ -1,0 +1,507 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers.models.roformer.modeling_roformer import RoFormerModel, RoFormerConfig, RoFormerEncoder
+import pytorch_lightning as L
+from torch.utils.data import DataLoader, IterableDataset
+from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
+import sys
+import pdb
+import wandb
+from pytorch_lightning.loggers import WandbLogger
+from typing import Optional
+from preprocess_large_midi_dataset import tensor_to_midi
+
+TRAIN_LENGTH = 192
+MAX_STEPS = 1000000
+
+# Indicator: 0
+# pitch+duration*2: 3200 (25*128)
+N_NORMAL_TOKENS = 3202
+N_TOKENS = N_NORMAL_TOKENS + 3
+SOS_TOKEN = N_NORMAL_TOKENS
+EOS_TOKEN = N_NORMAL_TOKENS + 1
+PAD_TOKEN = N_NORMAL_TOKENS + 2
+
+def fill_with_neg_inf(t):
+    """FP16-compatible function that fills a tensor with -inf."""
+    return t.float().fill_(float("-inf")).type_as(t)
+
+class RoFormerSymbolicTransformer(L.LightningModule):
+
+    def __init__(self, large=False):
+        super().__init__()
+        self.hidden_size = 768 if large else 512
+        self.num_layers = 12 if large else 6
+        self.num_attention_heads = 12 if large else 8
+        self.intermediate_size = 3072 if large else 1024
+        self.local_model_num_layers = 3
+        self.local_model_num_attention_heads = 8
+        self.local_model_intermediate_size = 768
+        main_roformer_config = RoFormerConfig(
+            hidden_size=self.hidden_size,
+            num_hidden_layers=self.num_layers,
+            num_attention_heads=self.num_attention_heads,
+            intermediate_size=self.intermediate_size,
+            hidden_act="gelu",
+            hidden_dropout_prob=0.1,
+            attention_probs_dropout_prob=0.1
+        )
+        self.model = self.get_base_model(main_roformer_config)
+        local_encoder_config = local_decoder_config = RoFormerConfig(
+            hidden_size=self.hidden_size,
+            num_hidden_layers=self.local_model_num_layers,
+            num_attention_heads=self.local_model_num_attention_heads,
+            intermediate_size=self.local_model_intermediate_size,
+            hidden_act="gelu",
+            hidden_dropout_prob=0.1,
+            attention_probs_dropout_prob=0.1
+        )
+        self.local_embedding = nn.Embedding(N_TOKENS, self.hidden_size)
+        self.token_type_embeddings = nn.Embedding(2, self.hidden_size)
+        with torch.no_grad():
+            self.token_type_embeddings.weight.mul_(2.0)
+        # self.token_type_embeddings.weight.requires_grad_(True)
+        self.local_encoder = RoFormerEncoder(local_encoder_config)
+        self.local_decoder = RoFormerEncoder(local_decoder_config)
+        self.final_decoder = nn.Linear(self.hidden_size, N_TOKENS)
+        self.global_sos = nn.Parameter(torch.randn(self.hidden_size))
+        self._future_mask = torch.empty(0)
+        # self.type_classifier = nn.Linear(self.hidden_size, 2)
+        # self.type_classifier.weight.requires_grad_(False)
+
+        # self.type_scale = nn.Parameter(torch.tensor(1.0))
+        # self.mix_proj = nn.Linear(2 * self.hidden_size, self.hidden_size)
+        # self.type_proj = nn.Sequential(
+        #     nn.Linear(self.hidden_size, self.hidden_size),
+        #     nn.ReLU()
+        # )
+
+    def get_base_model(self, config):
+        return RoFormerEncoder(config)
+
+    # def local_encode(self, x):
+    #     batch_size, seq_len, subseq_len = x.shape
+    #     x = x.view(-1, subseq_len)
+    #     x = torch.cat([torch.full((x.shape[0], 1), SOS_TOKEN, dtype=torch.long, device=x.device), x], dim=-1)
+    #     # print("after 1 sos:", x.shape)
+    #     mask = x != PAD_TOKEN
+    #     emb = self.local_embedding(x)
+    #     # print("emb shape:", emb.shape)
+    #     h = self.local_encoder(emb, encoder_attention_mask=mask)[0] # 9个取前一个 不用改变 positional encoding
+    #     # get representation of the first token
+    #     return h[:, 0], emb[:, :-1]
+    def local_encode(self, x, token_type_ids):
+
+        batch_size, seq_len, subseq_len = x.shape
+        x = x.view(-1, subseq_len)
+
+        # prepend SOS:
+        x = torch.cat([
+            torch.full((x.shape[0], 1), SOS_TOKEN, dtype=torch.long, device=x.device),
+            x
+        ], dim=-1)  # now [B*seq_len, subseq_len+1]
+
+        # build an attention mask off of PAD_TOKEN
+        mask = x != PAD_TOKEN     # [B*seq_len, subseq_len+1]
+
+        # 2a) embed the “word” tokens:
+        word_emb = self.local_embedding(x)  # → [B*seq_len, subseq_len+1, H]
+
+        type_emb = self.token_type_embeddings(token_type_ids)      # [B*seq_len, subseq_len+1, H]
+        type_emb = type_emb.view(batch_size*seq_len, word_emb.shape[1], -1)
+
+        # type_emb = self.type_proj(type_emb)                 # [B*seq, subseq+1, H]
+
+        emb = word_emb + type_emb
+        # 1) 拼接：变成 [B*seq, subseq+1, 2H]
+        # cat_emb = torch.cat([word_emb, type_emb], dim=-1)
+
+        # emb = self.mix_proj(cat_emb)  # → [B*seq, subseq+1, H]
+        # 2d) run through the RoFormerEncoder:
+        h = self.local_encoder(emb, encoder_attention_mask=mask)[0]
+
+        return h[:, 0], emb[:, :-1]
+
+    def local_decode(self, h, emb):
+        batch_size, subseq_len, _ = emb.shape
+        # Add h as the first token of emb
+        h = h.view(batch_size, 1, -1)
+        emb = torch.cat([h, emb[:, 1:]], dim=1)
+        # Create an autoregressive mask
+        h = self.local_decoder(emb, attention_mask=self.buffered_future_mask(emb))[0]
+        # print("h shape", h.shape)
+        final = self.final_decoder(h)
+        # print("final:", final.shape)
+        return self.final_decoder(h)
+
+
+    def local_sampling(self, h, max_subseq_len=32, temperature=1.0):
+        batch_size, _ = h.shape
+        y = torch.zeros((batch_size, 0), dtype=torch.long, device=h.device)
+        emb = h[:, None, :]
+        eos_triggered = torch.zeros(batch_size, dtype=torch.bool, device=h.device)
+
+        for i in range(max_subseq_len):
+            h_ = self.local_decoder(emb, attention_mask=self.buffered_future_mask(emb))[0]
+            if temperature == 0:
+                p = F.one_hot(self.final_decoder(h_).argmax(dim=-1), N_TOKENS).float()
+            else:
+                p = F.softmax(self.final_decoder(h_[:, -1]) / temperature, dim=-1)
+            y_next = torch.multinomial(p, 1)
+            y_next[eos_triggered, :] = PAD_TOKEN
+            eos_triggered = eos_triggered | (y_next.squeeze(1) == EOS_TOKEN)
+            y = torch.cat([y, y_next], dim=1)
+            if torch.all(eos_triggered):
+                break
+
+            # 5a) now append the embedding (always ACCOMPANIMENT), so token_type_ids = 1
+            emb = torch.cat([emb, self.local_embedding(y_next) + self.token_type_embeddings(torch.ones_like(y_next))], dim=1)
+
+        return y
+   
+
+    def global_sampling(self, x, x_mel_gt=None, max_seq_len=384, temperature=1.0):
+        
+        batch_size, seq_len, subseq_len = x.shape
+        _, seq_len_gt, _ = x_mel_gt.shape
+        idx = torch.arange(seq_len, device=x.device)
+        frame_type = (idx % 2 == 0).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
+        token_type_ids = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, subseq_len)
+        sos_type = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, 1)
+        token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
+        h, _= self.local_encode(x, token_type_ids)
+        h_mel, _ = self.local_encode(x_mel_gt, torch.zeros(*x_mel_gt.shape[:-1], x_mel_gt.shape[-1] + 1, device=x_mel_gt.device, dtype=x_mel_gt.dtype))
+        # print(h.shape, emb.shape)
+        h = h.view(batch_size, seq_len, -1)
+        h_mel = h_mel.view(batch_size, seq_len_gt, -1)
+        sos = self.global_sos.view(1, 1, -1).repeat(batch_size, 1, 1)
+        # print("sos",sos.shape)
+        # print("h", h.shape)
+        h = torch.cat([sos, h], dim=1)
+        y = [x[:, i, :] for i in range(seq_len)]  # y will be returned by a list a0,m0,a1,m1,a_to_be_2
+        if x_mel_gt != None:
+            print('with gt!')
+            for i in range(0, max_seq_len):
+                if i % 10 == 0:
+                    print('Sampling', i, '/', max_seq_len)
+                if i % 2 == 0:
+                    h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+                    y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
+                    y.append(y_next)
+                    b, s, l = y_next.unsqueeze(1).shape
+                    token_type_ids = torch.ones((b, s, l+1), dtype=torch.long, device=y_next.device)
+                    h = torch.cat([h, self.local_encode(y_next.unsqueeze(1), token_type_ids = token_type_ids)[0].unsqueeze(1)], dim=1)
+                else:
+                    # token_type_ids = torch.zeros((b, s, l+1), dtype=torch.long, device=y_next.device)
+                    h_prev_mel = h_mel[:, i//2, :].unsqueeze(1)  # [B, 1, H]
+                    h = torch.cat([h, h_prev_mel], dim=1)  # [B, cur_len, H]
+                    y.append(x_mel_gt[: ,i//2, :])
+        else:
+            for i in range(0, max_seq_len):
+                if i % 10 == 0:
+                    print('Sampling', i, '/', max_seq_len)
+                h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+                y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
+                y.append(y_next)
+                b, s, l = y_next.unsqueeze(1).shape
+                if i%2==0:
+                    token_type_ids = torch.ones((b, s, l+1), dtype=torch.long, device=y_next.device)
+                else:
+                    token_type_ids = torch.zeros((b, s, l+1), dtype=torch.long, device=y_next.device)
+                h = torch.cat([h, self.local_encode(y_next.unsqueeze(1), token_type_ids = token_type_ids)[0].unsqueeze(1)], dim=1)
+        return y
+
+    def global_sampling_from_scratch(self, x_mel: torch.LongTensor, temperature: float = 1.0, max_seq_len=384):
+        B, S, L = x_mel.shape
+        device = x_mel.device
+
+        # Build program IDs = 0 for all melody tokens
+        # token_type_ids = torch.zeros_like(x_mel, dtype=torch.long)  # [B, S, L]
+        h_mel, _ = self.local_encode(x_mel, torch.zeros((B, S, L+1), device=device, dtype=x_mel.dtype))
+        h_mel = h_mel.view(B, S, self.hidden_size)     # [B, S, H]
+
+        # Prepare SOS for global
+        sos = self.global_sos.view(1, 1, -1).repeat(B, 1, 1)  # [B, 1, H]
+
+        # Will store generated accompaniment frames
+        y = []  # each entry: [B, L]
+
+        # Start with just [SOS]
+        h = sos  # [B, 1, H]
+        for t in range(max_seq_len):
+            if t % 10 == 0:
+                    print('Sampling', t, '/', max_seq_len)
+            if t > 0:
+                # Append previous melody summary before generating new accompaniment
+                h_prev_mel = h_mel[:, t-1, :].unsqueeze(1)  # [B, 1, H]
+                h = torch.cat([h, h_prev_mel], dim=1)  # [B, cur_len, H]
+                y.append(x_mel[: ,t-1, :])
+
+            h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+            y_next = self.local_sampling(h_out[:, -1], max_subseq_len=L, temperature=temperature)
+            y.append(y_next)
+            b, s, l = y_next.unsqueeze(1).shape
+            token_type_ids = torch.ones((b, s, l+1), dtype=torch.long, device=y_next.device)
+            h = torch.cat([h, self.local_encode(y_next.unsqueeze(1), token_type_ids = token_type_ids)[0].unsqueeze(1)], dim=1)
+        return y  # list of S tensors [B, L]
+
+
+    def buffered_future_mask(self, tensor):
+        dim = tensor.size(1)
+        # self._future_mask.device != tensor.device is not working in TorchScript. This is a workaround.
+        if (
+                self._future_mask.size(0) == 0
+                or (not self._future_mask.device == tensor.device)
+                or self._future_mask.size(0) < dim
+        ):
+            self._future_mask = torch.triu(
+                fill_with_neg_inf(torch.zeros([dim, dim])), 1
+            )
+        self._future_mask = self._future_mask.to(tensor)
+        return self._future_mask[:dim, :dim]
+
+    def forward(self, x):
+        # x: [batch, seq, subseq]
+        # Use local encoder to encode subsequences
+        # print("start:", x_mel.shape)
+        batch_size, seq_len, subseq_len = x.shape # 10*384*8
+        assert seq_len % 2 == 0, "Expected even number of frames (2*S interleaved)."
+
+        idx = torch.arange(seq_len, device=x.device)
+        frame_type = (idx % 2 == 0).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
+        token_type_ids = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, subseq_len)
+        sos_type = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, 1)
+        token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
+        # print(token_type_ids.shape)
+        h, emb= self.local_encode(x, token_type_ids) #这里是within time step
+        h = h.view(batch_size, seq_len, -1) #这里重新展开 这是每一帧的summary 包括sos吗
+
+        # type_logits = self.type_classifier(h)
+
+        # Prepend SOS token and remove the last token
+        sos = self.global_sos.view(1, 1, -1).repeat(batch_size, 1, 1)
+        h = torch.cat([sos, h[:, :-1]], dim=1)
+
+        # print(h.shape)
+        h = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+        return self.local_decode(h, emb)
+
+
+        
+    def preprocess(
+        self,
+        x: torch.LongTensor, # melody
+        pitch_shift: torch.LongTensor,
+        y: Optional[torch.LongTensor] = None, # accompaniment
+    ):
+
+        batch_size, seq_length, subseq_length = x.shape
+        x = x.long().view(batch_size, seq_length, subseq_length // 3, 3)
+        x_processed = torch.zeros(batch_size, seq_length, subseq_length // 3, 2, dtype=torch.long, device=x.device)
+        pad_indices = x[:, :, :, 1] == 255 #pitch is 255 that need to be pad
+        eos_indices = x[:, :, :, 0] == 254 #program is 254
+        is_not_drum = x[:, :, :, 0] != 127 
+        x_processed[:, :, :, 0] = 0 # program 不变
+        x_processed[:, :, :, 1] = x[:, :, :, 1] + (x[:, :, :, 2]) * 128 + 2 + pitch_shift[:, None, None] * is_not_drum
+        x_processed[pad_indices] = PAD_TOKEN
+        x_processed[:, :, :, 0][eos_indices] = EOS_TOKEN
+        # x_no_prog = x_processed[..., 1] 
+        
+        if y==None:
+            # return x_no_prog
+            return x_processed.view(batch_size, seq_length, subseq_length // 3 * 2)
+        else:
+            batch_size_y, seq_length_y, subseq_length_y = y.shape
+            y = y.long().view(batch_size_y, seq_length_y, subseq_length_y // 3, 3)
+            y_processed = torch.zeros(batch_size_y, seq_length_y, subseq_length_y // 3, 2, dtype=torch.long, device=y.device)
+            pad_indices_y = y[:, :, :, 1] == 255 #pitch is 255 that need to be pad
+            eos_indices_y = y[:, :, :, 0] == 254 #program is 254
+            is_not_drum_y = y[:, :, :, 0] != 127 
+            y_processed[:, :, :, 0] = 1 # program 不变
+            # print(pitch_shift)
+            y_processed[:, :, :, 1] = y[:, :, :, 1] + (y[:, :, :, 2]) * 128 + 2 + pitch_shift[:, None, None] * is_not_drum_y
+            y_processed[pad_indices_y] = PAD_TOKEN
+            y_processed[:, :, :, 0][eos_indices_y] = EOS_TOKEN
+
+            # y_no_prog = y_processed[..., 1] 
+
+            return x_processed.view(batch_size, seq_length, subseq_length // 3 * 2), y_processed.view(batch_size_y, seq_length_y, subseq_length_y // 3 * 2)
+            # return x_no_prog, y_no_prog
+    
+    def loss(self, x_mel, x_acc, pitch_shift):
+        # x_mel, x_acc = self.preprocess(x_mel, pitch_shift, y = x_acc)
+        x_mel, x_acc = self.preprocess(x_mel, pitch_shift, y=x_acc)
+        batch_size, seq_len, subseq_len = x_mel.shape # 10*384*8
+        stacked = torch.stack([x_acc, x_mel], dim=2)
+        x = stacked.view(batch_size, seq_len * 2, subseq_len)
+        
+        x_target = x.clone()
+        # build a mask: True at every odd timestep
+        idx = torch.arange(seq_len * 2, device=x.device)
+        mel_mask = (idx % 2 == 1).unsqueeze(0).unsqueeze(-1)    # [1, 2*S, 1]
+        mel_mask = mel_mask.expand(batch_size, seq_len * 2, subseq_len)                 # [B, 2*S, L]
+        x_target[mel_mask] = PAD_TOKEN
+
+        y= self(x)
+
+        return F.cross_entropy(y.view(-1, N_TOKENS), x_target.view(-1), ignore_index=PAD_TOKEN)
+
+    def training_step(self, batch, batch_idx):
+        loss = self.loss(*batch)
+        self.log('train_loss', loss)
+        # scheduler step
+        scheduler = self.lr_schedulers()
+        scheduler.step()
+        self.log('training/lr', scheduler.get_last_lr()[0])
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        loss = self.loss(*batch)
+        self.log('val_loss', loss)
+        return loss
+
+    def configure_optimizers(self):
+        max_lr = 1e-4
+        optimizer = torch.optim.AdamW(self.parameters(), lr=max_lr)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=max_lr, total_steps=MAX_STEPS, pct_start=0.005)
+        return [optimizer], [scheduler]
+    # def on_after_backward(self):
+    #     # 这个 hook 会在 loss.backward() 完成之后、optimizer.step() 之前被调用
+    #     # 在这里打印 type_embeddings 的梯度均值
+    #     if self.token_type_embeddings.weight.grad is not None:
+    #         grad_mean = self.token_type_embeddings.weight.grad.abs().mean().item()
+    #         print(f"[DEBUG] type_emb grad mean = {grad_mean:.6f}")
+    #     else:
+    #         print("[DEBUG] type_emb grad is None")
+class FramedDataset(IterableDataset):
+
+    def __init__(self, file_path, target_length, batch_size, split='all', split_ratio=10):
+        self.file_path = file_path
+        self.length = torch.load(file_path[:-3] + '.length.pt', weights_only=True)
+        self.start = torch.cumsum(self.length, dim=0) - self.length
+        # Invalid samples are those whose length is less than min_length
+        is_valid = self.length >= target_length
+        self.valid_indices = torch.arange(len(self.start))[is_valid]
+        # Get training or validation split
+        if split == 'all':
+            pass
+        elif split == 'train':
+            self.valid_indices = self.valid_indices[self.valid_indices % split_ratio != 0]
+        elif split == 'val':
+            self.valid_indices = self.valid_indices[self.valid_indices % split_ratio == 0]
+        self.split = split
+        self.valid_song_count = len(self.valid_indices)
+        self.target_length = target_length
+        self.batch_size = batch_size
+        print('Metadata for dataset', file_path, 'loaded. Number of valid songs:', self.valid_song_count)
+
+    def __iter__(self):
+        data = torch.load(self.file_path, weights_only=True) #伴奏
+        data_c = torch.load(self.file_path.replace('acc.pt', 'mel.pt'), weights_only=True) #旋律
+        pitch_shift_range = torch.load(self.file_path[:-3] + '.pitch_shift_range.pt', weights_only=True).reshape(-1, 2)
+        pitch_shift_range[pitch_shift_range[:, 0] < -5, 0] = -5
+        pitch_shift_range[pitch_shift_range[:, 1] > 6, 1] = 6
+        pitch_shift_range_c = torch.load(self.file_path.replace('acc.pt', 'mel.pt')[:-3] + '.pitch_shift_range.pt', weights_only=True).reshape(-1, 2)
+        pitch_shift_range_c[pitch_shift_range_c[:, 0] < -5, 0] = -5
+        pitch_shift_range_c[pitch_shift_range_c[:, 1] > 6, 1] = 6
+        if self.split == 'val':
+            pitch_shift_range = torch.zeros_like(pitch_shift_range)  # No pitch shift for validation
+            pitch_shift_range_c = torch.zeros_like(pitch_shift_range_c)  # No pitch shift for validation
+        print('Data for dataset', self.file_path, 'loaded.')
+        while True:
+            indices = torch.randperm(len(self.valid_indices))
+            for i in range(0, len(self.valid_indices), self.batch_size):
+                batch_indices = indices[i:i + self.batch_size]
+                batch_pitch_shift_range = pitch_shift_range[self.valid_indices[batch_indices]]
+                # print("bpsr:", batch_pitch_shift_range)
+                batch_pitch_shift_range_c = pitch_shift_range_c[self.valid_indices[batch_indices]]
+                raw_ids = self.valid_indices[batch_indices]
+                # starts = torch.randint(self.start[raw_ids], self.start[raw_ids] + self.length[raw_ids] - self.target_length)
+                starts = torch.floor(torch.rand(len(raw_ids)) * (self.length[raw_ids] - self.target_length)).long() + self.start[raw_ids]
+                index_matrix = torch.arange(self.target_length).view(1, -1) + starts.view(-1, 1)
+                # Shift the pitch in range [min, max], inclusive
+                minmax = torch.minimum(batch_pitch_shift_range_c[:, 1], batch_pitch_shift_range[:, 1])
+                maxmin = torch.maximum(batch_pitch_shift_range[:, 0], batch_pitch_shift_range_c[:, 0])
+                # print("1", batch_pitch_shift_range[:, 1].shape)
+                # print("2", minmax.shape)
+                batch_pitch_shift = torch.floor(torch.rand(len(raw_ids)) * (minmax - maxmin + 1)).long() + maxmin
+                # batch_pitch_shift = torch.floor(torch.rand(len(raw_ids)) * (batch_pitch_shift_range[:, 1] - batch_pitch_shift_range[:, 0] + 1)).long() + batch_pitch_shift_range[:, 0]
+                # print(data_c[index_matrix].shape, data[index_matrix].shape)
+                yield data_c[index_matrix], data[index_matrix], batch_pitch_shift
+
+def sanity_check():
+    # Do some sanity check
+    model = RoFormerSymbolicTransformer()
+    x = [
+        [
+            [0 , 34, 12, EOS_TOKEN, PAD_TOKEN, PAD_TOKEN],
+            [12, 34, 52, 34, 12, EOS_TOKEN],
+            [12, 34, 52, 34, 12, 52]
+        ],
+        [
+            [52, 34, 12, EOS_TOKEN, PAD_TOKEN, PAD_TOKEN],
+            [12, 34, 52, 34, 12, EOS_TOKEN],
+            [EOS_TOKEN, PAD_TOKEN, PAD_TOKEN, PAD_TOKEN, PAD_TOKEN, PAD_TOKEN]
+        ]
+    ]
+    y = [
+        [
+            [42, 34, 12, EOS_TOKEN, PAD_TOKEN, PAD_TOKEN],
+            [22, 34, 52, 34, 12, EOS_TOKEN],
+            [22, 34, 52, 34, 12, 52]
+        ],
+        [
+            [42, 34, 12, EOS_TOKEN, PAD_TOKEN, PAD_TOKEN],
+            [22, 34, 52, 34, 12, EOS_TOKEN],
+            [EOS_TOKEN, PAD_TOKEN, PAD_TOKEN, PAD_TOKEN, PAD_TOKEN, PAD_TOKEN]
+        ]
+    ]
+    x = torch.tensor(x, dtype=torch.long)
+    y = torch.tensor(y, dtype=torch.long)
+    loss = model.loss(x, y, pitch_shift = torch.zeros(1, dtype=torch.int8))
+    print(loss)
+
+if __name__ == '__main__':
+    # sanity_check()
+    batch_size = int(sys.argv[1])
+    model_size = str(sys.argv[2])
+    assert model_size in ['small', 'large']
+    n_gpus = max(torch.cuda.device_count(), 1)
+    model_name = f'cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_{model_size}_batch_{batch_size * n_gpus}_schedule'
+    wandb_logger = WandbLogger(name=model_name, project="StreamMUSE", 
+                               config={
+                                "batch_size": batch_size,
+                                "model_size": model_size,
+                                "train_length": TRAIN_LENGTH
+                            }
+    )
+    net = RoFormerSymbolicTransformer(model_size == 'large')
+    # net = RoFormerSymbolicTransformer.load_from_checkpoint('/home/coder/laopo/StreamMUSE/ckpt/cp_transformer_m_v0.2_small_batch_40_schedule/cp_transformer_m_v0.2_small_batch_40_schedule.epoch=00.val_loss=0.09079.ckpt', large=False)
+    train_set_loader = DataLoader(FramedDataset('data/909+ac+1k7_cp4_v2_acc.pt', TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=1, persistent_workers=True)
+    val_set_loader = DataLoader(FramedDataset('data/909+ac+1k7_cp4_v2_acc.pt', TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=1, persistent_workers=True)
+    # mel, acc, _ = next(iter(train_set_loader))
+    checkpoint_callback = L.callbacks.ModelCheckpoint(monitor='val_loss',
+                                                      save_top_k=10,
+                                                      save_last=True,
+                                                      dirpath=f'ckpt/{model_name}',
+                                                      filename=model_name + '.{epoch:02d}.{val_loss:.5f}')
+
+    # load from checkpoint
+    checkpoint_path = None
+    if len(sys.argv) > 3:
+        checkpoint_path = sys.argv[3]
+    trainer = L.Trainer(devices=n_gpus,
+                        precision="bf16-mixed" if torch.cuda.is_available() else 32,
+                        max_steps=MAX_STEPS,
+                        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+                        callbacks=[checkpoint_callback],
+                        val_check_interval=500,
+                        limit_val_batches=25,
+                        check_val_every_n_epoch=None,
+                        logger=wandb_logger if 'test' not in model_name else None,
+                        strategy='auto' if n_gpus == 1 else 'ddp')
+    trainer.fit(net, train_set_loader, val_set_loader, ckpt_path=checkpoint_path)
+    # save the model (parameters only)
+    torch.save(net.state_dict(), f'ckpt/{model_name}.pt')

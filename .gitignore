@@ -1,0 +1,11 @@
+__pycache__
+ckpt
+lightning_logs
+tb_logs
+.idea
+/data
+/temp/
+m2a_transformer_new.py
+cp_transformer.py
+/wandb
+preprocess_large_midi_dataset_private.py
