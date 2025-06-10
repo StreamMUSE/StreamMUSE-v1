@@ -1,7 +1,7 @@
 import numpy as np
 
 from m2a_transformer import RoFormerSymbolicTransformer, SOS_TOKEN, EOS_TOKEN, PAD_TOKEN
-from preprocess_large_midi_dataset import preprocess_midi, DURATION_TEMPLATES
+from preprocess_large_midi_dataset_private import preprocess_midi, DURATION_TEMPLATES
 from settings import RWC_DATASET_PATH
 import torch
 import pretty_midi
@@ -127,4 +127,4 @@ if __name__ == '__main__':
     for midi in os.listdir('/home/coder/laopo/StreamMUSE/input/mel'):
         if midi.endswith('mid'):
             midi = os.path.join('/home/coder/laopo/StreamMUSE/input/mel', midi)
-            continuation(model, midi, temperature=0.7, generation_length=384, n_samples=2, prompt_length=75,gt_mel=True)
+            continuation(model, midi, temperature=1.0, generation_length=384, n_samples=2, prompt_length=75,gt_mel=True)
