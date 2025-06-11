@@ -1,7 +1,9 @@
 # StreamMUSE 🎹⏳
 This final goal of this task is to generate accompniament given melody by user input in a real-time streaming fashion. We use 'mel' as short for melody and 'acc' as short for accompaniment. 
 
-![My Diagram](images/very_simple_model_architecture.png)
+Below is a simple diagram showing the (1) model architecture and (2) how the encoder captures information from midi. 
+![My Diagram](images/very_simple_architecture.png)
+![attention](images/attn.png)
 
 The model uses Roformer as its encoders and decoder. Check its documentation [here](https://huggingface.co/docs/transformers/en/model_doc/roformer). 
 
