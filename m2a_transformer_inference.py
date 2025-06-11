@@ -17,10 +17,8 @@ def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
         instrument_map = {}
         for time_step, data in enumerate(output):
             content = data.squeeze(0)
-            # if not prompt: print(content)
             time_step = time_step if single else time_step//2
             start_time = time_step * time_step_length
-            # print(time_step, start_time, ':', content)
             for i in range(0, len(content), 2):
                 program = int(content[i].item())
                 if program ==EOS_TOKEN:
@@ -29,9 +27,6 @@ def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
                     print('Incomplete note @', time_step, i)
                     break
                 pitch_duration = int(content[i+1].item())
-                # if program!=0:
-                #     print("invalid program", program)
-                #     break
                 pitch_duration = pitch_duration - 2
                 pitch = pitch_duration % 128
                 duration = pitch_duration // 128
