@@ -27,7 +27,11 @@ Download POP909 dataset:
 
     git clone https://github.com/music-x-lab/POP909-Dataset.git
 
-![TODO](https://img.shields.io/badge/TODO-important-red): Think of a way to separate the melody track and accompaniment track in the MIDI files!
++ you can use Garageband or other online DAW, such as [soundtrap](https://www.soundtrap.com/musicmakers, to visualize MIDI files. 
+
+Run `python extract_mid.py` to extract accompaniment and melody tracks in midi files. 
+
++ ![TODO](https://img.shields.io/badge/TODO-important-red): the script is implemented for accompaniment, adapt it to separate melody as well. 
 
 Make sure your MIDI dataset follow the below data structure and make sure the same song shares same name in both folders:
 
