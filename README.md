@@ -1,6 +1,10 @@
 # StreamMUSE 🎹⏳
 This final goal of this task is to generate accompniament given melody by user input in a real-time streaming fashion. We use 'mel' as short for melody and 'acc' as short for accompaniment. 
 
+![My Diagram](images/very_simple_model_architecture.png)
+
+The model uses Roformer as its encoders and decoder. Check its documentation [here](https://huggingface.co/docs/transformers/en/model_doc/roformer). 
+
 
 ## Environment 
 
@@ -72,7 +76,7 @@ For inference, place all the melody and accompaniment midi under the `/input` fo
 
 Run inferencen with:
 
-    python m2a_transformer_inference.py --model_path /home/coder/laopo/StreamMUSE/ckpt/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt --prompt_len 75 --n_samples 2 --temperature 1.0
+    python m2a_transformer_inference.py --model_path /path/to/ckpt --prompt_len 75 --n_samples 2 --temperature 1.0
 
 + `--prompt_len` let you define the prompt_len.
 + `--n_samples` let you generate multiple output on one input.

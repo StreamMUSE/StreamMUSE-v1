@@ -93,23 +93,13 @@ class RoFormerSymbolicTransformer(L.LightningModule):
             x
         ], dim=-1)  # now [B*seq_len, subseq_len+1]
 
-        # build an attention mask off of PAD_TOKEN
         mask = x != PAD_TOKEN     # [B*seq_len, subseq_len+1]
-
-        # 2a) embed the “word” tokens:
         word_emb = self.local_embedding(x)  # → [B*seq_len, subseq_len+1, H]
 
         type_emb = self.token_type_embeddings(token_type_ids)      # [B*seq_len, subseq_len+1, H]
         type_emb = type_emb.view(batch_size*seq_len, word_emb.shape[1], -1)
 
-        # type_emb = self.type_proj(type_emb)                 # [B*seq, subseq+1, H]
-
         emb = word_emb + type_emb
-        # 1) 拼接：变成 [B*seq, subseq+1, 2H]
-        # cat_emb = torch.cat([word_emb, type_emb], dim=-1)
-
-        # emb = self.mix_proj(cat_emb)  # → [B*seq, subseq+1, H]
-        # 2d) run through the RoFormerEncoder:
         h = self.local_encoder(emb, encoder_attention_mask=mask)[0]
 
         return h[:, 0], emb[:, :-1]
@@ -118,10 +108,10 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         batch_size, subseq_len, _ = emb.shape
         # Add h as the first token of emb
         h = h.view(batch_size, 1, -1)
+        print(emb.shape) #3840 8 512
         emb = torch.cat([h, emb[:, 1:]], dim=1)
         # Create an autoregressive mask
         h = self.local_decoder(emb, attention_mask=self.buffered_future_mask(emb))[0]
-        final = self.final_decoder(h)
         return self.final_decoder(h)
 
 
@@ -258,8 +248,8 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         token_type_ids = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, subseq_len)
         sos_type = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, 1)
         token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
-        h, emb= self.local_encode(x, token_type_ids) #这里是within time step
-        h = h.view(batch_size, seq_len, -1) #这里重新展开 这是每一帧的summary 包括sos吗
+        h, emb= self.local_encode(x, token_type_ids) 
+        h = h.view(batch_size, seq_len, -1) #这是每一帧的summary
 
 
         # Prepend SOS token and remove the last token
@@ -267,7 +257,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         h = torch.cat([sos, h[:, :-1]], dim=1)
 
         # print(h.shape)
-        h = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+        h = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0] ##all the sos of every timestep (considering other timestep)
         return self.local_decode(h, emb)
 
 
