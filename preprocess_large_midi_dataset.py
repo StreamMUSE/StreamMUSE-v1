@@ -7,7 +7,6 @@ import torch
 import shutil
 import json
 import pretty_midi
-from preprocess_large_midi_dataset import DURATION_TEMPLATES
 import argparse
 
 tokenize_dict = {'<sos>': 0, '<eos>': 1, '<pad>': 2}
@@ -272,19 +271,30 @@ def create_npy_dataset_from_midi(folders,
     else:
         print("没有成功的文件，跳过保存。")
 
-def synch(prefix):
-    mel = torch.load('/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v1_mel.pt')
-    acc = torch.load('/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v1_acc.pt')
+    return [f'data/{dataset_name}.pt', f'data/{dataset_name}.length.pt']
 
-    length_mel = torch.load("/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v1_mel.length.pt")
-    length_acc = torch.load("/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v1_mel.length.pt")
-    # print(length_mel[1200:1260], length_acc[1200:1260])
+def sync(path_m, path_a):
+
+    tensor_m = path_m[0]
+    length_m = path_m[1]
+
+    tensor_a = path_a[0]
+    length_a = path_a[1]
+
+
+    mel = torch.load(tensor_m)
+    acc = torch.load(tensor_a)
+
+    length_mel = torch.load(length_m)
+    length_acc = torch.load(length_a)
+
     min_lengths = torch.minimum(length_mel, length_acc)
-    print(min_lengths)
+
     adjusted_tensor1 = []
     adjusted_tensor2 = []
     start_idx1 = 0
     start_idx2 = 0
+
     for i in range(len(min_lengths)):
         # Trim subtensors to min length
         adjusted_tensor1.append(mel[start_idx1:start_idx1 + min_lengths[i]])
@@ -297,51 +307,24 @@ def synch(prefix):
     # Convert back to tensors
     adjusted_tensor1 = torch.cat(adjusted_tensor1)
     adjusted_tensor2 = torch.cat(adjusted_tensor2)
+
+
+    torch.save(min_lengths, length_m)
+    torch.save(min_lengths, length_a)
+   
+    torch.save(adjusted_tensor1, tensor_m)
+    torch.save(adjusted_tensor2, tensor_a)
     print(adjusted_tensor1.shape)
     print(adjusted_tensor2.shape)
+    print('tensor matching complete')
 
-    mel_new = "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v2_mel.pt"
-    acc_new = "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v2_acc.pt"
-    length_mel_new = "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v2_mel.length.pt"
-    length_acc_new =  "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v2_acc.length.pt"
-    torch.save(min_lengths, length_mel_new)
-    torch.save(min_lengths, length_acc_new)
-   
-    torch.save(adjusted_tensor1, mel_new)
-    torch.save(adjusted_tensor2, acc_new)
-
-    length1 = torch.load(length_mel_new)
-    length2 = torch.load(length_acc_new)
-
-    print(length1, length2)
-   
-
-    src = "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v1_mel.pitch_shift_range.pt"
-    dst = "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v2_mel.pitch_shift_range.pt"
-
-    # copy file contents and metadata
-    shutil.copy(src, dst)
-
-    src = "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v1_acc.pitch_shift_range.pt"
-    dst = "/home/coder/laopo/StreamMUSE/data/909+ac+1k7_cp4_v2_acc.pitch_shift_range.pt"
-
-    # copy file contents and metadata
-    shutil.copy(src, dst)
-
-def create_combined_melody(max_polyphony=4):
-    folder = ['/home/coder/laopo/data/Pop1K7/Pop1K7/melodymid','/home/coder/laopo/data/POP909-Dataset/melodymid', '/home/coder/laopo/data/AccoMontage/melodymid']
-    create_npy_dataset_from_midi(folder, max_polyphony, f'909+ac+1k7_cp{max_polyphony}_v1_mel', scan_subfolders=False)
-def create_combined_accomp(max_polyphony=4):
-    folder = ['/home/coder/laopo/data/Pop1K7/Pop1K7/accompmid','/home/coder/laopo/data/POP909-Dataset/accompmid_new', '/home/coder/laopo/data/AccoMontage/accompmid']
-    create_npy_dataset_from_midi(folder, max_polyphony, f'909+ac+1k7_cp{max_polyphony}_v1_acc', scan_subfolders=False)
-def create_combined(dataset_name, folders, max_polyphony=4):
-    # folder = ['/home/coder/laopo/data/Pop1K7/Pop1K7/accompmid','/home/coder/laopo/data/POP909-Dataset/accompmid_new', '/home/coder/laopo/data/AccoMontage/accompmid']
-    create_npy_dataset_from_midi(folders, max_polyphony, f'{dataset_name}_cp{max_polyphony}', scan_subfolders=False)
-
+def create_tensor(dataset_name, folders, max_polyphony=4):
+    paths = create_npy_dataset_from_midi(folders, max_polyphony, f'{dataset_name}_cp{max_polyphony}', scan_subfolders=False)
+    return paths
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
-
+    
     # Positional arguments
     parser.add_argument("--name",type=str,help="name your dataset")
     parser.add_argument("--folders",nargs='+', type=str, help="paths to midi folders")
@@ -349,8 +332,17 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    create_combined(args.name, args.folders, max_polyphony=args.polyphony)
+    melody_f = [os.path.join(f, 'mel') for f in args.folders]
+    accomp_f = [os.path.join(f, 'acc') for f in args.folders]
+    melody_n = args.name+'_mel'
+    accomp_n = args.name+'_acc'
+
+    paths_m = create_tensor(melody_n, melody_f, max_polyphony=args.polyphony)
+    paths_a = create_tensor(accomp_n, accomp_f, max_polyphony=args.polyphony)
     
+    sync(paths_m, paths_a)
+
+
         
 
     

@@ -6,6 +6,7 @@ from settings import RWC_DATASET_PATH
 import torch
 import pretty_midi
 import os
+import argparse
 
 def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
@@ -113,18 +114,25 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
 
 
 if __name__ == '__main__':
-    import sys
-    if len(sys.argv) < 2:
-        print('Usage: python cp_transformer_inference.py <model_path>')
-        exit(1)
-    model_path = sys.argv[1]
-    model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=True)
+    parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
+    
+    parser.add_argument("--model_path", type=str, help="path to model checkpoint")
+    parser.add_argument("--prompt_len",type=int, default=75, help="length of prompt")
+    parser.add_argument("--n_samples", type=int, default=2, help="number of samples")
+    parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
+
+    args = parser.parse_args()
+
+    model_path = args.model_path
+
+    if 'small' in model_path:
+        model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=False)
+    else:
+        model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=True)
     model.save_name = os.path.basename(model_path)
     model.cuda()
     model.eval()
-    # continuation(model, 'input/ashover1.mid', temperature=1.0, generation_length=384, n_samples=8, prompt_length=75)
-    # continuation(model, 'input/RM-P003.SMF_SYNC.MID', temperature=1.0, generation_length=384, n_samples=8)
     for midi in os.listdir('/home/coder/laopo/StreamMUSE/input/mel'):
         if midi.endswith('mid'):
             midi = os.path.join('/home/coder/laopo/StreamMUSE/input/mel', midi)
-            continuation(model, midi, temperature=1.0, generation_length=384, n_samples=2, prompt_length=75,gt_mel=True)
+            continuation(model, midi, temperature=args.temperature, generation_length=384, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)

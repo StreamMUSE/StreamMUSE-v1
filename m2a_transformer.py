@@ -12,6 +12,7 @@ import wandb
 from pytorch_lightning.loggers import WandbLogger
 from typing import Optional
 # from preprocess_large_midi_dataset import tensor_to_midi
+import argparse
 
 TRAIN_LENGTH = 192
 MAX_STEPS = 1000000
@@ -81,17 +82,6 @@ class RoFormerSymbolicTransformer(L.LightningModule):
     def get_base_model(self, config):
         return RoFormerEncoder(config)
 
-    # def local_encode(self, x):
-    #     batch_size, seq_len, subseq_len = x.shape
-    #     x = x.view(-1, subseq_len)
-    #     x = torch.cat([torch.full((x.shape[0], 1), SOS_TOKEN, dtype=torch.long, device=x.device), x], dim=-1)
-    #     # print("after 1 sos:", x.shape)
-    #     mask = x != PAD_TOKEN
-    #     emb = self.local_embedding(x)
-    #     # print("emb shape:", emb.shape)
-    #     h = self.local_encoder(emb, encoder_attention_mask=mask)[0] # 9个取前一个 不用改变 positional encoding
-    #     # get representation of the first token
-    #     return h[:, 0], emb[:, :-1]
     def local_encode(self, x, token_type_ids):
 
         batch_size, seq_len, subseq_len = x.shape
@@ -131,9 +121,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         emb = torch.cat([h, emb[:, 1:]], dim=1)
         # Create an autoregressive mask
         h = self.local_decoder(emb, attention_mask=self.buffered_future_mask(emb))[0]
-        # print("h shape", h.shape)
         final = self.final_decoder(h)
-        # print("final:", final.shape)
         return self.final_decoder(h)
 
 
@@ -173,12 +161,9 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
         h, _= self.local_encode(x, token_type_ids)
         h_mel, _ = self.local_encode(x_mel_gt, torch.zeros(*x_mel_gt.shape[:-1], x_mel_gt.shape[-1] + 1, device=x_mel_gt.device, dtype=x_mel_gt.dtype))
-        # print(h.shape, emb.shape)
         h = h.view(batch_size, seq_len, -1)
         h_mel = h_mel.view(batch_size, seq_len_gt, -1)
         sos = self.global_sos.view(1, 1, -1).repeat(batch_size, 1, 1)
-        # print("sos",sos.shape)
-        # print("h", h.shape)
         h = torch.cat([sos, h], dim=1)
         y = [x[:, i, :] for i in range(seq_len)]  # y will be returned by a list a0,m0,a1,m1,a_to_be_2
         if x_mel_gt != None:
@@ -265,7 +250,6 @@ class RoFormerSymbolicTransformer(L.LightningModule):
     def forward(self, x):
         # x: [batch, seq, subseq]
         # Use local encoder to encode subsequences
-        # print("start:", x_mel.shape)
         batch_size, seq_len, subseq_len = x.shape # 10*384*8
         assert seq_len % 2 == 0, "Expected even number of frames (2*S interleaved)."
 
@@ -274,11 +258,9 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         token_type_ids = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, subseq_len)
         sos_type = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, 1)
         token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
-        # print(token_type_ids.shape)
         h, emb= self.local_encode(x, token_type_ids) #这里是within time step
         h = h.view(batch_size, seq_len, -1) #这里重新展开 这是每一帧的summary 包括sos吗
 
-        # type_logits = self.type_classifier(h)
 
         # Prepend SOS token and remove the last token
         sos = self.global_sos.view(1, 1, -1).repeat(batch_size, 1, 1)
@@ -307,10 +289,8 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         x_processed[:, :, :, 1] = x[:, :, :, 1] + (x[:, :, :, 2]) * 128 + 2 + pitch_shift[:, None, None] * is_not_drum
         x_processed[pad_indices] = PAD_TOKEN
         x_processed[:, :, :, 0][eos_indices] = EOS_TOKEN
-        # x_no_prog = x_processed[..., 1] 
         
         if y==None:
-            # return x_no_prog
             return x_processed.view(batch_size, seq_length, subseq_length // 3 * 2)
         else:
             batch_size_y, seq_length_y, subseq_length_y = y.shape
@@ -320,15 +300,12 @@ class RoFormerSymbolicTransformer(L.LightningModule):
             eos_indices_y = y[:, :, :, 0] == 254 #program is 254
             is_not_drum_y = y[:, :, :, 0] != 127 
             y_processed[:, :, :, 0] = 1 # program 不变
-            # print(pitch_shift)
             y_processed[:, :, :, 1] = y[:, :, :, 1] + (y[:, :, :, 2]) * 128 + 2 + pitch_shift[:, None, None] * is_not_drum_y
             y_processed[pad_indices_y] = PAD_TOKEN
             y_processed[:, :, :, 0][eos_indices_y] = EOS_TOKEN
 
-            # y_no_prog = y_processed[..., 1] 
-
             return x_processed.view(batch_size, seq_length, subseq_length // 3 * 2), y_processed.view(batch_size_y, seq_length_y, subseq_length_y // 3 * 2)
-            # return x_no_prog, y_no_prog
+
     
     def loss(self, x_mel, x_acc, pitch_shift):
         # x_mel, x_acc = self.preprocess(x_mel, pitch_shift, y = x_acc)
@@ -367,14 +344,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         optimizer = torch.optim.AdamW(self.parameters(), lr=max_lr)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=max_lr, total_steps=MAX_STEPS, pct_start=0.005)
         return [optimizer], [scheduler]
-    # def on_after_backward(self):
-    #     # 这个 hook 会在 loss.backward() 完成之后、optimizer.step() 之前被调用
-    #     # 在这里打印 type_embeddings 的梯度均值
-    #     if self.token_type_embeddings.weight.grad is not None:
-    #         grad_mean = self.token_type_embeddings.weight.grad.abs().mean().item()
-    #         print(f"[DEBUG] type_emb grad mean = {grad_mean:.6f}")
-    #     else:
-    #         print("[DEBUG] type_emb grad is None")
+
 class FramedDataset(IterableDataset):
 
     def __init__(self, file_path, target_length, batch_size, split='all', split_ratio=10):
@@ -415,20 +385,13 @@ class FramedDataset(IterableDataset):
             for i in range(0, len(self.valid_indices), self.batch_size):
                 batch_indices = indices[i:i + self.batch_size]
                 batch_pitch_shift_range = pitch_shift_range[self.valid_indices[batch_indices]]
-                # print("bpsr:", batch_pitch_shift_range)
                 batch_pitch_shift_range_c = pitch_shift_range_c[self.valid_indices[batch_indices]]
                 raw_ids = self.valid_indices[batch_indices]
-                # starts = torch.randint(self.start[raw_ids], self.start[raw_ids] + self.length[raw_ids] - self.target_length)
                 starts = torch.floor(torch.rand(len(raw_ids)) * (self.length[raw_ids] - self.target_length)).long() + self.start[raw_ids]
                 index_matrix = torch.arange(self.target_length).view(1, -1) + starts.view(-1, 1)
-                # Shift the pitch in range [min, max], inclusive
                 minmax = torch.minimum(batch_pitch_shift_range_c[:, 1], batch_pitch_shift_range[:, 1])
                 maxmin = torch.maximum(batch_pitch_shift_range[:, 0], batch_pitch_shift_range_c[:, 0])
-                # print("1", batch_pitch_shift_range[:, 1].shape)
-                # print("2", minmax.shape)
                 batch_pitch_shift = torch.floor(torch.rand(len(raw_ids)) * (minmax - maxmin + 1)).long() + maxmin
-                # batch_pitch_shift = torch.floor(torch.rand(len(raw_ids)) * (batch_pitch_shift_range[:, 1] - batch_pitch_shift_range[:, 0] + 1)).long() + batch_pitch_shift_range[:, 0]
-                # print(data_c[index_matrix].shape, data[index_matrix].shape)
                 yield data_c[index_matrix], data[index_matrix], batch_pitch_shift
 
 def sanity_check():
@@ -461,37 +424,41 @@ def sanity_check():
     x = torch.tensor(x, dtype=torch.long)
     y = torch.tensor(y, dtype=torch.long)
     loss = model.loss(x, y, pitch_shift = torch.zeros(1, dtype=torch.int8))
-    print(loss)
+    # print(loss)
 
 if __name__ == '__main__':
     # sanity_check()
-    batch_size = int(sys.argv[1])
-    model_size = str(sys.argv[2])
+   
+    parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
+    
+    parser.add_argument("--batch_size",type=int, default=10, help="batch size")
+    parser.add_argument("--model_size", type=str, default='small', help="large or small")
+    parser.add_argument("--path_to_dataset",type=str,help="name to your accompaniment .pt file")
+    parser.add_argument("--model_name",type=str,default=None, help="name to your model")
+    parser.add_argument("--checkpoint_path", type=str, default=None, help="continue training from checkpoint")
+    parser.add_argument("--wandb", action="store_true",  default=False, help="enable wand logging")
+
+    args = parser.parse_args()
+
+    batch_size = args.batch_size 
+    model_size = args.model_size
+    dataset = args.path_to_dataset
+    checkpoint_path = args.checkpoint_path
+
     assert model_size in ['small', 'large']
     n_gpus = max(torch.cuda.device_count(), 1)
-    model_name = f'cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_{model_size}_batch_{batch_size * n_gpus}_schedule'
-    wandb_logger = WandbLogger(name=model_name, project="StreamMUSE", 
-                               config={
-                                "batch_size": batch_size,
-                                "model_size": model_size,
-                                "train_length": TRAIN_LENGTH
-                            }
-    )
+
+    default_name = f"m2a_transformer_{model_size}_batch_{batch_size * n_gpus}_schedule"
+    model_name = args.model_name if args.model_name is not None else default_name
     net = RoFormerSymbolicTransformer(model_size == 'large')
-    # net = RoFormerSymbolicTransformer.load_from_checkpoint('/home/coder/laopo/StreamMUSE/ckpt/cp_transformer_m_v0.2_small_batch_40_schedule/cp_transformer_m_v0.2_small_batch_40_schedule.epoch=00.val_loss=0.09079.ckpt', large=False)
-    train_set_loader = DataLoader(FramedDataset('data/909+ac+1k7_cp4_v2_acc.pt', TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=1, persistent_workers=True)
-    val_set_loader = DataLoader(FramedDataset('data/909+ac+1k7_cp4_v2_acc.pt', TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=1, persistent_workers=True)
-    # mel, acc, _ = next(iter(train_set_loader))
+    train_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=1, persistent_workers=True)
+    val_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=1, persistent_workers=True)
     checkpoint_callback = L.callbacks.ModelCheckpoint(monitor='val_loss',
                                                       save_top_k=10,
                                                       save_last=True,
                                                       dirpath=f'ckpt/{model_name}',
                                                       filename=model_name + '.{epoch:02d}.{val_loss:.5f}')
 
-    # load from checkpoint
-    checkpoint_path = None
-    if len(sys.argv) > 3:
-        checkpoint_path = sys.argv[3]
     trainer = L.Trainer(devices=n_gpus,
                         precision="bf16-mixed" if torch.cuda.is_available() else 32,
                         max_steps=MAX_STEPS,
@@ -500,8 +467,12 @@ if __name__ == '__main__':
                         val_check_interval=500,
                         limit_val_batches=25,
                         check_val_every_n_epoch=None,
-                        logger=wandb_logger if 'test' not in model_name else None,
+                        logger= WandbLogger(name=model_name, project="StreamMUSE", 
+                                config={
+                                    "batch_size": batch_size,
+                                    "model_size": model_size,
+                                    "train_length": TRAIN_LENGTH
+                                }) if args.wandb else TensorBoardLogger("tb_logs", name=model_name),
                         strategy='auto' if n_gpus == 1 else 'ddp')
     trainer.fit(net, train_set_loader, val_set_loader, ckpt_path=checkpoint_path)
-    # save the model (parameters only)
     torch.save(net.state_dict(), f'ckpt/{model_name}.pt')
