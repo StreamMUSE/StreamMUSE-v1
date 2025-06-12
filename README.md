@@ -70,7 +70,8 @@ Train model with:
 
 ## Inference
 
-Download checkpoint from [here](https://drive.google.com/file/d/1mX4I8EsyKN5xjYqfDHhBS6ukGDN7kosY/view?usp=sharing) and place it under `/ckpt`
+Download checkpoint from [here](https://huggingface.co/Jianshu001/music/blob/main/cp_transformer_909%2Bac%2B1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch%3D00.val_loss%3D0.90296.ckpt) and place it under `/ckpt`
+(for faster download, use wget command)
 
 For inference, place all the melody and accompaniment midi under the `/input` folder:
 
