@@ -1,7 +1,7 @@
 import numpy as np
 
 from m2a_transformer import RoFormerSymbolicTransformer, SOS_TOKEN, EOS_TOKEN, PAD_TOKEN
-from preprocess_large_midi_dataset_private import preprocess_midi, DURATION_TEMPLATES
+from preprocess_large_midi_dataset import preprocess_midi, DURATION_TEMPLATES
 from settings import RWC_DATASET_PATH
 import torch
 import pretty_midi
