@@ -27,7 +27,7 @@ Download POP909 dataset:
 
     git clone https://github.com/music-x-lab/POP909-Dataset.git
 
-+ you can use Garageband or other online DAW, such as [soundtrap](https://www.soundtrap.com/musicmakers, to visualize MIDI files. 
++ you can use Garageband or other online DAW, such as [soundtrap](https://www.soundtrap.com/musicmakers), to visualize MIDI files. 
 
 Run `python extract_mid.py` to extract accompaniment and melody tracks in midi files. 
 
