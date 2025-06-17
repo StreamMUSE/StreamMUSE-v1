@@ -1,13 +1,7 @@
 import numpy as np
 
 from m2a_transformer import RoFormerSymbolicTransformer, SOS_TOKEN, EOS_TOKEN, PAD_TOKEN
-<<<<<<< HEAD
 from preprocess_large_midi_dataset import preprocess_midi, DURATION_TEMPLATES
-=======
-# from preprocess_large_midi_dataset_private import preprocess_midi, DURATION_TEMPLATES
-from preprocess_large_midi_dataset import preprocess_midi, DURATION_TEMPLATES
-
->>>>>>> 17cfb63 (Update .gitignore and enhance MIDI processing scripts)
 from settings import RWC_DATASET_PATH
 import torch
 import pretty_midi
