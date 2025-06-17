@@ -108,7 +108,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         batch_size, subseq_len, _ = emb.shape
         # Add h as the first token of emb
         h = h.view(batch_size, 1, -1)
-        print(emb.shape) #3840 8 512
+        # print(emb.shape) #3840 8 512
         emb = torch.cat([h, emb[:, 1:]], dim=1)
         # Create an autoregressive mask
         h = self.local_decoder(emb, attention_mask=self.buffered_future_mask(emb))[0]
@@ -157,10 +157,11 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         h = torch.cat([sos, h], dim=1)
         y = [x[:, i, :] for i in range(seq_len)]  # y will be returned by a list a0,m0,a1,m1,a_to_be_2
         if x_mel_gt != None:
-            print('with gt!')
+            # print('with gt!')
             for i in range(0, max_seq_len):
                 if i % 10 == 0:
-                    print('Sampling', i, '/', max_seq_len)
+                    # print('Sampling', i, '/', max_seq_len)
+                    ...
                 if i % 2 == 0:
                     h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
                     y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
@@ -175,8 +176,8 @@ class RoFormerSymbolicTransformer(L.LightningModule):
                     y.append(x_mel_gt[: ,i//2, :])
         else:
             for i in range(0, max_seq_len):
-                if i % 10 == 0:
-                    print('Sampling', i, '/', max_seq_len)
+                # if i % 10 == 0:
+                #     print('Sampling', i, '/', max_seq_len)
                 h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
                 y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
                 y.append(y_next)
@@ -206,8 +207,8 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         # Start with just [SOS]
         h = sos  # [B, 1, H]
         for t in range(max_seq_len):
-            if t % 10 == 0:
-                    print('Sampling', t, '/', max_seq_len)
+            # if t % 10 == 0:
+            #         print('Sampling', t, '/', max_seq_len)
             if t > 0:
                 # Append previous melody summary before generating new accompaniment
                 h_prev_mel = h_mel[:, t-1, :].unsqueeze(1)  # [B, 1, H]
@@ -441,8 +442,8 @@ if __name__ == '__main__':
     default_name = f"m2a_transformer_{model_size}_batch_{batch_size * n_gpus}_schedule"
     model_name = args.model_name if args.model_name is not None else default_name
     net = RoFormerSymbolicTransformer(model_size == 'large')
-    train_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=1, persistent_workers=True)
-    val_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=1, persistent_workers=True)
+    train_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=0)
+    val_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=0)
     checkpoint_callback = L.callbacks.ModelCheckpoint(monitor='val_loss',
                                                       save_top_k=10,
                                                       save_last=True,
