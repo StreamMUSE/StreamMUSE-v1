@@ -15,7 +15,7 @@ from typing import Optional
 import argparse
 
 TRAIN_LENGTH = 192
-MAX_STEPS = 1000000
+MAX_STEPS = 100000
 
 # Indicator: 0
 # pitch+duration*2: 3200 (25*128)
@@ -162,7 +162,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
                 if i % 10 == 0:
                     print('Sampling', i, '/', max_seq_len)
                 if i % 2 == 0:
-                    h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+                    h_out = self.model(h, attention_mask=self.buffered_future_mask(h))[0]
                     y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
                     y.append(y_next)
                     b, s, l = y_next.unsqueeze(1).shape
@@ -177,7 +177,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
             for i in range(0, max_seq_len):
                 if i % 10 == 0:
                     print('Sampling', i, '/', max_seq_len)
-                h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+                h_out = self.model(h, attention_mask=self.buffered_future_mask(h))[0]
                 y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
                 y.append(y_next)
                 b, s, l = y_next.unsqueeze(1).shape
@@ -214,7 +214,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
                 h = torch.cat([h, h_prev_mel], dim=1)  # [B, cur_len, H]
                 y.append(x_mel[: ,t-1, :])
 
-            h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+            h_out = self.model(h, attention_mask=self.buffered_future_mask(h))[0]
             y_next = self.local_sampling(h_out[:, -1], max_subseq_len=L, temperature=temperature)
             y.append(y_next)
             b, s, l = y_next.unsqueeze(1).shape
@@ -257,7 +257,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         h = torch.cat([sos, h[:, :-1]], dim=1)
 
         # print(h.shape)
-        h = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0] ##all the sos of every timestep (considering other timestep)
+        h = self.model(h, attention_mask=self.buffered_future_mask(h))[0] ##all the sos of every timestep (considering other timestep)
         return self.local_decode(h, emb)
 
 
