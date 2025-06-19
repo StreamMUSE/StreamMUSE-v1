@@ -16,4 +16,4 @@ aria-dataset
 POP909-Dataset
 /test/
 *.mid
-aria-extract
+aria-extract.py
