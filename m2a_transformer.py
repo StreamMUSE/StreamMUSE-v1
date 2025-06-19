@@ -15,7 +15,7 @@ from typing import Optional
 import argparse
 
 TRAIN_LENGTH = 192
-MAX_STEPS = 100000
+MAX_STEPS = 1000000
 
 # Indicator: 0
 # pitch+duration*2: 3200 (25*128)
@@ -358,8 +358,10 @@ class FramedDataset(IterableDataset):
         print('Metadata for dataset', file_path, 'loaded. Number of valid songs:', self.valid_song_count)
 
     def __iter__(self):
-        data = torch.load(self.file_path, weights_only=True) #伴奏
-        data_c = torch.load(self.file_path.replace('acc.pt', 'mel.pt'), weights_only=True) #旋律
+        # data = torch.load(self.file_path, weights_only=True) #伴奏
+        # data_c = torch.load(self.file_path.replace('acc.pt', 'mel.pt'), weights_only=True) #旋律
+        data = torch.load(self.file_path, mmap=True)
+        data_c = torch.load(self.file_path.replace('acc.pt', 'mel.pt'), mmap=True)
         pitch_shift_range = torch.load(self.file_path[:-3] + '.pitch_shift_range.pt', weights_only=True).reshape(-1, 2)
         pitch_shift_range[pitch_shift_range[:, 0] < -5, 0] = -5
         pitch_shift_range[pitch_shift_range[:, 1] > 6, 1] = 6
@@ -436,13 +438,14 @@ if __name__ == '__main__':
     checkpoint_path = args.checkpoint_path
 
     assert model_size in ['small', 'large']
-    n_gpus = max(torch.cuda.device_count(), 1)
+    n_gpus = max(torch.cuda.device_count(), 1) # check issues when doing big dataset
+    # n_gpus = 1 
 
     default_name = f"m2a_transformer_{model_size}_batch_{batch_size * n_gpus}_schedule"
     model_name = args.model_name if args.model_name is not None else default_name
     net = RoFormerSymbolicTransformer(model_size == 'large')
-    train_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=1, persistent_workers=True)
-    val_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=1, persistent_workers=True)
+    train_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=0)
+    val_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=0)
     checkpoint_callback = L.callbacks.ModelCheckpoint(monitor='val_loss',
                                                       save_top_k=10,
                                                       save_last=True,
@@ -463,6 +466,6 @@ if __name__ == '__main__':
                                     "model_size": model_size,
                                     "train_length": TRAIN_LENGTH
                                 }) if args.wandb else TensorBoardLogger("tb_logs", name=model_name),
-                        strategy='auto' if n_gpus == 1 else 'ddp')
+                        strategy='auto' if n_gpus == 1 else 'ddp_find_unused_parameters_true')
     trainer.fit(net, train_set_loader, val_set_loader, ckpt_path=checkpoint_path)
     torch.save(net.state_dict(), f'ckpt/{model_name}.pt')
