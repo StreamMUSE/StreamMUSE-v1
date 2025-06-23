@@ -36,16 +36,17 @@ class BaseDataModuleSchema(BaseModel):
             self.predict_config.stage = "predict"
 
 
-# Now inherit for your specific dataset/datamodule schemas
-class Pop909DatasetSchema(BaseDatasetSchema):
-    mel_dir: str = Field(..., description="Directory containing melody REMI json files.")
-    acc_dir: str = Field(..., description="Directory containing accompaniment REMI json files.")
+class MelAccRemiJsonDatasetSchema(BaseDatasetSchema):
+    mel_dir: str = Field(..., description="Directory containing melody JSONs.")
+    acc_dir: str = Field(..., description="Directory containing accompaniment JSONs.")
+    file_pattern: str = Field("*.json", description="Glob pattern for finding JSON files (e.g., '*.json').")
 
+class MelAccRemiJsonDataModuleSchema(BaseDataModuleSchema):
+    train_config: MelAccRemiJsonDatasetSchema = Field(..., description="Configuration for the training dataset.")
+    val_config: MelAccRemiJsonDatasetSchema = Field(..., description="Configuration for the validation dataset.")
+    test_config: Optional[MelAccRemiJsonDatasetSchema] = Field(None, description="Configuration for the test dataset.")
+    predict_config: Optional[MelAccRemiJsonDatasetSchema] = Field(None, description="Configuration for the prediction dataset.")
+    batch_size: int = Field(1, description="Batch size for data loaders.")
+    num_workers: int = Field(0, description="Number of workers for data loaders.")
 
-class Pop909DataModuleSchema(BaseDataModuleSchema):
-    train_config: Optional[Pop909DatasetSchema] = Field(None, description="Configuration for the training dataset.")
-    val_config: Optional[Pop909DatasetSchema] = Field(None, description="Configuration for the validation dataset.")
-    test_config: Optional[Pop909DatasetSchema] = Field(None, description="Configuration for the test dataset.")
-    predict_config: Optional[Pop909DatasetSchema] = Field(None, description="Optional configuration for the prediction dataset.")
-
-DataModuleSchema = Union[Pop909DataModuleSchema]
+DataModuleSchema = Union[MelAccRemiJsonDataModuleSchema]

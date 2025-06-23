@@ -2,7 +2,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger, CSVLogger  # or your preferred logger
 from pytorch_lightning.callbacks import ModelCheckpoint  # or other callbacks you need
 from schema.project_schema import ProjectSchema  # Assuming you have a config schema
-from datamodule.pop909_dataset import Pop909DataModule
+from datamodule.remi_json_dataset import Pop909DataModule
 from m2a_transformer_refactor import M2ATransformer  # Your PL model
 import os
 import shutil
