@@ -14,9 +14,10 @@ cp_transformer_pt.py
 m2a_transformer_inference_copy.py
 
 *.ckpt
-/.vscode/
+.vscode/
 .python-version
 *.zip
 uv.lock
 pyproject.toml
 /datasets/
+logs
