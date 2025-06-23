@@ -48,4 +48,4 @@ class Pop909DataModuleSchema(BaseDataModuleSchema):
     test_config: Optional[Pop909DatasetSchema] = Field(None, description="Configuration for the test dataset.")
     predict_config: Optional[Pop909DatasetSchema] = Field(None, description="Optional configuration for the prediction dataset.")
 
-DataModuleSchema = Pop909DataModuleSchema
+DataModuleSchema = Union[Pop909DataModuleSchema]
