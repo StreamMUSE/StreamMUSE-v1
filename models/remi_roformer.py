@@ -7,9 +7,9 @@ from torchmetrics.classification import MulticlassAccuracy, MulticlassF1Score
 from torchmetrics import MetricCollection
 import os
 
-class M2ATransformer(pl.LightningModule):
+class REMIRoformer(pl.LightningModule):
     def __init__(self, model_schema: ModelSchema) -> None:
-        super(M2ATransformer, self).__init__()
+        super(REMIRoformer, self).__init__()
         self.model_schema = model_schema
         self.model = RoFormerForCausalLM(config=model_schema.network_schema)
         self.tokenizer = ...
@@ -74,21 +74,22 @@ class M2ATransformer(pl.LightningModule):
         self._save_validation_data(batch, preds, target)
         
         return loss
-def _save_validation_data(self, batch: ModelInputData, preds: torch.Tensor, target: torch.Tensor) -> None:
-    """
-    Save validation data to disk after validation epoch ends.
-    """
-    val_save_dir = os.path.join(self.loggers[0].save_dir, self.loggers[0].name)
-    os.makedirs(val_save_dir, exist_ok=True)
-    torch.save(
-        {
-            "mel_data": batch.mel_data,
-            "acc_data": batch.acc_data,
-            "preds": preds,
-            "target": target,
-        },
-        f=f"{val_save_dir}/val_epoch.pt",
-    )
+    
+    def _save_validation_data(self, batch: ModelInputData, preds: torch.Tensor, target: torch.Tensor) -> None:
+        """
+        Save validation data to disk after validation epoch ends.
+        """
+        val_save_dir = os.path.join(self.loggers[0].save_dir, self.loggers[0].name)
+        os.makedirs(val_save_dir, exist_ok=True)
+        torch.save(
+            {
+                "mel_data": batch.mel_data,
+                "acc_data": batch.acc_data,
+                "preds": preds,
+                "target": target,
+            },
+            f=f"{val_save_dir}/val_epoch.pt",
+        )
 
     def test_step(self, batch: ModelInputData, batch_idx: int) -> ModelOutputData:
         batch = self._move_to_device(batch)

@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
 # Adjust the import path based on your project structure
-from datamodule.remi_json_dataset import Pop909Dataset, Pop909DataModule
+from datamodules.remi_json_datamodule import Pop909Dataset, Pop909DataModule
 from schema.dataset_schema import Pop909DatasetSchema, Pop909DataModuleSchema
 
 # Mock the schema classes by inheriting directly from them

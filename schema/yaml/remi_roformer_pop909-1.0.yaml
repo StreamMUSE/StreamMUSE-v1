@@ -1,6 +1,6 @@
 project_name: &proj_name "Real-Time Accompaniment Generation "
-version: &version "1.0.0"
-description: "symbolic music generation with REMI and RoFormer, trained on pop 909 dataset"
+version: &version "1.0"
+description: "symbolic music generation with REMI and RoFormer, trained on pop 909 dataset sub seq=30(polyphony=10)"
 loggers:
   csv_logger:
     type: "csv"
@@ -40,7 +40,7 @@ dataset:
 
 model:
   model_name: "REMI + RoFormer"
-  model_type: "M2A-Transformer"
+  model_type: "REMI-RoFormer"
 trainer:
   max_epochs: 5000
   accelerator: "gpu"

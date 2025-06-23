@@ -115,7 +115,6 @@ def deterministic_clip_and_pad(
 
 class MelAccRemiJsonDataset(Dataset): # 类名已更改
     def __init__(self, config: MelAccRemiJsonDatasetSchema) -> None:
-        # 直接使用 mel_dir 和 acc_dir
         self.mel_dir = config.mel_dir
         self.acc_dir = config.acc_dir
         self.file_pattern = config.file_pattern # 仍然保留 file_pattern 用于 glob
@@ -125,7 +124,6 @@ class MelAccRemiJsonDataset(Dataset): # 类名已更改
         self.tokenization_type = config.tokenization_type
         self.midi_file_pairs = []
         self.stage = config.stage
-        # self.val_start_idx 似乎未被使用，可以考虑移除或说明其用途
 
         self.midi_file_pairs = self._collect_file_pairs()
         self.midi_file_pairs.sort() # 保持排序
