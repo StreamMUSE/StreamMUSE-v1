@@ -22,16 +22,16 @@ loggers:
 dataset:
   tokenizer: "XinYue's"
   train_config:
-    batch_size: 32
+    batch_size: 24
     num_workers: 0
-    file_path: "data/POP909_acc_cp4.pt"
+    file_path: "data/pop909_acc_cp10.pt"
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
   val_config:
-    batch_size: 32
+    batch_size: 24
     num_workers: 0
-    file_path: "data/POP909_acc_cp4.pt"
+    file_path: "data/pop909_acc_cp10.pt"
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
@@ -42,5 +42,5 @@ model:
 trainer:
   max_epochs: 5000
   accelerator: "gpu"
-  devices: 1
+  devices: [0,1, 2, 3, 4]
 seed: 42

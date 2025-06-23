@@ -60,7 +60,9 @@ class TrainerSchema(BaseModel):
 
     max_epochs: int = Field(10, description="Maximum number of epochs for training. Default is 10.")
     accelerator: Optional[str] = Field("auto", description="Accelerator to use for training (e.g., 'cpu', 'gpu'). Default is 'auto'.")
-    devices: Optional[int] = Field(None, description="Number of devices to use for training. Default is None (use all available).")
+    devices: Optional[Union[int, list[int], tuple[int]]] = Field(
+        None, description="Number of devices to use for training. Default is None (use all available)."
+    )
 
     def model_post_init(self, context: Any) -> None:
         # Additional initialization logic can be added here if needed
