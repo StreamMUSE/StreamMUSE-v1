@@ -158,7 +158,7 @@ class ProjectSchema(BaseModel):
     Schema for the M2A Transformer project configuration.
     """
 
-    project_name: str = Field(..., description="Name of the project.")
+    project: str = Field(..., description="Name of the project.")
     version: str = Field("1.0.0", description="Version of the project. Default is '1.0.0'.")
     description: Optional[str] = Field(None, description="Description of the project.")
     loggers: Optional[dict[str, LoggerSchema]] = Field(None, description="List of logger configurations.")
