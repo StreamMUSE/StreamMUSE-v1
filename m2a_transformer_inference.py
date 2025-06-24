@@ -166,3 +166,15 @@ if __name__ == "__main__":
                 gt_mel=True,
             )
 >>>>>>> ff32bce (-)
+    for midi in os.listdir("input/mel"):
+        if midi.endswith("mid"):
+            midi = os.path.join("input/mel", midi)
+            continuation(
+                model,
+                midi,
+                temperature=args.temperature,
+                generation_length=384,
+                n_samples=args.n_samples,
+                prompt_length=args.prompt_len,
+                gt_mel=True,
+            )
