@@ -149,5 +149,11 @@ if __name__ == "__main__":
         if midi.endswith("mid"):
             midi = os.path.join("input/mel", midi)
             continuation(
-                model, midi, temperature=args.temperature, generation_length=384, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True
+                model,
+                midi,
+                temperature=args.temperature,
+                generation_length=384,
+                n_samples=args.n_samples,
+                prompt_length=args.prompt_len,
+                gt_mel=True,
             )
