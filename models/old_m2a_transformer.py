@@ -29,13 +29,13 @@ class OldM2ATransformer(L.LightningModule):
     def __init__(self, model_schema:OldM2ATransformerSchema):
         super().__init__()
         large = model_schema.large
-        self.hidden_size = 768 if large else 512
-        self.num_layers = 12 if large else 6
-        self.num_attention_heads = 12 if large else 8
-        self.intermediate_size = 3072 if large else 1024
-        self.local_model_num_layers = 3
-        self.local_model_num_attention_heads = 8
-        self.local_model_intermediate_size = 768
+        self.hidden_size = model_schema.hidden_size
+        self.num_layers = model_schema.num_layers
+        self.num_attention_heads = model_schema.num_attention_heads
+        self.intermediate_size = model_schema.intermediate_size
+        self.local_model_num_layers = model_schema.local_model_num_layers
+        self.local_model_num_attention_heads = model_schema.local_model_num_attention_heads
+        self.local_model_intermediate_size = model_schema.local_model_intermediate_size
         main_roformer_config = RoFormerConfig(
             hidden_size=self.hidden_size,
             num_hidden_layers=self.num_layers,
@@ -303,18 +303,18 @@ class OldM2ATransformer(L.LightningModule):
         batch = self._move_to_device(batch)
         x_mel, x_acc, pitch_shift = batch.mel_data, batch.acc_data, batch.pitch_shift
         loss = self.loss(x_mel, x_acc, pitch_shift)
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         # scheduler step
         scheduler = self.lr_schedulers()
         scheduler.step()
-        self.log("training/lr", scheduler.get_last_lr()[0])
+        self.log("training/lr", scheduler.get_last_lr()[0], on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch: M2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)
         x_mel, x_acc, pitch_shift = batch.mel_data, batch.acc_data, batch.pitch_shift
         loss = self.loss(x_mel, x_acc, pitch_shift)
-        self.log("val_loss", loss)
+        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     def configure_optimizers(self):
