@@ -1,0 +1,50 @@
+project: &project "Real-Time Accompaniment Generation "
+description: "symbolic music generation with XinYue's tokenization and customed RoFormer, trained on pop 909 dataset"
+
+name: &name "old_m2a_pop909"
+version: &version "1.0"
+
+loggers:
+  csv_logger:
+    type: "csv"
+    save_dir: "logs/"
+    name: *name
+    version: *version
+  tensorboard_logger:
+    type: "tensorboard"
+    save_dir: "logs/"
+    name: *name
+    version: *version
+  # - wandb_logger:
+  #   type: "wandb"
+  #   project: *project_name
+  #   entity: "music_generation"
+  #   name: "REMI_RoFormer_pop909"
+  #   version: "1.0.0"
+
+dataset:
+  tokenizer: "XinYue's"
+  train_config:
+    batch_size: 24
+    num_workers: 0
+    file_path: "data/pop909_acc_cp10.pt"
+    target_length: 384
+    tokenization_type: "XinYue's"
+    split_ratio: 10
+  val_config:
+    batch_size: 24
+    num_workers: 0
+    file_path: "data/pop909_acc_cp10.pt"
+    target_length: 384
+    tokenization_type: "XinYue's"
+    split_ratio: 10
+
+model:
+  model_name: "XinYue's + customed RoFormer"
+  model_type: "M2A-Transformer"
+
+trainer:
+  max_epochs: 5000
+  accelerator: "gpu"
+  devices: [ 0, 1, 2, 3, 4 ]
+seed: 42
