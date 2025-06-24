@@ -2,8 +2,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 from roformer import RoFormerConfig
 from typing import Union, Optional
-
-
 from typing import Literal
 
 
@@ -21,7 +19,7 @@ class BaseModelSchema(BaseModel):
 
     model_name: str = Field("", description="Name of the model.")
     model_type: str = Field("roformer", description="Type of the model. Default is 'roformer'.")
-    network_schema: Optional[RoFormerConfig] = Field(None, description="Configuration for the RoFormer model.")
+    network_schema: Optional[Any] = Field(None, description="Configuration for the RoFormer model.")
     optimizer_schema: OptimizerSchema = Field(default_factory=lambda: OptimizerSchema(), description="Configuration for the optimizer.")
 
     model_config = {"arbitrary_types_allowed": True}
@@ -71,7 +69,8 @@ class OldM2ATransformerSchema(BaseModelSchema):
     """
     Configuration schema for RoFormerSymbolicTransformer hyperparameters.
     """
-
+    model_name: str = Field("Old-M2A-Transformer", description="Name of the M2A Transformer model.")
+    model_type: Literal["Old-M2A-Transformer"] = Field("Old-M2A-Transformer", description="Type of the model.")
     large: bool = Field(False, description="If True, use larger model configuration (hidden_size=768, num_layers=12, etc.).")
 
     # Global Model (Main Transformer) Hyperparameters
@@ -95,27 +94,28 @@ class OldM2ATransformerSchema(BaseModelSchema):
     hidden_dropout_prob: float = Field(0.1, description="Dropout probability for hidden layers.")
     attention_probs_dropout_prob: float = Field(0.1, description="Dropout probability for attention weights.")
 
-    def model_post_init(self, __context: Any) -> None:
-        if self.large:
-            # Set default large model parameters IF they haven't been explicitly set
-            if self.hidden_size is None:
-                self.hidden_size = 768
-            if self.num_layers is None:
-                self.num_layers = 12
-            if self.num_attention_heads is None:
-                self.num_attention_heads = 12
-            if self.intermediate_size is None:
-                self.intermediate_size = 3072
-        else:
-            # Set default small model parameters IF they haven't been explicitly set
-            if self.hidden_size is None:
-                self.hidden_size = 512
-            if self.num_layers is None:
-                self.num_layers = 6
-            if self.num_attention_heads is None:
-                self.num_attention_heads = 8
-            if self.intermediate_size is None:
-                self.intermediate_size = 1024
+    def model_post_init(self, __context: Any) -> None: ...
+        # if self.large:
+        #     # Set default large model parameters IF they haven't been explicitly set
+        #     if self.hidden_size is None:
+        #         self.hidden_size = 768
+        #     if self.num_layers is None:
+        #         self.num_layers = 12
+        #     if self.num_attention_heads is None:
+        #         self.num_attention_heads = 12
+        #     if self.intermediate_size is None:
+        #         self.intermediate_size = 3072
+        # else:
+        #     # Set default small model parameters IF they haven't been explicitly set
+        #     if self.hidden_size is None:
+        #         self.hidden_size = 512
+        #     if self.num_layers is None:
+        #         self.num_layers = 6
+        #     if self.num_attention_heads is None:
+        #         self.num_attention_heads = 8
+        #     if self.intermediate_size is None:
+        #         self.intermediate_size = 1024
 
 
 ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema]
+# ModelSchema = OldM2ATransformerSchema

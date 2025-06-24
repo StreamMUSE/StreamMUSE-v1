@@ -1,7 +1,7 @@
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-from lightning.pytorch.utilities.seed import seed_everything
+# from lightning.pytorch.utilities.seed import seed_everything
 from schema.project_schema import ProjectSchema
 from datamodules.remi_json_datamodule import MelAccRemiJsonDataModule
 import os
@@ -65,7 +65,7 @@ class ProjectRunner:
 
     def setup_model(self):
         try:
-            if self.config.model.model_type == "M2A-Transformer":
+            if self.config.model.model_type == "Old-M2A-Transformer":
                 from models.old_m2a_transformer import OldM2ATransformer
 
                 self.model = OldM2ATransformer(
@@ -116,11 +116,14 @@ class ProjectRunner:
             #     logger.warning("ModelCheckpoint callback not found in trainer configuration. Model checkpoints will not be saved automatically.")
 
             self.trainer = Trainer(
+                precision="bf16-mixed", # data precision
                 logger=self.loggers,
+                val_check_interval=50,
+                log_every_n_steps=50,
                 **self.config.trainer.model_dump(),
                 callbacks=[
                     ModelCheckpoint(
-                        every_n_epochs=50,
+                        every_n_train_steps=1000,
                         save_top_k=5,
                         monitor="val_loss",
                         mode="min",
@@ -173,7 +176,7 @@ class ProjectRunner:
 
     def run_experiment(self):
         logger.info("Starting experiment setup...")
-        seed_everything(self.config.seed)  # Set seed for reproducibility
+        # seed_everything(self.config.seed)  # Set seed for reproducibility
         try:
             self.setup_datamodule()
             self.setup_model()
@@ -199,7 +202,7 @@ class ProjectRunner:
 
 if __name__ == "__main__":
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_pop909-1.0.yaml")
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.0.yaml")
     # runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-1.0.yaml") # Use your specific config
 
     try:
