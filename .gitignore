@@ -4,6 +4,7 @@ lightning_logs
 tb_logs
 .idea
 /data
+/data_*
 /temp/
 m2a_transformer_new.py
 cp_transformer.py
