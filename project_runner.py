@@ -1,6 +1,7 @@
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+from lightning.pytorch.utilities.seed import seed_everything
 from schema.project_schema import ProjectSchema
 from datamodules.remi_json_datamodule import MelAccRemiJsonDataModule
 import os
@@ -120,7 +121,7 @@ class ProjectRunner:
                 callbacks=[
                     ModelCheckpoint(
                         every_n_epochs=50,
-                        save_top_k=3,
+                        save_top_k=5,
                         monitor="val_loss",
                         mode="min",
                         dirpath=f"{self.loggers[0].log_dir}/ckpt",  # Ensure this path is correct
@@ -172,6 +173,7 @@ class ProjectRunner:
 
     def run_experiment(self):
         logger.info("Starting experiment setup...")
+        seed_everything(self.config.seed)  # Set seed for reproducibility
         try:
             self.setup_datamodule()
             self.setup_model()
