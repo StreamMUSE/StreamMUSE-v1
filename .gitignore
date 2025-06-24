@@ -15,9 +15,6 @@ m2a_transformer_inference_copy.py
 
 *.ckpt
 .vscode/
-.python-version
 *.zip
-uv.lock
-pyproject.toml
 /datasets/
 logs
