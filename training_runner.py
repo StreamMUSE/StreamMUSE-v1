@@ -118,7 +118,7 @@ class ProjectRunner:
             self.trainer = Trainer(
                 precision="bf16-mixed", # data precision
                 logger=self.loggers,
-                val_check_interval=50,
+                val_check_interval=500,
                 log_every_n_steps=50,
                 **self.config.trainer.model_dump(),
                 callbacks=[
@@ -202,7 +202,7 @@ class ProjectRunner:
 
 if __name__ == "__main__":
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.0.yaml")
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
     # runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-1.0.yaml") # Use your specific config
 
     try:
