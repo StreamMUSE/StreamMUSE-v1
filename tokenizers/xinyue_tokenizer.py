@@ -1,8 +1,13 @@
 from miditok import MusicTokenizer, TokenizerConfig
 from miditok import Event
-from miditok.constants import SPECIAL_TOKENS
+from miditok.constants import TIME_SIGNATURE, SPECIAL_TOKENS
+from symusic import (
+    TimeSignature,
+)
+import numpy as np
+from miditok.utils import compute_ticks_per_bar, compute_ticks_per_beat
 
-XINYUE_SPECIAL_TOKENS = SPECIAL_TOKENS + ["FRAME"]
+XINYUE_SPECIAL_TOKENS = SPECIAL_TOKENS.copy()
 
 
 class XinyueTokenizerConfig(TokenizerConfig):
@@ -13,8 +18,11 @@ class XinyueTokenizerConfig(TokenizerConfig):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # You can add any additional configuration parameters here if needed
-        self.special_tokens = SPECIAL_TOKENS
+        # Use the custom special tokens including "FRAME"
+        self.special_tokens = XINYUE_SPECIAL_TOKENS
+        # Add frame-specific config. Here, we set a frame to be 120 ticks.
+        # If your MIDI has 480 ticks per beat (TPB), this corresponds to a 16th note.
+        self.additional_params["frame_duration_ticks"] = 120
 
 
 class XinyueTokenizer(MusicTokenizer):
@@ -27,78 +35,34 @@ class XinyueTokenizer(MusicTokenizer):
         super().__init__(*args, **kwargs)
         # You can add any additional initialization here if needed
 
-    def _add_time_events(self, events: list[Event], time_division: int = 4) -> list[Event]:
-        """
-        Adds time events to the list of events based on the specified time division.
-        Args:
-            events (list[Event]): List of MIDI events.
-            time_division (int): The time division to use for adding time events.
-        Returns:
-            list[Event]: The updated list of events with time events added.
-        """
-        if not isinstance(events, list):
-            raise TypeError("events must be a list of Event objects")
-        if not all(isinstance(event, Event) for event in events):
-            raise TypeError("All items in events must be instances of Event")
-
-        return super()._add_time_events(events, time_division)
-
-    def _tokens_to_score(self, tokens, programs=None):
-        return super()._tokens_to_score(tokens, programs)
-
     def _create_base_vocabulary(self) -> list[str]:
         r"""
         Create the vocabulary, as a list of string tokens.
-
-        Each token is given as the form ``"Type_Value"``, with its type and value
-        separated with an underscore. Example: ``Pitch_58``.
-        The :class:`miditok.MusicTokenizer` main class will then create the "real"
-        vocabulary as a dictionary. Special tokens have to be given when creating the
-        tokenizer, and will be added to the vocabulary by
-        :class:`miditok.MusicTokenizer`.
-
-        **Attribute control tokens are added when creating the tokenizer by the**
-        ``MusicTokenizer.add_attribute_control`` **method.**
-
-        :return: the vocabulary as a list of string.
         """
         vocab = []
-        # # Frame
-        vocab += ["Frame_None"]
 
-        # # Program
-        
-        # # Duration
+        # Bar
+        vocab += ["Bar_None"]
 
-        # # Pitch
+        # Program
+        vocab += [f"Program_{program}" for program in self.config.programs]
 
-        # # Bar
-        # if self.config.additional_params["max_bar_embedding"] is not None:
-        #     vocab += [
-        #         f"Bar_{i}"
-        #         for i in range(self.config.additional_params["max_bar_embedding"])
-        #     ]
-        # else:
-        #     vocab += ["Bar_None"]
-        # if self.config.additional_params["use_bar_end_tokens"]:
-        #     vocab.append("Bar_End")
+        # Pitch
+        vocab += [f"Pitch_{i}" for i in range(*self.config.pitch_range)]
 
-        # # NoteOn/NoteOff/Velocity
-        # self._add_note_tokens_to_vocab_list(vocab)
+        # Duration
+        vocab += [f"Duration_{'.'.join(map(str, duration))}" for duration in self.durations]
 
         # # Position
-        # # self.time_division is equal to the maximum possible ticks/beat value.
         # max_num_beats = max(ts[0] for ts in self.time_signatures)
         # num_positions = self.config.max_num_pos_per_beat * max_num_beats
         # vocab += [f"Position_{i}" for i in range(num_positions)]
 
-        # # Add additional tokens
-        # self._add_additional_tokens_to_vocab_list(vocab)
+        # # Frame
 
-        # return vocab
+        vocab += ["Frame_None"]
 
-    def _score_to_tokens(self, score, attribute_controls_indexes=None):
-        return super()._score_to_tokens(score, attribute_controls_indexes)
+        return vocab
 
     def _create_track_events(self, track, ticks_per_beat, time_division, ticks_bars, ticks_beats, attribute_controls_indexes=None):
         return super()._create_track_events(track, ticks_per_beat, time_division, ticks_bars, ticks_beats, attribute_controls_indexes)
@@ -114,198 +78,157 @@ class XinyueTokenizer(MusicTokenizer):
         """
         dic: dict[str, set[str]] = {}
 
-        if self.config.use_programs:
-            first_note_token_type = "Pitch" if self.config.program_changes else "Program"
-            dic["Program"] = {"Pitch"}
-        else:
-            first_note_token_type = "Pitch"
+        # # Position -> (Program-> Pitch -> Duration, Position )
+        # dic["Position"] = {"Program", "Postion"}
+        # dic["Program"] = {"Pitch"}
+        # dic["Pitch"] = {"Duration"}
+
+        # # Duration -> (Program, Bar, Position)
+        # dic["Duration"] = {"Program", "Bar", "Position"}
+
+        # dic["Bar"] = {"Position"}
+
+        # Frame -> (Program-> Pitch -> Duration, Frame )
+        dic["Frame"] = {"Program", "Postion"}
+        dic["Program"] = {"Pitch"}
+        dic["Pitch"] = {"Duration"}
+
+        # Duration -> (Program, Bar, Frame)
+        dic["Duration"] = {"Program", "Bar", "Frame"}
+
+        dic["Bar"] = {"Frame"}
+
+        return dic
+
+    def _tokens_to_score(self, tokens, programs=None):
+        return super()._tokens_to_score(tokens, programs)
+
+    def _score_to_tokens(self, score, attribute_controls_indexes=None):
+        return super()._score_to_tokens(score, attribute_controls_indexes)
+
+    def _add_time_events(self, events: list[Event], time_division: int) -> list[list[Event]]:
+        r"""
+        Create the time events from a list of global and track events.
+
+        Internal method intended to be implemented by child classes.
+        The returned sequence is the final token sequence ready to be converted to ids
+        to be fed to a model.
+
+        :param events: sequence of global and track events to create tokens time from.
+        :param time_division: time division in ticks per quarter of the
+            ``symusic.Score`` being tokenized.
+        :return: the same events, with time events inserted.
+        """
+        # Add time events
+
+        duration_offset = 0
         if self.config.use_velocities:
-            dic["Pitch"] = {"Velocity"}
-            dic["Velocity"] = {"Duration"} if self.config.using_note_duration_tokens else {first_note_token_type, "Position", "Bar"}
-        elif self.config.using_note_duration_tokens:
-            dic["Pitch"] = {"Duration"}
-        else:
-            dic["Pitch"] = {first_note_token_type, "Bar", "Position"}
+            duration_offset += 1
         if self.config.using_note_duration_tokens:
-            dic["Duration"] = {first_note_token_type, "Position", "Bar"}
-        dic["Bar"] = {"Position", "Bar"}
-        dic["Position"] = {first_note_token_type}
-        if self.config.use_pitch_intervals:
-            for token_type in ("PitchIntervalTime", "PitchIntervalChord"):
-                dic[token_type] = (
-                    {"Velocity"}
-                    if self.config.use_velocities
-                    else {"Duration"}
-                    if self.config.using_note_duration_tokens
-                    else {
-                        first_note_token_type,
-                        "PitchIntervalTime",
-                        "PitchIntervalChord",
-                        "Bar",
-                        "Position",
-                    }
-                )
-                if self.config.use_programs and self.config.one_token_stream_for_programs:
-                    dic["Program"].add(token_type)
-                else:
-                    if self.config.using_note_duration_tokens:
-                        dic["Duration"].add(token_type)
-                    elif self.config.use_velocities:
-                        dic["Velocity"].add(token_type)
-                    else:
-                        dic["Pitch"].add(token_type)
-                    dic["Position"].add(token_type)
-        if self.config.program_changes:
-            dic["Duration" if self.config.using_note_duration_tokens else "Velocity" if self.config.use_velocities else first_note_token_type].add(
-                "Program"
-            )
-            # The first bar may be empty but the Program token will still be present
-            if self.config.additional_params["use_bar_end_tokens"]:
-                dic["Program"].add("Bar")
-
-        if self.config.use_chords:
-            dic["Chord"] = {first_note_token_type}
-            dic["Position"] |= {"Chord"}
-            if self.config.use_programs:
-                dic["Program"].add("Chord")
-            if self.config.use_pitch_intervals:
-                dic["Chord"] |= {"PitchIntervalTime", "PitchIntervalChord"}
-
-        if self.config.use_tempos:
-            dic["Position"] |= {"Tempo"}
-            dic["Tempo"] = {first_note_token_type, "Position", "Bar"}
-            if self.config.use_chords:
-                dic["Tempo"] |= {"Chord"}
-            if self.config.use_rests:
-                dic["Tempo"].add("Rest")  # only for first token
-            if self.config.use_pitch_intervals:
-                dic["Tempo"] |= {"PitchIntervalTime", "PitchIntervalChord"}
-
+            duration_offset += 1
+        all_events = []
+        current_bar = -1
+        bar_at_last_ts_change = 0
+        previous_tick = -1
+        previous_note_end = 0
+        tick_at_last_ts_change = tick_at_current_bar = 0
+        current_time_sig = TIME_SIGNATURE
+        if self.config.log_tempos:
+            # pick the closest to the default value
+            current_tempo = float(self.tempos[(np.abs(self.tempos - self.default_tempo)).argmin()])
+        else:
+            current_tempo = self.default_tempo
+        current_program = None
+        ticks_per_bar = compute_ticks_per_bar(TimeSignature(0, *current_time_sig), time_division)
+        ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
+        ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+        # First look for a TimeSig token, if any is given at tick 0, to update
+        # current_time_sig
         if self.config.use_time_signatures:
-            dic["Bar"] = {"TimeSig"}
-            if self.config.additional_params["use_bar_end_tokens"]:
-                dic["Bar"].add("Bar")
-            dic["TimeSig"] = {first_note_token_type, "Position", "Bar"}
-            if self.config.use_chords:
-                dic["TimeSig"] |= {"Chord"}
-            if self.config.use_rests:
-                dic["TimeSig"].add("Rest")  # only for first token
-            if self.config.use_tempos:
-                dic["Tempo"].add("TimeSig")
-            if self.config.use_pitch_intervals:
-                dic["TimeSig"] |= {"PitchIntervalTime", "PitchIntervalChord"}
+            for event in events:
+                # There should be a TimeSig token at tick 0
+                if event.type_ == "TimeSig":
+                    current_time_sig = list(map(int, event.value.split("/")))
+                    ticks_per_bar = compute_ticks_per_bar(TimeSignature(event.time, *current_time_sig), time_division)
+                    ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
+                    ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+                    break
+        # Then look for a Tempo token, if any is given at tick 0, to update
+        # Add the time events
+        for e, event in enumerate(events):
+            if event.type_ == "Tempo":
+                current_tempo = event.value
+            elif event.type_ == "Program":
+                current_program = event.value
+                continue
+            if event.time != previous_tick:
+                # Bar
+                num_new_bars = bar_at_last_ts_change + (event.time - tick_at_last_ts_change) // ticks_per_bar - current_bar
+                if num_new_bars >= 1:
+                    for i in range(num_new_bars):
+                        all_events.append(
+                            Event(
+                                type_="Bar",
+                                value="None",
+                            )
+                        )
+                    current_bar += num_new_bars
+                    tick_at_current_bar = tick_at_last_ts_change + (current_bar - bar_at_last_ts_change) * ticks_per_bar
 
-        if self.config.use_sustain_pedals:
-            dic["Position"].add("Pedal")
-            if self.config.sustain_pedal_duration:
-                dic["Pedal"] = {"Duration"}
-                if self.config.using_note_duration_tokens:
-                    dic["Duration"].add("Pedal")
-                elif self.config.use_velocities:
-                    dic["Duration"] = {first_note_token_type, "Bar", "Position"}
-                    dic["Velocity"].add("Pedal")
-                else:
-                    dic["Duration"] = {first_note_token_type, "Bar", "Position"}
-                    dic["Pitch"].add("Pedal")
-            else:
-                dic["PedalOff"] = {
-                    "Pedal",
-                    "PedalOff",
-                    first_note_token_type,
-                    "Position",
-                    "Bar",
-                }
-                dic["Pedal"] = {"Pedal", first_note_token_type, "Position", "Bar"}
-                dic["Position"].add("PedalOff")
-            if self.config.use_chords:
-                dic["Pedal"].add("Chord")
-                if not self.config.sustain_pedal_duration:
-                    dic["PedalOff"].add("Chord")
-                    dic["Chord"].add("PedalOff")
-            if self.config.use_rests:
-                dic["Pedal"].add("Rest")
-                if not self.config.sustain_pedal_duration:
-                    dic["PedalOff"].add("Rest")
-            if self.config.use_tempos:
-                dic["Tempo"].add("Pedal")
-                if not self.config.sustain_pedal_duration:
-                    dic["Tempo"].add("PedalOff")
-            if self.config.use_time_signatures:
-                dic["TimeSig"].add("Pedal")
-                if not self.config.sustain_pedal_duration:
-                    dic["TimeSig"].add("PedalOff")
-            if self.config.use_pitch_intervals:
-                if self.config.sustain_pedal_duration:
-                    dic["Duration"] |= {"PitchIntervalTime", "PitchIntervalChord"}
-                else:
-                    dic["Pedal"] |= {"PitchIntervalTime", "PitchIntervalChord"}
-                    dic["PedalOff"] |= {"PitchIntervalTime", "PitchIntervalChord"}
+                # Position
+                if event.type_ != "TimeSig":
+                    pos_index = (event.time - tick_at_current_bar) // ticks_per_pos
+                    all_events.append(
+                        self.__create_cp_token(
+                            event.time,
+                            pos=pos_index,
+                            chord=event.value if event.type_ == "Chord" else None,
+                            tempo=current_tempo if self.config.use_tempos else None,
+                            desc="Position",
+                        )
+                    )
 
-        if self.config.use_pitch_bends:
-            # As a Program token will precede PitchBend otherwise
-            # Else no need to add Program as its already in
-            dic["PitchBend"] = {first_note_token_type, "Position", "Bar"}
-            if self.config.use_programs and not self.config.program_changes:
-                dic["Program"].add("PitchBend")
-            else:
-                dic["Position"].add("PitchBend")
-                if self.config.use_tempos:
-                    dic["Tempo"].add("PitchBend")
-                if self.config.use_time_signatures:
-                    dic["TimeSig"].add("PitchBend")
-                if self.config.use_sustain_pedals:
-                    dic["Pedal"].add("PitchBend")
-                    if self.config.sustain_pedal_duration:
-                        dic["Duration"].add("PitchBend")
-                    else:
-                        dic["PedalOff"].add("PitchBend")
-            if self.config.use_chords:
-                dic["PitchBend"].add("Chord")
-            if self.config.use_rests:
-                dic["PitchBend"].add("Rest")
+                previous_tick = event.time
 
-        if self.config.use_rests:
-            dic["Rest"] = {"Rest", first_note_token_type, "Position", "Bar"}
-            dic["Duration" if self.config.using_note_duration_tokens else "Velocity" if self.config.use_velocities else first_note_token_type].add(
-                "Rest"
-            )
-            if self.config.use_chords:
-                dic["Rest"] |= {"Chord"}
-            if self.config.use_tempos:
-                dic["Rest"].add("Tempo")
-            if self.config.use_time_signatures:
-                dic["Rest"].add("TimeSig")
-            if self.config.use_sustain_pedals:
-                dic["Rest"].add("Pedal")
-                if self.config.sustain_pedal_duration:
-                    dic["Duration"].add("Rest")
-                else:
-                    dic["Rest"].add("PedalOff")
-                    dic["PedalOff"].add("Rest")
-            if self.config.use_pitch_bends:
-                dic["Rest"].add("PitchBend")
-            if self.config.use_pitch_intervals:
-                dic["Rest"] |= {"PitchIntervalTime", "PitchIntervalChord"}
+            # Update time signature time variables, after adjusting the time (above)
+            if event.type_ == "TimeSig":
+                current_time_sig = list(map(int, event.value.split("/")))
+                bar_at_last_ts_change += (event.time - tick_at_last_ts_change) // ticks_per_bar
+                tick_at_last_ts_change = event.time
+                ticks_per_bar = compute_ticks_per_bar(TimeSignature(event.time, *current_time_sig), time_division)
+                ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
+                ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+                # We decrease the previous tick so that a Position token is enforced
+                # for the next event
+                previous_tick -= 1
 
-        if self.config.program_changes:
-            for token_type in {
-                "Position",
-                "Rest",
-                "PitchBend",
-                "Pedal",
-                "PedalOff",
+            # Convert event to CP Event
+            # Update max offset time of the notes encountered
+            if event.type_ in {"Pitch", "PitchDrum"} and e + duration_offset < len(events):
+                all_events.append(
+                    self.__create_cp_token(
+                        event.time,
+                        pitch=event.value,
+                        vel=events[e + 1].value if self.config.use_velocities else None,
+                        dur=events[e + duration_offset].value if self.config.using_note_duration_tokens else None,
+                        program=current_program,
+                        pitch_drum=event.type_ == "PitchDrum",
+                    )
+                )
+                previous_note_end = max(previous_note_end, event.desc)
+            elif event.type_ in [
+                "Program",
                 "Tempo",
                 "TimeSig",
                 "Chord",
-            }:
-                if token_type in dic:
-                    dic["Program"].add(token_type)
-                    dic[token_type].add("Program")
+            ]:
+                previous_note_end = max(previous_note_end, event.time)
 
-        if self.config.use_pitchdrum_tokens:
-            dic["PitchDrum"] = dic["Pitch"]
-            for key, values in dic.items():
-                if "Pitch" in values:
-                    dic[key].add("PitchDrum")
+        return all_events
 
-        return dic
+
+if __name__ == "__main__":
+    tokenizer = XinyueTokenizer()
+
+    out = tokenizer.encode("datasets/Seperated-POP909-Dataset/mel/002.mid")
+    print(out)
