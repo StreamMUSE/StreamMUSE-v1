@@ -12,6 +12,13 @@ class OptimizerSchema(BaseModel):
     momentum: Optional[float] = Field(None, description="Momentum factor (for SGD).")
 
 
+class LRSchedulerSchema(BaseModel):
+    """Schema for learning rate scheduler configuration."""
+
+    type: str = Field("CosineAnnealingLR", description="Type of the LR scheduler, e.g., 'CosineAnnealingLR', 'StepLR'.")
+    params: dict[str, Any] = Field(default_factory=lambda: {"T_max": 10000, "eta_min": 1e-6}, description="Parameters for the LR scheduler.")
+
+
 class BaseModelSchema(BaseModel):
     """
     Schema for the M2A Transformer model configuration.
@@ -69,6 +76,7 @@ class OldM2ATransformerSchema(BaseModelSchema):
     """
     Configuration schema for RoFormerSymbolicTransformer hyperparameters.
     """
+
     model_name: str = Field("Old-M2A-Transformer", description="Name of the M2A Transformer model.")
     model_type: Literal["Old-M2A-Transformer"] = Field("Old-M2A-Transformer", description="Type of the model.")
     large: bool = Field(False, description="If True, use larger model configuration (hidden_size=768, num_layers=12, etc.).")
@@ -119,3 +127,44 @@ class OldM2ATransformerSchema(BaseModelSchema):
 
 ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema]
 # ModelSchema = OldM2ATransformerSchema
+
+
+
+# class OldM2ATransformerNetworkSchema(BaseModel):
+#     """Network-specific hyperparameters for Old-M2A-Transformer."""
+
+#     hidden_size: int = Field(1536, description="Hidden layer dimension of the global model.")
+#     num_layers: int = Field(12, description="Number of Transformer encoder layers in the global model.")
+#     num_attention_heads: int = Field(16, description="Number of attention heads in the global model.")
+#     intermediate_size: int = Field(6144, description="Intermediate size of the feed-forward network.")
+#     local_model_num_layers: int = Field(3, description="Number of layers in the local encoder/decoder.")
+#     local_model_num_attention_heads: int = Field(16, description="Number of attention heads in the local encoder/decoder.")
+#     local_model_intermediate_size: int = Field(3072, description="Intermediate size of the feed-forward network in the local encoder/decoder.")
+
+
+# class REMIRoformerNetworkSchema(BaseModel):
+#     """Network-specific hyperparameters for REMI-Roformer."""
+
+#     # 在这里为 REMI-Roformer 添加具体参数
+#     hidden_size: int = Field(512, description="Hidden layer dimension.")
+#     # ... 其他参数
+
+
+# # 使用 Union 来支持多种网络配置
+# NetworkSchema = Union[OldM2ATransformerNetworkSchema, REMIRoformerNetworkSchema]
+
+
+# # 3. 创建一个通用的、层次清晰的顶层 ModelSchema
+# class ModelSchema(BaseModel):
+#     """
+#     Generic schema for model configuration, including network, optimizer, and scheduler.
+#     """
+
+#     model_type: Literal["Old-M2A-Transformer", "REMI-Roformer"] = Field(..., description="The type of the model to be used.")
+
+#     # 将网络配置嵌套进来
+#     network: NetworkSchema = Field(..., description="The network-specific architecture configuration.")
+
+#     # 将优化器和调度器配置嵌套进来
+#     optimizer: OptimizerSchema = Field(default_factory=OptimizerSchema, description="Optimizer configuration.")
+#     lr_scheduler: LRSchedulerSchema = Field(default_factory=LRSchedulerSchema, description="Learning rate scheduler configuration.")

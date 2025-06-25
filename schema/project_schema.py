@@ -83,16 +83,6 @@ class CSVLoggerSchema(BaseModel):
         # Additional initialization logic can be added here if needed
         pass
 
-    # @model_validator(mode="after")
-    # def auto_increment_version(self) -> "CSVLoggerSchema":
-    #     if self.version is None:
-    #         run_name_for_versioning = self.name if self.name else "default_run"
-    #         self.version = get_next_version(self.save_dir, run_name_for_versioning)
-    #     elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
-    #         run_name_for_versioning = self.name if self.name else "default_run"
-    #         self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
-    #     return self
-
 
 class WandbLoggerSchema(BaseModel):
     """
@@ -112,18 +102,6 @@ class WandbLoggerSchema(BaseModel):
         # Additional initialization logic can be added here if needed
         pass
 
-    # @model_validator(mode="after")
-    # def auto_increment_version(self) -> "WandbLoggerSchema":
-    #     # This validator runs after initial validation, so self.name, self.save_dir are ready
-    #     if self.version is None:
-    #         # Use self.name as the 'project_name' for versioning within save_dir
-    #         run_name_for_versioning = self.name if self.name else "default_run"  # Use W&B project name if run name is None
-    #         self.version = get_next_version(self.save_dir, run_name_for_versioning)
-    #     elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
-    #         run_name_for_versioning = self.name if self.name else "default_run"
-    #         self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
-    #     return self
-
 
 class TensorBoardLoggerSchema(BaseModel):
     """
@@ -139,15 +117,6 @@ class TensorBoardLoggerSchema(BaseModel):
         # Additional initialization logic can be added here if needed
         pass
 
-    # @model_validator(mode="after")
-    # def auto_increment_version(self) -> "TensorBoardLoggerSchema":
-    #     if self.version is None:
-    #         run_name_for_versioning = self.name if self.name else "default_run"
-    #         self.version = get_next_version(self.save_dir, run_name_for_versioning)
-    #     elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
-    #         run_name_for_versioning = self.name if self.name else "default_run"
-    #         self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
-    #     return self
 
 
 LoggerSchema = Union[CSVLoggerSchema, WandbLoggerSchema, TensorBoardLoggerSchema]
@@ -174,28 +143,25 @@ class ProjectSchema(BaseModel):
         return cls(**data)
 
     @model_validator(mode="after")
-    def unify_logger_versions(self) -> "ProjectSchema":
+    def unify_logger_versions_and_names(self) -> "ProjectSchema":
         if not self.loggers:
             return self
 
-        # Use the first logger's config to determine the base path and name
-        # This assumes all loggers might share the same save_dir and name.
-        first_logger_config = next(iter(self.loggers.values()))
-        save_dir = first_logger_config.save_dir
+        # 统一所有 logger 的 save_dir (可选，但推荐)
+        # 这里我们假设所有 logger 都应保存在同一个基础目录下
+        base_save_dir = next(iter(self.loggers.values())).save_dir
 
-        # Use the logger's name for versioning, fallback to project name
-        run_name_for_versioning = first_logger_config.name or self.project
+        # 使用 project 的 name 和 version 作为版本控制的基准
+        # project.name 是实验名, project.version 是版本前缀
+        unified_version = get_next_version(base_dir=base_save_dir, project_name=self.name, version_prefix=self.version)
 
-        # Check if a version prefix is provided (e.g., "1.0") from the first logger
-        version_prefix = None
-        if first_logger_config.version and re.match(r"^\d+\.\d+$", first_logger_config.version):
-            version_prefix = first_logger_config.version
-
-        # Determine the version ONCE for all loggers
-        unified_version = get_next_version(save_dir, run_name_for_versioning, version_prefix)
-
-        # Apply the same, unified version to all configured loggers
+        # 应用统一的 name 和 version 到所有 logger
         for logger_config in self.loggers.values():
+            # 如果 logger 没有指定 name，则默认使用 project.name
+            if logger_config.name is None:
+                logger_config.name = self.name
+
+            # 强制所有 logger 使用统一计算出的版本号
             logger_config.version = unified_version
 
         return self
