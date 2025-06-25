@@ -94,27 +94,27 @@ class OldM2ATransformerSchema(BaseModelSchema):
     hidden_dropout_prob: float = Field(0.1, description="Dropout probability for hidden layers.")
     attention_probs_dropout_prob: float = Field(0.1, description="Dropout probability for attention weights.")
 
-    def model_post_init(self, __context: Any) -> None: ...
-        # if self.large:
-        #     # Set default large model parameters IF they haven't been explicitly set
-        #     if self.hidden_size is None:
-        #         self.hidden_size = 768
-        #     if self.num_layers is None:
-        #         self.num_layers = 12
-        #     if self.num_attention_heads is None:
-        #         self.num_attention_heads = 12
-        #     if self.intermediate_size is None:
-        #         self.intermediate_size = 3072
-        # else:
-        #     # Set default small model parameters IF they haven't been explicitly set
-        #     if self.hidden_size is None:
-        #         self.hidden_size = 512
-        #     if self.num_layers is None:
-        #         self.num_layers = 6
-        #     if self.num_attention_heads is None:
-        #         self.num_attention_heads = 8
-        #     if self.intermediate_size is None:
-        #         self.intermediate_size = 1024
+    def model_post_init(self, __context: Any) -> None:
+        if self.large:
+            # Set default large model parameters IF they haven't been explicitly set
+            if self.hidden_size is None:
+                self.hidden_size = 768
+            if self.num_layers is None:
+                self.num_layers = 12
+            if self.num_attention_heads is None:
+                self.num_attention_heads = 12
+            if self.intermediate_size is None:
+                self.intermediate_size = 3072
+        else:
+            # Set default small model parameters IF they haven't been explicitly set
+            if self.hidden_size is None:
+                self.hidden_size = 512
+            if self.num_layers is None:
+                self.num_layers = 6
+            if self.num_attention_heads is None:
+                self.num_attention_heads = 8
+            if self.intermediate_size is None:
+                self.intermediate_size = 1024
 
 
 ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema]

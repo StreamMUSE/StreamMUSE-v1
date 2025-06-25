@@ -1,5 +1,5 @@
 project: &project "Real-Time Accompaniment Generation "
-description: "symbolic music generation with XinYue's tokenization and customed RoFormer, trained on pop 909 dataset"
+description: "symbolic music generation with XinYue's tokenization and customed RoFormer, trained on aria dataset(skyline_v0). The model size is around 0.5 B"
 
 name: &name "old_m2a_aria"
 version: &version "1.0"
