@@ -83,15 +83,15 @@ class CSVLoggerSchema(BaseModel):
         # Additional initialization logic can be added here if needed
         pass
 
-    @model_validator(mode="after")
-    def auto_increment_version(self) -> "CSVLoggerSchema":
-        if self.version is None:
-            run_name_for_versioning = self.name if self.name else "default_run"
-            self.version = get_next_version(self.save_dir, run_name_for_versioning)
-        elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
-            run_name_for_versioning = self.name if self.name else "default_run"
-            self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
-        return self
+    # @model_validator(mode="after")
+    # def auto_increment_version(self) -> "CSVLoggerSchema":
+    #     if self.version is None:
+    #         run_name_for_versioning = self.name if self.name else "default_run"
+    #         self.version = get_next_version(self.save_dir, run_name_for_versioning)
+    #     elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
+    #         run_name_for_versioning = self.name if self.name else "default_run"
+    #         self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
+    #     return self
 
 
 class WandbLoggerSchema(BaseModel):
@@ -112,17 +112,17 @@ class WandbLoggerSchema(BaseModel):
         # Additional initialization logic can be added here if needed
         pass
 
-    @model_validator(mode="after")
-    def auto_increment_version(self) -> "WandbLoggerSchema":
-        # This validator runs after initial validation, so self.name, self.save_dir are ready
-        if self.version is None:
-            # Use self.name as the 'project_name' for versioning within save_dir
-            run_name_for_versioning = self.name if self.name else "default_run"  # Use W&B project name if run name is None
-            self.version = get_next_version(self.save_dir, run_name_for_versioning)
-        elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
-            run_name_for_versioning = self.name if self.name else "default_run"
-            self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
-        return self
+    # @model_validator(mode="after")
+    # def auto_increment_version(self) -> "WandbLoggerSchema":
+    #     # This validator runs after initial validation, so self.name, self.save_dir are ready
+    #     if self.version is None:
+    #         # Use self.name as the 'project_name' for versioning within save_dir
+    #         run_name_for_versioning = self.name if self.name else "default_run"  # Use W&B project name if run name is None
+    #         self.version = get_next_version(self.save_dir, run_name_for_versioning)
+    #     elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
+    #         run_name_for_versioning = self.name if self.name else "default_run"
+    #         self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
+    #     return self
 
 
 class TensorBoardLoggerSchema(BaseModel):
@@ -139,15 +139,15 @@ class TensorBoardLoggerSchema(BaseModel):
         # Additional initialization logic can be added here if needed
         pass
 
-    @model_validator(mode="after")
-    def auto_increment_version(self) -> "TensorBoardLoggerSchema":
-        if self.version is None:
-            run_name_for_versioning = self.name if self.name else "default_run"
-            self.version = get_next_version(self.save_dir, run_name_for_versioning)
-        elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
-            run_name_for_versioning = self.name if self.name else "default_run"
-            self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
-        return self
+    # @model_validator(mode="after")
+    # def auto_increment_version(self) -> "TensorBoardLoggerSchema":
+    #     if self.version is None:
+    #         run_name_for_versioning = self.name if self.name else "default_run"
+    #         self.version = get_next_version(self.save_dir, run_name_for_versioning)
+    #     elif re.match(r"^\d+\.\d+$", self.version):  # If user provides "1.0" or "2.1"
+    #         run_name_for_versioning = self.name if self.name else "default_run"
+    #         self.version = get_next_version(self.save_dir, run_name_for_versioning, self.version)
+    #     return self
 
 
 LoggerSchema = Union[CSVLoggerSchema, WandbLoggerSchema, TensorBoardLoggerSchema]
@@ -172,3 +172,30 @@ class ProjectSchema(BaseModel):
         with open(path, "r") as f:
             data = yaml.safe_load(f)
         return cls(**data)
+
+    @model_validator(mode="after")
+    def unify_logger_versions(self) -> "ProjectSchema":
+        if not self.loggers:
+            return self
+
+        # Use the first logger's config to determine the base path and name
+        # This assumes all loggers might share the same save_dir and name.
+        first_logger_config = next(iter(self.loggers.values()))
+        save_dir = first_logger_config.save_dir
+
+        # Use the logger's name for versioning, fallback to project name
+        run_name_for_versioning = first_logger_config.name or self.project
+
+        # Check if a version prefix is provided (e.g., "1.0") from the first logger
+        version_prefix = None
+        if first_logger_config.version and re.match(r"^\d+\.\d+$", first_logger_config.version):
+            version_prefix = first_logger_config.version
+
+        # Determine the version ONCE for all loggers
+        unified_version = get_next_version(save_dir, run_name_for_versioning, version_prefix)
+
+        # Apply the same, unified version to all configured loggers
+        for logger_config in self.loggers.values():
+            logger_config.version = unified_version
+
+        return self
