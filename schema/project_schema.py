@@ -118,7 +118,6 @@ class TensorBoardLoggerSchema(BaseModel):
         pass
 
 
-
 LoggerSchema = Union[CSVLoggerSchema, WandbLoggerSchema, TensorBoardLoggerSchema]
 
 
@@ -128,7 +127,9 @@ class ProjectSchema(BaseModel):
     """
 
     project: str = Field(..., description="Name of the project.")
-    version: str = Field("1.0.0", description="Version of the project. Default is '1.0.0'.")
+    name: Optional[str] = Field(None, description="Sub name of the project. Default is None.")
+    version: str = Field("1.0", description="Version of the project. Default is '1.0.0'.")
+    save_dir: str = Field("./logs", description="Directory where project logs will be saved.")
     description: Optional[str] = Field(None, description="Description of the project.")
     loggers: Optional[dict[str, LoggerSchema]] = Field(None, description="List of logger configurations.")
     model: ModelSchema = Field(..., description="Model configuration.")
@@ -146,22 +147,11 @@ class ProjectSchema(BaseModel):
     def unify_logger_versions_and_names(self) -> "ProjectSchema":
         if not self.loggers:
             return self
-
-        # 统一所有 logger 的 save_dir (可选，但推荐)
-        # 这里我们假设所有 logger 都应保存在同一个基础目录下
-        base_save_dir = next(iter(self.loggers.values())).save_dir
-
-        # 使用 project 的 name 和 version 作为版本控制的基准
-        # project.name 是实验名, project.version 是版本前缀
+        base_save_dir = self.save_dir
         unified_version = get_next_version(base_dir=base_save_dir, project_name=self.name, version_prefix=self.version)
-
-        # 应用统一的 name 和 version 到所有 logger
         for logger_config in self.loggers.values():
-            # 如果 logger 没有指定 name，则默认使用 project.name
             if logger_config.name is None:
                 logger_config.name = self.name
-
-            # 强制所有 logger 使用统一计算出的版本号
             logger_config.version = unified_version
 
         return self
