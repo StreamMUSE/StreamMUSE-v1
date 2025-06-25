@@ -1,6 +1,7 @@
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+
 # from lightning.pytorch.utilities.seed import seed_everything
 from schema.project_schema import ProjectSchema
 from datamodules.remi_json_datamodule import MelAccRemiJsonDataModule
@@ -116,7 +117,7 @@ class ProjectRunner:
             #     logger.warning("ModelCheckpoint callback not found in trainer configuration. Model checkpoints will not be saved automatically.")
 
             self.trainer = Trainer(
-                precision="bf16-mixed", # data precision
+                precision="bf16-mixed",  # data precision
                 logger=self.loggers,
                 val_check_interval=500,
                 log_every_n_steps=50,
@@ -133,7 +134,6 @@ class ProjectRunner:
                 ],
                 gradient_clip_algorithm="norm",
                 gradient_clip_val=1.0,  # Example value, adjust as needed
-                check_val_every_n_epoch=10,
                 strategy="ddp",
             )
         except Exception as e:
