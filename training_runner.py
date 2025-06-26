@@ -78,6 +78,12 @@ class ProjectRunner:
                 self.model = REMIRoformer(
                     model_schema=self.config.model,
                 )
+            elif self.config.model.model_type == "Old-M2A-Transformer-Nomask":
+                from models.old_m2a_nomask_transformer import OldM2ANomaskTransformer
+
+                self.model = OldM2ANomaskTransformer(
+                    model_schema=self.config.model,
+                )
             else:
                 logger.warning(f"Unsupported model type: {self.config.model.model_type}. Check your config or implement the model.")
                 raise ValueError(f"Unsupported model type: {self.config.model.model_type}")
@@ -209,8 +215,7 @@ class ProjectRunner:
 
 if __name__ == "__main__":
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0_0.5B-1.0.yaml")
-    # runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-1.0.yaml") # Use your specific config
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0_0.5B-1.0.yaml") # Use your specific config
 
     try:
         runner.run_experiment()
