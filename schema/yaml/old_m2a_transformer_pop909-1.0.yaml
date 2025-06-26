@@ -10,6 +10,15 @@ loggers:
     type: "csv"
   tensorboard_logger:
     type: "tensorboard"
+  wandb_logger:
+    type: "wandb"
+    project: *project_name
+    entity: "music_generation"
+
+  # csv_logger:
+  #   type: "csv"
+  # tensorboard_logger:
+  #   type: "tensorboard"
   # - wandb_logger:
   #   type: "wandb"
   #   project: *project_name
@@ -22,14 +31,14 @@ dataset:
   train_config:
     batch_size: 24
     num_workers: 0
-    file_path: "data_aria_skyline_v0/aria_skyline_v0_acc_cp10.length.pt" # path to the preprocessed training data
+    file_path: "data/pop909_acc_cp4.pt" # path to the preprocessed training data
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
   val_config:
     batch_size: 24
     num_workers: 0
-    file_path: "data_aria_skyline_v0/aria_skyline_v0_acc_cp10.length.pt"
+    file_path: "data/pop909_acc_cp4.pt"
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
