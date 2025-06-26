@@ -26,7 +26,7 @@ def fill_with_neg_inf(t):
 
 
 class OldM2ATransformer(L.LightningModule):
-    def __init__(self, model_schema:OldM2ATransformerSchema):
+    def __init__(self, model_schema: OldM2ATransformerSchema):
         super().__init__()
         large = model_schema.large
         self.hidden_size = model_schema.hidden_size
@@ -309,12 +309,13 @@ class OldM2ATransformer(L.LightningModule):
         scheduler.step()
         self.log("training/lr", scheduler.get_last_lr()[0], on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
+    
 
     def validation_step(self, batch: M2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)
         x_mel, x_acc, pitch_shift = batch.mel_data, batch.acc_data, batch.pitch_shift
         loss = self.loss(x_mel, x_acc, pitch_shift)
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     def configure_optimizers(self):

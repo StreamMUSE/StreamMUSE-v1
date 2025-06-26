@@ -1,6 +1,7 @@
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+
 # from lightning.pytorch.utilities.seed import seed_everything
 from schema.project_schema import ProjectSchema
 from datamodules.remi_json_datamodule import MelAccRemiJsonDataModule
@@ -71,7 +72,7 @@ class ProjectRunner:
                 self.model = OldM2ATransformer(
                     model_schema=self.config.model,
                 )
-            elif self.config.model.model_type == "REMI-Roformer":
+            elif self.config.model.model_type == "REMI-RoFormer":
                 from models.remi_roformer import REMIRoformer
 
                 self.model = REMIRoformer(
@@ -100,6 +101,7 @@ class ProjectRunner:
                     loggers.append(CSVLogger(**_logger_config))
                 else:
                     logger.warning(f"Unknown logger type: {type(logger_config)}. This logger will be skipped.")
+                print(name,_logger_config)
             self.loggers = loggers if len(loggers) > 0 else [TensorBoardLogger("logs", name="default")]
             if not self.loggers:
                 logger.warning("No loggers were configured or recognized. Defaulting to TensorBoardLogger.")
@@ -116,14 +118,15 @@ class ProjectRunner:
             #     logger.warning("ModelCheckpoint callback not found in trainer configuration. Model checkpoints will not be saved automatically.")
 
             self.trainer = Trainer(
-                precision="bf16-mixed", # data precision
+                limit_val_batches=100,
+                precision="bf16-mixed",  # data precision
                 logger=self.loggers,
-                val_check_interval=50,
+                val_check_interval=1000,  # Validate every 10% of the training steps
                 log_every_n_steps=50,
                 **self.config.trainer.model_dump(),
                 callbacks=[
                     ModelCheckpoint(
-                        every_n_train_steps=1000,
+                        every_n_train_steps=500,
                         save_top_k=5,
                         monitor="val_loss",
                         mode="min",
@@ -133,7 +136,6 @@ class ProjectRunner:
                 ],
                 gradient_clip_algorithm="norm",
                 gradient_clip_val=1.0,  # Example value, adjust as needed
-                check_val_every_n_epoch=10,
                 strategy="ddp",
             )
         except Exception as e:
@@ -147,6 +149,7 @@ class ProjectRunner:
             return
 
         exp_log_dir = self.loggers[0].log_dir
+        print(f"Experiment log directory: {exp_log_dir}")
         os.makedirs(exp_log_dir, exist_ok=True)  # Ensure the directory exists
         log_file_path = os.path.join(exp_log_dir, "experiment_log.log")
 
@@ -182,8 +185,12 @@ class ProjectRunner:
             self.setup_model()
             self.setup_loggers()
             self.setup_trainer()  # trainer and loggers are ready here
-            self.add_file_logger_to_exp_dir()
-            self.copy_config(self.trainer)
+
+            # --- Critical Change: Only run file IO on the main process ---
+            if self.trainer.is_global_zero:
+                self.add_file_logger_to_exp_dir()
+                self.copy_config(self.trainer)
+
             logger.info("Experiment setup complete. Starting training...")
         except Exception as e:
             logger.critical(f"Fatal error during experiment setup: {e}", exc_info=True)
@@ -202,7 +209,7 @@ class ProjectRunner:
 
 if __name__ == "__main__":
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.0.yaml")
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0_0.5B-1.0.yaml")
     # runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-1.0.yaml") # Use your specific config
 
     try:
