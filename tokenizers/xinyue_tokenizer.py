@@ -195,15 +195,26 @@ class XinyueTokenizer(MusicTokenizer):
         all_events = []
         current_tick = 0
         ticks_per_frame = self._compute_ticks_per_frame(time_division)
-
-        for event_idx, event in enumerate(events):
-            if event.time > current_tick:
-                frame_start_tick_to_insert = current_tick
-                while frame_start_tick_to_insert <= event.time:
-                    self._add_position_event(all_events, frame_start_tick_to_insert, ticks_per_frame)
-                    frame_start_tick_to_insert += ticks_per_frame
-                current_tick = event.time
+        events.sort(key=lambda e: e.time)
+        
+        # for event_idx, event in enumerate(events):
+        #     if event.time > current_tick:
+        #         frame_start_tick_to_insert = current_tick
+        #         while frame_start_tick_to_insert <= event.time:
+        #             self._add_position_event(all_events, frame_start_tick_to_insert, ticks_per_frame)
+        #             frame_start_tick_to_insert += ticks_per_frame
+        #         current_tick = event.time
+        #     all_events.append(event)
+        # return all_events
+        for event in events:
+            # Add all Frame events needed to advance the timeline up to the current event's time
+            while current_tick <= event.time:
+                self._add_position_event(all_events, current_tick, ticks_per_frame)
+                current_tick += ticks_per_frame
+            
+            # Now that the timeline is up-to-date, add the musical event
             all_events.append(event)
+            
         return all_events
 
     def _compute_ticks_per_frame(self, time_division: int) -> int:
@@ -357,7 +368,7 @@ class XinyueTokenizer(MusicTokenizer):
                         time= current_tick,
                         duration= int(duration_time),
                         pitch=int(pitch_val),
-                        velocity=100,
+                        velocity=50,
                     )
                     # tracks[program_val].append(new_note)
                     
@@ -462,7 +473,7 @@ if __name__ == "__main__":
     # print(out)
     # print(out)
     # tokens = tokenizer._ids_to_tokens(ids)
-    tokens = tokenizer.encode("datasets/Seperated-POP909-Dataset/mel/002.mid")
+    tokens = tokenizer.encode("/home/andy.zhang/StreamMuseDev/StreamMUSE/POP909-Dataset/POP909/001/001.mid")
     # print(TokSequence(tokens))
     decode = tokenizer.decode(tokens)
     decode.dump_midi("x.mid")
