@@ -49,5 +49,5 @@ model:
 trainer:
   max_epochs: 5000
   accelerator: "gpu"
-  devices: [ 1, 2 ]
+  devices: [ 3, 4, 5, 6 ]
 seed: 42

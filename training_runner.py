@@ -209,7 +209,7 @@ class ProjectRunner:
 
 if __name__ == "__main__":
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0_0.12B-1.2.yaml")
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0_0.5B-1.0.yaml")
     # runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-1.0.yaml") # Use your specific config
 
     try:
