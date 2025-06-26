@@ -101,7 +101,7 @@ class ProjectRunner:
                     loggers.append(CSVLogger(**_logger_config))
                 else:
                     logger.warning(f"Unknown logger type: {type(logger_config)}. This logger will be skipped.")
-                print(name,_logger_config)
+                print(name, _logger_config)
             self.loggers = loggers if len(loggers) > 0 else [TensorBoardLogger("logs", name="default")]
             if not self.loggers:
                 logger.warning("No loggers were configured or recognized. Defaulting to TensorBoardLogger.")
@@ -121,7 +121,7 @@ class ProjectRunner:
                 precision="bf16-mixed",  # data precision
                 logger=self.loggers,
                 val_check_interval=5,
-                log_every_n_steps=5,
+                log_every_n_steps=10,
                 limit_val_batches=3,
                 **self.config.trainer.model_dump(),
                 callbacks=[
@@ -210,7 +210,7 @@ class ProjectRunner:
 if __name__ == "__main__":
     # Example usage
     # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
-    runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-v2.yaml") # Use your specific config
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_pop909-1.0.yaml")  # Use your specific config
 
     try:
         runner.run_experiment()
