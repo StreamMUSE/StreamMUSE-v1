@@ -315,7 +315,7 @@ class OldM2ATransformer(L.LightningModule):
         batch = self._move_to_device(batch)
         x_mel, x_acc, pitch_shift = batch.mel_data, batch.acc_data, batch.pitch_shift
         loss = self.loss(x_mel, x_acc, pitch_shift)
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     def configure_optimizers(self):
