@@ -3,18 +3,12 @@ description: "symbolic music generation with XinYue's tokenization and customed 
 
 name: &name "old_m2a_aria"
 version: &version "1.3"
-
+save_dir: &save_dir "logs/"
 loggers:
   csv_logger:
     type: "csv"
-    save_dir: "logs/"
-    name: *name
-    version: *version
   tensorboard_logger:
     type: "tensorboard"
-    save_dir: "logs/"
-    name: *name
-    version: *version
   # - wandb_logger:
   #   type: "wandb"
   #   project: *project_name
@@ -56,5 +50,5 @@ model:
 trainer:
   max_epochs: 5000
   accelerator: "gpu"
-  devices: [ 5, 6 ]
+  devices: [ 3, 4, 5, 6 ]
 seed: 42

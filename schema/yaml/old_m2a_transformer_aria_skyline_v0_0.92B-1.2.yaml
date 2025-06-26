@@ -3,18 +3,12 @@ description: "symbolic music generation with XinYue's tokenization and customed 
 
 name: &name "old_m2a_aria"
 version: &version "1.2"
-
+save_dir: &save_dir "logs/"
 loggers:
   csv_logger:
     type: "csv"
-    save_dir: "logs/"
-    name: *name
-    version: *version
   tensorboard_logger:
     type: "tensorboard"
-    save_dir: "logs/"
-    name: *name
-    version: *version
   # - wandb_logger:
   #   type: "wandb"
   #   project: *project_name
@@ -27,14 +21,14 @@ dataset:
   train_config:
     batch_size: 6
     num_workers: 0
-    file_path: "data_aria_skyline_v0/aria_skyline_v0_acc_cp10.pt" # path to the preprocessed training data
+    file_path: "data/data_aria_skyline_v0/aria_skyline_v0_acc_cp10.pt" # path to the preprocessed training data
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
   val_config:
     batch_size: 6
     num_workers: 0
-    file_path: "data_aria_skyline_v0/aria_skyline_v0_acc_cp10.pt"
+    file_path: "data/data_aria_skyline_v0/aria_skyline_v0_acc_cp10.pt"
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
@@ -56,5 +50,5 @@ model:
 trainer:
   max_epochs: 5000
   accelerator: "gpu"
-  devices: [ 6, 7 ]
+  devices: [ 7 ]
 seed: 42

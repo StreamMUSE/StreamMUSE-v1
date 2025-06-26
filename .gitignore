@@ -22,3 +22,4 @@ POP909-Dataset
 *.mid
 aria-extract.py
 /dataset/
+results/
