@@ -6,8 +6,15 @@ from symusic import (
 )
 import numpy as np
 from miditok.utils import compute_ticks_per_bar, compute_ticks_per_beat
+from miditok.constants import TIME_SIGNATURE, SPECIAL_TOKENS
+from symusic import (
+    TimeSignature,
+)
+import numpy as np
+from miditok.utils import compute_ticks_per_bar, compute_ticks_per_beat
 
 XINYUE_SPECIAL_TOKENS = SPECIAL_TOKENS.copy()
+
 
 class XinyueTokenizerConfig(TokenizerConfig):
     """
@@ -21,6 +28,7 @@ class XinyueTokenizerConfig(TokenizerConfig):
         self.special_tokens = XINYUE_SPECIAL_TOKENS
         # Add frame-specific config. Here, we set a frame to be 120 ticks.
         # If your MIDI has 480 ticks per beat (TPB), this corresponds to a 16th note.
+        self.additional_params["frame_duration_ticks"] = 120
 
 
 class XinyueTokenizer(MusicTokenizer):
@@ -39,6 +47,9 @@ class XinyueTokenizer(MusicTokenizer):
         """
         vocab = []
 
+        # Bar
+        vocab += ["Bar_None"]
+
         # Program
         vocab += [f"Program_{program}" for program in self.config.programs]
 
@@ -48,8 +59,13 @@ class XinyueTokenizer(MusicTokenizer):
         # Duration
         vocab += [f"Duration_{'.'.join(map(str, duration))}" for duration in self.durations]
 
+        # # Position
+        # max_num_beats = max(ts[0] for ts in self.time_signatures)
+        # num_positions = self.config.max_num_pos_per_beat * max_num_beats
+        # vocab += [f"Position_{i}" for i in range(num_positions)]
 
-        # Frame
+        # # Frame
+
         vocab += ["Frame_None"]
 
         return vocab
@@ -68,13 +84,25 @@ class XinyueTokenizer(MusicTokenizer):
         """
         dic: dict[str, set[str]] = {}
 
+        # # Position -> (Program-> Pitch -> Duration, Position )
+        # dic["Position"] = {"Program", "Postion"}
+        # dic["Program"] = {"Pitch"}
+        # dic["Pitch"] = {"Duration"}
+
+        # # Duration -> (Program, Bar, Position)
+        # dic["Duration"] = {"Program", "Bar", "Position"}
+
+        # dic["Bar"] = {"Position"}
+
         # Frame -> (Program-> Pitch -> Duration, Frame )
-        dic["Frame"] = {"Program", "Frame"}
+        dic["Frame"] = {"Program", "Postion"}
         dic["Program"] = {"Pitch"}
         dic["Pitch"] = {"Duration"}
 
         # Duration -> (Program, Bar, Frame)
-        dic["Duration"] = {"Program", "Frame"}
+        dic["Duration"] = {"Program", "Bar", "Frame"}
+
+        dic["Bar"] = {"Frame"}
 
         return dic
 
@@ -99,56 +127,111 @@ class XinyueTokenizer(MusicTokenizer):
         """
         # Add time events
 
+        duration_offset = 0
+        if self.config.use_velocities:
+            duration_offset += 1
+        if self.config.using_note_duration_tokens:
+            duration_offset += 1
         all_events = []
-        current_tick = 0  # 当前处理到的 tick 时间点
-        print(time_division)
-        ticks_per_frame = self._compute_ticks_per_frame(time_division)
+        current_bar = -1
+        bar_at_last_ts_change = 0
+        previous_tick = -1
+        previous_note_end = 0
+        tick_at_last_ts_change = tick_at_current_bar = 0
+        current_time_sig = TIME_SIGNATURE
+        if self.config.log_tempos:
+            # pick the closest to the default value
+            current_tempo = float(self.tempos[(np.abs(self.tempos - self.default_tempo)).argmin()])
+        else:
+            current_tempo = self.default_tempo
+        current_program = None
+        ticks_per_bar = compute_ticks_per_bar(TimeSignature(0, *current_time_sig), time_division)
+        ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
+        ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+        # First look for a TimeSig token, if any is given at tick 0, to update
+        # current_time_sig
+        if self.config.use_time_signatures:
+            for event in events:
+                # There should be a TimeSig token at tick 0
+                if event.type_ == "TimeSig":
+                    current_time_sig = list(map(int, event.value.split("/")))
+                    ticks_per_bar = compute_ticks_per_bar(TimeSignature(event.time, *current_time_sig), time_division)
+                    ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
+                    ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+                    break
+        # Then look for a Tempo token, if any is given at tick 0, to update
+        # Add the time events
+        for e, event in enumerate(events):
+            if event.type_ == "Tempo":
+                current_tempo = event.value
+            elif event.type_ == "Program":
+                current_program = event.value
+                continue
+            if event.time != previous_tick:
+                # Bar
+                num_new_bars = bar_at_last_ts_change + (event.time - tick_at_last_ts_change) // ticks_per_bar - current_bar
+                if num_new_bars >= 1:
+                    for i in range(num_new_bars):
+                        all_events.append(
+                            Event(
+                                type_="Bar",
+                                value="None",
+                            )
+                        )
+                    current_bar += num_new_bars
+                    tick_at_current_bar = tick_at_last_ts_change + (current_bar - bar_at_last_ts_change) * ticks_per_bar
 
-        for event_idx, event in enumerate(events):
-            if event.time > current_tick:
-                frame_start_tick_to_insert = current_tick 
-                while frame_start_tick_to_insert < event.time:
-                    self._add_position_event(all_events, frame_start_tick_to_insert, ticks_per_frame)
-                    frame_start_tick_to_insert += ticks_per_frame
+                # Position
+                if event.type_ != "TimeSig":
+                    pos_index = (event.time - tick_at_current_bar) // ticks_per_pos
+                    all_events.append(
+                        self.__create_cp_token(
+                            event.time,
+                            pos=pos_index,
+                            chord=event.value if event.type_ == "Chord" else None,
+                            tempo=current_tempo if self.config.use_tempos else None,
+                            desc="Position",
+                        )
+                    )
 
-                current_tick = event.time
+                previous_tick = event.time
 
-            all_events.append(event)
-        print(all_events[100:200])   
+            # Update time signature time variables, after adjusting the time (above)
+            if event.type_ == "TimeSig":
+                current_time_sig = list(map(int, event.value.split("/")))
+                bar_at_last_ts_change += (event.time - tick_at_last_ts_change) // ticks_per_bar
+                tick_at_last_ts_change = event.time
+                ticks_per_bar = compute_ticks_per_bar(TimeSignature(event.time, *current_time_sig), time_division)
+                ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
+                ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+                # We decrease the previous tick so that a Position token is enforced
+                # for the next event
+                previous_tick -= 1
+
+            # Convert event to CP Event
+            # Update max offset time of the notes encountered
+            if event.type_ in {"Pitch", "PitchDrum"} and e + duration_offset < len(events):
+                all_events.append(
+                    self.__create_cp_token(
+                        event.time,
+                        pitch=event.value,
+                        vel=events[e + 1].value if self.config.use_velocities else None,
+                        dur=events[e + duration_offset].value if self.config.using_note_duration_tokens else None,
+                        program=current_program,
+                        pitch_drum=event.type_ == "PitchDrum",
+                    )
+                )
+                previous_note_end = max(previous_note_end, event.desc)
+            elif event.type_ in [
+                "Program",
+                "Tempo",
+                "TimeSig",
+                "Chord",
+            ]:
+                previous_note_end = max(previous_note_end, event.time)
+
         return all_events
-    
-    def _compute_ticks_per_frame(self, time_division: int) -> int:
-        """
-        计算每 Frame (1/4 拍) 的 tick 数。
-        time_division 是每四分音符的tick数 (TPQ)。
-        假设 1 拍 = 1 四分音符，所以每拍的 tick 数就是 time_division。
-        一个 Frame 是 1/4 拍，所以是 (time_division / 4) ticks。
-        """
-        ticks_per_frame = time_division // 4 
-        if ticks_per_frame == 0:
-            ticks_per_frame = 1 
-        return ticks_per_frame
 
-    def _add_position_event(
-        self, all_events: list[Event], current_tick: int, ticks_per_frame: int
-    ):
-        """
-        添加一个Position事件，作为“frame”事件来插入。
-        这里的 current_tick 是即将插入的 Frame 事件的时间。
-        Frame 的 value 直接是其在整个序列中的帧索引。
-        """
-        if ticks_per_frame == 0:
-            return
-        frame_index = current_tick // ticks_per_frame
-        all_events.append(
-            Event(
-                type_="Frame",
-                # value=str(frame_index),
-                value="None",
-                time=current_tick,
-                desc=f"Frame {frame_index} (at {current_tick} ticks)"
-            )
-        )
 
 if __name__ == "__main__":
     tokenizer = XinyueTokenizer()
