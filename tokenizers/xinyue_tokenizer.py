@@ -18,9 +18,6 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 from miditok.classes import TokSequence, TokenizerConfig
 from miditok.constants import SPECIAL_TOKENS, MIDI_INSTRUMENTS, DEFAULT_VELOCITY, TIME_SIGNATURE
-    Track,
-    Score
-)
 from pathlib import Path
 
 from collections.abc import Mapping, Sequence
@@ -350,7 +347,6 @@ class XinyueTokenizer(MusicTokenizer):
         return ticks_per_frame
 
     def _add_position_event(self, all_events: list[Event], current_tick: int, ticks_per_frame: int):
-    def _add_position_event(self, all_events: list[Event], current_tick: int, ticks_per_frame: int):
         """
         添加一个Position事件，作为“frame”事件来插入。
         这里的 current_tick 是即将插入的 Frame 事件的时间。
@@ -584,15 +580,6 @@ class XinyueTokenizer(MusicTokenizer):
         :return: the ``symusic.Score`` object.
         """
         return super().decode(tokens, programs, output_path)
-        if current_tick % ticks_per_frame == 0:
-            all_events.append(
-                Event(
-                    type_="Frame",
-                    value="None",
-                    time=current_tick,
-                    desc=f"Frame {frame_index} (at {current_tick} ticks)",
-                )
-            )
 
     def _tokens_to_score(
         self,
