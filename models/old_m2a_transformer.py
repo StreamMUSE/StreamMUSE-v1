@@ -2,11 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.models.roformer.modeling_roformer import RoFormerConfig, RoFormerEncoder
-from schema.model_io_schema import M2AModelInputData
+from schema.model_io_schema import M2AModelInputData,M2AModelOutputData
 from schema.model_schema import OldM2ATransformerSchema
-import pytorch_lightning as L
 from typing import Optional
-
+from .base_pytorch_lightning_model import BasePyTorchLightningModel
 
 TRAIN_LENGTH = 192
 MAX_STEPS = 1000000
@@ -25,9 +24,9 @@ def fill_with_neg_inf(t):
     return t.float().fill_(float("-inf")).type_as(t)
 
 
-class OldM2ATransformer(L.LightningModule):
+class OldM2ATransformer(BasePyTorchLightningModel):
     def __init__(self, model_schema: OldM2ATransformerSchema):
-        super().__init__()
+        super().__init__(model_schema)
         large = model_schema.large
         self.hidden_size = model_schema.hidden_size
         self.num_layers = model_schema.num_layers
@@ -309,7 +308,6 @@ class OldM2ATransformer(L.LightningModule):
         scheduler.step()
         self.log("training/lr", scheduler.get_last_lr()[0], on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
-    
 
     def validation_step(self, batch: M2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)
