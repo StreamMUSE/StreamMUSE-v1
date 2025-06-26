@@ -5,11 +5,22 @@ from typing import Union, Optional
 from typing import Literal
 
 
+class TrainingProbingLoggerSchema(BaseModel):
+    """TrainingProbingLoggerSchema."""
+
+    loss_jump_threshold_X: float = Field(1.5, description="Threshold for loss jump")
+    loss_avg_window_Y: int = Field(10, description="Window size for loss average")
+    recording_window_N: int = Field(5, description="Window size for recording")
+
+
 class OptimizerSchema(BaseModel):
     optimizer_type: Literal["adam", "sgd", "adamw"] = Field("adam", description="Type of optimizer.")
-    learning_rate: float = Field(1e-4, description="Learning rate for the optimizer.")
-    weight_decay: float = Field(0.0, description="Weight decay (L2 penalty).")
-    momentum: Optional[float] = Field(None, description="Momentum factor (for SGD).")
+    params: dict[str, Any] = Field(
+        default_factory=lambda: {"lr": 1e-4, "betas": (0.9, 0.999), "eps": 1e-8}, description="Parameters for the optimizer."
+    )
+    # learning_rate: float = Field(1e-4, description="Learning rate for the optimizer.")
+    # weight_decay: float = Field(0.0, description="Weight decay (L2 penalty).")
+    # momentum: Optional[float] = Field(None, description="Momentum factor (for SGD).")
 
 
 class LRSchedulerSchema(BaseModel):
@@ -26,8 +37,11 @@ class BaseModelSchema(BaseModel):
 
     model_name: str = Field("", description="Name of the model.")
     model_type: str = Field("roformer", description="Type of the model. Default is 'roformer'.")
-    network_schema: Optional[Any] = Field(None, description="Configuration for the RoFormer model.")
+    network_schema: Optional[Union[Any, dict[str, Any]]] = Field(None, description="Configuration for the RoFormer model.")
     optimizer_schema: OptimizerSchema = Field(default_factory=lambda: OptimizerSchema(), description="Configuration for the optimizer.")
+    training_probing_training_logger_schema: TrainingProbingLoggerSchema = Field(
+        default_factory=lambda: TrainingProbingLoggerSchema(), description="Configuration for the training probing logger."
+    )
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -127,7 +141,6 @@ class OldM2ATransformerSchema(BaseModelSchema):
 
 ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema]
 # ModelSchema = OldM2ATransformerSchema
-
 
 
 # class OldM2ATransformerNetworkSchema(BaseModel):

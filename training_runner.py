@@ -72,7 +72,7 @@ class ProjectRunner:
                 self.model = OldM2ATransformer(
                     model_schema=self.config.model,
                 )
-            elif self.config.model.model_type == "REMI-Roformer":
+            elif self.config.model.model_type == "REMI-RoFormer":
                 from models.remi_roformer import REMIRoformer
 
                 self.model = REMIRoformer(
@@ -101,6 +101,7 @@ class ProjectRunner:
                     loggers.append(CSVLogger(**_logger_config))
                 else:
                     logger.warning(f"Unknown logger type: {type(logger_config)}. This logger will be skipped.")
+                print(name,_logger_config)
             self.loggers = loggers if len(loggers) > 0 else [TensorBoardLogger("logs", name="default")]
             if not self.loggers:
                 logger.warning("No loggers were configured or recognized. Defaulting to TensorBoardLogger.")
@@ -119,8 +120,9 @@ class ProjectRunner:
             self.trainer = Trainer(
                 precision="bf16-mixed",  # data precision
                 logger=self.loggers,
-                val_check_interval=500,
-                log_every_n_steps=50,
+                val_check_interval=5,
+                log_every_n_steps=5,
+                limit_val_batches=3,
                 **self.config.trainer.model_dump(),
                 callbacks=[
                     ModelCheckpoint(
@@ -147,6 +149,7 @@ class ProjectRunner:
             return
 
         exp_log_dir = self.loggers[0].log_dir
+        print(f"Experiment log directory: {exp_log_dir}")
         os.makedirs(exp_log_dir, exist_ok=True)  # Ensure the directory exists
         log_file_path = os.path.join(exp_log_dir, "experiment_log.log")
 
@@ -182,8 +185,12 @@ class ProjectRunner:
             self.setup_model()
             self.setup_loggers()
             self.setup_trainer()  # trainer and loggers are ready here
-            self.add_file_logger_to_exp_dir()
-            self.copy_config(self.trainer)
+
+            # --- Critical Change: Only run file IO on the main process ---
+            if self.trainer.is_global_zero:
+                self.add_file_logger_to_exp_dir()
+                self.copy_config(self.trainer)
+
             logger.info("Experiment setup complete. Starting training...")
         except Exception as e:
             logger.critical(f"Fatal error during experiment setup: {e}", exc_info=True)
@@ -202,8 +209,8 @@ class ProjectRunner:
 
 if __name__ == "__main__":
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
-    # runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-1.0.yaml") # Use your specific config
+    # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
+    runner = ProjectRunner(config_path="schema/yaml/remi_roformer_pop909-v2.yaml") # Use your specific config
 
     try:
         runner.run_experiment()
