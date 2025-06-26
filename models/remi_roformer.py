@@ -122,7 +122,7 @@ class REMIRoformer(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.model_schema.optimizer_schema.learning_rate)
+        optimizer = torch.optim.AdamW(self.parameters(), **self.model_schema.optimizer_schema.params)
         return optimizer
 
     def _move_to_device(self, batch: ModelInputData) -> ModelInputData:
