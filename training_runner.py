@@ -1,7 +1,7 @@
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-
+import torch
 # from lightning.pytorch.utilities.seed import seed_everything
 from schema.project_schema import ProjectSchema
 from datamodules.remi_json_datamodule import MelAccRemiJsonDataModule
@@ -28,6 +28,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("Application started. Initial logging setup complete.")
 
+temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
+os.environ['TMPDIR'] = temp_dir
+# 确保这个目录存在
+os.makedirs(temp_dir, exist_ok=True)
 
 class ProjectRunner:
     def __init__(self, config_path: str):
@@ -124,6 +128,7 @@ class ProjectRunner:
             #     logger.warning("ModelCheckpoint callback not found in trainer configuration. Model checkpoints will not be saved automatically.")
 
             self.trainer = Trainer(
+                # max_steps=5,
                 limit_val_batches=100,
                 precision="bf16-mixed",  # data precision
                 logger=self.loggers,
@@ -203,7 +208,9 @@ class ProjectRunner:
             sys.exit(1)  # Exit if setup fails critically
 
         try:
-            self.trainer.fit(self.model, datamodule=self.datamodule)
+            # torch.cuda.memory._dump_snapshot("before_train.pickle")
+            self.trainer.fit(self.model, datamodule=self.datamodule, ckpt_path=self.config.model.ckpt_path)
+            # torch.cuda.memory._dump_snapshot("after_train.pickle")
             logger.info("Experiment training finished successfully!")
         except Exception as e:
             logger.error(f"An error occurred during model training: {e}", exc_info=True)
@@ -214,8 +221,11 @@ class ProjectRunner:
 
 
 if __name__ == "__main__":
+
+    # torch.cuda.memory._record_memory_history() # start memory snapshot
+
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0_0.5B-1.0.yaml") # Use your specific config
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_nomask_aria_unique_skyline_top2_0.5B-1.3.yaml") # Use your specific config 
 
     try:
         runner.run_experiment()

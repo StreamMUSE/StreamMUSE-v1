@@ -19,7 +19,6 @@ SOS_TOKEN = N_NORMAL_TOKENS
 EOS_TOKEN = N_NORMAL_TOKENS + 1
 PAD_TOKEN = N_NORMAL_TOKENS + 2
 
-
 def fill_with_neg_inf(t):
     """FP16-compatible function that fills a tensor with -inf."""
     return t.float().fill_(float("-inf")).type_as(t)
@@ -225,6 +224,7 @@ class OldM2ATransformer(L.LightningModule):
     def forward(self, x):
         # x: [batch, seq, subseq]
         # Use local encoder to encode subsequences
+        torch.cuda.memory._record_memory_history() # tool for GPU memory
         batch_size, seq_len, subseq_len = x.shape  # 10*384*8
         assert seq_len % 2 == 0, "Expected even number of frames (2*S interleaved)."
 

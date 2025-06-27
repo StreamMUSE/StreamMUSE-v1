@@ -116,6 +116,10 @@ class OldM2ATransformerSchema(BaseModelSchema):
     hidden_dropout_prob: float = Field(0.1, description="Dropout probability for hidden layers.")
     attention_probs_dropout_prob: float = Field(0.1, description="Dropout probability for attention weights.")
 
+    ckpt_path: Optional[str] = Field(
+        None, description="Path to the checkpoint file. If provided, the model will be initialized from this checkpoint."
+    )
+
     def model_post_init(self, __context: Any) -> None:
         if self.large:
             # Set default large model parameters IF they haven't been explicitly set
@@ -168,6 +172,10 @@ class OldM2ANomaskTransformerSchema(BaseModelSchema):
     hidden_dropout_prob: float = Field(0.1, description="Dropout probability for hidden layers.")
     attention_probs_dropout_prob: float = Field(0.1, description="Dropout probability for attention weights.")
 
+    ckpt_path: Optional[str] = Field(
+        None, description="Path to the checkpoint file. If provided, the model will be initialized from this checkpoint."
+    )
+    
     def model_post_init(self, __context: Any) -> None:
         if self.large:
             # Set default large model parameters IF they haven't been explicitly set
