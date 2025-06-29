@@ -1,0 +1,4 @@
+requests
+pynput
+mido[ports-rtmidi]
+pygame
