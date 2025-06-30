@@ -144,25 +144,33 @@ class TransformerInferenceEngine:
         # The prompt should be based on a rolling window ending just before the new generation begins.
         prompt_end_tick = generation_start_tick
         prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
+        
+        # This is the fixed context length the model expects.
+        model_context_len = self.prompt_length_ticks
+        # This is the actual duration of the history we have available for the prompt.
+        actual_history_duration = prompt_end_tick - prompt_start_tick
+        
+        # If there's no history to use, there's nothing to generate from.
+        if actual_history_duration <= 0:
+            return ([], preprocess_start_time, time.perf_counter(), time.perf_counter(), time.perf_counter())
 
-        # Filter notes to include only those within the prompt window and make their ticks relative to the start of the prompt.
+        # Calculate the padding needed at the beginning of the context window.
+        padding_duration = model_context_len - actual_history_duration
+
+        # Filter notes and make their ticks relative to the *padded* window.
+        # This aligns the existing history to the END of the context window.
         prompt_melody = [
-            {**n, 'tick': n['tick'] - prompt_start_tick}
+            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
             for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         prompt_acc = [
-            {**n, 'tick': n['tick'] - prompt_start_tick}
+            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
             for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         
-        # The duration of the prompt, in ticks, for the _notes_to_rolls function.
-        prompt_duration_ticks = prompt_end_tick - prompt_start_tick
-        if prompt_duration_ticks <= 0:
-            return ([], preprocess_start_time, time.perf_counter(), time.perf_counter(), time.perf_counter())
-
-        # Step 3: Convert the note events into tensor 'rolls' that the model can understand.
-        x_mel_raw = self._notes_to_rolls(prompt_melody, prompt_duration_ticks, self.max_polyphony, program=0)
-        x_acc_raw = self._notes_to_rolls(prompt_acc, prompt_duration_ticks, self.max_polyphony, program=1)
+        # Step 3: Convert note events into tensor 'rolls' using the fixed model context length.
+        x_mel_raw = self._notes_to_rolls(prompt_melody, model_context_len, self.max_polyphony, program=0)
+        x_acc_raw = self._notes_to_rolls(prompt_acc, model_context_len, self.max_polyphony, program=1)
 
         # Step 4: Preprocess the rolls and prepare them for the model (e.g., move to GPU).
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
