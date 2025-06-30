@@ -32,8 +32,12 @@ def inference_worker(request_queue: Queue, response_queue: Queue, server_url: st
         
         request_data, full_request_dict = queue_item
 
-        # The request_data is now expected to be a dictionary for the InferenceRequest model
-        start_time = time.perf_counter()
+        # Add timestamp right before sending
+        client_send_time = time.perf_counter()
+        request_data['client_request_send_time'] = client_send_time
+        full_request_dict['client_request_send_time'] = client_send_time # For logging
+
+        start_time = client_send_time
         try:
             response = requests.post(server_url, json=request_data)
             response.raise_for_status()
@@ -113,6 +117,22 @@ def tick_loop(
                 # --- Log the complete inference event ---
                 json_log_handler.log_inference_event(request_data, response_data)
 
+                # --- Calculate and store all timing information ---
+                timings = response_data['timings']
+                timings['round_trip_time'] = round_trip_time
+
+                # Calculate separate latencies (Note: assumes synchronized clocks)
+                client_send_time = timings['client_request_send_time']
+                server_arrival_time = timings['request_arrival_time']
+                server_response_time = timings['response_output_time']
+                # Reconstruct client receive time to get an accurate duration
+                client_receive_time = client_send_time + round_trip_time
+
+                timings['latency_request_send'] = server_arrival_time - client_send_time
+                timings['latency_response_receive'] = client_receive_time - server_response_time
+                timings['server_processing_duration'] = server_response_time - server_arrival_time
+                all_timing_data.append(timings)
+                
                 # --- Tick Consistency Filter ---
                 generation_start_tick = response_data['generation_start_tick']
                 newly_generated_notes = response_data['accompaniment']
@@ -134,9 +154,7 @@ def tick_loop(
                         playback_schedule[note['tick']].append(note)
                 
                 # Store timings for display, making them persistent
-                last_inference_timings = response_data['timings']
-                last_inference_timings['round_trip_time'] = round_trip_time
-                all_timing_data.append(last_inference_timings) # Add full dict to benchmark list
+                last_inference_timings = timings
 
         # --- 3. Trigger New Inference (Latency-Aware) ---
         is_trigger_tick = (tick_count % ticks_per_bar) == (ticks_per_bar - LATENCY_OFFSET_TICKS)
@@ -150,7 +168,7 @@ def tick_loop(
                 "melody_notes": notes_for_next_request,
                 "generation_start_tick": next_bar_start_tick
             }
-            inference_request_queue.put((request_data, request_data)) # Pass it twice for logging
+            inference_request_queue.put((request_data, request_data.copy())) # Pass a copy for logging
             notes_for_next_request = [] # Clear the buffer
 
         # --- 4. Play Scheduled Notes ---

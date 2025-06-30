@@ -1,0 +1,335 @@
+[
+  {
+    "request": {
+      "melody_notes": [
+        {
+          "pitch": 64,
+          "tick": 14,
+          "duration": 4
+        }
+      ],
+      "generation_start_tick": 16,
+      "client_request_send_time": 445872.200669375
+    },
+    "response": {
+      "accompaniment": [
+        {
+          "pitch": 30,
+          "tick": 32,
+          "duration": 4,
+          "program": 1
+        },
+        {
+          "pitch": 42,
+          "tick": 32,
+          "duration": 4,
+          "program": 1
+        },
+        {
+          "pitch": 67,
+          "tick": 32,
+          "duration": 4,
+          "program": 1
+        },
+        {
+          "pitch": 82,
+          "tick": 32,
+          "duration": 4,
+          "program": 1
+        },
+        {
+          "pitch": 38,
+          "tick": 33,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 53,
+          "tick": 33,
+          "duration": 6,
+          "program": 1
+        },
+        {
+          "pitch": 34,
+          "tick": 36,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 57,
+          "tick": 36,
+          "duration": 12,
+          "program": 1
+        },
+        {
+          "pitch": 74,
+          "tick": 36,
+          "duration": 12,
+          "program": 1
+        },
+        {
+          "pitch": 58,
+          "tick": 37,
+          "duration": 32,
+          "program": 1
+        },
+        {
+          "pitch": 94,
+          "tick": 37,
+          "duration": 3,
+          "program": 1
+        },
+        {
+          "pitch": 98,
+          "tick": 37,
+          "duration": 2,
+          "program": 1
+        },
+        {
+          "pitch": 39,
+          "tick": 37,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 58,
+          "tick": 37,
+          "duration": 2,
+          "program": 1
+        },
+        {
+          "pitch": 63,
+          "tick": 37,
+          "duration": 2,
+          "program": 1
+        },
+        {
+          "pitch": 67,
+          "tick": 37,
+          "duration": 2,
+          "program": 1
+        },
+        {
+          "pitch": 58,
+          "tick": 38,
+          "duration": 24,
+          "program": 1
+        },
+        {
+          "pitch": 58,
+          "tick": 39,
+          "duration": 24,
+          "program": 1
+        },
+        {
+          "pitch": 97,
+          "tick": 39,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 101,
+          "tick": 39,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 33,
+          "tick": 39,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 57,
+          "tick": 39,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 62,
+          "tick": 40,
+          "duration": 32,
+          "program": 1
+        },
+        {
+          "pitch": 65,
+          "tick": 40,
+          "duration": 32,
+          "program": 1
+        },
+        {
+          "pitch": 74,
+          "tick": 40,
+          "duration": 24,
+          "program": 1
+        },
+        {
+          "pitch": 39,
+          "tick": 40,
+          "duration": 4,
+          "program": 1
+        },
+        {
+          "pitch": 46,
+          "tick": 40,
+          "duration": 3,
+          "program": 1
+        },
+        {
+          "pitch": 51,
+          "tick": 40,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 70,
+          "tick": 41,
+          "duration": 32,
+          "program": 1
+        },
+        {
+          "pitch": 70,
+          "tick": 41,
+          "duration": 24,
+          "program": 1
+        },
+        {
+          "pitch": 98,
+          "tick": 41,
+          "duration": 3,
+          "program": 1
+        },
+        {
+          "pitch": 72,
+          "tick": 42,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 75,
+          "tick": 42,
+          "duration": 24,
+          "program": 1
+        },
+        {
+          "pitch": 86,
+          "tick": 42,
+          "duration": 2,
+          "program": 1
+        },
+        {
+          "pitch": 79,
+          "tick": 43,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 82,
+          "tick": 43,
+          "duration": 1,
+          "program": 1
+        },
+        {
+          "pitch": 82,
+          "tick": 44,
+          "duration": 24,
+          "program": 1
+        },
+        {
+          "pitch": 77,
+          "tick": 44,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 79,
+          "tick": 44,
+          "duration": 12,
+          "program": 1
+        },
+        {
+          "pitch": 94,
+          "tick": 44,
+          "duration": 3,
+          "program": 1
+        },
+        {
+          "pitch": 74,
+          "tick": 45,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 77,
+          "tick": 45,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 82,
+          "tick": 45,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 91,
+          "tick": 45,
+          "duration": 2,
+          "program": 1
+        },
+        {
+          "pitch": 74,
+          "tick": 46,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 77,
+          "tick": 46,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 84,
+          "tick": 46,
+          "duration": 6,
+          "program": 1
+        },
+        {
+          "pitch": 74,
+          "tick": 47,
+          "duration": 12,
+          "program": 1
+        },
+        {
+          "pitch": 81,
+          "tick": 47,
+          "duration": 16,
+          "program": 1
+        },
+        {
+          "pitch": 77,
+          "tick": 47,
+          "duration": 2,
+          "program": 1
+        },
+        {
+          "pitch": 77,
+          "tick": 47,
+          "duration": 2,
+          "program": 1
+        }
+      ],
+      "timings": {
+        "request_arrival_time": 79949.011516397,
+        "response_output_time": 79950.163993454,
+        "preprocess_start_time": 79949.011615006,
+        "inference_start_time": 79949.021270191,
+        "inference_end_time": 79950.158081506,
+        "postprocess_start_time": 79950.158081801,
+        "round_trip_time": 1.7748681659577414
+      },
+      "generation_start_tick": 16
+    }
+  }
+]

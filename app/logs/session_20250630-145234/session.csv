@@ -1,0 +1,2 @@
+request_arrival_time,response_output_time,preprocess_start_time,inference_start_time,inference_end_time,postprocess_start_time,round_trip_time
+79133.49296631,79134.835162785,79133.493076339,79133.501811573,79134.822492995,79134.822493378,2.013500458037015

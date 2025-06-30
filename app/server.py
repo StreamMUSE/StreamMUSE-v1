@@ -18,6 +18,7 @@ class MelodyNoteEvent(BaseModel):
 class InferenceRequest(BaseModel):
     melody_notes: list[MelodyNoteEvent]
     generation_start_tick: int
+    client_request_send_time: float
 
 class AccompanimentNoteEvent(BaseModel):
     pitch: int
@@ -32,6 +33,7 @@ class Timings(BaseModel):
     inference_start_time: float
     inference_end_time: float
     postprocess_start_time: float
+    client_request_send_time: float
 
 class AccompanimentResponse(BaseModel):
     accompaniment: list[AccompanimentNoteEvent]
@@ -91,7 +93,8 @@ async def generate_accompaniment(request: InferenceRequest):
             preprocess_start_time=preprocess_start_time,
             inference_start_time=inference_start_time,
             inference_end_time=inference_end_time,
-            postprocess_start_time=postprocess_start_time
+            postprocess_start_time=postprocess_start_time,
+            client_request_send_time=request.client_request_send_time
         ),
         generation_start_tick=request.generation_start_tick
     )
