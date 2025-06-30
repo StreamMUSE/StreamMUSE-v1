@@ -22,8 +22,8 @@ class MidiFileHandler:
         self.seconds_per_tick = (60.0 / tempo) / ticks_per_beat
         self.midi_data = pretty_midi.PrettyMIDI(initial_tempo=tempo)
         
-        # Track 0: User Melody (Acoustic Guitar, program 25)
-        self.user_instrument = pretty_midi.Instrument(program=25, name='User Melody')
+        # Track 0: User Melody (Acoustic Grand Piano, program 0)
+        self.user_instrument = pretty_midi.Instrument(program=0, name='User Melody')
         # Track 1: Model Accompaniment (Acoustic Grand Piano, program 0)
         self.model_instrument = pretty_midi.Instrument(program=0, name='Model Accompaniment')
 

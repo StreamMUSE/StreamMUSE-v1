@@ -20,4 +20,7 @@ aria-extract.py
 /dataset/
 
 src/transformers/
-/app/logs
+app/.DS_Store
+.DS_Store
+.DS_Store
+.DS_Store
