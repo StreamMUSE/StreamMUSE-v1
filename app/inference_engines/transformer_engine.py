@@ -13,7 +13,7 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from preprocess_large_midi_dataset import DURATION_TEMPLATES
 
 class TransformerInferenceEngine:
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=32):
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=4):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 

@@ -189,7 +189,7 @@ def tick_loop(
 
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
-            audio_output_handler.on(event['pitch'], 100) # Use a fixed velocity for generated notes
+            audio_output_handler.on(event['pitch'], 127) # Use a fixed velocity for generated notes
             midi_file_handler.add_model_note(event) # Log model note
             
             note_off_tick = tick_count + event['duration']
