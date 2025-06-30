@@ -74,7 +74,7 @@ class TransformerInferenceEngine:
 
         return torch.tensor(rolls.reshape(max_tick, -1))
 
-    def _tensors_to_notes(self, output_tensors, single=False):
+    def _tensors_to_notes(self, output_tensors, start_frame_offset=0, single=False):
         notes_per_sample = []
         num_timesteps = len(output_tensors)
         if num_timesteps == 0:
@@ -84,10 +84,13 @@ class TransformerInferenceEngine:
 
         for i in range(n_samples):
             sample_notes = []
-            for time_step in range(num_timesteps):
+            for time_step in range(start_frame_offset, num_timesteps):
                 data = output_tensors[time_step][i]
                 content = data.flatten()
-                tick = time_step if single else time_step // 2
+                
+                # Calculate the tick relative to the start of the *generation*.
+                relative_time_step = time_step - start_frame_offset
+                tick = relative_time_step if single else relative_time_step // 2
                 
                 for j in range(0, len(content), 2):
                     program = int(content[j].item())
@@ -192,8 +195,15 @@ class TransformerInferenceEngine:
 
         postprocess_start_time = time.perf_counter()
         
+        # The model's global_sampling returns the entire sequence (prompt + generation).
+        # We need to slice off the prompt part to get only the newly generated notes.
+        prompt_len_frames = x.shape[1]
+        generated_output_tensors = output_tensors[prompt_len_frames:]
+        
         # Step 6: Decode the model's tensor output back into note events.
-        generated_notes_relative = self._tensors_to_notes(output_tensors)
+        # We pass prompt_len_frames as the offset to ensure the new notes'
+        # ticks are calculated relative to the start of the generation, not the start of the prompt.
+        generated_notes_relative = self._tensors_to_notes(output_tensors, start_frame_offset=prompt_len_frames)
         generated_notes_relative = generated_notes_relative[0] if generated_notes_relative else []
 
         # Step 7: Post-process the generated notes.
