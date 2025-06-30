@@ -114,10 +114,19 @@ def tick_loop(
                 json_log_handler.log_inference_event(request_data, response_data)
 
                 # --- Tick Consistency Filter ---
-                # Only schedule notes that are meant for the future.
                 generation_start_tick = response_data['generation_start_tick']
                 newly_generated_notes = response_data['accompaniment']
+
+                # --- Clear stale notes from the previous generation ---
+                # This ensures that if a new response arrives before the old one is
+                # fully played out, we replace the future notes with the new ones.
+                ticks_to_clear = [t for t in playback_schedule if t >= generation_start_tick]
+                for t in ticks_to_clear:
+                    # In the current design, any scheduled event is a model-generated note_on.
+                    # A more complex design might require tagging events with their source.
+                    del playback_schedule[t]
                 
+                # --- Schedule new notes ---
                 for note in newly_generated_notes:
                     if note['tick'] >= tick_count:
                         if note['tick'] not in playback_schedule:

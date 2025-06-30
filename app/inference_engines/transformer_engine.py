@@ -136,33 +136,29 @@ class TransformerInferenceEngine:
         """
         preprocess_start_time = time.perf_counter()
 
-        # Step 1: Update the internal history with the new notes from this turn.
+        # Step 1: Update the internal melody history with the new user notes for this turn.
         self.melody_history.extend(melody_notes)
-        self.accompaniment_history.extend(accompaniment_notes)
+        # Note: We do NOT update the accompaniment history until after generation.
 
-        # Step 2: Create a prompt for the model from the recent history.
-        # The prompt is a rolling window of the last `prompt_length_ticks` of the performance.
-        all_history = self.melody_history + self.accompaniment_history
-        if not all_history:
-             # If history is empty, ensure generation starts from the client's requested tick.
-             max_tick_in_history = generation_start_tick -1
-        else:
-             max_tick_in_history = max(n['tick'] for n in all_history)
-        
-        # Trim the history to the model's maximum context window (prompt length).
-        prompt_start_tick = max(0, max_tick_in_history - self.prompt_length_ticks + 1)
-        
+        # Step 2: Create a prompt for the model from history occurring BEFORE the generation start tick.
+        # The prompt should be based on a rolling window ending just before the new generation begins.
+        prompt_end_tick = generation_start_tick
+        prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
+
         # Filter notes to include only those within the prompt window and make their ticks relative to the start of the prompt.
         prompt_melody = [
             {**n, 'tick': n['tick'] - prompt_start_tick}
-            for n in self.melody_history if n['tick'] >= prompt_start_tick
+            for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         prompt_acc = [
             {**n, 'tick': n['tick'] - prompt_start_tick}
-            for n in self.accompaniment_history if n['tick'] >= prompt_start_tick
+            for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         
-        prompt_duration_ticks = max_tick_in_history - prompt_start_tick + 1
+        # The duration of the prompt, in ticks, for the _notes_to_rolls function.
+        prompt_duration_ticks = prompt_end_tick - prompt_start_tick
+        if prompt_duration_ticks <= 0:
+            return ([], preprocess_start_time, time.perf_counter(), time.perf_counter(), time.perf_counter())
 
         # Step 3: Convert the note events into tensor 'rolls' that the model can understand.
         x_mel_raw = self._notes_to_rolls(prompt_melody, prompt_duration_ticks, self.max_polyphony, program=0)
