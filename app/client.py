@@ -121,16 +121,16 @@ def tick_loop(
                 timings = response_data['timings']
                 timings['round_trip_time'] = round_trip_time
 
-                # Calculate separate latencies (Note: assumes synchronized clocks)
-                client_send_time = timings['client_request_send_time']
+                # Calculate server processing duration (this is accurate as it uses one clock)
                 server_arrival_time = timings['request_arrival_time']
                 server_response_time = timings['response_output_time']
-                # Reconstruct client receive time to get an accurate duration
-                client_receive_time = client_send_time + round_trip_time
+                server_processing_duration = server_response_time - server_arrival_time
+                timings['server_processing_duration'] = server_processing_duration
 
-                timings['latency_request_send'] = server_arrival_time - client_send_time
-                timings['latency_response_receive'] = client_receive_time - server_response_time
-                timings['server_processing_duration'] = server_response_time - server_arrival_time
+                # Calculate total network latency (accurate)
+                # This is the time spent on the network for both the request and response.
+                timings['total_network_latency'] = round_trip_time - server_processing_duration
+
                 all_timing_data.append(timings)
                 
                 # --- Tick Consistency Filter ---
