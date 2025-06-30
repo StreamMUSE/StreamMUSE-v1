@@ -13,7 +13,7 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from preprocess_large_midi_dataset import DURATION_TEMPLATES
 
 class TransformerInferenceEngine:
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=64):
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=32):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
@@ -31,7 +31,7 @@ class TransformerInferenceEngine:
         
         # The model's max sequence length is defined in interleaved frames (melody, accompaniment).
         # The effective prompt length in ticks is half of that, as ticks are our musical time unit.
-        self.model_max_seq_len_frames = 384 # Derived from m2a_transformer.py
+        self.model_max_seq_len_frames = 96 # Derived from m2a_transformer.py
         self.prompt_length_ticks = self.model_max_seq_len_frames // 2
         
         self.max_polyphony = max_polyphony
