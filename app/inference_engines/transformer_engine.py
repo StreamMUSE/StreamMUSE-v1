@@ -13,7 +13,7 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from preprocess_large_midi_dataset import DURATION_TEMPLATES
 
 class TransformerInferenceEngine:
-    def __init__(self, checkpoint_path: str, prompt_length_ticks=200, max_polyphony=4, generation_length_frames=40):
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=64):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
@@ -29,7 +29,11 @@ class TransformerInferenceEngine:
         self.model.eval()
         print("Model loaded successfully.")
         
-        self.prompt_length_ticks = prompt_length_ticks
+        # The model's max sequence length is defined in interleaved frames (melody, accompaniment).
+        # The effective prompt length in ticks is half of that, as ticks are our musical time unit.
+        self.model_max_seq_len_frames = 384 # Derived from m2a_transformer.py
+        self.prompt_length_ticks = self.model_max_seq_len_frames // 2
+        
         self.max_polyphony = max_polyphony
         self.generation_length_frames = generation_length_frames
         
@@ -142,6 +146,8 @@ class TransformerInferenceEngine:
              return ([], preprocess_start_time, time.perf_counter(), time.perf_counter(), time.perf_counter())
 
         max_tick_in_history = max(n['tick'] for n in all_history)
+        
+        # Trim the history to the model's maximum context window (prompt length).
         prompt_start_tick = max(0, max_tick_in_history - self.prompt_length_ticks + 1)
         
         # Filter notes to include only those within the prompt window and make their ticks relative to the start of the prompt.

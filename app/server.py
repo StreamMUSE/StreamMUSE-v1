@@ -15,6 +15,10 @@ class MelodyNoteEvent(BaseModel):
     tick: int
     duration: int
 
+class InferenceRequest(BaseModel):
+    melody_notes: list[MelodyNoteEvent]
+    generation_start_tick: int
+
 class AccompanimentNoteEvent(BaseModel):
     pitch: int
     tick: int
@@ -32,6 +36,7 @@ class Timings(BaseModel):
 class AccompanimentResponse(BaseModel):
     accompaniment: list[AccompanimentNoteEvent]
     timings: Timings
+    generation_start_tick: int
 
 app = FastAPI(title='StreamMUSE Inference Server')
 
@@ -58,7 +63,7 @@ async def startup_event():
         exit()
 
 @app.post('/generate_accompaniment', response_model=AccompanimentResponse)
-async def generate_accompaniment(melody_notes: list[MelodyNoteEvent], accompaniment_notes: list[AccompanimentNoteEvent] = None):
+async def generate_accompaniment(request: InferenceRequest):
     """
     Receive list of note events from client
     Returns generated list of accompaniment events with timing info.
@@ -69,10 +74,9 @@ async def generate_accompaniment(melody_notes: list[MelodyNoteEvent], accompanim
     if not inference_engine:
         return JSONResponse(status_code=503, content={"error": "Inference engine not loaded"})
     
-    melody_notes_dicts = [note.dict() for note in melody_notes]
-    accompaniment_notes_dicts = [note.dict() for note in accompaniment_notes] if accompaniment_notes else []
+    melody_notes_dicts = [note.dict() for note in request.melody_notes]
     
-    accompaniment_dicts, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time = inference_engine.generate_accompaniment(melody_notes_dicts, accompaniment_notes_dicts)
+    accompaniment_dicts, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time = inference_engine.generate_accompaniment(melody_notes_dicts)
     
     response_output_time = time.perf_counter()
 
@@ -85,7 +89,8 @@ async def generate_accompaniment(melody_notes: list[MelodyNoteEvent], accompanim
             inference_start_time=inference_start_time,
             inference_end_time=inference_end_time,
             postprocess_start_time=postprocess_start_time
-        )
+        ),
+        generation_start_tick=request.generation_start_tick
     )
 
 @app.post('/clear_history')

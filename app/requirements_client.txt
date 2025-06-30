@@ -1,4 +1,5 @@
 requests
+mido
+python-rtmidi
 pynput
-mido[ports-rtmidi]
 pygame
