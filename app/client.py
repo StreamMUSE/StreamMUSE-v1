@@ -74,6 +74,7 @@ def tick_loop(
         tick_count += 1
         
         # --- 1. Process User Input ---
+        user_notes_this_tick = []
         while not event_queue.empty():
             event = event_queue.get()
             if event is None:
@@ -90,6 +91,7 @@ def tick_loop(
                     "duration": DEFAULT_NOTE_DURATION_TICKS
                 }
                 notes_for_next_request.append(quantized_note)
+                user_notes_this_tick.append(quantized_note) # Add to tick-specific list
                 audio_output_handler.on(event['pitch'], event['velocity'])
             elif event['type'] == 'note_off':
                 audio_output_handler.off(event['pitch'])
@@ -169,7 +171,8 @@ def tick_loop(
         bar_count = tick_count // ticks_per_bar
         beat_in_bar = (tick_count % ticks_per_bar) // ticks_per_beat
         
-        user_notes_for_display = [n['pitch'] for n in notes_for_next_request] # Show notes waiting to be sent
+        pending_user_notes_display = [n['pitch'] for n in notes_for_next_request]
+        user_notes_this_tick_display = [n['pitch'] for n in user_notes_this_tick]
         model_notes_for_display = [n['pitch'] for n in notes_to_play_this_tick]
 
         music_info = {
@@ -183,8 +186,9 @@ def tick_loop(
         output_handler.update_and_display(
             tick_count,
             music_info,
-            user_notes_for_display,
-            model_notes_for_display
+            user_notes_this_tick_display,
+            model_notes_for_display,
+            pending_user_notes_display
         )
 
         # --- 7. Sleep ---

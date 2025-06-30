@@ -5,6 +5,7 @@ This is the CLI output handler for the StreamMUSE end to end system.
 from collections import deque
 import shutil
 import time
+import os
 
 class CLIOutputHandler:
     """
@@ -37,13 +38,16 @@ class CLIOutputHandler:
         note_index = pitch % 12
         return f"{note_names[note_index]}{octave}"
     
-    def update_and_display(self, tick_count, music_info, user_notes_played, model_notes_played):
+    def update_and_display(self, tick_count, music_info, user_notes_this_tick, model_notes_played, pending_user_notes):
         """
         Update the display with the latest log and status lines.
         """
-        user_notes_str = ', '.join([self._midi_to_note_name(pitch) for pitch in user_notes_played]) or "None"
-        model_notes_str = ', '.join([self._midi_to_note_name(pitch) for pitch in model_notes_played]) or "None"
+        # --- Prepare strings for display ---
+        user_this_tick_str = ', '.join([self._midi_to_note_name(pitch) for pitch in user_notes_this_tick])
+        model_notes_str = ', '.join([self._midi_to_note_name(pitch) for pitch in model_notes_played])
+        pending_notes_str = ', '.join([self._midi_to_note_name(pitch) for pitch in pending_user_notes]) or "None"
 
+        # --- Build Log Entry ---
         ticks_per_beat = music_info.get("ticks_per_beat", 4)
         bar = music_info.get("bar", 0)
         beat = music_info.get("beat", 0)
@@ -51,26 +55,27 @@ class CLIOutputHandler:
 
         log_entry = f"[{bar:03d}.{beat}.{tick_in_beat}]"
         
-        if user_notes_played:
-            log_entry += f" USER: [{user_notes_str}]"
-        if model_notes_played:
+        if user_this_tick_str:
+            log_entry += f" USER: [{user_this_tick_str}]"
+        if model_notes_str:
             log_entry += f" | MODEL: [{model_notes_str}]"
         
-        # Placeholder for no note events
-        if not user_notes_played and not model_notes_played:
+        # Placeholder for no note events on this specific tick
+        if not user_this_tick_str and not model_notes_str:
             log_entry += " ..."
 
         # Update log history
         self.log_history.append(log_entry)
 
-        # Line 1: Inputs during this tick
-        inputs_line = f'PENDING USER NOTES: {user_notes_str}'
+        # --- Build Status Lines ---
+        # Line 1: Shows the buffer of notes waiting to be sent for inference
+        inputs_line = f'PENDING USER NOTES: {pending_notes_str}'
 
-        # Line 2: Model output
+        # Line 2: Shows the last notes played by the model
         if music_info.get('inference_triggered'):
             self.last_model_output_str = "Waiting for server..."
         elif model_notes_played:
-            self.last_model_output_str = model_notes_str
+            self.last_model_output_str = model_notes_str or "None"
 
         output_line = f"LAST MODEL NOTES PLAYED: {self.last_model_output_str}"
 
@@ -119,13 +124,18 @@ class CLIOutputHandler:
             print("\nNo inference times to log.")
             return
 
+        # --- Create Log Directory ---
+        log_dir = "app/logs"
+        os.makedirs(log_dir, exist_ok=True)
+
         avg_time = sum(self.all_round_trip_times) / len(self.all_round_trip_times)
         
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        log_file = f"{log_file_prefix}_{timestamp}.txt"
+        log_filename = f"{log_file_prefix}_{timestamp}.txt"
+        log_filepath = os.path.join(log_dir, log_filename)
 
         try:
-            with open(log_file, "w") as f:
+            with open(log_filepath, "w") as f:
                 f.write("--- StreamMUSE Client Round-Trip Benchmark Log ---\n")
                 f.write(f"Timestamp: {timestamp}\n")
                 f.write(f"Total Inferences Logged: {len(self.all_round_trip_times)}\n")
@@ -136,6 +146,6 @@ class CLIOutputHandler:
                 for i, t in enumerate(self.all_round_trip_times):
                     f.write(f"Inference {i+1}: {t:.6f}\n")
             
-            print(f"\nRound-trip log saved to {log_file}")
+            print(f"\nRound-trip log saved to {log_filepath}")
         except IOError as e:
             print(f"\nError saving log file: {e}")

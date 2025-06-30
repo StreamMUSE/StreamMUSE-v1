@@ -143,20 +143,20 @@ class RoFormerSymbolicTransformer(L.LightningModule):
     def global_sampling(self, x, x_mel_gt=None, max_seq_len=384, temperature=1.0):
         
         batch_size, seq_len, subseq_len = x.shape
-        _, seq_len_gt, _ = x_mel_gt.shape
         idx = torch.arange(seq_len, device=x.device)
         frame_type = (idx % 2 == 0).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
         token_type_ids = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, subseq_len)
         sos_type = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, 1)
         token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
         h, _= self.local_encode(x, token_type_ids)
-        h_mel, _ = self.local_encode(x_mel_gt, torch.zeros(*x_mel_gt.shape[:-1], x_mel_gt.shape[-1] + 1, device=x_mel_gt.device, dtype=x_mel_gt.dtype))
         h = h.view(batch_size, seq_len, -1)
-        h_mel = h_mel.view(batch_size, seq_len_gt, -1)
         sos = self.global_sos.view(1, 1, -1).repeat(batch_size, 1, 1)
         h = torch.cat([sos, h], dim=1)
         y = [x[:, i, :] for i in range(seq_len)]  # y will be returned by a list a0,m0,a1,m1,a_to_be_2
-        if x_mel_gt != None:
+        if x_mel_gt is not None:
+            _, seq_len_gt, _ = x_mel_gt.shape
+            h_mel, _ = self.local_encode(x_mel_gt, torch.zeros(*x_mel_gt.shape[:-1], x_mel_gt.shape[-1] + 1, device=x_mel_gt.device, dtype=x_mel_gt.dtype))
+            h_mel = h_mel.view(batch_size, seq_len_gt, -1)
             print('with gt!')
             for i in range(0, max_seq_len):
                 if i % 10 == 0:
