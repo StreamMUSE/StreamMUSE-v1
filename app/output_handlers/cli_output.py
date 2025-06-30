@@ -6,6 +6,7 @@ from collections import deque
 import shutil
 import time
 import os
+import csv
 
 class CLIOutputHandler:
     """
@@ -17,7 +18,7 @@ class CLIOutputHandler:
         Initialize the CLI output handler.
         """
         self.log_display_count = log_display_count
-        self.status_line_count = 3 # Changed from 4 to 3
+        self.status_line_count = 4 # Now 4 lines: Pending, Last Played, Time, Timings
         self.total_managed_lines = self.status_line_count + self.log_display_count
 
         # Use deque for maintaining fixed size history
@@ -79,17 +80,23 @@ class CLIOutputHandler:
 
         output_line = f"LAST MODEL NOTES PLAYED: {self.last_model_output_str}"
 
-        # Line 3: General status and benchmarking
-        status_line = f"TIME: Bar {bar:03d}, Beat {beat} |"
+        # Line 3: Real-time music time
+        time_status_line = f"TIME: Bar {bar:03d}, Beat {beat}"
         
+        # Line 4: Last inference timings (persistent)
         if "round_trip_time" in music_info:
+            all_times = music_info.get("all_round_trip_times", [])
             last_time = music_info['round_trip_time']
-            self.all_round_trip_times.append(last_time)
-            avg_time = sum(self.all_round_trip_times) / len(self.all_round_trip_times)
-            count = len(self.all_round_trip_times)
-            status_line += f" Round-trip: {last_time:.3f}s (Avg: {avg_time:.3f}s over {count} calls)"
+            avg_time = sum(all_times) / len(all_times) if all_times else 0
+            count = len(all_times)
+            
+            # Detailed breakdown
+            server_total = music_info['response_output_time'] - music_info['request_arrival_time']
+            inference_total = music_info['inference_end_time'] - music_info['inference_start_time']
+            
+            timing_status_line = f"TIMING: Round-trip: {last_time:.3f}s (Avg: {avg_time:.3f}s) | Server: {server_total:.3f}s | Inference: {inference_total:.3f}s"
         else:
-            status_line += " Waiting for first inference..."
+            timing_status_line = "TIMING: Waiting for first inference..."
         
         # 2. --- Render the display ---
 
@@ -116,36 +123,69 @@ class CLIOutputHandler:
         print(f"\x1b[2K" + "═"*terminal_width, flush=True) # Changed to a different separator
         print(f"\x1b[2K{inputs_line}", flush=True)
         print(f"\x1b[2K{output_line}", flush=True)
-        print(f"\x1b[2K{status_line}", flush=True)
+        print(f"\x1b[2K{time_status_line}", flush=True)
+        print(f"\x1b[2K{timing_status_line}", flush=True)
 
-    def save_log_on_exit(self, log_file_prefix="inference_log"):
-        """Saves the collected inference times to a file on exit."""
-        if not self.all_round_trip_times:
+    def save_log_on_exit(self, session_log_dir: str, all_timing_data: list, log_file_prefix="session"):
+        """Saves collected timings to a .txt summary and a detailed .csv file."""
+        if not all_timing_data:
             print("\nNo inference times to log.")
             return
 
-        # --- Create Log Directory ---
-        log_dir = "app/logs"
-        os.makedirs(log_dir, exist_ok=True)
-
-        avg_time = sum(self.all_round_trip_times) / len(self.all_round_trip_times)
+        # --- Save Detailed CSV Log ---
+        csv_filename = f"{log_file_prefix}.csv"
+        csv_filepath = os.path.join(session_log_dir, csv_filename)
         
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        log_filename = f"{log_file_prefix}_{timestamp}.txt"
-        log_filepath = os.path.join(log_dir, log_filename)
+        # Define header based on the keys in the timing data dictionary
+        header = list(all_timing_data[0].keys())
 
         try:
-            with open(log_filepath, "w") as f:
-                f.write("--- StreamMUSE Client Round-Trip Benchmark Log ---\n")
-                f.write(f"Timestamp: {timestamp}\n")
-                f.write(f"Total Inferences Logged: {len(self.all_round_trip_times)}\n")
-                f.write(f"Average Round-Trip Time: {avg_time:.4f}s\n")
-                f.write(f"Min Round-Trip Time: {min(self.all_round_trip_times):.4f}s\n")
-                f.write(f"Max Round-Trip Time: {max(self.all_round_trip_times):.4f}s\n")
-                f.write("\n--- Raw Data (seconds) ---\n")
-                for i, t in enumerate(self.all_round_trip_times):
-                    f.write(f"Inference {i+1}: {t:.6f}\n")
-            
-            print(f"\nRound-trip log saved to {log_filepath}")
+            with open(csv_filepath, "w", newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=header)
+                writer.writeheader()
+                writer.writerows(all_timing_data)
         except IOError as e:
-            print(f"\nError saving log file: {e}")
+            print(f"\nError saving CSV log file: {e}")
+            return # Don't proceed if CSV fails
+
+        # --- Calculate Averages for Text Log ---
+        num_inferences = len(all_timing_data)
+        avg_round_trip = sum(d['round_trip_time'] for d in all_timing_data) / num_inferences
+        min_round_trip = min(d['round_trip_time'] for d in all_timing_data)
+        max_round_trip = max(d['round_trip_time'] for d in all_timing_data)
+
+        # --- Save Summary .txt Log ---
+        txt_filename = f"{log_file_prefix}.txt"
+        txt_filepath = os.path.join(session_log_dir, txt_filename)
+
+        try:
+            with open(txt_filepath, "w") as f:
+                f.write("--- StreamMUSE Client Session Summary ---\n")
+                f.write(f"Timestamp: {os.path.basename(session_log_dir)}\n")
+                f.write(f"Total Inferences Logged: {num_inferences}\n")
+                f.write(f"Average Round-Trip Time: {avg_round_trip:.4f}s\n")
+                f.write(f"Min Round-Trip Time: {min_round_trip:.4f}s\n")
+                f.write(f"Max Round-Trip Time: {max_round_trip:.4f}s\n")
+            
+            # --- Create Visual Confirmation ---
+            try:
+                width = min(80, shutil.get_terminal_size().columns - 4)
+            except OSError:
+                width = 76
+
+            title = "LOGS SAVED"
+            path_str_1 = f"Summary: {txt_filepath}"
+            path_str_2 = f"Detailed CSV: {csv_filepath}"
+
+            print("\n")
+            print("+" + "-" * width + "+")
+            print("|" + " " * width + "|")
+            print(f"|{title:^{width}}|")
+            print("|" + " " * width + "|")
+            print(f"|{path_str_1:<{width}}|")
+            print(f"|{path_str_2:<{width}}|")
+            print("|" + " " * width + "|")
+            print("+" + "-" * width + "+\n")
+
+        except IOError as e:
+            print(f"\nError saving summary log file: {e}")

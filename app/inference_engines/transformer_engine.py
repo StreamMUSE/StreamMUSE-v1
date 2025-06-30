@@ -117,7 +117,7 @@ class TransformerInferenceEngine:
             notes_per_sample.append(sample_notes)
         return notes_per_sample
 
-    def generate_accompaniment(self, melody_notes, accompaniment_notes=[]):
+    def generate_accompaniment(self, melody_notes, generation_start_tick: int, accompaniment_notes=[]):
         """
         Generates musical accompaniment based on a history of melody and accompaniment notes.
 
@@ -127,6 +127,7 @@ class TransformerInferenceEngine:
 
         Args:
             melody_notes (list[dict]): A list of new melody note events from the user.
+            generation_start_tick (int): The absolute tick value from which the generation should start.
             accompaniment_notes (list[dict], optional): A list of new accompaniment note events.
 
         Returns:
@@ -143,9 +144,10 @@ class TransformerInferenceEngine:
         # The prompt is a rolling window of the last `prompt_length_ticks` of the performance.
         all_history = self.melody_history + self.accompaniment_history
         if not all_history:
-             return ([], preprocess_start_time, time.perf_counter(), time.perf_counter(), time.perf_counter())
-
-        max_tick_in_history = max(n['tick'] for n in all_history)
+             # If history is empty, ensure generation starts from the client's requested tick.
+             max_tick_in_history = generation_start_tick -1
+        else:
+             max_tick_in_history = max(n['tick'] for n in all_history)
         
         # Trim the history to the model's maximum context window (prompt length).
         prompt_start_tick = max(0, max_tick_in_history - self.prompt_length_ticks + 1)
@@ -193,7 +195,7 @@ class TransformerInferenceEngine:
         # Step 7: Post-process the generated notes.
         # The model's output is relative to the start of the generation, so we need to
         # offset the ticks to place them correctly in the absolute performance timeline.
-        generation_start_tick = max_tick_in_history + 1
+        # The client is the source of truth for the timeline.
         generated_notes_absolute = []
         for note in generated_notes_relative:
             if note['program'] == 1: # We only want to return and store the accompaniment.

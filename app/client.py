@@ -13,6 +13,8 @@ import argparse
 
 from output_handlers.cli_output import CLIOutputHandler
 from output_handlers.audio_output import AudioOutputHandler
+from output_handlers.midi_file_handler import MidiFileHandler
+from output_handlers.json_log_handler import JsonLogHandler
 from input_handlers.input_handler import read_midi_input, read_keyboard_input
 
 # --- Constants ---
@@ -24,10 +26,12 @@ def inference_worker(request_queue: Queue, response_queue: Queue, server_url: st
     Worker function for sending requests to the server and receiving responses.
     """
     while True:
-        request_data = request_queue.get()
-        if request_data is None:
+        queue_item = request_queue.get()
+        if queue_item is None:
             break
         
+        request_data, full_request_dict = queue_item
+
         # The request_data is now expected to be a dictionary for the InferenceRequest model
         start_time = time.perf_counter()
         try:
@@ -42,7 +46,7 @@ def inference_worker(request_queue: Queue, response_queue: Queue, server_url: st
         round_trip_time = end_time - start_time
         
         # Pass the full response and timing info back
-        response_queue.put((response_json, round_trip_time))
+        response_queue.put((response_json, round_trip_time, full_request_dict))
 
 def tick_loop(
     event_queue: Queue, 
@@ -50,10 +54,12 @@ def tick_loop(
     inference_response_queue: Queue,
     output_handler: CLIOutputHandler, 
     audio_output_handler: AudioOutputHandler, 
+    midi_file_handler: MidiFileHandler,
+    json_log_handler: JsonLogHandler,
     tempo: float, 
     ticks_per_beat: int, 
     beats_per_bar: int, 
-    user_input_history: list,
+    all_timing_data: list, # Pass list in to be mutated
     metronome_enabled: bool
 ):
     """
@@ -66,7 +72,7 @@ def tick_loop(
     # New state variables
     active_notes = {} # For tracking note durations if we need to in the future
     notes_for_next_request = []
-    last_inference_timings = {}
+    last_inference_timings = {} # To persist timing info for display
     ticks_per_bar = ticks_per_beat * beats_per_bar
 
     # --- Main Loop ---
@@ -75,6 +81,8 @@ def tick_loop(
         
         # --- 1. Process User Input ---
         user_notes_this_tick = []
+        timings_this_tick = {} # Process timings on a per-tick basis
+
         while not event_queue.empty():
             event = event_queue.get()
             if event is None:
@@ -92,15 +100,19 @@ def tick_loop(
                 }
                 notes_for_next_request.append(quantized_note)
                 user_notes_this_tick.append(quantized_note) # Add to tick-specific list
+                midi_file_handler.add_user_note(quantized_note) # Log user note
                 audio_output_handler.on(event['pitch'], event['velocity'])
             elif event['type'] == 'note_off':
                 audio_output_handler.off(event['pitch'])
         
         # --- 2. Handle Inference Responses ---
         while not inference_response_queue.empty():
-            response_data, round_trip_time = inference_response_queue.get()
+            response_data, round_trip_time, request_data = inference_response_queue.get()
             
             if response_data:
+                # --- Log the complete inference event ---
+                json_log_handler.log_inference_event(request_data, response_data)
+
                 # --- Tick Consistency Filter ---
                 # Only schedule notes that are meant for the future.
                 generation_start_tick = response_data['generation_start_tick']
@@ -112,9 +124,10 @@ def tick_loop(
                             playback_schedule[note['tick']] = []
                         playback_schedule[note['tick']].append(note)
                 
-                # Store timings for display
+                # Store timings for display, making them persistent
                 last_inference_timings = response_data['timings']
                 last_inference_timings['round_trip_time'] = round_trip_time
+                all_timing_data.append(last_inference_timings) # Add full dict to benchmark list
 
         # --- 3. Trigger New Inference (Latency-Aware) ---
         is_trigger_tick = (tick_count % ticks_per_bar) == (ticks_per_bar - LATENCY_OFFSET_TICKS)
@@ -128,7 +141,7 @@ def tick_loop(
                 "melody_notes": notes_for_next_request,
                 "generation_start_tick": next_bar_start_tick
             }
-            inference_request_queue.put(request_data)
+            inference_request_queue.put((request_data, request_data)) # Pass it twice for logging
             notes_for_next_request = [] # Clear the buffer
 
         # --- 4. Play Scheduled Notes ---
@@ -150,6 +163,7 @@ def tick_loop(
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
             audio_output_handler.on(event['pitch'], 100) # Use a fixed velocity for generated notes
+            midi_file_handler.add_model_note(event) # Log model note
             
             note_off_tick = tick_count + event['duration']
             if note_off_tick not in playback_schedule:
@@ -179,7 +193,8 @@ def tick_loop(
             "bar": bar_count,
             "beat": beat_in_bar,
             "ticks_per_beat": ticks_per_beat,
-            "inference_triggered": is_trigger_tick and bool(notes_for_next_request)
+            "inference_triggered": is_trigger_tick and bool(notes_for_next_request),
+            "all_timing_data": all_timing_data
         }
         music_info.update(last_inference_timings)
         
@@ -212,11 +227,19 @@ def main():
     parser.add_argument("--use-keyboard-input", action="store_true", help="Use the computer keyboard as MIDI input.")
     args = parser.parse_args()
 
+    # --- Create Session Log Directory ---
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    session_log_dir = os.path.join("app", "logs", f"session_{timestamp}")
+    os.makedirs(session_log_dir, exist_ok=True)
+
     event_queue = Queue()
     inference_request_queue = Queue()
     inference_response_queue = Queue()
     audio_output_handler = AudioOutputHandler(args.midi_output_name)
     output_handler = CLIOutputHandler(args.log_lines)
+    midi_file_handler = MidiFileHandler(args.tempo, args.ticks_per_beat)
+    json_log_handler = JsonLogHandler()
+    all_timing_data = [] # Initialize list in main scope
 
     if args.use_keyboard_input:
         input_thread = threading.Thread(target=read_keyboard_input, args=(event_queue,), daemon=True)
@@ -250,10 +273,12 @@ def main():
             inference_response_queue,
             output_handler,
             audio_output_handler,
+            midi_file_handler,
+            json_log_handler,
             args.tempo,
             args.ticks_per_beat,
             args.beats_per_bar,
-            [],
+            all_timing_data,
             args.metronome),
         daemon=True
     )
@@ -273,7 +298,11 @@ def main():
     except KeyboardInterrupt:
         print("\r\nCtrl+C detected. Exiting application.")
     finally:
-        output_handler.save_log_on_exit()
+        print("\n--- Saving all session logs ---")
+        # Pass the benchmark data to be saved
+        output_handler.save_log_on_exit(session_log_dir, all_timing_data)
+        midi_file_handler.save_to_midi(session_log_dir)
+        json_log_handler.save_logs(session_log_dir)
         audio_output_handler.close()
 
 if __name__ == "__main__":

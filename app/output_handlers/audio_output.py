@@ -3,6 +3,7 @@ This is the audio output handler for the StreamMUSE end to end system.
 """
 
 import mido
+import time
 
 METRONOME_CHANNEL = 9
 METRONOME_PITCH_FIRST = 76
@@ -64,6 +65,9 @@ class AudioOutputHandler:
             vel=METRONOME_VELOCITY_FIRST,
             channel=METRONOME_CHANNEL,
         )
+        # Send a note_off immediately for a clean "click"
+        time.sleep(0.01) # Small delay to ensure synth registers note_on
+        self.off(METRONOME_PITCH_FIRST, channel=METRONOME_CHANNEL)
 
     def metro_other(self):
         """
@@ -74,6 +78,9 @@ class AudioOutputHandler:
             vel=METRONOME_VELOCITY_OTHER,
             channel=METRONOME_CHANNEL,
         )
+        # Send a note_off immediately for a clean "click"
+        time.sleep(0.01) # Small delay to ensure synth registers note_on
+        self.off(METRONOME_PITCH_OTHER, channel=METRONOME_CHANNEL)
 
     def close(self):
         """

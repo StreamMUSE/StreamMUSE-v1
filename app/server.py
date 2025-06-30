@@ -76,7 +76,10 @@ async def generate_accompaniment(request: InferenceRequest):
     
     melody_notes_dicts = [note.dict() for note in request.melody_notes]
     
-    accompaniment_dicts, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time = inference_engine.generate_accompaniment(melody_notes_dicts)
+    accompaniment_dicts, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time = inference_engine.generate_accompaniment(
+        melody_notes_dicts,
+        generation_start_tick=request.generation_start_tick
+    )
     
     response_output_time = time.perf_counter()
 

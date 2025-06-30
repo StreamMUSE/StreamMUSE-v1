@@ -1,5 +1,7 @@
 requests
 mido
 python-rtmidi
-pynput
 pygame
+numpy
+pretty_midi
+pynput
