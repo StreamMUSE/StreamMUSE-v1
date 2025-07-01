@@ -12,13 +12,16 @@ preprocess_large_midi_dataset_private.py
 cp_transformer_pt_inference.py
 cp_transformer_pt.py
 m2a_transformer_inference_copy.py
+.vscode/
+*.zip
+/datasets/
+/logs/
 aria-dataset
 POP909-Dataset
 /test/
 *.mid
 aria-extract.py
 /dataset/
-
 src/transformers/
 app/.DS_Store
 .DS_Store
@@ -26,3 +29,4 @@ app/.DS_Store
 .DS_Store
 /app/logs
 .python-version
+results/

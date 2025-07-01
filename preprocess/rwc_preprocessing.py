@@ -1,6 +1,6 @@
-from settings import RWC_DATASET_PATH, LA_DATASET_PATH
+from StreamMUSE.preprocess.settings import RWC_DATASET_PATH, LA_DATASET_PATH
 import os
-import xf_midi
+import StreamMUSE.preprocess.xf_midi as xf_midi
 import pretty_midi
 import numpy as np
 import json
