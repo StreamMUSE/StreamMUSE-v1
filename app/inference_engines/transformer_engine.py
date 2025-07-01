@@ -13,7 +13,13 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from preprocess_large_midi_dataset import DURATION_TEMPLATES
 
 class TransformerInferenceEngine:
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=32):
+    """
+    This class wraps the RoFormerSymbolicTransformer model and handles all the
+    data processing required for real-time interactive music generation. It manages
+    the performance history, prepares input tensors for the model, and decodes
+    the model's output back into playable musical notes.
+    """
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=96):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
@@ -29,24 +35,64 @@ class TransformerInferenceEngine:
         self.model.eval()
         print("Model loaded successfully.")
         
-        # The model's max sequence length is defined in interleaved frames (melody, accompaniment).
-        # The effective prompt length in ticks is half of that, as ticks are our musical time unit.
-        self.model_max_seq_len_frames = 192 # Derived from m2a_transformer.py
+        # The model's max sequence length (the total number of tokens it can process at once).
+        # This is measured in "frames", where one tick of music contains two frames:
+        # one for the melody and one for the accompaniment.
+        self.model_max_seq_len_frames = model_max_seq_len_frames
+        
+        # The effective history length, in musical ticks, that the model uses as a prompt.
+        # This must be half the frame length because ticks are interleaved (mel, acc, mel, acc...).
         self.prompt_length_ticks = self.model_max_seq_len_frames // 2
         
+        # The maximum number of simultaneous notes allowed at a single tick.
         self.max_polyphony = max_polyphony
+        
+        # The number of frames (melody + accompaniment) to generate in one go.
         self.generation_length_frames = generation_length_frames
         
+        # Stateful history of all notes played during the session.
+        # These are stored with absolute ticks relative to the start of the performance.
         self.melody_history = []
         self.accompaniment_history = []
 
     def clear_history(self):
+        """Clears the performance history."""
         self.melody_history = []
         self.accompaniment_history = []
 
-    def _notes_to_rolls(self, notes, max_tick, max_polyphony=4, program=0):
+    def _notes_to_rolls(self, notes: list, max_tick: int, max_polyphony=4, program=0):
+        """
+        Converts a list of musical notes into a tensor representation (a "piano roll").
+
+        This function creates a tensor where each row represents a tick and each column
+        contains information about the notes starting at that tick.
+
+        Args:
+            notes (list): A list of note dictionaries, each with 'pitch', 'tick', 'duration'.
+                          The ticks in this list are expected to be relative to the start
+                          of the desired tensor, not absolute performance ticks.
+            max_tick (int): The total number of ticks for the resulting tensor (its length).
+            max_polyphony (int): The maximum number of simultaneous notes allowed per tick.
+            program (int): The instrument program number (0 for melody, 1 for accompaniment).
+
+        Returns:
+            torch.Tensor: A tensor of shape `(max_tick, max_polyphony * 3)` ready for
+                          the model's `preprocess` step. Each note is represented by
+                          3 numbers: (program, pitch, duration_idx). The tensor is
+                          padded with 255 for empty slots.
+        """
+        # DURATION_TEMPLATES contains the quantized durations the model understands.
+        # We find the midpoints between these templates to decide which template a
+        # given note duration is closest to.
         duration_boundaries = (DURATION_TEMPLATES[1:] + DURATION_TEMPLATES[:-1]) / 2.0
+        
+        # Initialize the piano roll tensor.
+        # Shape: (time, polyphony, features)
+        # Features are (instrument_program, pitch, duration_index).
+        # We use 255 as a special padding value, which is later ignored by the model.
         rolls = np.full((max_tick, max_polyphony, 3), dtype=np.uint8, fill_value=255)
+        
+        # Keep track of how many notes are at each tick to handle polyphony.
         polyphony_counts = np.zeros(max_tick, dtype=np.uint8)
 
         for note in notes:
@@ -54,12 +100,15 @@ class TransformerInferenceEngine:
             if tick >= max_tick:
                 continue
 
+            # Drop notes that exceed the maximum polyphony for a given tick.
             if polyphony_counts[tick] >= max_polyphony:
                 print(f"Warning: Exceeded max polyphony at tick {tick}. Note with pitch {note['pitch']} dropped.")
                 continue
             
+            # Find the index of the closest duration template.
             duration_idx = np.searchsorted(duration_boundaries, note['duration'])
 
+            # Place the note's data into the correct slot in the tensor.
             slot = polyphony_counts[tick]
             rolls[tick, slot, 0] = program
             rolls[tick, slot, 1] = note['pitch']
@@ -67,14 +116,35 @@ class TransformerInferenceEngine:
             
             polyphony_counts[tick] += 1
 
+        # For polyphonic ticks, sort the notes by pitch. This creates a canonical
+        # representation, which helps the model learn more effectively.
         for i in range(max_tick):
             if polyphony_counts[i] > 1:
                 sorted_indices = np.argsort(rolls[i, :polyphony_counts[i], 1])
                 rolls[i, :polyphony_counts[i]] = rolls[i, :polyphony_counts[i]][sorted_indices]
 
+        # Reshape the tensor to the final format expected by the model's preprocess function.
+        # Shape becomes (max_tick, max_polyphony * 3), e.g., (48, 12).
         return torch.tensor(rolls.reshape(max_tick, -1))
 
-    def _tensors_to_notes(self, output_tensors, single=False):
+    def _tensors_to_notes(self, output_tensors: list, start_frame_offset=0, single=False):
+        """
+        Decodes the symbolic output from the model back into a list of note events.
+
+        This is the reverse of `_notes_to_rolls`, translating the model's tensor
+        predictions into a human-readable and playable format.
+
+        Args:
+            output_tensors (list): A list of tensors from the model's output. Each tensor
+                                   in the list represents one frame of music.
+            start_frame_offset (int): The frame number where the generation began. This is
+                                      used to calculate the ticks relative to the start of
+                                      the *newly generated* music, not the start of the prompt.
+            single (bool): If True, assumes each frame is one tick (not interleaved).
+
+        Returns:
+            list[list[dict]]: A list containing one list of note dictionaries for each generated sample.
+        """
         notes_per_sample = []
         num_timesteps = len(output_tensors)
         if num_timesteps == 0:
@@ -84,25 +154,35 @@ class TransformerInferenceEngine:
 
         for i in range(n_samples):
             sample_notes = []
-            for time_step in range(num_timesteps):
+            # We only iterate from the start of the generated content.
+            for time_step in range(start_frame_offset, num_timesteps):
                 data = output_tensors[time_step][i]
                 content = data.flatten()
-                tick = time_step if single else time_step // 2
                 
+                # Calculate the tick relative to the start of the *generation*.
+                relative_time_step = time_step - start_frame_offset
+                tick = relative_time_step if single else relative_time_step // 2
+                
+                # Each note is encoded as two tokens: (program, pitch_duration_combo).
                 for j in range(0, len(content), 2):
                     program = int(content[j].item())
+                    # Stop decoding this frame if we hit a special token.
                     if program == EOS_TOKEN or program == PAD_TOKEN:
                         continue
                     if j + 1 >= len(content):
                         break
                     
-                    pitch_duration = int(content[j+1].item()) - 2
+                    # This is the core decoding step.
+                    # The model predicts a single number that combines pitch and duration.
+                    # We reverse the formula: pitch_duration = (duration_idx * 128) + pitch
+                    pitch_duration = int(content[j+1].item()) - 2 # Subtract special token offset
                     if pitch_duration < 0:
                         continue
 
                     pitch = pitch_duration % 128
                     duration_idx = pitch_duration // 128
 
+                    # Validate the decoded duration index.
                     if not (0 <= duration_idx < len(DURATION_TEMPLATES)):
                         continue
 
@@ -120,62 +200,60 @@ class TransformerInferenceEngine:
     def generate_accompaniment(self, melody_notes, generation_start_tick: int, accompaniment_notes=[]):
         """
         Generates musical accompaniment based on a history of melody and accompaniment notes.
-
-        This method is stateful and maintains a history of all notes played. It uses the most
-        recent segment of this history as a prompt for the transformer model to generate the
-        next sequence of accompaniment notes.
-
-        Args:
-            melody_notes (list[dict]): A list of new melody note events from the user.
-            generation_start_tick (int): The absolute tick value from which the generation should start.
-            accompaniment_notes (list[dict], optional): A list of new accompaniment note events.
-
-        Returns:
-            tuple: A tuple containing the list of newly generated accompaniment notes and timing
-                   information for different stages of the process (preprocessing, inference, postprocessing).
+        This is the main public method for the engine.
         """
         preprocess_start_time = time.perf_counter()
 
-        # Step 1: Update the internal history with the new notes from this turn.
+        # Step 1: Update the internal melody history with the new user notes for this turn.
         self.melody_history.extend(melody_notes)
-        self.accompaniment_history.extend(accompaniment_notes)
+        # Note: We do NOT update the accompaniment history until after generation.
 
-        # Step 2: Create a prompt for the model from the recent history.
-        # The prompt is a rolling window of the last `prompt_length_ticks` of the performance.
-        all_history = self.melody_history + self.accompaniment_history
-        if not all_history:
-             # If history is empty, ensure generation starts from the client's requested tick.
-             max_tick_in_history = generation_start_tick -1
-        else:
-             max_tick_in_history = max(n['tick'] for n in all_history)
+        # Step 2: Create a prompt for the model from history occurring BEFORE the generation start tick.
+        # This logic ensures the model always gets a fixed-size input and that the most
+        # recent history is right-aligned (padded at the front).
+        prompt_end_tick = generation_start_tick
+        prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
         
-        # Trim the history to the model's maximum context window (prompt length).
-        prompt_start_tick = max(0, max_tick_in_history - self.prompt_length_ticks + 1)
+        # This is the fixed context length the model expects.
+        model_context_len = self.prompt_length_ticks
+        # This is the actual duration of the history we have available for the prompt.
+        actual_history_duration = prompt_end_tick - prompt_start_tick
         
-        # Filter notes to include only those within the prompt window and make their ticks relative to the start of the prompt.
+        # If there's no history to use, there's nothing to generate from.
+        if actual_history_duration <= 0:
+            return ([], preprocess_start_time, time.perf_counter(), time.perf_counter(), time.perf_counter())
+
+        # Calculate the padding needed at the beginning of the context window.
+        padding_duration = model_context_len - actual_history_duration
+
+        # Filter notes and make their ticks relative to the *padded* window.
+        # This aligns the existing history to the END of the context window.
+        # For example, if padding_duration is 10, the first note's tick will be 10, not 0.
         prompt_melody = [
-            {**n, 'tick': n['tick'] - prompt_start_tick}
-            for n in self.melody_history if n['tick'] >= prompt_start_tick
+            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
+            for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         prompt_acc = [
-            {**n, 'tick': n['tick'] - prompt_start_tick}
-            for n in self.accompaniment_history if n['tick'] >= prompt_start_tick
+            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
+            for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         
-        prompt_duration_ticks = max_tick_in_history - prompt_start_tick + 1
-
-        # Step 3: Convert the note events into tensor 'rolls' that the model can understand.
-        x_mel_raw = self._notes_to_rolls(prompt_melody, prompt_duration_ticks, self.max_polyphony, program=0)
-        x_acc_raw = self._notes_to_rolls(prompt_acc, prompt_duration_ticks, self.max_polyphony, program=1)
+        # Step 3: Convert note events into tensor 'rolls' using the fixed model context length.
+        # The resulting tensors will have shape (48, 12).
+        x_mel_raw = self._notes_to_rolls(prompt_melody, model_context_len, self.max_polyphony, program=0)
+        x_acc_raw = self._notes_to_rolls(prompt_acc, model_context_len, self.max_polyphony, program=1)
 
         # Step 4: Preprocess the rolls and prepare them for the model (e.g., move to GPU).
+        # `preprocess` combines (program, pitch, duration) into the single combined token
+        # that the model was trained on.
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         x_mel_raw = x_mel_raw.unsqueeze(0).to(device)
         x_acc_raw = x_acc_raw.unsqueeze(0).to(device)
-
         x_mel, x_acc = self.model.preprocess(x_mel_raw.long(), pitch_shift=torch.zeros(1, dtype=torch.int8).to(device), y=x_acc_raw.long())
 
-        # The model expects an interleaved sequence of melody and accompaniment.
+        # The model expects an interleaved sequence of melody and accompaniment frames.
+        # We stack them and reshape to create this interleaved format.
+        # Final shape `x` is (batch_size, num_frames, subseq_len), e.g., (1, 96, 8).
         batch_size, seq_len, subseq_len = x_mel.shape
         stacked = torch.stack([x_acc, x_mel], dim=2)
         x = stacked.view(batch_size, seq_len * 2, subseq_len)
@@ -188,19 +266,30 @@ class TransformerInferenceEngine:
 
         postprocess_start_time = time.perf_counter()
         
+        # The model's global_sampling returns the entire sequence (prompt + generation).
+        # We need to slice off the prompt part to get only the newly generated notes.
+        prompt_len_frames = x.shape[1]
+        
         # Step 6: Decode the model's tensor output back into note events.
-        generated_notes_relative = self._tensors_to_notes(output_tensors)
+        # We pass prompt_len_frames as the offset to ensure the new notes'
+        # ticks are calculated relative to the start of the generation, not the start of the prompt.
+        generated_notes_relative = self._tensors_to_notes(output_tensors, start_frame_offset=prompt_len_frames)
         generated_notes_relative = generated_notes_relative[0] if generated_notes_relative else []
 
         # Step 7: Post-process the generated notes.
-        # The model's output is relative to the start of the generation, so we need to
-        # offset the ticks to place them correctly in the absolute performance timeline.
-        # The client is the source of truth for the timeline.
+        # - Filter for accompaniment notes only (program == 1)
+        # - Filter for unique notes within this generation batch to prevent duplicates.
+        # - Make note ticks absolute based on the client's timeline.
+        unique_notes_tracker = set()
         generated_notes_absolute = []
         for note in generated_notes_relative:
             if note['program'] == 1: # We only want to return and store the accompaniment.
-                note['tick'] += generation_start_tick
-                generated_notes_absolute.append(note)
+                # A note is unique based on its relative tick, pitch, and duration.
+                note_signature = (note['tick'], note['pitch'], note['duration'])
+                if note_signature not in unique_notes_tracker:
+                    unique_notes_tracker.add(note_signature)
+                    note['tick'] += generation_start_tick # Make tick absolute
+                    generated_notes_absolute.append(note)
 
         # Step 8: Update the history with the newly generated accompaniment notes.
         # This ensures they become part of the context for the next turn.

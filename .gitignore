@@ -24,3 +24,5 @@ app/.DS_Store
 .DS_Store
 .DS_Store
 .DS_Store
+/app/logs
+/app/results

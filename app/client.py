@@ -32,8 +32,12 @@ def inference_worker(request_queue: Queue, response_queue: Queue, server_url: st
         
         request_data, full_request_dict = queue_item
 
-        # The request_data is now expected to be a dictionary for the InferenceRequest model
-        start_time = time.perf_counter()
+        # Add timestamp right before sending
+        client_send_time = time.perf_counter()
+        request_data['client_request_send_time'] = client_send_time
+        full_request_dict['client_request_send_time'] = client_send_time # For logging
+
+        start_time = client_send_time
         try:
             response = requests.post(server_url, json=request_data)
             response.raise_for_status()
@@ -113,11 +117,36 @@ def tick_loop(
                 # --- Log the complete inference event ---
                 json_log_handler.log_inference_event(request_data, response_data)
 
+                # --- Calculate and store all timing information ---
+                timings = response_data['timings']
+                timings['round_trip_time'] = round_trip_time
+
+                # Calculate server processing duration (this is accurate as it uses one clock)
+                server_arrival_time = timings['request_arrival_time']
+                server_response_time = timings['response_output_time']
+                server_processing_duration = server_response_time - server_arrival_time
+                timings['server_processing_duration'] = server_processing_duration
+
+                # Calculate total network latency (accurate)
+                # This is the time spent on the network for both the request and response.
+                timings['total_network_latency'] = round_trip_time - server_processing_duration
+
+                all_timing_data.append(timings)
+                
                 # --- Tick Consistency Filter ---
-                # Only schedule notes that are meant for the future.
                 generation_start_tick = response_data['generation_start_tick']
                 newly_generated_notes = response_data['accompaniment']
+
+                # --- Clear stale notes from the previous generation ---
+                # This ensures that if a new response arrives before the old one is
+                # fully played out, we replace the future notes with the new ones.
+                ticks_to_clear = [t for t in playback_schedule if t >= generation_start_tick]
+                for t in ticks_to_clear:
+                    # In the current design, any scheduled event is a model-generated note_on.
+                    # A more complex design might require tagging events with their source.
+                    del playback_schedule[t]
                 
+                # --- Schedule new notes ---
                 for note in newly_generated_notes:
                     if note['tick'] >= tick_count:
                         if note['tick'] not in playback_schedule:
@@ -125,9 +154,7 @@ def tick_loop(
                         playback_schedule[note['tick']].append(note)
                 
                 # Store timings for display, making them persistent
-                last_inference_timings = response_data['timings']
-                last_inference_timings['round_trip_time'] = round_trip_time
-                all_timing_data.append(last_inference_timings) # Add full dict to benchmark list
+                last_inference_timings = timings
 
         # --- 3. Trigger New Inference (Latency-Aware) ---
         is_trigger_tick = (tick_count % ticks_per_bar) == (ticks_per_bar - LATENCY_OFFSET_TICKS)
@@ -141,7 +168,7 @@ def tick_loop(
                 "melody_notes": notes_for_next_request,
                 "generation_start_tick": next_bar_start_tick
             }
-            inference_request_queue.put((request_data, request_data)) # Pass it twice for logging
+            inference_request_queue.put((request_data, request_data.copy())) # Pass a copy for logging
             notes_for_next_request = [] # Clear the buffer
 
         # --- 4. Play Scheduled Notes ---
@@ -162,7 +189,7 @@ def tick_loop(
 
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
-            audio_output_handler.on(event['pitch'], 100) # Use a fixed velocity for generated notes
+            audio_output_handler.on(event['pitch'], 127) # Use a fixed velocity for generated notes
             midi_file_handler.add_model_note(event) # Log model note
             
             note_off_tick = tick_count + event['duration']
