@@ -1,2 +1,0 @@
-request_arrival_time,response_output_time,preprocess_start_time,inference_start_time,inference_end_time,postprocess_start_time,round_trip_time
-77762.571552361,77766.132927026,77762.571637752,77762.867356837,77766.075152104,77766.075152427,4.772187083028257
