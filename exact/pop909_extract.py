@@ -4,8 +4,8 @@ from tqdm import tqdm
 import shutil
 
 # Input and output directories
-INPUT_DIR = 'POP909-Dataset/POP909'          # Replace with actual path
-OUTPUT_DIR = 'datasets/Separated-POP909-Dataset'          # Where to save the melody-only MIDI files
+INPUT_DIR = '/mnt/ugrip/original_dataset/POP909-Dataset/POP909'          # Replace with actual path
+OUTPUT_DIR = '/mnt/ugrip/formatted_dataset/POP909-Dataset'          # Where to save the melody-only MIDI files
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # def extract_acc_track(mid_path, output_path):
