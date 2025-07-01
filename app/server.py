@@ -4,9 +4,11 @@ This is the server side for the StreamMUSE end to end system.
 
 import os
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 import time
+from contextlib import asynccontextmanager
 
 from app.inference_engines.transformer_engine import TransformerInferenceEngine
 
@@ -39,13 +41,12 @@ class AccompanimentResponse(BaseModel):
     timings: Timings
     generation_start_tick: int
 
-app = FastAPI(title='StreamMUSE Inference Server')
+# app = FastAPI(title='StreamMUSE Inference Server')
 
-@app.on_event('startup')
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    Load the models at startup
-    Reads checkpoint from environment variable
+    FastAPI lifespan event handler: 在应用启动时加载模型
     """
     checkpoint_path = os.getenv('CHECKPOINT_PATH')
     if not checkpoint_path:
@@ -74,8 +75,11 @@ async def startup_event():
         print("Inference engine loaded successfully.")
     except FileNotFoundError as e:
         print(f"Fatal Error: {e}")
-        # Exit if the model can't be loaded.
         exit()
+    yield
+    # 这里可以添加关闭/清理逻辑（可选）
+
+app = FastAPI(title='StreamMUSE Inference Server', lifespan=lifespan)
 
 @app.post('/generate_accompaniment', response_model=AccompanimentResponse)
 async def generate_accompaniment(request: InferenceRequest):

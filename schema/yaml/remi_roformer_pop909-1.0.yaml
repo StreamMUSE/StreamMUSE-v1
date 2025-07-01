@@ -1,0 +1,48 @@
+project_name: &proj_name "Real-Time Accompaniment Generation "
+version: &version "1.0"
+description: "symbolic music generation with REMI and RoFormer, trained on pop 909 dataset sub seq=30(polyphony=10)"
+loggers:
+  csv_logger:
+    type: "csv"
+    save_dir: &save_dir "logs/"
+    name: &name "REMI_RoFormer_pop909"
+    version: *version
+  tensorboard_logger:
+    type: "tensorboard"
+    save_dir: *save_dir
+    name: &name
+    version: *version
+  # - wandb_logger:
+  #   type: "wandb"
+  #   project: *project_name
+  #   entity: "music_generation"
+  #   name: "REMI_RoFormer_pop909"
+  #   version: "1.0.0"
+
+dataset:
+  tokenizer: "REMI"
+  train_config:
+    batch_size: 32
+    num_workers: 0
+    mel_dir: "datasets/Processed-POP909-Dataset-REMI/mel"
+    acc_dir: "datasets/Processed-POP909-Dataset-REMI/acc"
+    max_seq_len: 384
+    tokenization_type: "REMI"
+    data_range: [0.0, 0.9]
+  val_config:
+    batch_size: 32
+    num_workers: 0
+    mel_dir: "datasets/Processed-POP909-Dataset-REMI/mel"
+    acc_dir: "datasets/Processed-POP909-Dataset-REMI/acc"
+    max_seq_len: 384
+    tokenization_type: "REMI"
+    data_range: [0.9, 1.0]
+
+model:
+  model_name: "REMI + RoFormer"
+  model_type: "REMI-RoFormer"
+trainer:
+  max_epochs: 5000
+  accelerator: "gpu"
+  devices: 1
+seed: 42

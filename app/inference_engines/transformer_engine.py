@@ -10,7 +10,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
-from preprocess_large_midi_dataset import DURATION_TEMPLATES
+from preprocess.preprocess_midi2pt_dataset import DURATION_TEMPLATES
 
 class TransformerInferenceEngine:
     """
@@ -26,9 +26,15 @@ class TransformerInferenceEngine:
         print(f"Loading model from: {checkpoint_path}")
         # Determine model size from checkpoint path name
         if 'small' in checkpoint_path:
-            self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, large=False)
+            self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, 
+                                                                          large=False, 
+                                                                          map_location=lambda storage, loc: storage.cuda(0) if torch.cuda.is_available() else 'cpu'
+                                                                          )
         else:
-            self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, large=True)
+            self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, 
+                                                                          large=True, 
+                                                                          map_location=lambda storage, loc: storage.cuda(0) if torch.cuda.is_available() else 'cpu'
+                                                                          )
         
         if torch.cuda.is_available():
             self.model.cuda()
