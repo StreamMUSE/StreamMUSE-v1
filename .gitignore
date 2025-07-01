@@ -22,4 +22,12 @@ POP909-Dataset
 *.mid
 aria-extract.py
 /dataset/
+src/transformers/
+app/.DS_Store
+.DS_Store
+.DS_Store
+.DS_Store
+/app/logs
+.python-version
 results/
+/app/results
