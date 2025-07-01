@@ -1,34 +1,16 @@
 from miditok import MusicTokenizer, TokenizerConfig
 from miditok import Event
-from symusic import (
-    Note,
-    Pedal,
-    PitchBend,
-    Tempo,
-    Note,
-    Pedal,
-    PitchBend,
-    Tempo,
-    TimeSignature,
-    Track,
-    Score
-)
+from symusic import Note, TimeSignature, Track, Score
 from pathlib import Path
 
 from collections.abc import Mapping, Sequence
 from miditok.classes import TokSequence, TokenizerConfig
-from miditok.constants import SPECIAL_TOKENS, MIDI_INSTRUMENTS, DEFAULT_VELOCITY, TIME_SIGNATURE
-from pathlib import Path
+from miditok.constants import SPECIAL_TOKENS, MIDI_INSTRUMENTS, TIME_SIGNATURE
 
-from collections.abc import Mapping, Sequence
-from miditok.classes import TokSequence, TokenizerConfig
-from miditok.constants import SPECIAL_TOKENS, MIDI_INSTRUMENTS, DEFAULT_VELOCITY, TIME_SIGNATURE
-from miditok.utils import compute_ticks_per_bar, compute_ticks_per_beat
-import numpy as np
+from miditok.utils import compute_ticks_per_bar
 import numpy as np
 
 XINYUE_SPECIAL_TOKENS = SPECIAL_TOKENS.copy()
-
 
 
 class XinyueTokenizerConfig(TokenizerConfig):
@@ -159,6 +141,7 @@ class XinyueTokenizer(MusicTokenizer):
             )
 
         return events
+
     def _create_track_events(
         self,
         track: Track,
@@ -311,7 +294,6 @@ class XinyueTokenizer(MusicTokenizer):
 
         return all_events
 
-
     def _compute_ticks_per_frame(self, time_division: int) -> int:
         """
         计算每 Frame (1/4 拍) 的 tick 数。
@@ -447,83 +429,75 @@ class XinyueTokenizer(MusicTokenizer):
             # Decode tokens
             for ti, token in enumerate(seq):
                 tok_type, tok_val = token.split("_")
-                
+
                 if token == "Frame_None":
-                    current_frame +=1
+                    current_frame += 1
                     if current_frame > 0:
                         current_tick = tick_at_current_frame + ticks_per_frame
                     tick_at_current_frame = current_tick
-                    
+
                 elif tok_type == "Program":
                     program_val = tok_val
-                    
-                    pitch_type , pitch_val = seq[ti+1].split("_")
-                    duration_type, duration_val =seq[ti+2].split("_")
-                    
+
+                    pitch_type, pitch_val = seq[ti + 1].split("_")
+                    duration_type, duration_val = seq[ti + 2].split("_")
+
                     duration_time = int(self.config.default_note_duration * ticks_per_beat)
                     new_note = Note(
-                        time= current_tick,
-                        duration= int(duration_time),
+                        time=current_tick,
+                        duration=int(duration_time),
                         pitch=int(pitch_val),
                         velocity=50,
                     )
                     # tracks[program_val].append(new_note)
-                    
+
                     if program_val in tracks.keys():
                         tracks[program_val].notes.append(new_note)
                     else:
                         tracks[program_val] = Track(program=program_val)
                         tracks[program_val].notes.append(new_note)
-                        
-                        
-                    
-                    
-                    
-                    
+
                 # elif tok_type in {
-                    # "Program",
+                # "Program",
                 # }:
-                    # pitch = int(tok_val)
-                    # ins_type = tok_val
-                    
-                    
+                # pitch = int(tok_val)
+                # ins_type = tok_val
 
-
-                    # try:
-                    #     if self.config.use_velocities:
-                    #         vel_type, vel = seq[ti + 1].split("_")
-                    #     else:
-                    #         vel_type, vel = "Velocity", DEFAULT_VELOCITY
-                    #     if current_track_use_duration:
-                    #         dur_type, dur = seq[ti + dur_offset].split("_")
-                    #     else:
-                    #         dur_type = "Duration"
-                    #         dur = int(self.config.default_note_duration * ticks_per_beat)
-                    #     if vel_type == "Velocity" and dur_type == "Duration":
-                    #         if isinstance(dur, str):
-                    #             dur = self._tpb_tokens_to_ticks[ticks_per_beat][dur]
-                    #         new_note = Note(
-                    #             current_tick,
-                    #             dur,
-                    #             pitch,
-                    #             int(vel),
-                    #         )
-                    #         if self.config.one_token_stream_for_programs:
-                    #             check_inst(current_program)
-                    #             tracks[current_program].notes.append(new_note)
-                    #         else:
-                    #             current_track.notes.append(new_note)
-                    #         previous_note_end = max(previous_note_end, current_tick + dur)
-                    # except IndexError:
-                        # A well constituted sequence should not raise an exception
-                        # However with generated sequences this can happen, or if the
-                        # sequence isn't finished
-                        # pass
+                # try:
+                #     if self.config.use_velocities:
+                #         vel_type, vel = seq[ti + 1].split("_")
+                #     else:
+                #         vel_type, vel = "Velocity", DEFAULT_VELOCITY
+                #     if current_track_use_duration:
+                #         dur_type, dur = seq[ti + dur_offset].split("_")
+                #     else:
+                #         dur_type = "Duration"
+                #         dur = int(self.config.default_note_duration * ticks_per_beat)
+                #     if vel_type == "Velocity" and dur_type == "Duration":
+                #         if isinstance(dur, str):
+                #             dur = self._tpb_tokens_to_ticks[ticks_per_beat][dur]
+                #         new_note = Note(
+                #             current_tick,
+                #             dur,
+                #             pitch,
+                #             int(vel),
+                #         )
+                #         if self.config.one_token_stream_for_programs:
+                #             check_inst(current_program)
+                #             tracks[current_program].notes.append(new_note)
+                #         else:
+                #             current_track.notes.append(new_note)
+                #         previous_note_end = max(previous_note_end, current_tick + dur)
+                # except IndexError:
+                # A well constituted sequence should not raise an exception
+                # However with generated sequences this can happen, or if the
+                # sequence isn't finished
+                # pass
 
             # Add current_inst to score and handle notes still active
             # if not self.config.one_token_stream_for_programs and not is_track_empty(current_track):
-                # score.tracks.append(current_track)
-                
+            # score.tracks.append(current_track)
+
             if not self.config.one_token_stream_for_programs:
                 for track in tracks.values():
                     if not is_track_empty(track):
@@ -534,7 +508,7 @@ class XinyueTokenizer(MusicTokenizer):
                         score.tracks.append(track)
 
         return score
-    
+
     def decode(
         self,
         tokens: TokSequence | list[TokSequence] | list[int | list[int]] | np.ndarray,
@@ -663,83 +637,75 @@ class XinyueTokenizer(MusicTokenizer):
             # Decode tokens
             for ti, token in enumerate(seq):
                 tok_type, tok_val = token.split("_")
-                
+
                 if token == "Frame_None":
-                    current_frame +=1
+                    current_frame += 1
                     if current_frame > 0:
                         current_tick = tick_at_current_frame + ticks_per_frame
                     tick_at_current_frame = current_tick
-                    
+
                 elif tok_type == "Program":
                     program_val = tok_val
-                    
-                    pitch_type , pitch_val = seq[ti+1].split("_")
-                    duration_type, duration_val =seq[ti+2].split("_")
-                    
+
+                    pitch_type, pitch_val = seq[ti + 1].split("_")
+                    duration_type, duration_val = seq[ti + 2].split("_")
+
                     duration_time = int(self.config.default_note_duration * ticks_per_beat)
                     new_note = Note(
-                        time= current_tick,
-                        duration= int(duration_time),
+                        time=current_tick,
+                        duration=int(duration_time),
                         pitch=int(pitch_val),
                         velocity=50,
                     )
                     # tracks[program_val].append(new_note)
-                    
+
                     if program_val in tracks.keys():
                         tracks[program_val].notes.append(new_note)
                     else:
                         tracks[program_val] = Track(program=program_val)
                         tracks[program_val].notes.append(new_note)
-                        
-                        
-                    
-                    
-                    
-                    
+
                 # elif tok_type in {
-                    # "Program",
+                # "Program",
                 # }:
-                    # pitch = int(tok_val)
-                    # ins_type = tok_val
-                    
-                    
+                # pitch = int(tok_val)
+                # ins_type = tok_val
 
-
-                    # try:
-                    #     if self.config.use_velocities:
-                    #         vel_type, vel = seq[ti + 1].split("_")
-                    #     else:
-                    #         vel_type, vel = "Velocity", DEFAULT_VELOCITY
-                    #     if current_track_use_duration:
-                    #         dur_type, dur = seq[ti + dur_offset].split("_")
-                    #     else:
-                    #         dur_type = "Duration"
-                    #         dur = int(self.config.default_note_duration * ticks_per_beat)
-                    #     if vel_type == "Velocity" and dur_type == "Duration":
-                    #         if isinstance(dur, str):
-                    #             dur = self._tpb_tokens_to_ticks[ticks_per_beat][dur]
-                    #         new_note = Note(
-                    #             current_tick,
-                    #             dur,
-                    #             pitch,
-                    #             int(vel),
-                    #         )
-                    #         if self.config.one_token_stream_for_programs:
-                    #             check_inst(current_program)
-                    #             tracks[current_program].notes.append(new_note)
-                    #         else:
-                    #             current_track.notes.append(new_note)
-                    #         previous_note_end = max(previous_note_end, current_tick + dur)
-                    # except IndexError:
-                        # A well constituted sequence should not raise an exception
-                        # However with generated sequences this can happen, or if the
-                        # sequence isn't finished
-                        # pass
+                # try:
+                #     if self.config.use_velocities:
+                #         vel_type, vel = seq[ti + 1].split("_")
+                #     else:
+                #         vel_type, vel = "Velocity", DEFAULT_VELOCITY
+                #     if current_track_use_duration:
+                #         dur_type, dur = seq[ti + dur_offset].split("_")
+                #     else:
+                #         dur_type = "Duration"
+                #         dur = int(self.config.default_note_duration * ticks_per_beat)
+                #     if vel_type == "Velocity" and dur_type == "Duration":
+                #         if isinstance(dur, str):
+                #             dur = self._tpb_tokens_to_ticks[ticks_per_beat][dur]
+                #         new_note = Note(
+                #             current_tick,
+                #             dur,
+                #             pitch,
+                #             int(vel),
+                #         )
+                #         if self.config.one_token_stream_for_programs:
+                #             check_inst(current_program)
+                #             tracks[current_program].notes.append(new_note)
+                #         else:
+                #             current_track.notes.append(new_note)
+                #         previous_note_end = max(previous_note_end, current_tick + dur)
+                # except IndexError:
+                # A well constituted sequence should not raise an exception
+                # However with generated sequences this can happen, or if the
+                # sequence isn't finished
+                # pass
 
             # Add current_inst to score and handle notes still active
             # if not self.config.one_token_stream_for_programs and not is_track_empty(current_track):
-                # score.tracks.append(current_track)
-                
+            # score.tracks.append(current_track)
+
             if not self.config.one_token_stream_for_programs:
                 for track in tracks.values():
                     if not is_track_empty(track):
@@ -751,6 +717,7 @@ class XinyueTokenizer(MusicTokenizer):
 
         return score
     
+
 
 if __name__ == "__main__":
     tokenizer = XinyueTokenizer()
@@ -765,7 +732,7 @@ if __name__ == "__main__":
     # print(TokSequence(tokens))
     decode = tokenizer.decode(tokens)
     decode.dump_midi("x.mid")
-    
+
     tokenizer.one_token_stream = True
     tokenizer.config.one_token_stream_for_programs = True
     # print(tokenizer.vocab)
@@ -777,4 +744,3 @@ if __name__ == "__main__":
     # print(TokSequence(tokens))
     decode = tokenizer.decode(tokens)
     decode.dump_midi("x.mid")
-    

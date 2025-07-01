@@ -116,6 +116,10 @@ class OldM2ATransformerSchema(BaseModelSchema):
     hidden_dropout_prob: float = Field(0.1, description="Dropout probability for hidden layers.")
     attention_probs_dropout_prob: float = Field(0.1, description="Dropout probability for attention weights.")
 
+    ckpt_path: Optional[str] = Field(
+        None, description="Path to the checkpoint file. If provided, the model will be initialized from this checkpoint."
+    )
+
     def model_post_init(self, __context: Any) -> None:
         if self.large:
             # Set default large model parameters IF they haven't been explicitly set
@@ -138,8 +142,63 @@ class OldM2ATransformerSchema(BaseModelSchema):
             if self.intermediate_size is None:
                 self.intermediate_size = 1024
 
+class OldM2ANomaskTransformerSchema(BaseModelSchema):
+    """
+    Configuration schema for RoFormerSymbolicTransformer hyperparameters.
+    """
 
-ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema]
+    model_name: str = Field("XinYue's + nomask + customed RoFormer", description="Name of the M2A Transformer model.")
+    model_type: Literal["Old-M2A-Transformer-Nomask"] = Field("Old-M2A-Transformer-Nomask", description="Type of the model.")
+    large: bool = Field(False, description="If True, use larger model configuration (hidden_size=768, num_layers=12, etc.).")
+
+    # Global Model (Main Transformer) Hyperparameters
+    hidden_size: Optional[int] = Field(None, description="Hidden layer dimension of the global model. Overrides 'large' setting if specified.")
+    num_layers: Optional[int] = Field(
+        None, description="Number of Transformer encoder layers in the global model. Overrides 'large' setting if specified."
+    )
+    num_attention_heads: Optional[int] = Field(
+        None, description="Number of attention heads in the global model. Overrides 'large' setting if specified."
+    )
+    intermediate_size: Optional[int] = Field(
+        None, description="Intermediate size of the feed-forward network in the global model. Overrides 'large' setting if specified."
+    )
+
+    # Local Model (Encoder/Decoder) Hyperparameters
+    local_model_num_layers: int = Field(3, description="Number of layers in the local encoder/decoder.")
+    local_model_num_attention_heads: int = Field(8, description="Number of attention heads in the local encoder/decoder.")
+    local_model_intermediate_size: int = Field(768, description="Intermediate size of the feed-forward network in the local encoder/decoder.")
+
+    # Dropout probabilities
+    hidden_dropout_prob: float = Field(0.1, description="Dropout probability for hidden layers.")
+    attention_probs_dropout_prob: float = Field(0.1, description="Dropout probability for attention weights.")
+
+    ckpt_path: Optional[str] = Field(
+        None, description="Path to the checkpoint file. If provided, the model will be initialized from this checkpoint."
+    )
+    
+    def model_post_init(self, __context: Any) -> None:
+        if self.large:
+            # Set default large model parameters IF they haven't been explicitly set
+            if self.hidden_size is None:
+                self.hidden_size = 768
+            if self.num_layers is None:
+                self.num_layers = 12
+            if self.num_attention_heads is None:
+                self.num_attention_heads = 12
+            if self.intermediate_size is None:
+                self.intermediate_size = 3072
+        else:
+            # Set default small model parameters IF they haven't been explicitly set
+            if self.hidden_size is None:
+                self.hidden_size = 512
+            if self.num_layers is None:
+                self.num_layers = 6
+            if self.num_attention_heads is None:
+                self.num_attention_heads = 8
+            if self.intermediate_size is None:
+                self.intermediate_size = 1024
+
+ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema, OldM2ANomaskTransformerSchema]
 # ModelSchema = OldM2ATransformerSchema
 
 

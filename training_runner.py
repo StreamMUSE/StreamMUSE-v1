@@ -2,7 +2,7 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-
+import torch
 # from lightning.pytorch.utilities.seed import seed_everything
 from schema.project_schema import ProjectSchema
 from datamodules.remi_json_datamodule import MelAccRemiJsonDataModule
@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # The first few messages might come from all ranks if this runs before DDP is fully set up.
 logger.info("Application started. Initial logging setup complete.")
 
+temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
+os.environ['TMPDIR'] = temp_dir
+# 确保这个目录存在
+os.makedirs(temp_dir, exist_ok=True)
 
 class ProjectRunner:
     def __init__(self, config_path: str):
@@ -84,6 +88,12 @@ class ProjectRunner:
                 from models.remi_roformer import REMIRoformer  # Import if needed
 
                 self.model = REMIRoformer(
+                    model_schema=self.config.model,
+                )
+            elif self.config.model.model_type == "Old-M2A-Transformer-Nomask":
+                from models.old_m2a_nomask_transformer import OldM2ANomaskTransformer
+
+                self.model = OldM2ANomaskTransformer(
                     model_schema=self.config.model,
                 )
             else:
@@ -161,9 +171,8 @@ class ProjectRunner:
             self.trainer = Trainer(
                 precision="bf16-mixed",  # data precision
                 logger=self.loggers,
-                val_check_interval=5,
-                log_every_n_steps=10,
-                limit_val_batches=3,
+                val_check_interval=1000,
+                log_every_n_steps=50,
                 **self.config.trainer.model_dump(),
                 callbacks=[
                     ModelCheckpoint(
@@ -284,6 +293,9 @@ class ProjectRunner:
 
 
 if __name__ == "__main__":
+
+    # torch.cuda.memory._record_memory_history() # start memory snapshot
+
     # Example usage
     # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
     runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_pop909-1.0.yaml")  # Use your specific config
