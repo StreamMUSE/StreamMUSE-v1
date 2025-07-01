@@ -30,3 +30,4 @@ app/.DS_Store
 /app/logs
 .python-version
 results/
+/app/results

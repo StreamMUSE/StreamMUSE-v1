@@ -2,6 +2,7 @@ import requests
 import time
 import argparse
 import csv
+import json
 import os
 import statistics
 
@@ -55,6 +56,7 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str):
 
     # Prepare to collect data
     all_results = []
+    all_responses = []  # Store complete response data
     
     print(f"Starting benchmark: {num_requests} requests to {server_url}")
 
@@ -68,7 +70,8 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str):
         
         request_data = {
             "melody_notes": melody_notes,
-            "generation_start_tick": generation_start_tick
+            "generation_start_tick": generation_start_tick,
+            "client_request_send_time": time.perf_counter()
         }
 
         try:
@@ -88,21 +91,73 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str):
             server_response = timings['response_output_time']
             server_processing_duration = server_response - server_arrival
             total_network_latency = round_trip_time - server_processing_duration
+            
+            # Calculate detailed server-side durations
+            preprocess_duration = timings['inference_start_time'] - timings['preprocess_start_time']
+            inference_duration = timings['inference_end_time'] - timings['inference_start_time']
+            postprocess_duration = timings['response_output_time'] - timings['postprocess_start_time']
 
-            all_results.append({
+            result = {
+                'request_id': i + 1,
+                'num_generated_notes': len(response_json['accompaniment']),
+                'generation_start_tick': response_json['generation_start_tick'],
+                
+                # Client-side measurements
                 'round_trip_time': round_trip_time,
+                'total_network_latency': total_network_latency,
+                
+                # Server-side timing (raw timestamps)
+                'server_request_arrival_time': timings['request_arrival_time'],
+                'server_response_output_time': timings['response_output_time'],
+                'server_preprocess_start_time': timings['preprocess_start_time'],
+                'server_inference_start_time': timings['inference_start_time'],
+                'server_inference_end_time': timings['inference_end_time'],
+                'server_postprocess_start_time': timings['postprocess_start_time'],
+                
+                # Server-side durations (calculated from same clock)
                 'server_processing_duration': server_processing_duration,
-                'total_network_latency': total_network_latency
-            })
+                'preprocess_duration': preprocess_duration,
+                'inference_duration': inference_duration,
+                'postprocess_duration': postprocess_duration,
+            }
+            
+            # Store complete response data for JSON output
+            response_record = {
+                'request_id': i + 1,
+                'request_data': request_data,
+                'response_data': response_json,
+                'client_timing': {
+                    'request_start_time': start_time,
+                    'request_end_time': end_time,
+                    'round_trip_time': round_trip_time,
+                    'total_network_latency': total_network_latency,
+                    'server_processing_duration': server_processing_duration,
+                    'preprocess_duration': preprocess_duration,
+                    'inference_duration': inference_duration,
+                    'postprocess_duration': postprocess_duration,
+                }
+            }
+            
+            all_results.append(result)
+            all_responses.append(response_record)
             
             # Brief pause to avoid overwhelming the server
             time.sleep(0.1)
 
-        except requests.exceptions.RequestException as e:
-            print(f"  Request {i+1} failed: {e}")
+        except requests.exceptions.HTTPError as http_err:
+            print(f"  Request {i+1} failed: {http_err}")
+            try:
+                # FastAPI provides detailed validation errors in the JSON response
+                print(f"  Server validation error: {http_err.response.json()}")
+            except ValueError:
+                # If the response isn't JSON, print the raw text
+                print(f"  Server response: {http_err.response.text}")
+            continue
+        except requests.exceptions.RequestException as req_err:
+            print(f"  Request {i+1} failed: {req_err}")
             continue
     
-    # --- Save Results to CSV ---
+    # --- Save Results ---
     if not all_results:
         print("No successful requests. No data to save.")
         return
@@ -110,22 +165,54 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str):
     # Create directory for output file if it doesn't exist
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
+    # Save CSV with timing summary
     with open(output_file, 'w', newline='') as f:
         header = all_results[0].keys()
         writer = csv.DictWriter(f, fieldnames=header)
         writer.writeheader()
         writer.writerows(all_results)
 
-    print(f"\nBenchmark finished. Results saved to {output_file}")
+    # Save JSON with complete response data
+    json_output_file = output_file.replace('.csv', '.json')
+    benchmark_data = {
+        'metadata': {
+            'server_url': server_url,
+            'num_requests': num_requests,
+            'total_successful_requests': len(all_results),
+            'melody_notes_sent': melody_notes,
+            'generation_start_tick': generation_start_tick,
+            'benchmark_timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+        },
+        'responses': all_responses
+    }
+    
+    with open(json_output_file, 'w') as f:
+        json.dump(benchmark_data, f, indent=2)
+
+    print(f"\nBenchmark finished.")
+    print(f"Timing summary saved to: {output_file}")
+    print(f"Complete response data saved to: {json_output_file}")
     
     # --- Print Summary Statistics ---
     round_trips = [r['round_trip_time'] for r in all_results]
     server_processing = [r['server_processing_duration'] for r in all_results]
+    inference_times = [r['inference_duration'] for r in all_results]
+    preprocess_times = [r['preprocess_duration'] for r in all_results]
+    postprocess_times = [r['postprocess_duration'] for r in all_results]
+    network_latencies = [r['total_network_latency'] for r in all_results]
+    num_notes = [r['num_generated_notes'] for r in all_results]
 
-    print("\n--- Summary ---")
+    print("\n--- Summary Statistics ---")
     print(f"Successful Requests: {len(all_results)}/{num_requests}")
-    print(f"Avg. Round Trip Time:      {statistics.mean(round_trips):.4f}s (std: {statistics.stdev(round_trips):.4f}s)")
-    print(f"Avg. Server Processing Time: {statistics.mean(server_processing):.4f}s (std: {statistics.stdev(server_processing):.4f}s)")
+    print(f"Generated Notes per Request: {statistics.mean(num_notes):.1f} (std: {statistics.stdev(num_notes):.1f})")
+    print()
+    print("Timing Breakdown:")
+    print(f"  Round Trip Time:       {statistics.mean(round_trips)*1000:.1f}ms (std: {statistics.stdev(round_trips)*1000:.1f}ms)")
+    print(f"  Server Processing:     {statistics.mean(server_processing)*1000:.1f}ms (std: {statistics.stdev(server_processing)*1000:.1f}ms)")
+    print(f"    - Preprocessing:     {statistics.mean(preprocess_times)*1000:.1f}ms (std: {statistics.stdev(preprocess_times)*1000:.1f}ms)")
+    print(f"    - Inference:         {statistics.mean(inference_times)*1000:.1f}ms (std: {statistics.stdev(inference_times)*1000:.1f}ms)")
+    print(f"    - Postprocessing:    {statistics.mean(postprocess_times)*1000:.1f}ms (std: {statistics.stdev(postprocess_times)*1000:.1f}ms)")
+    print(f"  Network Latency:       {statistics.mean(network_latencies)*1000:.1f}ms (std: {statistics.stdev(network_latencies)*1000:.1f}ms)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark the StreamMUSE server.")
@@ -138,7 +225,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_requests",
         type=int,
-        default=20,
+        default=100,
         help="The number of requests to send for the benchmark."
     )
     parser.add_argument(
