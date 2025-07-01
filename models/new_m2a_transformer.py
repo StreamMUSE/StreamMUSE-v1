@@ -5,12 +5,14 @@ from transformers.models.roformer.modeling_roformer import (
     RoFormerConfig,
     RoFormerEncoder,
 )
-from schema.model_io_schema import NewPtM2AModelInputData, NewPtM2AModelOutputData
+from schema.model_io_schema import NewPtM2AModelInputData
 from schema.model_schema import NewM2ATransformerSchema
 from typing import Optional
 from .base_pytorch_lightning_model import BasePyTorchLightningModel
 
-TRAIN_LENGTH = 192
+# TRAIN_LENGTH = 192
+TRAIN_LENGTH = 412
+
 MAX_STEPS = 1000000
 
 # Indicator: 0
@@ -36,9 +38,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         self.num_attention_heads = model_schema.num_attention_heads
         self.intermediate_size = model_schema.intermediate_size
         self.local_model_num_layers = model_schema.local_model_num_layers
-        self.local_model_num_attention_heads = (
-            model_schema.local_model_num_attention_heads
-        )
+        self.local_model_num_attention_heads = model_schema.local_model_num_attention_heads
         self.local_model_intermediate_size = model_schema.local_model_intermediate_size
         self.frame_shift = model_schema.frame_shift
         main_roformer_config = RoFormerConfig(
@@ -80,9 +80,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         # prepend SOS:
         x = torch.cat(
             [
-                torch.full(
-                    (x.shape[0], 1), SOS_TOKEN, dtype=torch.long, device=x.device
-                ),
+                torch.full((x.shape[0], 1), SOS_TOKEN, dtype=torch.long, device=x.device),
                 x,
             ],
             dim=-1,
@@ -91,9 +89,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         mask = x != PAD_TOKEN  # [B*seq_len, subseq_len+1]
         word_emb = self.local_embedding(x)  # → [B*seq_len, subseq_len+1, H]
 
-        type_emb = self.token_type_embeddings(
-            token_type_ids
-        )  # [B*seq_len, subseq_len+1, H]
+        type_emb = self.token_type_embeddings(token_type_ids)  # [B*seq_len, subseq_len+1, H]
         type_emb = type_emb.view(batch_size * seq_len, word_emb.shape[1], -1)
 
         emb = word_emb + type_emb
@@ -118,9 +114,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         eos_triggered = torch.zeros(batch_size, dtype=torch.bool, device=h.device)
 
         for i in range(max_subseq_len):
-            h_ = self.local_decoder(emb, attention_mask=self.buffered_future_mask(emb))[
-                0
-            ]
+            h_ = self.local_decoder(emb, attention_mask=self.buffered_future_mask(emb))[0]
             if temperature == 0:
                 p = F.one_hot(self.final_decoder(h_).argmax(dim=-1), N_TOKENS).float()
             else:
@@ -136,8 +130,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
             emb = torch.cat(
                 [
                     emb,
-                    self.local_embedding(y_next)
-                    + self.token_type_embeddings(torch.ones_like(y_next)),
+                    self.local_embedding(y_next) + self.token_type_embeddings(torch.ones_like(y_next)),
                 ],
                 dim=1,
             )
@@ -148,14 +141,8 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         batch_size, seq_len, subseq_len = x.shape
         _, seq_len_gt, _ = x_mel_gt.shape
         idx = torch.arange(seq_len, device=x.device)
-        frame_type = (
-            idx % 2 == 0
-        ).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
-        token_type_ids = (
-            frame_type.unsqueeze(0)
-            .unsqueeze(-1)
-            .expand(batch_size, seq_len, subseq_len)
-        )
+        frame_type = (idx % 2 == 0).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
+        token_type_ids = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, subseq_len)
         sos_type = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, 1)
         token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
         h, _ = self.local_encode(x, token_type_ids)
@@ -172,9 +159,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         h_mel = h_mel.view(batch_size, seq_len_gt, -1)
         sos = self.global_sos.view(1, 1, -1).repeat(batch_size, 1, 1)
         h = torch.cat([sos, h], dim=1)
-        y = [
-            x[:, i, :] for i in range(seq_len)
-        ]  # y will be returned by a list a0,m0,a1,m1,a_to_be_2
+        y = [x[:, i, :] for i in range(seq_len)]  # y will be returned by a list a0,m0,a1,m1,a_to_be_2
         if x_mel_gt != None:
             # print('with gt!')
             for i in range(0, max_seq_len):
@@ -187,20 +172,14 @@ class NewM2ATransformer(BasePyTorchLightningModel):
                         attention_mask=self.buffered_future_mask(h),
                         interleave_pos=True,
                     )[0]
-                    y_next = self.local_sampling(
-                        h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature
-                    )
+                    y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
                     y.append(y_next)
                     b, s, l = y_next.unsqueeze(1).shape
-                    token_type_ids = torch.ones(
-                        (b, s, l + 1), dtype=torch.long, device=y_next.device
-                    )
+                    token_type_ids = torch.ones((b, s, l + 1), dtype=torch.long, device=y_next.device)
                     h = torch.cat(
                         [
                             h,
-                            self.local_encode(
-                                y_next.unsqueeze(1), token_type_ids=token_type_ids
-                            )[0].unsqueeze(1),
+                            self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1),
                         ],
                         dim=1,
                     )
@@ -213,44 +192,30 @@ class NewM2ATransformer(BasePyTorchLightningModel):
             for i in range(0, max_seq_len):
                 # if i % 10 == 0:
                 #     print('Sampling', i, '/', max_seq_len)
-                h_out = self.model(
-                    h, attention_mask=self.buffered_future_mask(h), interleave_pos=True
-                )[0]
-                y_next = self.local_sampling(
-                    h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature
-                )
+                h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+                y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
                 y.append(y_next)
                 b, s, l = y_next.unsqueeze(1).shape
                 if i % 2 == 0:
-                    token_type_ids = torch.ones(
-                        (b, s, l + 1), dtype=torch.long, device=y_next.device
-                    )
+                    token_type_ids = torch.ones((b, s, l + 1), dtype=torch.long, device=y_next.device)
                 else:
-                    token_type_ids = torch.zeros(
-                        (b, s, l + 1), dtype=torch.long, device=y_next.device
-                    )
+                    token_type_ids = torch.zeros((b, s, l + 1), dtype=torch.long, device=y_next.device)
                 h = torch.cat(
                     [
                         h,
-                        self.local_encode(
-                            y_next.unsqueeze(1), token_type_ids=token_type_ids
-                        )[0].unsqueeze(1),
+                        self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1),
                     ],
                     dim=1,
                 )
         return y
 
-    def global_sampling_from_scratch(
-        self, x_mel: torch.LongTensor, temperature: float = 1.0, max_seq_len=384
-    ):
+    def global_sampling_from_scratch(self, x_mel: torch.LongTensor, temperature: float = 1.0, max_seq_len=384):
         B, S, L = x_mel.shape
         device = x_mel.device
 
         # Build program IDs = 0 for all melody tokens
         # token_type_ids = torch.zeros_like(x_mel, dtype=torch.long)  # [B, S, L]
-        h_mel, _ = self.local_encode(
-            x_mel, torch.zeros((B, S, L + 1), device=device, dtype=x_mel.dtype)
-        )
+        h_mel, _ = self.local_encode(x_mel, torch.zeros((B, S, L + 1), device=device, dtype=x_mel.dtype))
         h_mel = h_mel.view(B, S, self.hidden_size)  # [B, S, H]
 
         # Prepare SOS for global
@@ -270,23 +235,15 @@ class NewM2ATransformer(BasePyTorchLightningModel):
                 h = torch.cat([h, h_prev_mel], dim=1)  # [B, cur_len, H]
                 y.append(x_mel[:, t - 1, :])
 
-            h_out = self.model(
-                h, attention_mask=self.buffered_future_mask(h), interleave_pos=True
-            )[0]
-            y_next = self.local_sampling(
-                h_out[:, -1], max_subseq_len=L, temperature=temperature
-            )
+            h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+            y_next = self.local_sampling(h_out[:, -1], max_subseq_len=L, temperature=temperature)
             y.append(y_next)
             b, s, l = y_next.unsqueeze(1).shape
-            token_type_ids = torch.ones(
-                (b, s, l + 1), dtype=torch.long, device=y_next.device
-            )
+            token_type_ids = torch.ones((b, s, l + 1), dtype=torch.long, device=y_next.device)
             h = torch.cat(
                 [
                     h,
-                    self.local_encode(
-                        y_next.unsqueeze(1), token_type_ids=token_type_ids
-                    )[0].unsqueeze(1),
+                    self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1),
                 ],
                 dim=1,
             )
@@ -295,14 +252,8 @@ class NewM2ATransformer(BasePyTorchLightningModel):
     def buffered_future_mask(self, tensor):
         dim = tensor.size(1)
         # self._future_mask.device != tensor.device is not working in TorchScript. This is a workaround.
-        if (
-            self._future_mask.size(0) == 0
-            or (not self._future_mask.device == tensor.device)
-            or self._future_mask.size(0) < dim
-        ):
-            self._future_mask = torch.triu(
-                fill_with_neg_inf(torch.zeros([dim, dim])), 1
-            )
+        if self._future_mask.size(0) == 0 or (not self._future_mask.device == tensor.device) or self._future_mask.size(0) < dim:
+            self._future_mask = torch.triu(fill_with_neg_inf(torch.zeros([dim, dim])), 1)
         self._future_mask = self._future_mask.to(tensor)
         return self._future_mask[:dim, :dim]
 
@@ -314,14 +265,8 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         assert seq_len % 2 == 0, "Expected even number of frames (2*S interleaved)."
 
         idx = torch.arange(seq_len, device=x.device)
-        frame_type = (
-            idx % 2 == 0
-        ).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
-        token_type_ids = (
-            frame_type.unsqueeze(0)
-            .unsqueeze(-1)
-            .expand(batch_size, seq_len, subseq_len)
-        )
+        frame_type = (idx % 2 == 0).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
+        token_type_ids = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, subseq_len)
         sos_type = frame_type.unsqueeze(0).unsqueeze(-1).expand(batch_size, seq_len, 1)
         token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
         h, emb = self.local_encode(x, token_type_ids)
@@ -332,9 +277,9 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         h = torch.cat([sos, h[:, :-1]], dim=1)
 
         # print(h.shape)
-        h = self.model(
-            h, attention_mask=self.buffered_future_mask(h), interleave_pos=True
-        )[0]  ##all the sos of every timestep (considering other timestep)
+        h = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[
+            0
+        ]  ##all the sos of every timestep (considering other timestep)
         return self.local_decode(h, emb)
 
     def preprocess(
@@ -357,12 +302,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         eos_indices = x[:, :, :, 0] == 254  # program is 254
         is_not_drum = x[:, :, :, 0] != 127
         x_processed[:, :, :, 0] = 0  # program 不变
-        x_processed[:, :, :, 1] = (
-            x[:, :, :, 1]
-            + (x[:, :, :, 2]) * 128
-            + 2
-            + pitch_shift[:, None, None] * is_not_drum
-        )
+        x_processed[:, :, :, 1] = x[:, :, :, 1] + (x[:, :, :, 2]) * 128 + 2 + pitch_shift * is_not_drum
         x_processed[pad_indices] = PAD_TOKEN
         x_processed[:, :, :, 0][eos_indices] = EOS_TOKEN
 
@@ -383,18 +323,13 @@ class NewM2ATransformer(BasePyTorchLightningModel):
             eos_indices_y = y[:, :, :, 0] == 254  # program is 254
             is_not_drum_y = y[:, :, :, 0] != 127
             y_processed[:, :, :, 0] = 1  # program 不变
-            y_processed[:, :, :, 1] = (
-                y[:, :, :, 1]
-                + (y[:, :, :, 2]) * 128
-                + 2
-                + pitch_shift[:, None, None] * is_not_drum_y
-            )
+            y_processed[:, :, :, 1] = y[:, :, :, 1] + (y[:, :, :, 2]) * 128 + 2 + pitch_shift * is_not_drum_y
             y_processed[pad_indices_y] = PAD_TOKEN
             y_processed[:, :, :, 0][eos_indices_y] = EOS_TOKEN
 
-            return x_processed.view(
-                batch_size, seq_length, subseq_length // 3 * 2
-            ), y_processed.view(batch_size_y, seq_length_y, subseq_length_y // 3 * 2)
+            return x_processed.view(batch_size, seq_length, subseq_length // 3 * 2), y_processed.view(
+                batch_size_y, seq_length_y, subseq_length_y // 3 * 2
+            )
 
     def loss(self, x_mel, x_acc, pitch_shift):
         # x_mel, x_acc = self.preprocess(x_mel, pitch_shift, y = x_acc)
@@ -412,17 +347,13 @@ class NewM2ATransformer(BasePyTorchLightningModel):
 
         y = self(x)
 
-        return F.cross_entropy(
-            y.view(-1, N_TOKENS), x_target.view(-1), ignore_index=PAD_TOKEN
-        )
+        return F.cross_entropy(y.view(-1, N_TOKENS), x_target.view(-1), ignore_index=PAD_TOKEN)
 
     def training_step(self, batch: NewPtM2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)
-        x_mel, x_acc, pitch_shift = (
-            batch.mel_data,
-            batch.acc_data,
-            batch.pitch_shift,
-        )
+        x_mel, x_acc = self._new_interleave_process(batch)
+        pitch_shift = batch.pitch_shift
+        
         loss = self.loss(x_mel, x_acc, pitch_shift)
         self.log(
             "train_loss",
@@ -432,6 +363,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
             prog_bar=True,
             logger=True,
             sync_dist=True,
+            batch_size=x_mel.shape[0],
         )
         # scheduler step
         scheduler = self.lr_schedulers()
@@ -444,12 +376,14 @@ class NewM2ATransformer(BasePyTorchLightningModel):
             prog_bar=True,
             logger=True,
             sync_dist=True,
+            batch_size=x_mel.shape[0],
         )
         return loss
 
     def validation_step(self, batch: NewPtM2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)
-        x_mel, x_acc, pitch_shift = batch.mel_data, batch.acc_data, batch.pitch_shift
+        x_mel, x_acc = self._new_interleave_process(batch)
+        pitch_shift = batch.pitch_shift
         loss = self.loss(x_mel, x_acc, pitch_shift)
         self.log(
             "val_loss",
@@ -459,6 +393,7 @@ class NewM2ATransformer(BasePyTorchLightningModel):
             prog_bar=True,
             logger=True,
             sync_dist=True,
+            batch_size=x_mel.shape[0],
         )
         return loss
 
@@ -473,11 +408,10 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         return NewPtM2AModelInputData(
             mel_data=batch.mel_data.to(self.device),
             acc_data=batch.acc_data.to(self.device),
+            pitch_shift=batch.pitch_shift.to(self.device).view(-1),
         )
 
-    def _new_interleave_process(
-        self, batch: NewPtM2AModelInputData
-    ) -> NewPtM2AModelInputData:
+    def _new_interleave_process(self, batch: NewPtM2AModelInputData) :
         # x = [a0,m0,a5,m1,a6,m2...m(n-6),a(n-1),m(n-5)]
         # y = [m0,a5,m1,a6,m2,a7...a(n-1),m(n-5),a(n)]
 

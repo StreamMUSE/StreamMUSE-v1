@@ -110,9 +110,16 @@ class NewPtDataModule(pl.LightningDataModule):
     def __init__(self, config: NewPtDataModuleSchema):
         super().__init__()
         self.config = config
-        self.train_dataset = NewPtDataset(config.train_config)
-        self.val_dataset = NewPtDataset(config.val_config)
-        self.test_dataset = NewPtDataset(config.test_config)
+        
+    def setup(self, stage):
+        if stage == "fit":
+            self.train_dataset = NewPtDataset(self.config.train_config)
+            self.val_dataset = NewPtDataset(self.config.val_config)
+        elif stage == "test":
+            self.test_dataset = NewPtDataset(self.config.test_config)
+        elif stage == "predict":
+            self.predict_dataset = NewPtDataset(self.config.predict_config)
+        return super().setup(stage)
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(

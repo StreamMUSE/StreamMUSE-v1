@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # The first few messages might come from all ranks if this runs before DDP is fully set up.
 logger.info("Application started. Initial logging setup complete.")
 
-temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
+temp_dir = 'my-temp-space'
 os.environ['TMPDIR'] = temp_dir
 # 确保这个目录存在
 os.makedirs(temp_dir, exist_ok=True)
@@ -67,7 +67,6 @@ class ProjectRunner:
                 )
             elif self.config.dataset.tokenizer == "New XinYue's":
                 from datamodules.new_pt_datamodule import NewPtDataModule  # Import if needed
-
                 self.datamodule = NewPtDataModule(
                     config=self.config.dataset,
                 )
@@ -184,8 +183,10 @@ class ProjectRunner:
             self.trainer = Trainer(
                 precision="bf16-mixed",  # data precision
                 logger=self.loggers,
-                val_check_interval=1000,
-                log_every_n_steps=50,
+                # val_check_interval=5,
+                # log_every_n_steps=1,
+                # limit_val_batches=5,
+                log_every_n_steps=5,
                 **self.config.trainer.model_dump(),
                 callbacks=[
                     ModelCheckpoint(

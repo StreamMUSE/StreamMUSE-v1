@@ -204,7 +204,7 @@ class NewM2ATransformerSchema(OldM2ATransformerSchema):
     frame_shift: int = Field(4, description="Number of frame shift.")
     
 
-ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema, OldM2ANomaskTransformerSchema]
+ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema, OldM2ANomaskTransformerSchema,NewM2ATransformerSchema]
 # ModelSchema = OldM2ATransformerSchema
 
 
