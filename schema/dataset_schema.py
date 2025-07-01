@@ -72,5 +72,27 @@ class OldPtDataModuleSchema(BaseDataModuleSchema):
     test_config: Optional[OldPtDatasetSchema] = Field(None, description="Configuration for the test dataset.")
     predict_config: Optional[OldPtDatasetSchema] = Field(None, description="Configuration for the prediction dataset.")
 
+class NewPtDatasetSchema(BaseDatasetSchema):
+    """
+    Schema for the new PT dataset.
+    """
 
-DataModuleSchema = Union[MelAccRemiJsonDataModuleSchema, OldPtDataModuleSchema]
+    file_path: str = Field(
+        ...,
+        description="Path to the main accompaniment .pt file. Melody and metadata files (length, start, pitch_shift_range) are inferred from this path.",
+    )
+    target_length: int = Field(..., description="The fixed length to which all sequences will be clipped and padded.")
+    sequence_shift: int = Field(1, description="The number of steps to shift the sequence for training.")
+    split_ratio: Optional[int] = Field(10, description="The ratio to split the dataset into training and validation sets.")
+    
+class NewPtDataModuleSchema(BaseDataModuleSchema):
+    """
+    Schema for the new PT datamodule.
+    """
+
+    train_config: NewPtDatasetSchema = Field(..., description="Configuration for the training dataset.")
+    val_config: NewPtDatasetSchema = Field(..., description="Configuration for the validation dataset.")
+    test_config: Optional[NewPtDatasetSchema] = Field(None, description="Configuration for the test dataset.")
+    predict_config: Optional[NewPtDatasetSchema] = Field(None, description="Configuration for the prediction dataset.")
+
+DataModuleSchema = Union[MelAccRemiJsonDataModuleSchema, OldPtDataModuleSchema,NewPtDataModuleSchema]

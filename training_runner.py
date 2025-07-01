@@ -65,6 +65,12 @@ class ProjectRunner:
                 self.datamodule = OldPtDataModule(
                     config=self.config.dataset,
                 )
+            elif self.config.dataset.tokenizer == "New XinYue's":
+                from datamodules.new_pt_datamodule import NewPtDataModule  # Import if needed
+
+                self.datamodule = NewPtDataModule(
+                    config=self.config.dataset,
+                )
             else:
                 logger.warning(
                     f"Unsupported tokenizer type: {self.config.dataset.tokenizer}. Please ensure this is intentional or define a new tokenizer type."
@@ -90,12 +96,19 @@ class ProjectRunner:
                 self.model = REMIRoformer(
                     model_schema=self.config.model,
                 )
+            elif self.config.model.model_type == "New-M2A-Transformer":
+                from models.new_m2a_transformer import NewM2ATransformer
+
+                self.model = NewM2ATransformer(
+                    model_schema=self.config.model,
+                )
             elif self.config.model.model_type == "Old-M2A-Transformer-Nomask":
                 from models.old_m2a_nomask_transformer import OldM2ANomaskTransformer
 
                 self.model = OldM2ANomaskTransformer(
                     model_schema=self.config.model,
                 )
+            
             else:
                 logger.warning(f"Unsupported model type: {self.config.model.model_type}. Check your config or implement the model.")
                 raise ValueError(f"Unsupported model type: {self.config.model.model_type}")
@@ -298,7 +311,7 @@ if __name__ == "__main__":
 
     # Example usage
     # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_pop909-1.0.yaml")  # Use your specific config
+    runner = ProjectRunner(config_path="schema/yaml/new_m2a_transformer_pop909_v0-1.0.yaml")  # Use your specific config
 
     try:
         runner.run_experiment()
