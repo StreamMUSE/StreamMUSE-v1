@@ -1,0 +1,16 @@
+[project]
+name = "streammuse"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mido>=1.3.3",
+    "numpy>=2.3.1",
+    "pretty-midi>=0.2.10",
+    "pygame>=2.6.1",
+    "pynput>=1.8.1",
+    "python-rtmidi>=1.5.8",
+    "requests>=2.32.4",
+    "setuptools>=80.9.0",
+]
