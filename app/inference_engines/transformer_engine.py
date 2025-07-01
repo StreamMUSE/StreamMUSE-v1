@@ -19,7 +19,7 @@ class TransformerInferenceEngine:
     the performance history, prepares input tensors for the model, and decodes
     the model's output back into playable musical notes.
     """
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20):
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=96):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
@@ -38,7 +38,7 @@ class TransformerInferenceEngine:
         # The model's max sequence length (the total number of tokens it can process at once).
         # This is measured in "frames", where one tick of music contains two frames:
         # one for the melody and one for the accompaniment.
-        self.model_max_seq_len_frames = 96 # Derived from m2a_transformer.py
+        self.model_max_seq_len_frames = model_max_seq_len_frames
         
         # The effective history length, in musical ticks, that the model uses as a prompt.
         # This must be half the frame length because ticks are interleaved (mel, acc, mel, acc...).

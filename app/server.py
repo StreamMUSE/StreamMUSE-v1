@@ -53,10 +53,24 @@ async def startup_event():
         print("Please run the server like: CHECKPOINT_PATH=path/to/model.ckpt uvicorn ...")
         exit()
 
+    # Get model parameters from environment variables with defaults
+    try:
+        model_max_seq_len_frames = int(os.getenv('MODEL_MAX_SEQ_LEN_FRAMES', 96))
+        generation_length_frames = int(os.getenv('GENERATION_LENGTH_FRAMES', 20))
+    except ValueError:
+        print("Fatal Error: Invalid integer value for model parameters in environment variables.")
+        exit()
+
     global inference_engine
     try:
         print(f"Loading model from {checkpoint_path}...")
-        inference_engine = TransformerInferenceEngine(checkpoint_path=checkpoint_path)
+        print(f"Using Model Max Sequence Length (Frames): {model_max_seq_len_frames}")
+        print(f"Using Generation Length (Frames): {generation_length_frames}")
+        inference_engine = TransformerInferenceEngine(
+            checkpoint_path=checkpoint_path,
+            model_max_seq_len_frames=model_max_seq_len_frames,
+            generation_length_frames=generation_length_frames
+        )
         print("Inference engine loaded successfully.")
     except FileNotFoundError as e:
         print(f"Fatal Error: {e}")
