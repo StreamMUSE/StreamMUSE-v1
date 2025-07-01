@@ -65,7 +65,6 @@ torchaudio==2.7.1
 torchmetrics==1.7.3
 torchvision==0.22.1
 tqdm==4.67.1
--e git+ssh://git@github.com/AHY123/StreamMUSE.git@e7d16b1d89e8d01c77cdac1a13f12123dedbda11#egg=transformers&subdirectory=transformers
 # triton==3.3.1
 typing-inspection==0.4.1
 typing_extensions==4.14.0
