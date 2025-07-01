@@ -164,3 +164,10 @@ class BasePyTorchLightningModel(L.LightningModule):
         # Call the setup function, which internally handles rank 0 logic
         self._setup_training_probing_logger()
         return super().on_fit_start()
+    
+    def configure_optimizers(self):
+        max_lr = 1e-4
+        MAX_STEPS =50000
+        optimizer = torch.optim.AdamW(self.parameters(), lr=max_lr)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=max_lr, total_steps=MAX_STEPS, pct_start=0.005)
+        return [optimizer], [scheduler]

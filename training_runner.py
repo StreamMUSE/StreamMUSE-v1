@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # The first few messages might come from all ranks if this runs before DDP is fully set up.
 logger.info("Application started. Initial logging setup complete.")
 
-temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
+temp_dir = 'my-temp-space'
 os.environ['TMPDIR'] = temp_dir
 # 确保这个目录存在
 os.makedirs(temp_dir, exist_ok=True)
@@ -65,6 +65,11 @@ class ProjectRunner:
                 self.datamodule = OldPtDataModule(
                     config=self.config.dataset,
                 )
+            elif self.config.dataset.tokenizer == "New XinYue's":
+                from datamodules.new_pt_datamodule import NewPtDataModule  # Import if needed
+                self.datamodule = NewPtDataModule(
+                    config=self.config.dataset,
+                )
             else:
                 logger.warning(
                     f"Unsupported tokenizer type: {self.config.dataset.tokenizer}. Please ensure this is intentional or define a new tokenizer type."
@@ -90,12 +95,19 @@ class ProjectRunner:
                 self.model = REMIRoformer(
                     model_schema=self.config.model,
                 )
+            elif self.config.model.model_type == "New-M2A-Transformer":
+                from models.new_m2a_transformer import NewM2ATransformer
+
+                self.model = NewM2ATransformer(
+                    model_schema=self.config.model,
+                )
             elif self.config.model.model_type == "Old-M2A-Transformer-Nomask":
                 from models.old_m2a_nomask_transformer import OldM2ANomaskTransformer
 
                 self.model = OldM2ANomaskTransformer(
                     model_schema=self.config.model,
                 )
+            
             else:
                 logger.warning(f"Unsupported model type: {self.config.model.model_type}. Check your config or implement the model.")
                 raise ValueError(f"Unsupported model type: {self.config.model.model_type}")
@@ -169,12 +181,12 @@ class ProjectRunner:
             trainer_config_dict = self.config.trainer.model_dump(exclude={"callbacks"})
 
             self.trainer = Trainer(
-                # max_steps=5,
-                limit_val_batches=100,
                 precision="bf16-mixed",  # data precision
                 logger=self.loggers,
-                val_check_interval=1000,
-                log_every_n_steps=50,
+                # val_check_interval=5,
+                # log_every_n_steps=1,
+                # limit_val_batches=5,
+                log_every_n_steps=5,
                 **self.config.trainer.model_dump(),
                 callbacks=[
                     ModelCheckpoint(
@@ -281,9 +293,7 @@ class ProjectRunner:
             sys.exit(1)
 
         try:
-            # torch.cuda.memory._dump_snapshot("before_train.pickle")
-            self.trainer.fit(self.model, datamodule=self.datamodule, ckpt_path=self.config.model.ckpt_path)
-            # torch.cuda.memory._dump_snapshot("after_train.pickle")
+            self.trainer.fit(self.model, datamodule=self.datamodule)
             # This log will only appear in rank 0's console and file log
             logger.info(f"[{os.environ.get('GLOBAL_RANK', 'N/A')}] Experiment training finished successfully!")
         except Exception as e:
@@ -301,7 +311,8 @@ if __name__ == "__main__":
     # torch.cuda.memory._record_memory_history() # start memory snapshot
 
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_nomask_aria_unique_skyline_top2_0.5B-1.3.yaml") # Use your specific config 
+    # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
+    runner = ProjectRunner(config_path="schema/yaml/new_m2a_transformer_pop909_v0-1.0.yaml")  # Use your specific config
 
     try:
         runner.run_experiment()
