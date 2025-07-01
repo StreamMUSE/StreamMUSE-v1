@@ -36,7 +36,7 @@ class AudioOutputHandler:
             # Set instrument to Acoustic Grand Piano on channel 0
             self.port.send(mido.Message('program_change', channel=PIANO_CHANNEL, program=0))
             print(f"Set instrument on channel {PIANO_CHANNEL} to Acoustic Grand Piano.")
-        except (OSError, IOError, mido.MidoError) as e:
+        except (OSError, IOError) as e:
             print(f"Warning: Could not open MIDI output port '{port_name}': {e}")
             print("Sound will not be played.")
 
