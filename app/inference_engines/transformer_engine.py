@@ -306,6 +306,11 @@ class TransformerInferenceEngine:
         # This ensures they become part of the context for the next turn.
         self.accompaniment_history.extend(final_generated_notes)
         
+        # Prune history to prevent memory leaks in long-running sessions.
+        # We can safely remove any notes that are older than the prompt window we just used.
+        self.melody_history = [n for n in self.melody_history if n['tick'] >= prompt_start_tick]
+        self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] >= prompt_start_tick]
+
         return (final_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
 
     

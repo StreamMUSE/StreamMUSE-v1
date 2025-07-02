@@ -120,7 +120,8 @@ def tick_loop(
                 # The event for the scheduler needs pitch info and a 'note_off' type.
                 playback_schedule[note_off_tick].append({
                     "type": "note_off",
-                    "pitch": event['pitch']
+                    "pitch": event['pitch'],
+                    "source": "user" # Tag as a user-originated event
                 })
         
         # --- 2. Handle Inference Responses ---
@@ -153,19 +154,30 @@ def tick_loop(
 
                 # --- Clear stale notes from the previous generation ---
                 # This ensures that if a new response arrives before the old one is
-                # fully played out, we replace the future notes with the new ones.
-                ticks_to_clear = [t for t in playback_schedule if t >= generation_start_tick]
-                for t in ticks_to_clear:
-                    # In the current design, any scheduled event is a model-generated note_on.
-                    # A more complex design might require tagging events with their source.
-                    del playback_schedule[t]
+                # fully played out, we only replace future model-generated notes.
+                # User-played note_offs are preserved.
+                if newly_generated_notes:
+                    # Find the first tick where the new generation actually places a note.
+                    # This prevents clearing old notes if there's a gap before the new music starts.
+                    first_new_note_tick = min(note['tick'] for note in newly_generated_notes)
+
+                    ticks_to_clean = [t for t in playback_schedule if t >= first_new_note_tick]
+                    for tick in ticks_to_clean:
+                        # Filter out events sourced from the model, keep user events
+                        playback_schedule[tick] = [
+                            event for event in playback_schedule[tick] if event.get("source") != "model"
+                        ]
+                        # If the tick is now empty, remove it from the schedule
+                        if not playback_schedule[tick]:
+                            del playback_schedule[tick]
                 
                 # --- Schedule new notes ---
                 for note in newly_generated_notes:
                     if note['tick'] >= tick_count:
                         if note['tick'] not in playback_schedule:
                             playback_schedule[note['tick']] = []
-                        playback_schedule[note['tick']].append(note)
+                        # Tag as a model-originated event
+                        playback_schedule[note['tick']].append({**note, "source": "model"})
                 
                 # Store timings for display, making them persistent
                 last_inference_timings = timings
