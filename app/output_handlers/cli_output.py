@@ -87,6 +87,9 @@ class CLIOutputHandler:
             self.last_model_output_str = "Waiting for server..."
         elif model_notes_played:
             self.last_model_output_str = model_notes_str or "None"
+        else:
+            # Clear the status if no notes were played on this tick
+            self.last_model_output_str = "None"
 
         output_line = f"LAST MODEL NOTES PLAYED: {self.last_model_output_str}"
 

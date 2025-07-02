@@ -75,7 +75,6 @@ def tick_loop(
     playback_schedule = {}
     
     # New state variables
-    active_notes = {} # For tracking note durations if we need to in the future
     notes_for_next_request = []
     last_inference_timings = {} # To persist timing info for display
     ticks_per_bar = ticks_per_beat * beats_per_bar
@@ -86,7 +85,6 @@ def tick_loop(
         
         # --- 1. Process User Input ---
         user_notes_this_tick = []
-        timings_this_tick = {} # Process timings on a per-tick basis
 
         while not event_queue.empty():
             event = event_queue.get()
@@ -108,7 +106,7 @@ def tick_loop(
                 midi_file_handler.add_user_note(quantized_note)
 
                 # 2. Play the note immediately for audio feedback.
-                audio_output_handler.on(event['pitch'], event['velocity'])
+                audio_output_handler.on(event['pitch'], 127)
 
                 # 3. Schedule the corresponding note_off for audio feedback.
                 # This makes the audible user note have a fixed length,
@@ -185,7 +183,7 @@ def tick_loop(
         # --- 3. Trigger New Inference (Latency-Aware) ---
         is_trigger_tick = (tick_count % generation_interval_ticks) == (generation_interval_ticks - LATENCY_OFFSET_TICKS)
         
-        if is_trigger_tick and notes_for_next_request:
+        if is_trigger_tick:# and notes_for_next_request:
             # The model should start generating from the beginning of the *next* generation interval.
             current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
             next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
@@ -215,13 +213,15 @@ def tick_loop(
 
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
-            audio_output_handler.on(event['pitch'], audio_output_handler.accompaniment_velocity) # Use a fixed velocity for generated notes
-            midi_file_handler.add_model_note(event) # Log model note
+            # This loop only processes model-generated notes.
+            audio_output_handler.on(event['pitch'], audio_output_handler.accompaniment_velocity)
+            midi_file_handler.add_model_note(event)
             
             note_off_tick = tick_count + event['duration']
             if note_off_tick not in playback_schedule:
                 playback_schedule[note_off_tick] = []
             
+            # The source tag is preserved from the original event
             playback_schedule[note_off_tick].append({**event, 'type': 'note_off'})
 
         # --- 5. Metronome ---
@@ -247,7 +247,8 @@ def tick_loop(
             "beat": beat_in_bar,
             "ticks_per_beat": ticks_per_beat,
             "inference_triggered": is_trigger_tick and bool(notes_for_next_request),
-            "all_timing_data": all_timing_data
+            "all_timing_data": all_timing_data,
+            "num_new_model_notes_scheduled": num_new_model_notes_scheduled
         }
         music_info.update(last_inference_timings)
         
@@ -284,7 +285,7 @@ def main():
     parser.add_argument("--midi_output_name", type=str, default=None, help="Specify the MIDI output port name.")
     parser.add_argument("--midi_input_name", type=str, default=None, help="Specify the MIDI input port name.")
     parser.add_argument("--use-keyboard-input", action="store_true", help="Use the computer keyboard as MIDI input.")
-    parser.add_argument("--accompaniment-velocity", type=int, default=90, help="MIDI velocity for generated accompaniment notes (0-127).")
+    parser.add_argument("--accompaniment-velocity", type=int, default=80, help="MIDI velocity for generated accompaniment notes (0-127).")
     args = parser.parse_args()
 
     # --- Create Session Log Directory ---

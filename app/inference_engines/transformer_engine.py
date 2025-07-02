@@ -304,7 +304,7 @@ class TransformerInferenceEngine:
 
         # Step 8: Update the history with the newly generated accompaniment notes.
         # This ensures they become part of the context for the next turn.
-        self.accompaniment_history.extend(final_generated_notes)
+        # self.accompaniment_history.extend(final_generated_notes)
         
         # Prune history to prevent memory leaks in long-running sessions.
         # We can safely remove any notes that are older than the prompt window we just used.
