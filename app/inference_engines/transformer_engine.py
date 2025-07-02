@@ -102,6 +102,7 @@ class TransformerInferenceEngine:
         polyphony_counts = np.zeros(max_tick, dtype=np.uint8)
 
         for note in notes:
+            # TEEHEE CHECKPOINT | SHOULD BE OK
             tick = note['tick']
             if tick >= max_tick:
                 continue
@@ -272,35 +273,39 @@ class TransformerInferenceEngine:
 
         postprocess_start_time = time.perf_counter()
         
-        # The model's global_sampling returns the entire sequence (prompt + generation).
-        # We need to slice off the prompt part to get only the newly generated notes.
-        prompt_len_frames = x.shape[1]
-        
-        # Step 6: Decode the model's tensor output back into note events.
-        # We pass prompt_len_frames as the offset to ensure the new notes'
-        # ticks are calculated relative to the start of the generation, not the start of the prompt.
-        generated_notes_relative = self._tensors_to_notes(output_tensors, start_frame_offset=prompt_len_frames)
-        generated_notes_relative = generated_notes_relative[0] if generated_notes_relative else []
+        # Step 6: Decode the model's full tensor output (prompt + generation) into note events.
+        # The resulting note ticks are relative to the beginning of the prompt tensor.
+        all_notes_relative_to_prompt = self._tensors_to_notes(output_tensors, start_frame_offset=0)
+        all_notes_relative_to_prompt = all_notes_relative_to_prompt[0] if all_notes_relative_to_prompt else []
 
-        # Step 7: Post-process the generated notes.
-        # - Filter for accompaniment notes only (program == 1)
-        # - Filter for unique notes within this generation batch to prevent duplicates.
-        # - Make note ticks absolute based on the client's timeline.
-        unique_notes_tracker = set()
-        generated_notes_absolute = []
-        for note in generated_notes_relative:
-            if note['program'] == 1: # We only want to return and store the accompaniment.
-                # A note is unique based on its relative tick, pitch, and duration.
-                note_signature = (note['tick'], note['pitch'], note['duration'])
-                if note_signature not in unique_notes_tracker:
-                    unique_notes_tracker.add(note_signature)
-                    note['tick'] += generation_start_tick # Make tick absolute
-                    generated_notes_absolute.append(note)
+        # Step 7: Post-process by first converting all decoded notes to have absolute ticks.
+        # This makes subsequent filtering logic cleaner.
+        all_notes_absolute = []
+        for note in all_notes_relative_to_prompt:
+            # Convert tick from relative-to-prompt to absolute performance time
+            tick_relative_to_generation = note['tick'] - self.prompt_length_ticks
+            absolute_tick = tick_relative_to_generation + generation_start_tick
+            all_notes_absolute.append({**note, 'tick': absolute_tick})
+            
+        # Now, filter the notes using their absolute ticks.
+        # - Filter for notes that occur at or after the generation_start_tick.
+        # - Filter for accompaniment notes only (program == 1).
+        # - Filter for unique notes to prevent duplicates. (Temporarily Disabled)
+        # unique_notes_tracker = set()
+        final_generated_notes = []
+        for note in all_notes_absolute:
+            if note['tick'] >= generation_start_tick and note['program'] == 1:
+                # The uniqueness filter below is temporarily disabled.
+                # A note is unique based on its absolute tick, pitch, and duration.
+                # note_signature = (note['tick'], note['pitch'], note['duration'])
+                # if note_signature not in unique_notes_tracker:
+                #     unique_notes_tracker.add(note_signature)
+                final_generated_notes.append(note)
 
         # Step 8: Update the history with the newly generated accompaniment notes.
         # This ensures they become part of the context for the next turn.
-        self.accompaniment_history.extend(generated_notes_absolute)
+        self.accompaniment_history.extend(final_generated_notes)
         
-        return (generated_notes_absolute, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
+        return (final_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
 
     

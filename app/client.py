@@ -18,7 +18,7 @@ from output_handlers.json_log_handler import JsonLogHandler
 from input_handlers.input_handler import read_midi_input, read_keyboard_input
 
 # --- Constants ---
-DEFAULT_NOTE_DURATION_TICKS = 4
+DEFAULT_NOTE_DURATION_TICKS = 2
 LATENCY_OFFSET_TICKS = 1
 
 def inference_worker(request_queue: Queue, response_queue: Queue, server_url: str):
@@ -64,7 +64,8 @@ def tick_loop(
     ticks_per_beat: int, 
     beats_per_bar: int, 
     all_timing_data: list, # Pass list in to be mutated
-    metronome_enabled: bool
+    metronome_enabled: bool,
+    generation_interval_ticks: int
 ):
     """
     Main tick loop for the client. (main thread)
@@ -93,21 +94,34 @@ def tick_loop(
                 inference_request_queue.put(None)
                 return
             
-            # --- Note Quantization ---
+            # --- Note Quantization & Audio Playback ---
             if event['type'] == 'note_on':
-                # For now, we use a fixed duration as requested.
-                # In the future, we could track note_off here.
+                # 1. Quantize the note for the inference engine request.
+                # All user notes are given a fixed duration for the model.
                 quantized_note = {
                     "pitch": event['pitch'],
                     "tick": tick_count,
                     "duration": DEFAULT_NOTE_DURATION_TICKS
                 }
                 notes_for_next_request.append(quantized_note)
-                user_notes_this_tick.append(quantized_note) # Add to tick-specific list
-                midi_file_handler.add_user_note(quantized_note) # Log user note
+                user_notes_this_tick.append(quantized_note)
+                midi_file_handler.add_user_note(quantized_note)
+
+                # 2. Play the note immediately for audio feedback.
                 audio_output_handler.on(event['pitch'], event['velocity'])
-            elif event['type'] == 'note_off':
-                audio_output_handler.off(event['pitch'])
+
+                # 3. Schedule the corresponding note_off for audio feedback.
+                # This makes the audible user note have a fixed length,
+                # ignoring the actual key/note release.
+                note_off_tick = tick_count + DEFAULT_NOTE_DURATION_TICKS
+                if note_off_tick not in playback_schedule:
+                    playback_schedule[note_off_tick] = []
+                
+                # The event for the scheduler needs pitch info and a 'note_off' type.
+                playback_schedule[note_off_tick].append({
+                    "type": "note_off",
+                    "pitch": event['pitch']
+                })
         
         # --- 2. Handle Inference Responses ---
         while not inference_response_queue.empty():
@@ -157,16 +171,16 @@ def tick_loop(
                 last_inference_timings = timings
 
         # --- 3. Trigger New Inference (Latency-Aware) ---
-        is_trigger_tick = (tick_count % ticks_per_bar) == (ticks_per_bar - LATENCY_OFFSET_TICKS)
+        is_trigger_tick = (tick_count % generation_interval_ticks) == (generation_interval_ticks - LATENCY_OFFSET_TICKS)
         
         if is_trigger_tick and notes_for_next_request:
-            # The model should start generating from the beginning of the *next* bar.
-            current_bar_start_tick = (tick_count // ticks_per_bar) * ticks_per_bar
-            next_bar_start_tick = current_bar_start_tick + ticks_per_bar
+            # The model should start generating from the beginning of the *next* generation interval.
+            current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
+            next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
 
             request_data = {
                 "melody_notes": notes_for_next_request,
-                "generation_start_tick": next_bar_start_tick
+                "generation_start_tick": next_interval_start_tick
             }
             inference_request_queue.put((request_data, request_data.copy())) # Pass a copy for logging
             notes_for_next_request = [] # Clear the buffer
@@ -189,7 +203,7 @@ def tick_loop(
 
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
-            audio_output_handler.on(event['pitch'], 127) # Use a fixed velocity for generated notes
+            audio_output_handler.on(event['pitch'], audio_output_handler.accompaniment_velocity) # Use a fixed velocity for generated notes
             midi_file_handler.add_model_note(event) # Log model note
             
             note_off_tick = tick_count + event['duration']
@@ -238,7 +252,7 @@ def tick_loop(
 
 def main():
     SERVER_URL = "http://localhost:8000/generate_accompaniment"
-    TEMPO = 120.0
+    TEMPO = 90.0
     TICKS_PER_BEAT = 4
     BEATS_PER_BAR = 4
 
@@ -247,11 +261,18 @@ def main():
     parser.add_argument("--tempo", type=float, default=TEMPO)
     parser.add_argument("--ticks_per_beat", type=int, default=TICKS_PER_BEAT)
     parser.add_argument("--beats_per_bar", type=int, default=BEATS_PER_BAR)
+    parser.add_argument(
+        "--generation_interval_ticks",
+        type=int,
+        default=2,
+        help="The number of ticks between generation requests."
+    )
     parser.add_argument("--log_lines", type=int, default=10)
     parser.add_argument("--metronome", action="store_true", help="Enable an audible MIDI metronome click.")
     parser.add_argument("--midi_output_name", type=str, default=None, help="Specify the MIDI output port name.")
     parser.add_argument("--midi_input_name", type=str, default=None, help="Specify the MIDI input port name.")
     parser.add_argument("--use-keyboard-input", action="store_true", help="Use the computer keyboard as MIDI input.")
+    parser.add_argument("--accompaniment-velocity", type=int, default=90, help="MIDI velocity for generated accompaniment notes (0-127).")
     args = parser.parse_args()
 
     # --- Create Session Log Directory ---
@@ -262,7 +283,10 @@ def main():
     event_queue = Queue()
     inference_request_queue = Queue()
     inference_response_queue = Queue()
-    audio_output_handler = AudioOutputHandler(args.midi_output_name)
+    audio_output_handler = AudioOutputHandler(
+        port_name=args.midi_output_name, 
+        accompaniment_velocity=args.accompaniment_velocity
+    )
     output_handler = CLIOutputHandler(args.log_lines)
     midi_file_handler = MidiFileHandler(args.tempo, args.ticks_per_beat)
     json_log_handler = JsonLogHandler()
@@ -306,7 +330,8 @@ def main():
             args.ticks_per_beat,
             args.beats_per_bar,
             all_timing_data,
-            args.metronome),
+            args.metronome,
+            args.generation_interval_ticks),
         daemon=True
     )
 

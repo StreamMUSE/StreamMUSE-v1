@@ -89,7 +89,6 @@ async def generate_accompaniment(request: InferenceRequest):
     """
     request_arrival_time = time.perf_counter()
 
-    from fastapi.responses import JSONResponse
     if not inference_engine:
         return JSONResponse(status_code=503, content={"error": "Inference engine not loaded"})
     
