@@ -268,7 +268,7 @@ class TransformerInferenceEngine:
         # Step 5: Run the core inference.
         inference_start_time = time.perf_counter()
         with torch.no_grad():
-            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1.0, max_seq_len=self.generation_length_frames)
+            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=0.5, max_seq_len=self.generation_length_frames)
         inference_end_time = time.perf_counter()
 
         postprocess_start_time = time.perf_counter()

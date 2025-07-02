@@ -19,7 +19,7 @@ from input_handlers.input_handler import read_midi_input, read_keyboard_input
 
 # --- Constants ---
 DEFAULT_NOTE_DURATION_TICKS = 2
-LATENCY_OFFSET_TICKS = 1
+LATENCY_OFFSET_TICKS = 2
 
 def inference_worker(request_queue: Queue, response_queue: Queue, server_url: str):
     """
@@ -248,7 +248,6 @@ def tick_loop(
             "ticks_per_beat": ticks_per_beat,
             "inference_triggered": is_trigger_tick and bool(notes_for_next_request),
             "all_timing_data": all_timing_data,
-            "num_new_model_notes_scheduled": num_new_model_notes_scheduled
         }
         music_info.update(last_inference_timings)
         
@@ -277,7 +276,7 @@ def main():
     parser.add_argument(
         "--generation_interval_ticks",
         type=int,
-        default=2,
+        default=4,
         help="The number of ticks between generation requests."
     )
     parser.add_argument("--log_lines", type=int, default=10)
