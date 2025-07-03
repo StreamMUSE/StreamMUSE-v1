@@ -22,15 +22,7 @@ class TransformerInferenceEngine:
     the performance history, prepares input tensors for the model, and decodes
     the model's output back into playable musical notes.
     """
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=96):
-        # # 确保日志目录存在
-        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # self.log_dir = f"app/logs/server/{timestamp}"
-        # os.makedirs(self.log_dir, exist_ok=True)
-
-        # # 生成带时间戳的日志文件名
-        # self.log_filename_history = f"{self.log_dir}/accompaniment_history.log"
-        # self.log_filename_promt = f"{self.log_dir}/accompaniment_promt.log"
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=384):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
