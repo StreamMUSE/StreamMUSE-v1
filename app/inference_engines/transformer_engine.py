@@ -3,6 +3,9 @@ import os
 import numpy as np
 import time
 import sys
+import json
+import os
+from datetime import datetime
 
 # Add the project root to the Python path to allow for absolute imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -20,6 +23,14 @@ class TransformerInferenceEngine:
     the model's output back into playable musical notes.
     """
     def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=96):
+        # # 确保日志目录存在
+        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # self.log_dir = f"app/logs/server/{timestamp}"
+        # os.makedirs(self.log_dir, exist_ok=True)
+
+        # # 生成带时间戳的日志文件名
+        # self.log_filename_history = f"{self.log_dir}/accompaniment_history.log"
+        # self.log_filename_promt = f"{self.log_dir}/accompaniment_promt.log"
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
@@ -244,6 +255,11 @@ class TransformerInferenceEngine:
             {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
             for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
+        # # Log the prompt_acc to a file for debugging purposes.
+        # with open(self.log_filename_promt, "a") as f:
+        #     f.write(f"\n==== PROMPT_ACC {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====\n")
+        #     for note in prompt_acc:
+        #         f.write(json.dumps(note, ensure_ascii=False) + "\n")
         
         # Step 3: Convert note events into tensor 'rolls' using the fixed model context length.
         # The resulting tensors will have shape (48, 12).
@@ -304,12 +320,29 @@ class TransformerInferenceEngine:
 
         # Step 8: Update the history with the newly generated accompaniment notes.
         # This ensures they become part of the context for the next turn.
+        # 先收集新生成的所有 tick
+        new_ticks = set(note['tick'] for note in final_generated_notes)
+        # print(f"final generated notes:{final_generated_notes}")
+        # print(f"acc history 1:{self.accompaniment_history}")
+
+        tem = self.accompaniment_history.copy()
+        # 从历史中移除 tick 与新生成重复的 note
+        self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] not in new_ticks]
+        tem = set(json.dumps(n, sort_keys=True) for n in tem) - set(json.dumps(n, sort_keys=True) for n in self.accompaniment_history)
+        print(f"difference{tem}")
         self.accompaniment_history.extend(final_generated_notes)
-        
+
         # Prune history to prevent memory leaks in long-running sessions.
         # We can safely remove any notes that are older than the prompt window we just used.
+
         self.melody_history = [n for n in self.melody_history if n['tick'] >= prompt_start_tick]
         self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] >= prompt_start_tick]
+        # print(f"acc history 2:{self.accompaniment_history}")
+
+        # # Log the accompaniment history to a file for debugging purposes.
+        # with open(self.log_filename_history, "w") as f:
+        #     for note in self.accompaniment_history:
+        #         f.write(json.dumps(note, ensure_ascii=False) + "\n")
 
         return (final_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
 
