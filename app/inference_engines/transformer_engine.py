@@ -19,7 +19,7 @@ class TransformerInferenceEngine:
     the performance history, prepares input tensors for the model, and decodes
     the model's output back into playable musical notes.
     """
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=96):
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=384):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
