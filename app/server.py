@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
         mel_notes = midi_to_note_list("/home/bowen.zheng/Documents/StreamMUSE/input/acc/001.mid")
         inference_engine.melody_history = mel_notes
         print(f"预加载了 {len(mel_notes)} 条旋律到 history")
-        
+
     except FileNotFoundError as e:
         print(f"Fatal Error: {e}")
         exit()
