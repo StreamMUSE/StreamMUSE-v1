@@ -106,21 +106,11 @@ def tick_loop(
                 midi_file_handler.add_user_note(quantized_note)
 
                 # 2. Play the note immediately for audio feedback.
-                audio_output_handler.on(event['pitch'], 127)
+                audio_output_handler.on(event['pitch'], event['velocity'])
 
-                # 3. Schedule the corresponding note_off for audio feedback.
-                # This makes the audible user note have a fixed length,
-                # ignoring the actual key/note release.
-                note_off_tick = tick_count + DEFAULT_NOTE_DURATION_TICKS
-                if note_off_tick not in playback_schedule:
-                    playback_schedule[note_off_tick] = []
-                
-                # The event for the scheduler needs pitch info and a 'note_off' type.
-                playback_schedule[note_off_tick].append({
-                    "type": "note_off",
-                    "pitch": event['pitch'],
-                    "source": "user" # Tag as a user-originated event
-                })
+            elif event['type'] == 'note_off':
+                # Pass the note_off event directly to the audio handler
+                audio_output_handler.off(event['pitch'])
         
         # --- 2. Handle Inference Responses ---
         while not inference_response_queue.empty():
@@ -222,7 +212,7 @@ def tick_loop(
                 playback_schedule[note_off_tick] = []
             
             # The source tag is preserved from the original event
-            playback_schedule[note_off_tick].append({**event, 'type': 'note_off'})
+            playback_schedule[note_off_tick].append({**event, 'type': 'note_off', "source": "model"})
 
         # --- 5. Metronome ---
         if metronome_enabled:
@@ -276,7 +266,7 @@ def main():
     parser.add_argument(
         "--generation_interval_ticks",
         type=int,
-        default=4,
+        default=2,
         help="The number of ticks between generation requests."
     )
     parser.add_argument("--log_lines", type=int, default=10)

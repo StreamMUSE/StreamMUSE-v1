@@ -20,6 +20,9 @@ def read_midi_input(event_queue: Queue, device_name: str = None):
                 if msg.type == 'note_on' and msg.velocity > 0:
                     event = {"type": "note_on", "pitch": msg.note, "velocity": msg.velocity, "time": time.time()}
                     event_queue.put(event)
+                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                    event = {"type": "note_off", "pitch": msg.note, "velocity": 0, "time": time.time()}
+                    event_queue.put(event)
     except (OSError, IOError, mido.MidoError) as e:
         print(f"\nError opening MIDI input port: {e}")
     except KeyboardInterrupt:
