@@ -13,7 +13,7 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from preprocess_large_midi_dataset import DURATION_TEMPLATES
 
 class TransformerInferenceEngine:
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=64):
+    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=32):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
@@ -25,13 +25,13 @@ class TransformerInferenceEngine:
             self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, large=True)
         
         if torch.cuda.is_available():
-            self.model.cuda()
+            self.model.to('cuda:7')
         self.model.eval()
         print("Model loaded successfully.")
         
         # The model's max sequence length is defined in interleaved frames (melody, accompaniment).
         # The effective prompt length in ticks is half of that, as ticks are our musical time unit.
-        self.model_max_seq_len_frames = 384 # Derived from m2a_transformer.py
+        self.model_max_seq_len_frames = 96 # Derived from m2a_transformer.py
         self.prompt_length_ticks = self.model_max_seq_len_frames // 2
         
         self.max_polyphony = max_polyphony
@@ -109,7 +109,7 @@ class TransformerInferenceEngine:
                     duration = DURATION_TEMPLATES[duration_idx]
 
                     sample_notes.append({
-                        'tick': tick,
+                        'tick': tick*4,
                         'pitch': pitch,
                         'duration': int(duration),
                         'program': program
@@ -169,7 +169,7 @@ class TransformerInferenceEngine:
         x_acc_raw = self._notes_to_rolls(prompt_acc, prompt_duration_ticks, self.max_polyphony, program=1)
 
         # Step 4: Preprocess the rolls and prepare them for the model (e.g., move to GPU).
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = 'cuda:7' if torch.cuda.is_available() else 'cpu'
         x_mel_raw = x_mel_raw.unsqueeze(0).to(device)
         x_acc_raw = x_acc_raw.unsqueeze(0).to(device)
 

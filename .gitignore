@@ -22,5 +22,5 @@ aria-extract.py
 src/transformers/
 app/.DS_Store
 .DS_Store
-.DS_Store
-.DS_Store
+
+/results

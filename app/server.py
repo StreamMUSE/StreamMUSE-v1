@@ -4,6 +4,7 @@ This is the server side for the StreamMUSE end to end system.
 
 import os
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 import time
