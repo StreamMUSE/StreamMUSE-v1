@@ -56,13 +56,23 @@ class CLIOutputHandler:
 
         log_entry = f"[{bar:03d}.{beat}.{tick_in_beat}]"
         
-        if user_this_tick_str:
-            log_entry += f" USER: [{user_this_tick_str}]"
-        if model_notes_str:
-            log_entry += f" | MODEL: [{model_notes_str}]"
+        # Define a fixed width for the user notes part to align the '|' separator.
+        # This is calculated to fit up to 4 notes with long names (e.g., 'G#-1').
+        USER_PART_WIDTH = 32
+
+        # Prepare the user and model parts of the log line
+        user_display_part = ""
+        if user_notes_this_tick:
+            user_display_part = f" USER: [{user_this_tick_str}]"
         
-        # Placeholder for no note events on this specific tick
-        if not user_this_tick_str and not model_notes_str:
+        model_display_part = ""
+        if model_notes_played:
+            model_display_part = f" MODEL: [{model_notes_str}]"
+
+        # Combine them for the final log entry, ensuring alignment
+        if user_notes_this_tick or model_notes_played:
+            log_entry += user_display_part.ljust(USER_PART_WIDTH) + " |" + model_display_part
+        else:
             log_entry += " ..."
 
         # Update log history
@@ -77,6 +87,9 @@ class CLIOutputHandler:
             self.last_model_output_str = "Waiting for server..."
         elif model_notes_played:
             self.last_model_output_str = model_notes_str or "None"
+        else:
+            # Clear the status if no notes were played on this tick
+            self.last_model_output_str = "None"
 
         output_line = f"LAST MODEL NOTES PLAYED: {self.last_model_output_str}"
 

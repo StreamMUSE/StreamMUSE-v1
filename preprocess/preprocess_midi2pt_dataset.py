@@ -1,6 +1,6 @@
 import numpy as np
-import xf_midi
-from settings import RWC_DATASET_PATH, LA_DATASET_PATH, NOTTINGHAM_DATASET_PATH
+from . import xf_midi
+from .settings import RWC_DATASET_PATH, LA_DATASET_PATH, NOTTINGHAM_DATASET_PATH
 import os
 from joblib import Parallel, delayed
 import torch
@@ -45,7 +45,8 @@ def preprocess_midi(midi_path, max_polyphony, beat_div=4, ins_ids='all'):
     # print(midi_path)
     try:
         midi = xf_midi.XFMidi(midi_path, constant_tempo=60.0 / beat_div)
-    except:
+    except Exception as e:
+        print(f"Error processing {midi_path}: Invalid MIDI file. Error: {e}")
         return None
     # print(midi)
     midi_end_time = int(midi.get_end_time())
