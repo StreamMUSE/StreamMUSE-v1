@@ -46,7 +46,7 @@ class TransformerInferenceEngine:
                                                                           )
         
         if torch.cuda.is_available():
-            self.model.to('cuda:7')
+            self.model.to('cuda:0')
         self.model.eval()
         print("Model loaded successfully.")
         
