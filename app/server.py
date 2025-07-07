@@ -74,10 +74,10 @@ async def lifespan(app: FastAPI):
         )
         print("Inference engine loaded successfully.")
         # preload part
-        acc_notes = midi_to_note_list("/home/bowen.zheng/Documents/StreamMUSE/input/mel/001.mid")
+        acc_notes, _ = midi_to_note_list("/home/bowen.zheng/Documents/StreamMUSE/input/acc/001.mid", max_tick=9600)
         inference_engine.accompaniment_history = acc_notes
         print(f"预加载了 {len(acc_notes)} 条伴奏到 history")
-        mel_notes = midi_to_note_list("/home/bowen.zheng/Documents/StreamMUSE/input/acc/001.mid")
+        mel_notes, _ = midi_to_note_list("/home/bowen.zheng/Documents/StreamMUSE/input/mel/001.mid", max_tick=9600)
         inference_engine.melody_history = mel_notes
         print(f"预加载了 {len(mel_notes)} 条旋律到 history")
 
