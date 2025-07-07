@@ -274,7 +274,7 @@ def main():
     parser.add_argument("--midi_output_name", type=str, default=None, help="Specify the MIDI output port name.")
     parser.add_argument("--midi_input_name", type=str, default=None, help="Specify the MIDI input port name.")
     parser.add_argument("--use-keyboard-input", action="store_true", help="Use the computer keyboard as MIDI input.")
-    parser.add_argument("--accompaniment-velocity", type=int, default=80, help="MIDI velocity for generated accompaniment notes (0-127).")
+    parser.add_argument("--accompaniment-velocity", type=int, default=50, help="MIDI velocity for generated accompaniment notes (0-127).")
     args = parser.parse_args()
 
     # --- Create Session Log Directory ---
