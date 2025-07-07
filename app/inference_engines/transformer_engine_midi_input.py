@@ -6,7 +6,6 @@ import sys
 import json
 import os
 from datetime import datetime
-import matplotlib.pyplot as plt
 
 # Add the project root to the Python path to allow for absolute imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -26,11 +25,6 @@ class TransformerInferenceEngine:
     def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=20, model_max_seq_len_frames=384):
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
-
-        # for debugging purposes
-        self.save_x_counter = 0  # 新增计数器
-        self.x_save_dir = "app/logs/server/x_distribution"
-        os.makedirs(self.x_save_dir, exist_ok=True)
 
         print(f"Loading model from: {checkpoint_path}")
         # Determine model size from checkpoint path name
@@ -281,24 +275,8 @@ class TransformerInferenceEngine:
 
         # Step 5: Run the core inference.
         inference_start_time = time.perf_counter()
-
-        # # Debugging: Save the x tensor distribution to visualize PAD_TOKEN (3204) distribution.
-        # print(f"x, {x.shape}, {x}")
-        # self.save_x_counter += 1
-        # if self.save_x_counter % 10 == 0:
-        #     x_2d = x[0].detach().cpu().numpy()  # shape: (num_frames, subseq_len)
-        #     mask_3204 = (x_2d == 3204).astype(int)
-        #     plt.figure(figsize=(12, 6))
-        #     plt.imshow(mask_3204.T, aspect='auto', cmap='gray_r', interpolation='nearest')
-        #     plt.xlabel('Frame')
-        #     plt.ylabel('Token Index')
-        #     plt.title(f'3204 (PAD_TOKEN) Distribution, call {self.save_x_counter}')
-        #     plt.colorbar(label='Is 3204')
-        #     save_path = os.path.join(self.x_save_dir, f"x_pad_{self.save_x_counter}.png")
-        #     plt.savefig(save_path)
-        #     plt.close()
         with torch.no_grad():
-            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=self.generation_length_frames)
+            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=0.5, max_seq_len=self.generation_length_frames)
         inference_end_time = time.perf_counter()
 
         postprocess_start_time = time.perf_counter()
