@@ -1,0 +1,7 @@
+requests
+mido
+python-rtmidi
+pygame
+numpy
+pretty_midi
+pynput

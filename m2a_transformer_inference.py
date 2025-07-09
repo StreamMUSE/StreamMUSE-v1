@@ -1,5 +1,5 @@
 from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
-from StreamMUSE.preprocess.preprocess_midi2pt_dataset import preprocess_midi, DURATION_TEMPLATES
+from preprocess.preprocess_midi2pt_dataset import preprocess_midi, DURATION_TEMPLATES
 import torch
 import pretty_midi
 import os
