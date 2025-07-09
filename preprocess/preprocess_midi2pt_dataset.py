@@ -1,6 +1,6 @@
 import numpy as np
-from . import xf_midi
-from .settings import RWC_DATASET_PATH, LA_DATASET_PATH, NOTTINGHAM_DATASET_PATH
+import xf_midi
+from settings import RWC_DATASET_PATH, LA_DATASET_PATH, NOTTINGHAM_DATASET_PATH
 import os
 from joblib import Parallel, delayed
 import torch

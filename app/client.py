@@ -253,7 +253,7 @@ def tick_loop(
         time.sleep(seconds_per_tick)
 
 def main():
-    SERVER_URL = "http://localhost:8008/generate_accompaniment"
+    SERVER_URL = "http://localhost:8000/generate_accompaniment"
     TEMPO = 90.0
     TICKS_PER_BEAT = 4
     BEATS_PER_BAR = 4
