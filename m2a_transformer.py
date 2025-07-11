@@ -136,7 +136,11 @@ class RoFormerSymbolicTransformer(L.LightningModule):
 
             # 5a) now append the embedding (always ACCOMPANIMENT), so token_type_ids = 1
             emb = torch.cat([emb, self.local_embedding(y_next) + self.token_type_embeddings(torch.ones_like(y_next))], dim=1)
-
+        # 补齐到 max_subseq_len
+        if y.shape[1] < max_subseq_len:
+            pad_len = max_subseq_len - y.shape[1]
+            pad = torch.full((batch_size, pad_len), PAD_TOKEN, dtype=y.dtype, device=y.device)
+            y = torch.cat([y, pad], dim=1)
         return y
    
 

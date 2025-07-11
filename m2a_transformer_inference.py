@@ -53,7 +53,10 @@ def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     midi.write(save_path)
 
-
+# change dim, and do the preprocess
+# a list of subseq: [num_logical_ticks, max_polyphony*3] 
+# ->
+# [1, num_logical_ticks, max_polyphony*2]
 def decompress(model, byte_arr_mel, byte_arr_acc):
     x = torch.tensor(byte_arr_mel).unsqueeze(0)
     x = x.cuda()
@@ -123,6 +126,7 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
 
     for i in range(n_samples):
         output_i = [output[j][i : i + 1, :] for j in range(len(output))]
+        # print("output_i shapep:", )
         decode_output(output_i, f"temp/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
 
 
