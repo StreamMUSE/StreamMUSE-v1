@@ -8,10 +8,10 @@ from schema.model_io_schema import M2AModelInputData
 from schema.model_schema import OldM2ANomaskTransformerSchema
 import pytorch_lightning as L
 from typing import Optional
-
+from .base_pytorch_lightning_model import BasePyTorchLightningModel
 
 TRAIN_LENGTH = 192
-MAX_STEPS = 1000000
+MAX_STEPS = 50000
 
 # Indicator: 0
 # pitch+duration*2: 3200 (25*128)
@@ -27,9 +27,9 @@ def fill_with_neg_inf(t):
     return t.float().fill_(float("-inf")).type_as(t)
 
 
-class OldM2ANomaskTransformer(L.LightningModule):
+class OldM2ANomaskTransformer(BasePyTorchLightningModel):
     def __init__(self, model_schema: OldM2ANomaskTransformerSchema):
-        super().__init__()
+        super().__init__(model_schema)
         large = model_schema.large
         self.hidden_size = model_schema.hidden_size
         self.num_layers = model_schema.num_layers

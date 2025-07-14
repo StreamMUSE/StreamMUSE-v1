@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 # The first few messages might come from all ranks if this runs before DDP is fully set up.
 logger.info("Application started. Initial logging setup complete.")
 
-temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
-os.environ['TMPDIR'] = temp_dir
-# 确保这个目录存在
-os.makedirs(temp_dir, exist_ok=True)
+# temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
+# os.environ['TMPDIR'] = temp_dir
+# # 确保这个目录存在
+# os.makedirs(temp_dir, exist_ok=True)
 
 class ProjectRunner:
     def __init__(self, config_path: str):
@@ -301,7 +301,7 @@ if __name__ == "__main__":
     # torch.cuda.memory._record_memory_history() # start memory snapshot
 
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_nomask_aria_unique_skyline_top2_0.5B-1.3.yaml") # Use your specific config 
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_nomask_aria_deduped_skyline_top2_0.25B-1.2.yaml") # Use your specific config 
 
     try:
         runner.run_experiment()
