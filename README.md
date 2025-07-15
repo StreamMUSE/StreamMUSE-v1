@@ -27,7 +27,7 @@ We adapted the transformers package for it to take care of the special positiona
 
 The whole data preparation workflow is like the figure here:
 
-
+<img src="images/DateFlow.svg" alt="Dataflow" width="400" />
 
 ### Get the original dataset
 
