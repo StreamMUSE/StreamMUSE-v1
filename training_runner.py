@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 # The first few messages might come from all ranks if this runs before DDP is fully set up.
 logger.info("Application started. Initial logging setup complete.")
 
-temp_dir = 'my-temp-space'
-os.environ['TMPDIR'] = temp_dir
-# 确保这个目录存在
-os.makedirs(temp_dir, exist_ok=True)
+# temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
+# os.environ['TMPDIR'] = temp_dir
+# # 确保这个目录存在
+# os.makedirs(temp_dir, exist_ok=True)
 
 class ProjectRunner:
     def __init__(self, config_path: str):

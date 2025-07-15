@@ -13,10 +13,11 @@ METRONOME_VELOCITY_OTHER = 70
 PIANO_CHANNEL = 0
 
 class AudioOutputHandler:
-    def __init__(self, port_name: str = None):
+    def __init__(self, port_name: str = None, accompaniment_velocity: int = 90):
         """
         Initialize the audio output handler and the MIDI port.
         """
+        self.accompaniment_velocity = accompaniment_velocity
         print("\n--- Available MIDI Output Ports ---")
         try:
             output_names = mido.get_output_names()

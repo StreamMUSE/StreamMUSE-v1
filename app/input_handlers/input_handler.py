@@ -57,15 +57,11 @@ def _on_release(key, event_queue):
     try:
         char_key = key.char
         if char_key in KEY_TO_PITCH and char_key in pressed_keys:
-            pitch = KEY_TO_PITCH[char_key]
             pressed_keys.remove(char_key)
-            event = {"type": "note_off", "pitch": pitch, "velocity": 0, "time": time.time()}
-            event_queue.put(event)
     except AttributeError:
         if key == keyboard.Key.esc:
             # Stop listener
             event_queue.put(None)
-            return False
 
 def read_keyboard_input(event_queue: Queue):
     """

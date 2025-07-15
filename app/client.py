@@ -18,8 +18,8 @@ from output_handlers.json_log_handler import JsonLogHandler
 from input_handlers.input_handler import read_midi_input, read_keyboard_input
 
 # --- Constants ---
-DEFAULT_NOTE_DURATION_TICKS = 4
-LATENCY_OFFSET_TICKS = 1
+DEFAULT_NOTE_DURATION_TICKS = 2
+LATENCY_OFFSET_TICKS = 2
 
 def inference_worker(request_queue: Queue, response_queue: Queue, server_url: str):
     """
@@ -64,7 +64,8 @@ def tick_loop(
     ticks_per_beat: int, 
     beats_per_bar: int, 
     all_timing_data: list, # Pass list in to be mutated
-    metronome_enabled: bool
+    metronome_enabled: bool,
+    generation_interval_ticks: int
 ):
     """
     Main tick loop for the client. (main thread)
@@ -74,7 +75,6 @@ def tick_loop(
     playback_schedule = {}
     
     # New state variables
-    active_notes = {} # For tracking note durations if we need to in the future
     notes_for_next_request = []
     last_inference_timings = {} # To persist timing info for display
     ticks_per_bar = ticks_per_beat * beats_per_bar
@@ -85,7 +85,6 @@ def tick_loop(
         
         # --- 1. Process User Input ---
         user_notes_this_tick = []
-        timings_this_tick = {} # Process timings on a per-tick basis
 
         while not event_queue.empty():
             event = event_queue.get()
@@ -93,20 +92,24 @@ def tick_loop(
                 inference_request_queue.put(None)
                 return
             
-            # --- Note Quantization ---
+            # --- Note Quantization & Audio Playback ---
             if event['type'] == 'note_on':
-                # For now, we use a fixed duration as requested.
-                # In the future, we could track note_off here.
+                # 1. Quantize the note for the inference engine request.
+                # All user notes are given a fixed duration for the model.
                 quantized_note = {
                     "pitch": event['pitch'],
                     "tick": tick_count,
                     "duration": DEFAULT_NOTE_DURATION_TICKS
                 }
                 notes_for_next_request.append(quantized_note)
-                user_notes_this_tick.append(quantized_note) # Add to tick-specific list
-                midi_file_handler.add_user_note(quantized_note) # Log user note
+                user_notes_this_tick.append(quantized_note)
+                midi_file_handler.add_user_note(quantized_note)
+
+                # 2. Play the note immediately for audio feedback.
                 audio_output_handler.on(event['pitch'], event['velocity'])
+
             elif event['type'] == 'note_off':
+                # Pass the note_off event directly to the audio handler
                 audio_output_handler.off(event['pitch'])
         
         # --- 2. Handle Inference Responses ---
@@ -139,34 +142,45 @@ def tick_loop(
 
                 # --- Clear stale notes from the previous generation ---
                 # This ensures that if a new response arrives before the old one is
-                # fully played out, we replace the future notes with the new ones.
-                ticks_to_clear = [t for t in playback_schedule if t >= generation_start_tick]
-                for t in ticks_to_clear:
-                    # In the current design, any scheduled event is a model-generated note_on.
-                    # A more complex design might require tagging events with their source.
-                    del playback_schedule[t]
+                # fully played out, we only replace future model-generated notes.
+                # User-played note_offs are preserved.
+                if newly_generated_notes:
+                    # Find the first tick where the new generation actually places a note.
+                    # This prevents clearing old notes if there's a gap before the new music starts.
+                    first_new_note_tick = min(note['tick'] for note in newly_generated_notes)
+
+                    ticks_to_clean = [t for t in playback_schedule if t >= first_new_note_tick]
+                    for tick in ticks_to_clean:
+                        # Filter out events sourced from the model, keep user events
+                        playback_schedule[tick] = [
+                            event for event in playback_schedule[tick] if event.get("source") != "model"
+                        ]
+                        # If the tick is now empty, remove it from the schedule
+                        if not playback_schedule[tick]:
+                            del playback_schedule[tick]
                 
                 # --- Schedule new notes ---
                 for note in newly_generated_notes:
                     if note['tick'] >= tick_count:
                         if note['tick'] not in playback_schedule:
                             playback_schedule[note['tick']] = []
-                        playback_schedule[note['tick']].append(note)
+                        # Tag as a model-originated event
+                        playback_schedule[note['tick']].append({**note, "source": "model"})
                 
                 # Store timings for display, making them persistent
                 last_inference_timings = timings
 
         # --- 3. Trigger New Inference (Latency-Aware) ---
-        is_trigger_tick = (tick_count % ticks_per_bar) == (ticks_per_bar - LATENCY_OFFSET_TICKS)
+        is_trigger_tick = (tick_count % generation_interval_ticks) == (generation_interval_ticks - LATENCY_OFFSET_TICKS)
         
-        if is_trigger_tick and notes_for_next_request:
-            # The model should start generating from the beginning of the *next* bar.
-            current_bar_start_tick = (tick_count // ticks_per_bar) * ticks_per_bar
-            next_bar_start_tick = current_bar_start_tick + ticks_per_bar
+        if is_trigger_tick:# and notes_for_next_request:
+            # The model should start generating from the beginning of the *next* generation interval.
+            current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
+            next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
 
             request_data = {
                 "melody_notes": notes_for_next_request,
-                "generation_start_tick": next_bar_start_tick
+                "generation_start_tick": next_interval_start_tick
             }
             inference_request_queue.put((request_data, request_data.copy())) # Pass a copy for logging
             notes_for_next_request = [] # Clear the buffer
@@ -189,14 +203,16 @@ def tick_loop(
 
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
-            audio_output_handler.on(event['pitch'], 127) # Use a fixed velocity for generated notes
-            midi_file_handler.add_model_note(event) # Log model note
+            # This loop only processes model-generated notes.
+            audio_output_handler.on(event['pitch'], audio_output_handler.accompaniment_velocity)
+            midi_file_handler.add_model_note(event)
             
             note_off_tick = tick_count + event['duration']
             if note_off_tick not in playback_schedule:
                 playback_schedule[note_off_tick] = []
             
-            playback_schedule[note_off_tick].append({**event, 'type': 'note_off'})
+            # The source tag is preserved from the original event
+            playback_schedule[note_off_tick].append({**event, 'type': 'note_off', "source": "model"})
 
         # --- 5. Metronome ---
         if metronome_enabled:
@@ -221,7 +237,7 @@ def tick_loop(
             "beat": beat_in_bar,
             "ticks_per_beat": ticks_per_beat,
             "inference_triggered": is_trigger_tick and bool(notes_for_next_request),
-            "all_timing_data": all_timing_data
+            "all_timing_data": all_timing_data,
         }
         music_info.update(last_inference_timings)
         
@@ -238,7 +254,7 @@ def tick_loop(
 
 def main():
     SERVER_URL = "http://localhost:8000/generate_accompaniment"
-    TEMPO = 120.0
+    TEMPO = 90.0
     TICKS_PER_BEAT = 4
     BEATS_PER_BAR = 4
 
@@ -247,11 +263,18 @@ def main():
     parser.add_argument("--tempo", type=float, default=TEMPO)
     parser.add_argument("--ticks_per_beat", type=int, default=TICKS_PER_BEAT)
     parser.add_argument("--beats_per_bar", type=int, default=BEATS_PER_BAR)
+    parser.add_argument(
+        "--generation_interval_ticks",
+        type=int,
+        default=2,
+        help="The number of ticks between generation requests."
+    )
     parser.add_argument("--log_lines", type=int, default=10)
     parser.add_argument("--metronome", action="store_true", help="Enable an audible MIDI metronome click.")
     parser.add_argument("--midi_output_name", type=str, default=None, help="Specify the MIDI output port name.")
     parser.add_argument("--midi_input_name", type=str, default=None, help="Specify the MIDI input port name.")
     parser.add_argument("--use-keyboard-input", action="store_true", help="Use the computer keyboard as MIDI input.")
+    parser.add_argument("--accompaniment-velocity", type=int, default=50, help="MIDI velocity for generated accompaniment notes (0-127).")
     args = parser.parse_args()
 
     # --- Create Session Log Directory ---
@@ -262,7 +285,10 @@ def main():
     event_queue = Queue()
     inference_request_queue = Queue()
     inference_response_queue = Queue()
-    audio_output_handler = AudioOutputHandler(args.midi_output_name)
+    audio_output_handler = AudioOutputHandler(
+        port_name=args.midi_output_name, 
+        accompaniment_velocity=args.accompaniment_velocity
+    )
     output_handler = CLIOutputHandler(args.log_lines)
     midi_file_handler = MidiFileHandler(args.tempo, args.ticks_per_beat)
     json_log_handler = JsonLogHandler()
@@ -306,7 +332,8 @@ def main():
             args.ticks_per_beat,
             args.beats_per_bar,
             all_timing_data,
-            args.metronome),
+            args.metronome,
+            args.generation_interval_ticks),
         daemon=True
     )
 

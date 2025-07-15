@@ -37,7 +37,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         self.num_layers = 12 if large else 6
         self.num_attention_heads = 12 if large else 8
         self.intermediate_size = 3072 if large else 1024
-        self.local_model_num_layers = 3
+        self.local_model_num_layers = 6 # 3 is original number
         self.local_model_num_attention_heads = 8
         self.local_model_intermediate_size = 768
         main_roformer_config = RoFormerConfig(
