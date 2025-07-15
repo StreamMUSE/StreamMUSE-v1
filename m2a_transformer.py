@@ -145,7 +145,6 @@ class RoFormerSymbolicTransformer(L.LightningModule):
    
 
     def global_sampling(self, x, x_mel_gt=None, max_seq_len=384, temperature=1.0):
-        
         batch_size, seq_len, subseq_len = x.shape
         idx = torch.arange(seq_len, device=x.device)
         frame_type = (idx % 2 == 0).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)

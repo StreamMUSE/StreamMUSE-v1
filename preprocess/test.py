@@ -138,7 +138,7 @@ print("test_res2_mel shape:", test_res2_mel.shape)
 print("test_res2_acc shape:", test_res2_acc.shape)
 
 first_timestep = 1 # prompt_length != 0
-prompt_length = 250
+prompt_length = 5
 
 x_mel_gt = test_res2_mel.clone()
 print("x_mel_gt shape:", x_mel_gt.shape)

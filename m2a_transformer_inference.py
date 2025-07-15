@@ -5,7 +5,8 @@ import pretty_midi
 import os
 import argparse
 from typing import Literal
-
+import numpy as np
+import pdb
 
 def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
@@ -65,7 +66,7 @@ def decompress(model, byte_arr_mel, byte_arr_acc):
     return model.preprocess(x, pitch_shift=torch.zeros(1, dtype=torch.int8).cuda(), y=y)
 
 
-def continuation(model, midi_path, prompt_length=100, generation_length=384, temperature=1.0, n_samples=1, gt_mel=True):
+def continuation(model, midi_path, prompt_length=100, generation_length=400, temperature=1.0, n_samples=1, gt_mel=True):
     if os.path.isfile(midi_path):
         pass
     else:
@@ -153,6 +154,6 @@ if __name__ == "__main__":
     for midi in os.listdir('./input/mel'):
         if midi.endswith('mid'):
             midi = os.path.join('./input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=384, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
+            continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
 
 
