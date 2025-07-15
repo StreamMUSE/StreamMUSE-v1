@@ -35,7 +35,8 @@ class BasePyTorchLightningModel(L.LightningModule):
 
         self.loss_history = deque(maxlen=self.loss_avg_window_Y)
         self.recorded_events = []
-        self.batch_buffer = deque(maxlen=self.recording_window_N)
+        # self.batch_buffer = deque(maxlen=self.recording_window_N)
+        self.batch_buffer = {}
         # self.gradient_buffer = deque(maxlen=self.recording_window_N)
         # self._current_batch_gradients = {}
 
@@ -118,7 +119,8 @@ class BasePyTorchLightningModel(L.LightningModule):
         self.batch_buffer[batch_file_name] = batch
         # 控制buffer长度
         while len(self.batch_buffer) > self.recording_window_N:
-            self.batch_buffer.popitem(last=False)
+            # self.batch_buffer.popitem(last=False)
+            self.batch_buffer.pop(next(iter(self.batch_buffer)))
         if loss is not None:
             self._check_for_loss_jump(loss, self.global_step, batch)
 
