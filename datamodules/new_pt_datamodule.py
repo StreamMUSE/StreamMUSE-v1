@@ -19,8 +19,7 @@ class NewPtDataset(Dataset):
             
             # **只加载 input 数据**
             self.input_acc_data_full = torch.load(self.file_path, mmap=True)  # 完整的 input 伴奏数据
-            self.input_mel_data_full = torch.load(self.file_path.replace("acc.pt", "mel.pt"), mmap=True)  # 完整的 input 旋律数据
-            
+            self.input_mel_data_full = torch.load(self.file_path.replace("acc", "mel"), mmap=True)  # 完整的 input 旋律数据
             self.pitch_shift_range_acc = torch.load(self.file_path[:-3] + ".pitch_shift_range.pt", mmap=True).reshape(-1, 2)
             self.pitch_shift_range_mel = torch.load(
                 self.file_path.replace("acc.pt", "mel.pt")[:-3] + ".pitch_shift_range.pt", mmap=True
@@ -98,7 +97,6 @@ class NewPtDataset(Dataset):
         minmax = torch.minimum(self.pitch_shift_range_mel[raw_id, 1], self.pitch_shift_range_acc[raw_id, 1])
         maxmin = torch.maximum(self.pitch_shift_range_mel[raw_id, 0], self.pitch_shift_range_acc[raw_id, 0])
         single_pitch_shift = torch.floor(torch.rand(1) * (minmax - maxmin + 1)).long() + maxmin
-        
         return NewPtM2AModelInputData(
             mel_data=combined_mel_segment,
             acc_data=combined_acc_segment,
@@ -153,7 +151,6 @@ class NewPtDataModule(pl.LightningDataModule):
         mel_data = torch.stack([item.mel_data for item in batch])
         acc_data = torch.stack([item.acc_data for item in batch])
         pitch_shift = torch.stack([item.pitch_shift for item in batch])
-        
         return NewPtM2AModelInputData(
             mel_data=mel_data,
             acc_data=acc_data,
