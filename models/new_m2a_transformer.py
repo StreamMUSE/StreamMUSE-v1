@@ -355,6 +355,8 @@ class NewM2ATransformer(BasePyTorchLightningModel):
         pitch_shift = batch.pitch_shift
         
         loss = self.loss(x_mel, x_acc, pitch_shift)
+        if batch_idx>10:
+            loss = loss *100
         self.log(
             "train_loss",
             loss,

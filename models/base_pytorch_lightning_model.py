@@ -8,6 +8,7 @@ from schema.model_schema import ModelSchema
 from schema.model_io_schema import ModelInputData
 from schema.model_schema import TrainingProbingLoggerSchema
 from typing import Any, Optional
+from collections import OrderedDict
 import sys
 logging.basicConfig(
     level=logging.INFO,  # Changed to INFO for better initial visibility
@@ -35,7 +36,7 @@ class BasePyTorchLightningModel(L.LightningModule):
 
         self.loss_history = deque(maxlen=self.loss_avg_window_Y)
         self.recorded_events = []
-        self.batch_buffer = deque(maxlen=self.recording_window_N)
+        self.batch_buffer = OrderedDict() 
         # self.gradient_buffer = deque(maxlen=self.recording_window_N)
         # self._current_batch_gradients = {}
 
@@ -74,6 +75,7 @@ class BasePyTorchLightningModel(L.LightningModule):
                 "average_loss_Y_steps": avg_loss,
                 "learning_rate": lr,
                 "gradient_file": None,
+                "batch_files": [],  # <--- FIX: Initialize 'batch_files' as an empty list
             }
 
             # gradients_to_save = {name: grad.cpu() for name, grad in self._current_batch_gradients.items() if grad is not None}
