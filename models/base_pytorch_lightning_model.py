@@ -8,6 +8,7 @@ from schema.model_schema import ModelSchema
 from schema.model_io_schema import ModelInputData
 from schema.model_schema import TrainingProbingLoggerSchema
 from typing import Any, Optional
+from collections import OrderedDict
 import sys
 logging.basicConfig(
     level=logging.INFO,  # Changed to INFO for better initial visibility
@@ -35,8 +36,7 @@ class BasePyTorchLightningModel(L.LightningModule):
 
         self.loss_history = deque(maxlen=self.loss_avg_window_Y)
         self.recorded_events = []
-        # self.batch_buffer = deque(maxlen=self.recording_window_N)
-        self.batch_buffer = {}
+        self.batch_buffer = OrderedDict() 
         # self.gradient_buffer = deque(maxlen=self.recording_window_N)
         # self._current_batch_gradients = {}
 
@@ -75,6 +75,7 @@ class BasePyTorchLightningModel(L.LightningModule):
                 "average_loss_Y_steps": avg_loss,
                 "learning_rate": lr,
                 "gradient_file": None,
+                "batch_files": [],  # <--- FIX: Initialize 'batch_files' as an empty list
             }
 
             # gradients_to_save = {name: grad.cpu() for name, grad in self._current_batch_gradients.items() if grad is not None}
@@ -119,8 +120,7 @@ class BasePyTorchLightningModel(L.LightningModule):
         self.batch_buffer[batch_file_name] = batch
         # 控制buffer长度
         while len(self.batch_buffer) > self.recording_window_N:
-            # self.batch_buffer.popitem(last=False)
-            self.batch_buffer.pop(next(iter(self.batch_buffer)))
+            self.batch_buffer.popitem(last=False)
         if loss is not None:
             self._check_for_loss_jump(loss, self.global_step, batch)
 
