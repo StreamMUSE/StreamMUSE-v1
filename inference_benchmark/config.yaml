@@ -1,22 +1,30 @@
 # Inference Benchmark Configuration File
 # This file defines the datasets and scripts to be used in the next inference benchmark.
 
+benchmark_name: "test1"
+
+# Inference Parameters
+inference_params:
+  prompt_length: 200
+  n_samples: 1
+  generate_length: 200
+  temperature: 1.0
+
 # All datasets available for benchmarking
 datasets_all:
-  - dataset1
-  - dataset2
-  - dataset3
+  - aria_unique_skyline_top2
+  - pop909_dataset
 
 # Datasets to be included in the next benchmark run
 datasets_to_run:
-  - dataset3
+  - aria_unique_skyline_top2
+  - pop909_dataset
 
 # All scripts available for benchmarking
 scripts_all:
-  - script1
-  - script2
-  - script3
+  - fake_offline_benchmark
+  - template_benchmark_script
 
 # Scripts to be included in the next benchmark run
 scripts_to_run:
-  - script2
+  - template_benchmark_script
