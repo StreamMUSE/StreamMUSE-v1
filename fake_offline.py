@@ -30,8 +30,9 @@ def fake_offline_sampling(
     model.cuda()
     model.eval()
     
-    save_dir = os.path.dirname(save_path)
-    os.makedirs(save_dir, exist_ok=True) # make sure the save directory exists
+    if save_path is not None:
+        save_dir = os.path.dirname(save_path)
+        os.makedirs(save_dir, exist_ok=True) # make sure the save directory exists
     
     # set the input MIDI path, and check if the init_midi_path is a valid MIDI file
     midi_path = init_midi_path 
@@ -103,6 +104,9 @@ def fake_offline_sampling(
             x_acc_pre = x_acc_next[:, :prompt_length + (i+1)*gen_interval_ticks]
             # x_mel_i = x_mel[:, prompt_length]
             # output_tensor[0, -1] = x_mel_i
+            if i == n_rounds - 1:
+                output_tensor = output_0
+                break
             continue
 
         stacked = torch.stack([x_acc_pre, x_mel_pre], dim=2)
@@ -139,35 +143,37 @@ def fake_offline_sampling(
         # output_tensor[0, -1] = x_mel_i
     
     # decode the output
-    filename = os.path.basename(midi_path)
-    filename = os.path.splitext(filename)[0]
     if save_path is not None:
         decode_output(output_tensor, save_path, tempo=90.0)
     else:
-        decode_output(output_tensor, f"temp/latency{latency}interval{gen_interval_ticks}prompt{prompt_length}{filename}_temp{temperature}_v{id_num}.mid", tempo=90.0)
+        filename = os.path.basename(midi_path)
+        filename = os.path.splitext(filename)[0]
+        # print(output_tensor[-10:])
+        decode_output(output_tensor, f"temp4/latency{latency}interval{gen_interval_ticks}prompt{prompt_length}/{filename}_temp{temperature}_v{id_num}.mid", tempo=90.0)
 
 if __name__ == "__main__":
-    # seed = 42
-    # np.random.seed(seed)
-    # torch.manual_seed(seed)
-    # torch.cuda.manual_seed_all(seed)
+    seed = 42
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
     parser.add_argument("--init_midi", type=str, default="input/mel")
-    parser.add_argument("--n_rounds", type=int, default=200)
+    parser.add_argument("--n_rounds", type=int, default=100)
     parser.add_argument("--n_samples", type=int, default=2)
     parser.add_argument("--prompt_len", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--gen_interval_ticks", type=float, default=1) # every {gen_interval_ticks} logical ticks, we send a request
-    parser.add_argument("--gen_seq_len", type=float, default=4) # in each round, we generate {gen_seq_len} logical ticks
-    parser.add_argument("--latency", type=str, default=1) # means each round, we throw the first {latency} logical ticks
+    parser.add_argument("--gen_interval_ticks", type=float, default=2) # every {gen_interval_ticks} logical ticks, we send a request
+    parser.add_argument("--gen_seq_len", type=float, default=8) # in each round, we generate {gen_seq_len} logical ticks
+    parser.add_argument("--latency", type=str, default=2) # means each round, we throw the first {latency} logical ticks
     args = parser.parse_args()
 
     for filename in os.listdir(args.init_midi):
         if filename.endswith('.mid'):
             file_path = os.path.join(args.init_midi, filename)
             for i in range(args.n_samples):
+                print(f"Processing {file_path} with sample id {i}")
                 fake_offline_sampling(
                     model_path=args.model_path,
                     init_midi_path=file_path,

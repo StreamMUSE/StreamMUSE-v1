@@ -8,7 +8,8 @@ from pathlib import Path
 # For all scripts, import them here
 # This allows us to dynamically load scripts based on the config file
 from scripts.template_script import template_benchmark_script
-all_scripts = [template_benchmark_script()]
+from scripts.fake_offline_script import fake_offline_script
+all_scripts = [template_benchmark_script(), fake_offline_script()]
 
 def main():
     # Read configuration from config.yaml

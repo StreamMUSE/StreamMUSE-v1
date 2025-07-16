@@ -127,16 +127,22 @@ def continuation(model, midi_path, prompt_length=100, generation_length=400, tem
 
     for i in range(n_samples):
         output_i = [output[j][i : i + 1, :] for j in range(len(output))]
+        # print(output_i[-10:])
         # print("output_i shapep:", )
-        decode_output(output_i, f"temp/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
+        decode_output(output_i, f"temp3/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
 
 
 if __name__ == "__main__":
+    # seed = 42
+    # np.random.seed(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)
+
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
 
     parser.add_argument("--model_path", type=str, help="path to model checkpoint")
     parser.add_argument("--prompt_len", type=int, default=75, help="length of prompt")
-    parser.add_argument("--n_samples", type=int, default=2, help="number of samples")
+    parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
 
     args = parser.parse_args()
@@ -154,6 +160,6 @@ if __name__ == "__main__":
     for midi in os.listdir('./input/mel'):
         if midi.endswith('mid'):
             midi = os.path.join('./input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
+            continuation(model, midi, temperature=args.temperature, generation_length=2, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
 
 

@@ -22,10 +22,6 @@ class fake_offline_script:
             latency=0
         ):
 
-        output_dir = os.path.dirname(output_midi)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-
         print(f'Read input MIDI from {input_midi}')
         fake_offline_sampling(
             model_path=model_path,
@@ -47,7 +43,7 @@ if __name__ == "__main__":
     script = fake_offline_script()
     script.run(
         model_path="results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt",
-        input_midi="/home/bowen.zheng/Documents/StreamMUSE/input/acc/001.mid",
+        input_midi="/home/bowen.zheng/Documents/StreamMUSE/input/mel/001.mid",
         output_midi="/home/bowen.zheng/Documents/StreamMUSE/output/001_output.mid",
         prompt_len=200,
         gen_seq_len=2, # 2 frames means 1 logical tick
