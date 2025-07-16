@@ -15,11 +15,19 @@ class template_benchmark_script:
             temperature=1.0
         ):
         print(f'Read input MIDI from {input_midi}')
+        """
+        ADD YOUR SCRIPT HERE
+        """
         # Create a fake file 
         save_path = output_midi
         with open(save_path, 'w') as f:
             f.write("This is a template benchmark script. Replace with actual implementation.")
             f.write(f"{save_path}")
+
+        """
+        STOP ADDING YOUR SCRIPT HERE
+        """
+        
         print(f'Save output MIDI to {save_path}')
 
 
