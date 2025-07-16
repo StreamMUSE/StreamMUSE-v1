@@ -21,6 +21,10 @@ def fake_offline_sampling(
     latency=0,  # means each round, we throw the first {latency} logical ticks
     save_path=None
 ):
+    print(prompt_len)
+    print(gen_interval_ticks)
+    print(gen_seq_len)
+    print(latency)
     # 加载模型
     if "small" in model_path:
         model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=False)

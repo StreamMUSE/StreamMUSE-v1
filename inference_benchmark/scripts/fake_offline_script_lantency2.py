@@ -6,7 +6,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from fake_offline import fake_offline_sampling
 
-class fake_offline_script:
+class fake_offline_script_lantency2:
     def __init__(self):
         self.name = self.__class__.__name__
 
@@ -17,13 +17,13 @@ class fake_offline_script:
             prompt_len=200,
             n_rounds=200,
             temperature=1.0,
-            gen_interval_ticks=1,
+            gen_interval_ticks=2,
             output_len=200,
-            latency=0,
+            latency=2,
             n_samples=1
         ):
         gen_seq_len = (gen_interval_ticks + latency) * 2
-        n_rounds = int(200 // gen_interval_ticks)
+        n_rounds = int(output_len // gen_interval_ticks)
         
         print(f'Read input MIDI from {input_midi}')
         fake_offline_sampling(

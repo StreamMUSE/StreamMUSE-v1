@@ -7,11 +7,12 @@ class template_benchmark_script:
         self.name = self.__class__.__name__
 
     def run(self,
+            model_path,
             input_midi,
             output_midi,
             prompt_len=200,
             n_samples=1,
-            generate_length=200,
+            output_len=200,
             temperature=1.0
         ):
         print(f'Read input MIDI from {input_midi}')

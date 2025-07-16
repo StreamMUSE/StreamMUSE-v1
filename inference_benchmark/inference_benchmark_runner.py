@@ -9,7 +9,15 @@ from pathlib import Path
 # This allows us to dynamically load scripts based on the config file
 from scripts.template_script import template_benchmark_script
 from scripts.fake_offline_script import fake_offline_script
-all_scripts = [template_benchmark_script(), fake_offline_script()]
+from scripts.fake_offline_script_lantency2 import fake_offline_script_lantency2
+from scripts.real_offline_script import real_offline_script 
+
+all_scripts = [
+    template_benchmark_script(),
+    fake_offline_script(),
+    fake_offline_script_lantency2(),
+    real_offline_script()
+]
 
 def main():
     # Read configuration from config.yaml
@@ -53,9 +61,10 @@ def main():
     inference_params = config.get("inference_params", {})
     if not inference_params:
         raise ValueError("No inference parameters specified in config.yaml")
+    model_path = inference_params.get("model_path", None)
     prompt_len = inference_params.get("prompt_len", 200)
     n_samples = inference_params.get("n_samples", 1)
-    generate_length = inference_params.get("generate_length", 200)
+    output_len = inference_params.get("output_len", 200)
     temperature = inference_params.get("temperature", 1.0)
 
     for script in scripts:
@@ -69,11 +78,12 @@ def main():
             for input_midi in input_midis:
                 output_midi = output_dir / input_midi.name
                 script.run(
+                    model_path=model_path,
                     input_midi=str(input_midi),
                     output_midi=str(output_midi).replace('.mid', 'output') + '.txt',
                     prompt_len=prompt_len,
                     n_samples=n_samples,
-                    generate_length=generate_length,
+                    output_len=output_len,
                     temperature=temperature
                 )
             print(f"        Finished running the benchmark script: {dataset}")
