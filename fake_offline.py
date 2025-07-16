@@ -13,7 +13,7 @@ def fake_offline_sampling(
     model_path,
     init_midi_path,
     n_rounds=5,
-    n_samples=1,
+    id_num=0,
     prompt_len=75,
     temperature=1.0,
     gen_interval_ticks=1,  # every {gen_interval_ticks} logical ticks, we send a request
@@ -138,8 +138,7 @@ def fake_offline_sampling(
         # output_tensor[0, -1] = x_mel_i
     
     # decode the output
-    decode_output(output_tensor, f"temp/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_v1.4.mid", tempo=90.0)
-
+    decode_output(output_tensor, f"temp1/{model.save_name}/latency{latency}interval{gen_interval_ticks}prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_v{id_num}.mid", tempo=90.0)
 
 if __name__ == "__main__":
     # seed = 42
@@ -149,24 +148,29 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
-    parser.add_argument("--init_midi", type=str, default="input/mel/001.mid")
+    parser.add_argument("--init_midi", type=str, default="input/mel")
     parser.add_argument("--n_rounds", type=int, default=200)
-    parser.add_argument("--n_samples", type=int, default=1)
+    parser.add_argument("--n_samples", type=int, default=2)
     parser.add_argument("--prompt_len", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--gen_interval_ticks", type=float, default=1) # every {gen_interval_ticks} logical ticks, we send a request
-    parser.add_argument("--gen_seq_len", type=float, default=2) # in each round, we generate {gen_seq_len} logical ticks
-    parser.add_argument("--latency", type=str, default=0) # means each round, we throw the first {latency} logical ticks
+    parser.add_argument("--gen_seq_len", type=float, default=4) # in each round, we generate {gen_seq_len} logical ticks
+    parser.add_argument("--latency", type=str, default=1) # means each round, we throw the first {latency} logical ticks
     args = parser.parse_args()
 
-    fake_offline_sampling(
-        model_path=args.model_path,
-        init_midi_path=args.init_midi,
-        n_rounds=args.n_rounds,
-        n_samples=args.n_samples,
-        prompt_len=args.prompt_len,
-        temperature=args.temperature,
-        gen_interval_ticks=args.gen_interval_ticks,
-        gen_seq_len=args.gen_seq_len,
-        latency=args.latency
-    )
+    for filename in os.listdir(args.init_midi):
+        if filename.endswith('.mid'):
+            file_path = os.path.join(args.init_midi, filename)
+            for i in range(args.n_samples):
+                fake_offline_sampling(
+                    model_path=args.model_path,
+                    init_midi_path=file_path,
+                    n_rounds=args.n_rounds,
+                    id_num=i,
+                    prompt_len=args.prompt_len,
+                    temperature=args.temperature,
+                    gen_interval_ticks=args.gen_interval_ticks,
+                    gen_seq_len=args.gen_seq_len,
+                    latency=args.latency
+                )
+            print(f"Processing {file_path}")
