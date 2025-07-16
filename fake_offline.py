@@ -19,7 +19,7 @@ def fake_offline_sampling(
     gen_interval_ticks=1,  # every {gen_interval_ticks} logical ticks, we send a request
     gen_seq_len=2,  # in each round, we generate {gen_seq_len} logical ticks
     latency=0,  # means each round, we throw the first {latency} logical ticks
-    save_dir="offline_fake"
+    save_path=None
 ):
     # 加载模型
     if "small" in model_path:
@@ -30,6 +30,7 @@ def fake_offline_sampling(
     model.cuda()
     model.eval()
     
+    save_dir = os.path.dirname(save_path)
     os.makedirs(save_dir, exist_ok=True) # make sure the save directory exists
     
     # set the input MIDI path, and check if the init_midi_path is a valid MIDI file
@@ -138,7 +139,12 @@ def fake_offline_sampling(
         # output_tensor[0, -1] = x_mel_i
     
     # decode the output
-    decode_output(output_tensor, f"temp1/{model.save_name}/latency{latency}interval{gen_interval_ticks}prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_v{id_num}.mid", tempo=90.0)
+    filename = os.path.basename(midi_path)
+    filename = os.path.splitext(filename)[0]
+    if save_path is not None:
+        decode_output(output_tensor, save_path, tempo=90.0)
+    else:
+        decode_output(output_tensor, f"temp/latency{latency}interval{gen_interval_ticks}prompt{prompt_length}{filename}_temp{temperature}_v{id_num}.mid", tempo=90.0)
 
 if __name__ == "__main__":
     # seed = 42
