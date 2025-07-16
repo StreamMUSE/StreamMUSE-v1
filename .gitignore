@@ -5,6 +5,7 @@ tb_logs
 .idea
 /data
 /temp/
+/temp1/
 m2a_transformer_new.py
 cp_transformer.py
 /wandb
@@ -19,7 +20,6 @@ m2a_transformer_inference_copy.py
 aria-dataset
 POP909-Dataset
 /test/
-*.mid
 aria-extract.py
 /dataset/
 src/transformers/
