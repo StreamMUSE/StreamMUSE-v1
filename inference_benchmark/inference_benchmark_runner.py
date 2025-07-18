@@ -80,7 +80,7 @@ def main():
                 script.run(
                     model_path=model_path,
                     input_midi=str(input_midi),
-                    output_midi=str(output_midi).replace('.mid', 'output') + '.txt',
+                    output_midi=str(output_midi).replace('.mid', 'output') + '.mid',
                     prompt_len=prompt_len,
                     n_samples=n_samples,
                     output_len=output_len,
