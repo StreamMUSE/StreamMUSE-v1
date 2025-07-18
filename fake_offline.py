@@ -152,25 +152,25 @@ def fake_offline_sampling(
     else:
         filename = os.path.basename(midi_path)
         filename = os.path.splitext(filename)[0]
-        # print(output_tensor[-10:])
+        print(output_tensor[-40:])
         decode_output(output_tensor, f"temp4/latency{latency}interval{gen_interval_ticks}prompt{prompt_length}/{filename}_temp{temperature}_v{id_num}.mid", tempo=90.0)
 
 if __name__ == "__main__":
-    seed = 42
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    # seed = 42
+    # np.random.seed(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
     parser.add_argument("--init_midi", type=str, default="input/mel")
-    parser.add_argument("--n_rounds", type=int, default=100)
-    parser.add_argument("--n_samples", type=int, default=2)
+    parser.add_argument("--n_rounds", type=int, default=1)
+    parser.add_argument("--n_samples", type=int, default=1)
     parser.add_argument("--prompt_len", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--gen_interval_ticks", type=float, default=2) # every {gen_interval_ticks} logical ticks, we send a request
-    parser.add_argument("--gen_seq_len", type=float, default=8) # in each round, we generate {gen_seq_len} logical ticks
-    parser.add_argument("--latency", type=str, default=2) # means each round, we throw the first {latency} logical ticks
+    parser.add_argument("--gen_interval_ticks", type=float, default=10) # every {gen_interval_ticks} logical ticks, we send a request
+    parser.add_argument("--gen_seq_len", type=float, default=20) # in each round, we generate {gen_seq_len} frames, means {gen_seq_len}/2 logical ticks
+    parser.add_argument("--latency", type=str, default=0) # means each round, we throw the first {latency} logical ticks
     args = parser.parse_args()
 
     for filename in os.listdir(args.init_midi):

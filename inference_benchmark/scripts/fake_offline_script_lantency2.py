@@ -11,7 +11,6 @@ class fake_offline_script_lantency2:
         self.name = self.__class__.__name__
 
     def run(self,
-            model_path,
             input_midi,
             output_midi,
             prompt_len=200,
@@ -22,6 +21,7 @@ class fake_offline_script_lantency2:
             latency=2,
             n_samples=1
         ):
+        model_path = "../results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
         gen_seq_len = (gen_interval_ticks + latency) * 2
         n_rounds = int(output_len // gen_interval_ticks)
         
@@ -45,7 +45,6 @@ if __name__ == "__main__":
     # Example usage
     script = fake_offline_script()
     script.run(
-        model_path="../results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt",
         input_midi="inputs/pop909_dataset/mel/001.mid",
         output_midi="outputs/testtttt.mid",
         prompt_len=200,

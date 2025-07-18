@@ -4,8 +4,7 @@
 benchmark_name: "test3"
 
 # Inference Parameters
-inference_params:
-  model_path: "../results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
+inference_params: 
   prompt_length: 200
   n_samples: 1
   output_len: 200
@@ -27,9 +26,11 @@ scripts_all:
   - template_benchmark_script
   - fake_offline_script_lantency2
   - real_offline_script
+  - real_offline_Xinyue_new_script
 
 # Scripts to be included in the next benchmark run
 scripts_to_run:
   # - fake_offline_script
   # - fake_offline_script_lantency2
-  - real_offline_script
+  # - real_offline_script
+  - real_offline_Xinyue_new_script

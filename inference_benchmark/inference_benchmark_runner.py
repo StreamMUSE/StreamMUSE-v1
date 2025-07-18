@@ -61,7 +61,6 @@ def main():
     inference_params = config.get("inference_params", {})
     if not inference_params:
         raise ValueError("No inference parameters specified in config.yaml")
-    model_path = inference_params.get("model_path", None)
     prompt_len = inference_params.get("prompt_len", 200)
     n_samples = inference_params.get("n_samples", 1)
     output_len = inference_params.get("output_len", 200)

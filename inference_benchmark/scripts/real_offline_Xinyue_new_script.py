@@ -1,8 +1,8 @@
 import os
 from .m2a_transformer_inference_for_benchmark import continuation
-from m2a_transformer import RoFormerSymbolicTransformer
+from m2a_transformer_new import RoFormerSymbolicTransformer
 
-class real_offline_script:
+class real_offline_Xinyue_new_script:
     def __init__(self):
         self.name = self.__class__.__name__
 
@@ -14,7 +14,7 @@ class real_offline_script:
             output_len=200,
             temperature=1.0
         ):
-        model_path="../results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
+        model_path="../results/ModelXinyueNew/m2a_transformer_v0.3_small_batch_20_schedule.epoch=00.val_loss=0.73766.ckpt"
         if "small" in model_path:
             model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=False)
         else:
