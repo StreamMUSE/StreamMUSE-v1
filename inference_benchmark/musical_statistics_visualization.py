@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 def distribution_histograms_collections(
     file_path,
+    title,
     metrics = [
         'duration_distribution',
         'velocity_distribution',
@@ -28,14 +29,59 @@ def distribution_histograms_collections(
     ],
     rows = 2,
     col = 3,
-    figsize = (15, 10),
+    figsize = (9, 6),
 ):
+    bins = 30
     data_dict = json.load(open(file_path, 'r'))
     plt.figure(figsize=figsize)
-    for i, metric in enumerate(metrics, 1):
+    plt.suptitle(title, fontsize=16)
+    for i, metric in enumerate(metrics[:4], 1):
         plt.subplot(rows, col, i)
-        sns.histplot(data_dict[metric], kde=True, bins=50)
+        sns.histplot(data_dict[metric], kde=True, bins=bins, stat="density")
         plt.title(f"{metric}")
+        plt.xlabel(metric)
+        plt.ylabel("Frequency")
+    
+    # Plotting tension and functionality distributions
+    plt.subplot(rows, col, 5)
+    sns.histplot(data_dict['tension_distribution'], kde=True, bins=np.linspace(0, 25, 26), stat="density")
+    # x-axis limits for better visibility
+    plt.xlim(0, 25)
+    plt.ylim(0, 0.6)
+    plt.title("Tension Distribution")
+
+    plt.subplot(rows, col, 6)
+    sns.histplot(data_dict['functionality_distribution'], kde=True, bins=np.linspace(0, 100, 11), stat="density")
+    plt.xlim(0, 100)
+    plt.ylim(0, 0.2)
+    plt.title("Functionality Distribution")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def distribution_histograms_by_metric(
+    file_paths,
+    file_name,
+    title,
+    metric,
+    rows = 2,
+    col = 3,
+    figsize = (9, 6),
+    bins = 30,
+    xlim = (0, 100),
+    ylim = (0, 0.6)
+):
+    plt.figure(figsize=figsize)
+    plt.suptitle(title, fontsize=16)
+    for i, file_path in enumerate(file_paths, 1):
+        title = file_path.replace('outputs/', '').replace('_dataset', '').replace('_skyline_top2', '')
+        data_dict = json.load(open(Path(file_path) / file_name, 'r'))
+        plt.subplot(rows, col, i)
+        sns.histplot(data_dict[metric], kde=True, bins=bins, stat="density")
+        plt.xlim(xlim)
+        plt.ylim(ylim)
+        plt.title(f"{title}")
         plt.xlabel(metric)
         plt.ylabel("Frequency")
     plt.tight_layout()
