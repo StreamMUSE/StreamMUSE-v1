@@ -11,12 +11,14 @@ from scripts.template_script import template_benchmark_script
 from scripts.fake_offline_script import fake_offline_script
 from scripts.fake_offline_script_lantency2 import fake_offline_script_lantency2
 from scripts.real_offline_script import real_offline_script 
+from scripts.real_offline_Xinyue_new_script import real_offline_Xinyue_new_script
 
 all_scripts = [
     template_benchmark_script(),
     fake_offline_script(),
     fake_offline_script_lantency2(),
-    real_offline_script()
+    real_offline_script(),
+    real_offline_Xinyue_new_script()
 ]
 
 def main():
@@ -77,7 +79,6 @@ def main():
             for input_midi in input_midis:
                 output_midi = output_dir / input_midi.name
                 script.run(
-                    model_path=model_path,
                     input_midi=str(input_midi),
                     output_midi=str(output_midi).replace('.mid', 'output') + '.mid',
                     prompt_len=prompt_len,

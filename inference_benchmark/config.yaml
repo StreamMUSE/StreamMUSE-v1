@@ -1,7 +1,7 @@
 # Inference Benchmark Configuration File
 # This file defines the datasets and scripts to be used in the next inference benchmark.
 
-benchmark_name: "test3"
+benchmark_name: "test"
 
 # Inference Parameters
 inference_params: 
