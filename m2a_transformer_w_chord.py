@@ -14,9 +14,9 @@ from typing import Optional
 # from preprocess_large_midi_dataset import tensor_to_midi
 import argparse
 import time
-from preprocess_large_midi_dataset import DURATION_TEMPLATES
-from rwc_preprocessing import *
-from generate_chroma import *
+from preprocess.preprocess_midi2pt_dataset import DURATION_TEMPLATES
+from preprocess.rwc_preprocessing import *
+from preprocess.generate_chroma import *
 def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
     time_step_length = 60.0 / tempo / 4

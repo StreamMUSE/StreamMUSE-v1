@@ -135,9 +135,9 @@ def change_tempo(input_path: str, output_path: str, new_bpm: float):
     new_mid.save(output_path)
     print(f"Converted {input_path} → {output_path} @ {new_bpm} BPM")
 
-def continuation(model, midi_path, prompt_length=100, generation_length=384, temperature=1.0, n_samples=1, gt_mel=True, pad_acc=False):
+def continuation(model, midi_path, prompt_length=100, generation_length=384, temperature=1.0, n_samples=1, output_path=None, gt_mel=True, pad_acc=False):
     
-    chord_lab_path = '/home/coder/laopo/data/POP909-Dataset/POP909/' + os.path.basename(midi_path)[:3] + '/chord_midi.txt'
+    chord_lab_path = '/home/ubuntu/ugrip/original_dataset/POP909-Dataset/POP909/' + os.path.basename(midi_path)[:3] + '/chord_midi.txt'
     x_chord =  create_chord_chroma(midi_path, chord_lab_path,  subbeat_div=4, shift=0)
     chroma_to_midi(x_chord, f'temp/{model.save_name}/{os.path.basename(midi_path)}_chordgt.mid', base_pitch=48)
     x_mel, x_acc, x_chord = decompress(model, preprocess_midi(midi_path, 4)[0], preprocess_midi(midi_path.replace('mel', 'acc'), 4)[0],x_chord)
@@ -188,7 +188,10 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
 
     for i in range(n_samples):
         output_i = [output[j][i:i + 1, :] for j in range(len(output))]
-        decode_output(output_i, f'temp/{model.save_name}/prompt{prompt_length}_{pad_acc}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid', tempo=120)
+        if output_path is None:
+            decode_output(output_i, f'temp/{model.save_name}/prompt{prompt_length}_{pad_acc}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid', tempo=120.0)
+        else:
+            decode_output(output_i, output_path, tempo=90.0)
 
 
 if __name__ == '__main__':

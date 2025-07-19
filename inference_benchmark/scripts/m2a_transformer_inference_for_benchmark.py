@@ -107,10 +107,10 @@ def continuation(model, midi_path, output_path=None, prompt_length=100, generati
     stacked = torch.stack([x_acc, x_mel], dim=2)
     x = stacked.view(batch_size, seq_len * 2, subseq_len)
 
-    if prompt_length != 0:
-        decode_output(
-            [x[:, i, :] for i in range(x.shape[1])], f"temp/{model.save_name}/{os.path.basename(midi_path)}_promptlen{prompt_length}.mid", tempo=90.0
-        )
+    # if prompt_length != 0:
+    #     decode_output(
+    #         [x[:, i, :] for i in range(x.shape[1])], f"temp/{model.save_name}/{os.path.basename(midi_path)}_promptlen{prompt_length}.mid", tempo=90.0
+    #     )
 
     with torch.no_grad():
         x = x.repeat(n_samples, 1, 1)

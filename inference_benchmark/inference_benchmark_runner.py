@@ -12,13 +12,15 @@ from scripts.fake_offline_script import fake_offline_script
 from scripts.fake_offline_script_lantency2 import fake_offline_script_lantency2
 from scripts.real_offline_script import real_offline_script 
 from scripts.real_offline_Xinyue_new_script import real_offline_Xinyue_new_script
+from scripts.real_offline_Xinyue_new_chord_script import real_offline_Xinyue_new_chord_script
 
 all_scripts = [
     template_benchmark_script(),
     fake_offline_script(),
     fake_offline_script_lantency2(),
     real_offline_script(),
-    real_offline_Xinyue_new_script()
+    real_offline_Xinyue_new_script(),
+    real_offline_Xinyue_new_chord_script()
 ]
 
 def main():

@@ -1,6 +1,6 @@
 import os
-from .m2a_transformer_inference_for_benchmark import continuation
-from m2a_transformer_new import RoFormerSymbolicTransformer
+from .m2a_transformer_inference_w_chord_for_benchmark import continuation
+from m2a_transformer_w_chord import RoFormerSymbolicTransformer
 
 class real_offline_Xinyue_new_chord_script:
     def __init__(self):
@@ -14,7 +14,7 @@ class real_offline_Xinyue_new_chord_script:
             output_len=200,
             temperature=1.0
         ):
-        model_path="../results/ModelXinyueNew/m2a_transformer_v0.3_small_batch_20_schedule.epoch=00.val_loss=0.73766.ckpt"
+        model_path="../results/ModelXinyueNewChord/m2a_transformer_v0.4_chord_small_batch_20_schedule.epoch=00.val_loss=0.72838.ckpt"
         if "small" in model_path:
             model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=False)
         else:

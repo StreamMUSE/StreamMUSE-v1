@@ -17,7 +17,7 @@ datasets_all:
 
 # Datasets to be included in the next benchmark run
 datasets_to_run:
-  - aria_unique_skyline_top2
+  # - aria_unique_skyline_top2
   - pop909_dataset
 
 # All scripts available for benchmarking
@@ -27,10 +27,12 @@ scripts_all:
   - fake_offline_script_lantency2
   - real_offline_script
   - real_offline_Xinyue_new_script
+  - real_offline_Xinyue_new_chord_script
 
 # Scripts to be included in the next benchmark run
 scripts_to_run:
   # - fake_offline_script
   # - fake_offline_script_lantency2
   # - real_offline_script
-  - real_offline_Xinyue_new_script
+  # - real_offline_Xinyue_new_script
+  - real_offline_Xinyue_new_chord_script
