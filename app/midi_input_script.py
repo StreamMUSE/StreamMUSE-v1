@@ -4,30 +4,40 @@ import pretty_midi
 from .inference_engines.transformer_engine import TransformerInferenceEngine
 import os
 import json
+from preprocess.xf_midi import XFMidi
 
-def midi_to_note_list(midi_path, tick_resolution=1, max_tick=40):
-    midi = pretty_midi.PrettyMIDI(midi_path)
+def midi_to_note(midi_path, min_pitch=0, max_pitch=127, beat_div=4, program=None):
+    """
+    用 XFMidi 读取 midi 文件，返回 notes 列表，每个元素是 {'pitch', 'tick', 'duration'} 字典。
+    """
+    midi = XFMidi(midi_path, constant_tempo=60.0 / beat_div)
+    max_tick = int(midi.get_end_time())
     notes = []
-    for instrument in midi.instruments:
-        program = instrument.program if not instrument.is_drum else 127
-        for note in instrument.notes:
-            tick = int(note.start * midi.resolution / tick_resolution)
-            duration = int((note.end - note.start) * midi.resolution / tick_resolution)
-            if max_tick is not None and tick >= max_tick:
-                continue
-            notes.append({
-                'pitch': int(note.pitch),
-                'tick': int(tick),
-                'duration': int(duration),
-                'program': int(program)
-            })
+    for inst in midi.instruments:
+        # 如果只想要某种 program，可以加判断
+        if program is not None and inst.program != program:
+            continue
+        for note in inst.notes:
+            if min_pitch <= note.pitch <= max_pitch:
+                # tick = round(time * resolution)
+                start_tick = int(round(note.start))
+                end_tick = int(round(note.end))
+                if start_tick >= 0 and end_tick < max_tick:
+                    notes.append({
+                        'pitch': note.pitch,
+                        'tick': start_tick,
+                        'duration': end_tick - start_tick
+                    })
+    # 按tick排序
+    notes.sort(key=lambda x: x['tick'])
+    
     return notes, midi.resolution
 
 def note_list_to_pretty_midi(notes, resolution, program=0, name="track"):
     instrument = pretty_midi.Instrument(program=program, name=name, is_drum=(program==127))
     for note in notes:
-        start = note['tick'] / resolution
-        end = (note['tick'] + note['duration']) / resolution
+        start = note['tick'] 
+        end = (note['tick'] + note['duration']) 
         midi_note = pretty_midi.Note(
             velocity=100,
             pitch=note['pitch'],
@@ -67,7 +77,7 @@ if __name__ == "__main__":
             exit()
 
     # 2. 读取 melody midi，转为 note list
-    melody_notes, resolution = midi_to_note_list("input/mel/001.mid", max_tick=None)
+    melody_notes, resolution = midi_to_note("input/mel/001.mid", max_tick=None)
     melody_notes = sorted(melody_notes, key=lambda n: n['tick'])
 
     # 3. 获取所有 tick
