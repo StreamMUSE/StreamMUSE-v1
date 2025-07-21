@@ -138,7 +138,9 @@ class TransformerInferenceEngine:
             if polyphony_counts[i] > 1:
                 sorted_indices = np.argsort(rolls[i, :polyphony_counts[i], 1])
                 rolls[i, :polyphony_counts[i]] = rolls[i, :polyphony_counts[i]][sorted_indices]
-
+            if polyphony_counts[i] < max_polyphony:
+                rolls[i, polyphony_counts[i], 0] = 254 
+                
         # Reshape the tensor to the final format expected by the model's preprocess function.
         # Shape becomes (max_tick, max_polyphony * 3), e.g., (48, 12).
         return torch.tensor(rolls.reshape(max_tick, -1))

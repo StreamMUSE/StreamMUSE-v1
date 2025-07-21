@@ -10,11 +10,11 @@ import json
 import pretty_midi
 import argparse
 
-sys.path.append("/home/bowen.zheng/Documents")
+sys.path.append("/home/ubuntu/ugrip/stanleyz")
 from StreamMUSE.m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 # from preprocess_midi2pt_dataset import preprocess_midi
 
-midi_path = "/home/bowen.zheng/Documents/StreamMUSE/input/mel/001.mid"
+midi_path = "/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid"
 
 tokenize_dict = {'<sos>': 0, '<eos>': 1, '<pad>': 2}
 tokenize_count = [-1, -1, -1]
@@ -102,7 +102,7 @@ def preprocess_midi(midi_path, max_polyphony, beat_div=4, ins_ids='all'):
             if polyphony_counts[i] < max_polyphony:
                 rolls[i, polyphony_counts[i], 0] = 254  # EOS token
         result_rolls.append(rolls)
-        print("polyphony_counts:", polyphony_counts[10:100])
+        print("polyphony_counts:", polyphony_counts[0:100])
     result_rolls = np.concatenate(result_rolls, axis=1) 
     print(result_rolls)
     # Get song-level pitch shift range
@@ -123,11 +123,25 @@ test_res1_acc = preprocess_midi(midi_path.replace("mel", "acc"), 4)
 
 # print("test_res1_mel:", test_res1_mel[0], test_res1_mel[1])
 print("test_res1_mel shape:", test_res1_mel[0].shape, test_res1_mel[1].shape)
+# 保存到 log 文件
+log_path = "test_res1_mel_log.txt"
+with open(log_path, "w") as f:
+    f.write(f"rolls shape: {test_res1_mel[0].shape}\n")
+    for row in test_res1_mel[0].tolist():
+        f.write(str(row) + "\n")
+print(f"rolls 已保存到 {log_path}")
 
 # print("test_res1_acc:", test_res1_acc[0], test_res1_acc[1])
 print("test_res1_acc shape:", test_res1_acc[0].shape, test_res1_acc[1].shape)
+# 保存到 log 文件
+log_path = "test_res1_acc_log.txt"
+with open(log_path, "w") as f:
+    f.write(f"rolls shape: {test_res1_acc[0].shape}\n")
+    for row in test_res1_acc[0].tolist():
+        f.write(str(row) + "\n")
+print(f"rolls 已保存到 {log_path}")
 
-model_path = "/home/bowen.zheng/Documents/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
+model_path = "/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
 model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=True)
 
 test_res2_mel, test_res2_acc = decompress(model, test_res1_mel[0], test_res1_acc[0])
