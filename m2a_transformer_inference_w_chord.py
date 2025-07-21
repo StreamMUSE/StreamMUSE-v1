@@ -137,7 +137,7 @@ def change_tempo(input_path: str, output_path: str, new_bpm: float):
 
 def continuation(model, midi_path, prompt_length=100, generation_length=384, temperature=1.0, n_samples=1, gt_mel=True, pad_acc=False):
     
-    chord_lab_path = '/home/coder/laopo/data/POP909-Dataset/POP909/' + os.path.basename(midi_path)[:3] + '/chord_midi.txt'
+    chord_lab_path = '/home/ubuntu/ugrip/original_dataset/POP909-Dataset/POP909/' + os.path.basename(midi_path)[:3] + '/chord_midi.txt'
     x_chord =  create_chord_chroma(midi_path, chord_lab_path,  subbeat_div=4, shift=0)
     chroma_to_midi(x_chord, f'temp/{model.save_name}/{os.path.basename(midi_path)}_chordgt.mid', base_pitch=48)
     x_mel, x_acc, x_chord = decompress(model, preprocess_midi(midi_path, 4)[0], preprocess_midi(midi_path.replace('mel', 'acc'), 4)[0],x_chord)
@@ -194,9 +194,9 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
     
-    parser.add_argument("--model_path", type=str, help="path to model checkpoint")
+    parser.add_argument("--model_path", type=str, default="/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelXinyueNewChord/m2a_transformer_v0.4_chord_small_batch_20_schedule.epoch=00.val_loss=0.72838.ckpt", help="path to model checkpoint")
     parser.add_argument("--prompt_len",type=int, default=75, help="length of prompt")
-    parser.add_argument("--n_samples", type=int, default=2, help="number of samples")
+    parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
     parser.add_argument("--pad_acc", action="store_true", default=False, help="if with chord")
     args = parser.parse_args()
@@ -210,7 +210,7 @@ if __name__ == '__main__':
     model.save_name = os.path.basename(model_path)
     model.cuda()
     model.eval()
-    for midi in os.listdir('/home/coder/laopo/StreamMUSE/input/mel'):
+    for midi in os.listdir('/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel'):
         if midi.endswith('.mid'):
-            midi = os.path.join('/home/coder/laopo/StreamMUSE/input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=384, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True,pad_acc=args.pad_acc)
+            midi = os.path.join('/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel', midi)
+            continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True,pad_acc=args.pad_acc)
