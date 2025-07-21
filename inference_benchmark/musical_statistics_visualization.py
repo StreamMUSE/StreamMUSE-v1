@@ -86,3 +86,35 @@ def distribution_histograms_by_metric(
         plt.ylabel("Frequency")
     plt.tight_layout()
     plt.show()
+
+
+def distribution_over_time_by_metric(
+    file_paths,
+    file_name,
+    title,
+    metric,
+    rows = 2,
+    col = 3,
+    figsize = (9, 6),
+    xlim = (0, 100),
+    ylim = (0, 0.6)
+):
+    plt.figure(figsize=figsize)
+    plt.suptitle(title, fontsize=16)
+    
+    for i, file_path in enumerate(file_paths, 1):
+        title = file_path.replace('outputs/', '').replace('_dataset', '').replace('_skyline_top2', '')
+        data_dict = json.load(open(Path(file_path) / file_name, 'r'))
+
+        df = pd.DataFrame(data_dict[metric]).rolling(window=5).mean().reset_index()
+        # print(df)
+
+        plt.subplot(rows, col, i)
+        sns.lineplot(df, x='index', y=0)
+        plt.xlim(xlim)
+        plt.ylim(ylim)
+        plt.title(f"{title}")
+        plt.xlabel(metric)
+        plt.ylabel("Score")
+    plt.tight_layout()
+    plt.show()

@@ -28,7 +28,7 @@ import seaborn as sns
 import math
 from tqdm import tqdm
 
-def calculate_tension_scores(chord_list):
+def calculate_tension_scores(chords, chord_list):
     """
     Calculates a tension score for each chord in a MIDI file by counting
     its dissonant intervals.
@@ -36,6 +36,8 @@ def calculate_tension_scores(chord_list):
     Returns a list of integer scores, where 0 is perfectly consonant. Lower is better.
     """
     tension_scores = []
+    tension_over_time = [[] for _ in range(100)]
+    duration = chords.highestTime
     try:
         for c in chord_list:
             chord_tension = 0
@@ -45,14 +47,17 @@ def calculate_tension_scores(chord_list):
                     if not note_interval.isConsonant():
                         chord_tension += 1
             tension_scores.append(chord_tension)
-            
+            tension_over_time[int(c.offset * 100 / duration)].append(chord_tension)
+        # Fill in the tension_over_time with zeros for empty slots
+        tension_over_time = [np.mean(tension) if tension else 0 for tension in tension_over_time]
+
     except Exception as e:
         print(f"An error occurred in calculate_tension_scores: {e}")
         return []
         
-    return tension_scores
+    return tension_scores, tension_over_time
 
-def calculate_functionality_scores(chord_list, key):
+def calculate_functionality_scores(chords, chord_list, key):
     """
     Calculates a functionality score for each chord based on its role
     within the song's automatically detected key.
@@ -60,19 +65,24 @@ def calculate_functionality_scores(chord_list, key):
     Returns a list of integer scores (typically 0-100). Higher is better.
     """
     functionality_scores = []
+    functionality_over_time = [[] for _ in range(100)]
+    duration = chords.highestTime
     try:
         for c in chord_list:
             try:
                 rn = m21.roman.romanNumeralFromChord(c, key)
                 functionality_scores.append(rn.functionalityScore)
+                functionality_over_time[int(c.offset * 100 / duration)].append(rn.functionalityScore)
             except m21.roman.RomanNumeralException:
                 continue
+        # Fill in the functionality_over_time with zeros for empty slots
+        functionality_over_time = [np.mean(func) if func else 0 for func in functionality_over_time]
                 
     except Exception as e:
         print(f"An error occurred in calculate_functionality_scores: {e}")
         return []
         
-    return functionality_scores
+    return functionality_scores, functionality_over_time
 
 def calculate_statistics(midi_file, acc_separated=False):
     pm = pretty_midi.PrettyMIDI(midi_file)
@@ -106,8 +116,8 @@ def calculate_statistics(midi_file, acc_separated=False):
         velocities = [note.velocity for note in all_notes]
         pitches = [note.pitch for note in all_notes]
         pitches_no_octaves = [note.pitch % 12 for note in all_notes]
-        tension_distribution = calculate_tension_scores(chord_list)
-        functionality_distribution = calculate_functionality_scores(chord_list, key)
+        tension_distribution, tension_distribution_over_time = calculate_tension_scores(chords, chord_list)
+        functionality_distribution, functionality_distribution_over_time = calculate_functionality_scores(chords, chord_list, key)
     else:
         return {}
 
@@ -122,6 +132,8 @@ def calculate_statistics(midi_file, acc_separated=False):
         'pitch_distribution_no_octaves': pitches_no_octaves,
         'tension_distribution': tension_distribution,
         'functionality_distribution': functionality_distribution,
+        'tension_distribution_over_time': tension_distribution_over_time,
+        'functionality_distribution_over_time': functionality_distribution_over_time,
 
         'mean_duration': np.mean(durations) if durations else 0,
         'mean_velocity': np.mean(velocities) if velocities else 0,
@@ -159,7 +171,9 @@ def calculate_statistics_collection(midi_files_dir, glob_string, acc_separated=F
             'pitch_distribution': stat['pitch_distribution'],
             'pitch_distribution_no_octaves': stat['pitch_distribution_no_octaves'],
             'tension_distribution': stat['tension_distribution'],
-            'functionality_distribution': stat['functionality_distribution']
+            'functionality_distribution': stat['functionality_distribution'],
+            'tension_distribution_over_time': stat['tension_distribution_over_time'],
+            'functionality_distribution_over_time': stat['functionality_distribution_over_time'],
         }
     stats_file = Path(midi_files_dir) / 'file_independent_statistics.json'
     with open(stats_file, 'w') as f:
@@ -174,7 +188,9 @@ def calculate_statistics_collection(midi_files_dir, glob_string, acc_separated=F
         'pitch_distribution': [],
         'pitch_distribution_no_octaves': [],
         'tension_distribution': [],
-        'functionality_distribution': []
+        'functionality_distribution': [],
+        'tension_distribution_over_time': [],
+        'functionality_distribution_over_time': []
     }
     for stat in all_stats:
         collection_stats['total_notes'].append(stat['total_notes'])
@@ -186,6 +202,16 @@ def calculate_statistics_collection(midi_files_dir, glob_string, acc_separated=F
         collection_stats['tension_distribution'].extend(stat['tension_distribution'])
         collection_stats['functionality_distribution'].extend(stat['functionality_distribution'])
     
+    # Calculate average tension and functionality distributions over time across all files
+    collection_stats['tension_distribution_over_time'] = [0 for _ in range(100)]
+    for i in range(len(all_stats[0]['tension_distribution_over_time'])):
+        collection_stats['tension_distribution_over_time'][i] = np.mean([stat['tension_distribution_over_time'][i] for stat in all_stats])
+    
+    collection_stats['functionality_distribution_over_time'] = [0 for _ in range(100)]
+    for i in range(len(all_stats[0]['functionality_distribution_over_time'])):
+        collection_stats['functionality_distribution_over_time'][i] = np.mean([stat['functionality_distribution_over_time'][i] for stat in all_stats])
+    
+    # Save the collection statistics to a json file
     collection_stats_file = Path(midi_files_dir) / 'collection_distribution_statistics.json'
     with open(collection_stats_file, 'w') as f:
         json.dump(collection_stats, f, indent=4)
@@ -227,7 +253,7 @@ def main(path):
     # print(stats)
 
     # Example collection usage
-    aggregated_stats = calculate_statistics_collection(path, glob_string='*.mid', acc_separated=False)
+    aggregated_stats = calculate_statistics_collection(path, glob_string='**/*.mid', acc_separated=False)
     # print(aggregated_stats)
 
 if __name__ == "__main__":
@@ -238,6 +264,21 @@ if __name__ == "__main__":
     # Example collection usage
     # midi_files = '../../../original_dataset/POP909-Dataset/POP909'
     # midi_files = '../../../original_dataset/aria-midi-v1-unique-ext/data'
-    midi_files = 'outputs/fake_offline_no_latency/aria_unique_skyline_top2'
-    main(midi_files)
+    # midi_files = 'outputs/fake_offline_no_latency/aria_unique_skyline_top2'
+    # main(midi_files)
+    
+    paths = [
+        '../../../original_dataset/POP909-Dataset/POP909',
+        '../../../original_dataset/aria-midi-v1-unique-ext/data',
+        # 'outputs/real_offline/pop909_dataset',
+        # 'outputs/fake_offline_no_latency/pop909_dataset',
+        # 'outputs/fake_offline_latency_2/pop909_dataset',
+        # 'outputs/real_offline/aria_unique_skyline_top2',
+        # 'outputs/fake_offline_no_latency/aria_unique_skyline_top2',
+        # 'outputs/fake_offline_latency_2/aria_unique_skyline_top2',
+    ]
+    
+    for midi_files in paths:
+        print(f"Calculating statistics for {midi_files}")
+        main(midi_files)
     
