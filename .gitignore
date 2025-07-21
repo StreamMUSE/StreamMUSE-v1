@@ -6,13 +6,11 @@ tb_logs
 /data
 /temp/
 /temp1/
-m2a_transformer_new.py
 cp_transformer.py
 /wandb
 preprocess_large_midi_dataset_private.py
 cp_transformer_pt_inference.py
 cp_transformer_pt.py
-m2a_transformer_inference_copy.py
 .vscode/
 *.zip
 /datasets/
