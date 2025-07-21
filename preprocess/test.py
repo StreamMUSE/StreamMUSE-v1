@@ -124,22 +124,22 @@ test_res1_acc = preprocess_midi(midi_path.replace("mel", "acc"), 4)
 # print("test_res1_mel:", test_res1_mel[0], test_res1_mel[1])
 print("test_res1_mel shape:", test_res1_mel[0].shape, test_res1_mel[1].shape)
 # 保存到 log 文件
-log_path = "test_res1_mel_log.txt"
-with open(log_path, "w") as f:
-    f.write(f"rolls shape: {test_res1_mel[0].shape}\n")
-    for row in test_res1_mel[0].tolist():
-        f.write(str(row) + "\n")
-print(f"rolls 已保存到 {log_path}")
+# log_path = "test_res1_mel_log.txt"
+# with open(log_path, "w") as f:
+#     f.write(f"rolls shape: {test_res1_mel[0].shape}\n")
+#     for row in test_res1_mel[0].tolist():
+#         f.write(str(row) + "\n")
+# print(f"rolls 已保存到 {log_path}")
 
 # print("test_res1_acc:", test_res1_acc[0], test_res1_acc[1])
 print("test_res1_acc shape:", test_res1_acc[0].shape, test_res1_acc[1].shape)
 # 保存到 log 文件
-log_path = "test_res1_acc_log.txt"
-with open(log_path, "w") as f:
-    f.write(f"rolls shape: {test_res1_acc[0].shape}\n")
-    for row in test_res1_acc[0].tolist():
-        f.write(str(row) + "\n")
-print(f"rolls 已保存到 {log_path}")
+# log_path = "test_res1_acc_log.txt"
+# with open(log_path, "w") as f:
+#     f.write(f"rolls shape: {test_res1_acc[0].shape}\n")
+#     for row in test_res1_acc[0].tolist():
+#         f.write(str(row) + "\n")
+# print(f"rolls 已保存到 {log_path}")
 
 model_path = "/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
 model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=True)
@@ -150,6 +150,12 @@ print("test_res2_mel shape:", test_res2_mel.shape)
 
 # print("test_res2_acc:", test_res2_acc)
 print("test_res2_acc shape:", test_res2_acc.shape)
+log_path = "test_res2_acc.txt"
+with open(log_path, "w") as f:
+    f.write(f"test_res2_acc shape: {test_res2_acc.shape}\n")
+    for row in test_res2_acc.tolist():
+        f.write(str(row) + "\n")
+print(f"rolls 已保存到 {log_path}")
 
 first_timestep = 1 # prompt_length != 0
 prompt_length = 5
