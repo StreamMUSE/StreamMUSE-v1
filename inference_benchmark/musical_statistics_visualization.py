@@ -28,7 +28,7 @@ def distribution_histograms_collections(
         'functionality_distribution'
     ],
     rows = 2,
-    col = 3,
+    cols = 4,
     figsize = (9, 6),
 ):
     bins = 30
@@ -36,21 +36,21 @@ def distribution_histograms_collections(
     plt.figure(figsize=figsize)
     plt.suptitle(title, fontsize=16)
     for i, metric in enumerate(metrics[:4], 1):
-        plt.subplot(rows, col, i)
+        plt.subplot(rows, cols, i)
         sns.histplot(data_dict[metric], kde=True, bins=bins, stat="density")
         plt.title(f"{metric}")
         plt.xlabel(metric)
         plt.ylabel("Frequency")
     
     # Plotting tension and functionality distributions
-    plt.subplot(rows, col, 5)
+    plt.subplot(rows, cols, 5)
     sns.histplot(data_dict['tension_distribution'], kde=True, bins=np.linspace(0, 25, 26), stat="density")
     # x-axis limits for better visibility
     plt.xlim(0, 25)
     plt.ylim(0, 0.6)
     plt.title("Tension Distribution")
 
-    plt.subplot(rows, col, 6)
+    plt.subplot(rows, cols, 6)
     sns.histplot(data_dict['functionality_distribution'], kde=True, bins=np.linspace(0, 100, 11), stat="density")
     plt.xlim(0, 100)
     plt.ylim(0, 0.2)
@@ -66,7 +66,7 @@ def distribution_histograms_by_metric(
     title,
     metric,
     rows = 2,
-    col = 3,
+    cols = 3,
     figsize = (9, 6),
     bins = 30,
     xlim = (0, 100),
@@ -75,9 +75,9 @@ def distribution_histograms_by_metric(
     plt.figure(figsize=figsize)
     plt.suptitle(title, fontsize=16)
     for i, file_path in enumerate(file_paths, 1):
-        title = file_path.replace('outputs/', '').replace('_dataset', '').replace('_skyline_top2', '')
+        title = file_path.replace('outputs/0722_full_run', '').replace('_dataset', '').replace('_skyline_top2', '')
         data_dict = json.load(open(Path(file_path) / file_name, 'r'))
-        plt.subplot(rows, col, i)
+        plt.subplot(rows, cols, i)
         sns.histplot(data_dict[metric], kde=True, bins=bins, stat="density")
         plt.xlim(xlim)
         plt.ylim(ylim)
@@ -94,7 +94,7 @@ def distribution_over_time_by_metric(
     title,
     metric,
     rows = 2,
-    col = 3,
+    cols = 3,
     figsize = (9, 6),
     xlim = (0, 100),
     ylim = (0, 0.6)
@@ -103,14 +103,15 @@ def distribution_over_time_by_metric(
     plt.suptitle(title, fontsize=16)
     
     for i, file_path in enumerate(file_paths, 1):
-        title = file_path.replace('outputs/', '').replace('_dataset', '').replace('_skyline_top2', '')
+        title = file_path.replace('outputs/0722_full_run/', '').replace('_dataset', '').replace('_skyline_top2', '')
         data_dict = json.load(open(Path(file_path) / file_name, 'r'))
 
         df = pd.DataFrame(data_dict[metric]).rolling(window=5).mean().reset_index()
         # print(df)
 
-        plt.subplot(rows, col, i)
+        plt.subplot(rows, cols, i)
         sns.lineplot(df, x='index', y=0)
+        plt.axvline(x=50, color='red', linestyle='--')
         plt.xlim(xlim)
         plt.ylim(ylim)
         plt.title(f"{title}")

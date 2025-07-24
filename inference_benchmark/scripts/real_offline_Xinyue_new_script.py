@@ -1,5 +1,7 @@
 import os
+import sys
 from .m2a_transformer_inference_for_benchmark import continuation
+
 from m2a_transformer_new import RoFormerSymbolicTransformer
 
 class real_offline_Xinyue_new_script:
@@ -33,5 +35,4 @@ class real_offline_Xinyue_new_script:
             n_samples=n_samples,
             output_path=output_midi
         )
-        
         print(f'Save output MIDI to {output_midi}')

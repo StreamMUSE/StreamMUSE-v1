@@ -186,6 +186,7 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
         # else:
         output = model.global_sampling(x, x_chord = x_chord, x_mel_gt=x_mel_gt if gt_mel else None, temperature=temperature, max_seq_len=generation_length, prompt_len=prompt_length)
 
+
     for i in range(n_samples):
         output_i = [output[j][i:i + 1, :] for j in range(len(output))]
         if output_path is None:

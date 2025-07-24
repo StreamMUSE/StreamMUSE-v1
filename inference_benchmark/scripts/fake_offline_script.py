@@ -23,8 +23,8 @@ class fake_offline_script:
         ):
         model_path = "../results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
         gen_seq_len = (gen_interval_ticks + latency) * 2
-        n_rounds = int(200 // gen_interval_ticks)
-        
+        n_rounds = int(output_len // gen_interval_ticks)
+
         print(f'Read input MIDI from {input_midi}')
         fake_offline_sampling(
             model_path=model_path,

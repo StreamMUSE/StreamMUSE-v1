@@ -29,3 +29,8 @@ results/
 /app/results
 my-temp-space
 /app/logs
+temp3/
+prep_samples/
+inference_benchmark/temp/
+inference_benchmark/inputs/
+inference_benchmark/outputs/
