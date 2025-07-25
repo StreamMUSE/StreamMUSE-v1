@@ -155,9 +155,8 @@ class TransformerInferenceEngine:
         Args:
             output_tensors (list): A list of tensors from the model's output. Each tensor
                                    in the list represents one frame of music.
-            start_frame_offset (int): The frame number where the generation began. This is
-                                      used to calculate the ticks relative to the start of
-                                      the *newly generated* music, not the start of the prompt.
+            start_frame_offset (int): The frame number where the generation began.
+                                    We take the input as the first position, and the frame number is relative to this.
             single (bool): If True, assumes each frame is one tick (not interleaved).
 
         Returns:
@@ -173,12 +172,12 @@ class TransformerInferenceEngine:
         for i in range(n_samples):
             sample_notes = []
             # We only iterate from the start of the generated content.
-            for time_step in range(start_frame_offset, num_timesteps):
+            for time_step in range(start_frame_offset*2, num_timesteps):
                 data = output_tensors[time_step][i]
                 content = data.flatten()
                 
                 # Calculate the tick relative to the start of the *generation*.
-                relative_time_step = time_step - start_frame_offset
+                relative_time_step = time_step - start_frame_offset * 2
                 tick = relative_time_step if single else relative_time_step // 2
                 
                 # Each note is encoded as two tokens: (program, pitch_duration_combo).
@@ -207,7 +206,7 @@ class TransformerInferenceEngine:
                     duration = DURATION_TEMPLATES[duration_idx]
 
                     sample_notes.append({
-                        'tick': tick*4,
+                        'tick': tick,
                         'pitch': pitch,
                         'duration': int(duration),
                         'program': program
@@ -232,10 +231,10 @@ class TransformerInferenceEngine:
         prompt_end_tick = generation_start_tick
         prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
         
-        # This is the fixed context length the model expects.
-        model_context_len = self.prompt_length_ticks
         # This is the actual duration of the history we have available for the prompt.
         actual_history_duration = prompt_end_tick - prompt_start_tick
+        # This is the fixed context length the model expects.
+        model_context_len = actual_history_duration
         
         # If there's no history to use, there's nothing to generate from.
         if actual_history_duration <= 0:
@@ -248,12 +247,10 @@ class TransformerInferenceEngine:
         # This aligns the existing history to the END of the context window.
         # For example, if padding_duration is 10, the first note's tick will be 10, not 0.
         prompt_melody = [
-            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
-            for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
+            n for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         prompt_acc = [
-            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
-            for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
+            n for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         # # Log the prompt_acc to a file for debugging purposes.
         # with open(self.log_filename_promt, "a") as f:
@@ -307,7 +304,7 @@ class TransformerInferenceEngine:
         
         # Step 6: Decode the model's full tensor output (prompt + generation) into note events.
         # The resulting note ticks are relative to the beginning of the prompt tensor.
-        all_notes_relative_to_prompt = self._tensors_to_notes(output_tensors, start_frame_offset=0)
+        all_notes_relative_to_prompt = self._tensors_to_notes(output_tensors, start_frame_offset=actual_history_duration)
         all_notes_relative_to_prompt = all_notes_relative_to_prompt[0] if all_notes_relative_to_prompt else []
 
         # Step 7: Post-process by first converting all decoded notes to have absolute ticks.

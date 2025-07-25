@@ -87,8 +87,14 @@ def fake_offline_sampling(
             stacked = torch.stack([x_acc_pre, x_mel_pre], dim=2)
             x = stacked.view(batch_size, seq_len * 2, subseq_len) # [1, prompt_length*2, polyphony*2]
 
+            np.set_printoptions(threshold=np.inf)
+            with open("tensor_dump_fake_offline.txt", "w") as f:
+                f.write(str(x.cpu().numpy()))
+
             output = model.global_sampling(x, temperature=1.0, max_seq_len=gen_seq_len) # a list of tensors, each tensor is [num_samples, polyphony*2]
             output_0 = [output[j][0 : 0 + 1, :] for j in range(len(output))] # a list of tensors, each tensor is [1, polyphony*2]
+            with open("tensor_output_dump_fake_offline.txt", "w") as f:
+                f.write(str(output_0))
             output_tensor = torch.cat(output_0, dim=0).unsqueeze(0) # [1, prompt_length*2+generate_len, polyphony*2]
             x_acc_pre = output_tensor[:, ::2, :]  # 取偶数位
             x_mel_pre = output_tensor[:, 1::2, :] # 取奇数位
@@ -102,13 +108,24 @@ def fake_offline_sampling(
             x_acc_pre = x_acc_next[:, :prompt_length + (i+1)*gen_interval_ticks]
             # x_mel_i = x_mel[:, prompt_length]
             # output_tensor[0, -1] = x_mel_i
+
+            if i == n_rounds - 1:
+                output_tensor = output_0
+                break
+
             continue
 
         stacked = torch.stack([x_acc_pre, x_mel_pre], dim=2)
         x = stacked.view(batch_size, seq_len * 2, subseq_len) # [1, prompt_length*2, polyphony*2]
 
+        np.set_printoptions(threshold=np.inf)
+        with open("tensor_dump_fake_offline.txt", "w") as f:
+            f.write(str(x.cpu().numpy()))
+
         output = model.global_sampling(x, temperature=1.0, max_seq_len=gen_seq_len) # a list of tensors, each tensor is [num_samples, polyphony*2]
         output_0 = [output[j][0 : 0 + 1, :] for j in range(len(output))] # a list of tensors, each tensor is [1, polyphony*2]
+        with open("tensor_output_dump_fake_offline.txt", "w") as f:
+            f.write(str(output_0))
         output_tensor = torch.cat(output_0, dim=0).unsqueeze(0) # [1, prompt_length*2+generate_len, polyphony*2]
         x_acc_pre = output_tensor[:, ::2, :]  # 取偶数位
         x_mel_pre = output_tensor[:, 1::2, :] # 取奇数位
@@ -141,36 +158,51 @@ def fake_offline_sampling(
     decode_output(output_tensor, f"temp1/{model.save_name}/latency{latency}interval{gen_interval_ticks}prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_v{id_num}.mid", tempo=90.0)
 
 if __name__ == "__main__":
-    # seed = 42
-    # np.random.seed(seed)
-    # torch.manual_seed(seed)
-    # torch.cuda.manual_seed_all(seed)
+    seed = 42
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
     parser.add_argument("--init_midi", type=str, default="input/mel")
-    parser.add_argument("--n_rounds", type=int, default=200)
-    parser.add_argument("--n_samples", type=int, default=2)
-    parser.add_argument("--prompt_len", type=int, default=200)
+    parser.add_argument("--n_rounds", type=int, default=1)
+    parser.add_argument("--n_samples", type=int, default=1)
+    parser.add_argument("--prompt_len", type=int, default=100)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--gen_interval_ticks", type=float, default=1) # every {gen_interval_ticks} logical ticks, we send a request
-    parser.add_argument("--gen_seq_len", type=float, default=4) # in each round, we generate {gen_seq_len} logical ticks
-    parser.add_argument("--latency", type=str, default=1) # means each round, we throw the first {latency} logical ticks
+    parser.add_argument("--gen_seq_len", type=float, default=2) # in each round, we generate {gen_seq_len} logical ticks
+    parser.add_argument("--latency", type=str, default=0) # means each round, we throw the first {latency} logical ticks
     args = parser.parse_args()
 
-    for filename in os.listdir(args.init_midi):
-        if filename.endswith('.mid'):
-            file_path = os.path.join(args.init_midi, filename)
-            for i in range(args.n_samples):
-                fake_offline_sampling(
+    # for filename in os.listdir(args.init_midi):
+    #     if filename.endswith('.mid'):
+    #         file_path = os.path.join(args.init_midi, filename)
+    #         for i in range(args.n_samples):
+    #             fake_offline_sampling(
+    #                 model_path=args.model_path,
+    #                 init_midi_path=file_path,
+    #                 n_rounds=args.n_rounds,
+    #                 id_num=i,
+    #                 prompt_len=args.prompt_len,
+    #                 temperature=args.temperature,
+    #                 gen_interval_ticks=args.gen_interval_ticks,
+    #                 gen_seq_len=args.gen_seq_len,
+    #                 latency=args.latency
+    #             )
+    #         print(f"Processing {file_path}")
+    
+    # for individual file processing
+    file_path = "input/mel/001.mid"  # replace with your actual MIDI file path
+    fake_offline_sampling(
                     model_path=args.model_path,
                     init_midi_path=file_path,
                     n_rounds=args.n_rounds,
-                    id_num=i,
+                    id_num=0,
                     prompt_len=args.prompt_len,
                     temperature=args.temperature,
                     gen_interval_ticks=args.gen_interval_ticks,
                     gen_seq_len=args.gen_seq_len,
                     latency=args.latency
                 )
-            print(f"Processing {file_path}")
+    print(f"Processing individual file: {file_path}")

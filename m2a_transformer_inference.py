@@ -127,7 +127,8 @@ def continuation(model, midi_path, prompt_length=100, generation_length=400, tem
 
     for i in range(n_samples):
         output_i = [output[j][i : i + 1, :] for j in range(len(output))]
-        # print("output_i shapep:", )
+        with open(f"tensor_output_original_inference_wo_gt_{i}.txt", "w") as f:
+            f.write(str(output_i))
         decode_output(output_i, f"temp/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
 
 
@@ -136,7 +137,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--model_path", type=str, help="path to model checkpoint")
     parser.add_argument("--prompt_len", type=int, default=75, help="length of prompt")
-    parser.add_argument("--n_samples", type=int, default=2, help="number of samples")
+    parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
 
     args = parser.parse_args()
@@ -151,9 +152,10 @@ if __name__ == "__main__":
     model.cuda()
     model.eval()
 
-    for midi in os.listdir('./input/mel'):
-        if midi.endswith('mid'):
-            midi = os.path.join('./input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
+    # for midi in os.listdir('./input/mel'):
+    #     if midi.endswith('mid'):
+    #         midi = os.path.join('./input/mel', midi)
+    #         continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)
 
-
+    midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
+    continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)
