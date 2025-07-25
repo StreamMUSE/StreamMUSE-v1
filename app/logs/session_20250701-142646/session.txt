@@ -1,0 +1,6 @@
+--- StreamMUSE Client Session Summary ---
+Timestamp: session_20250701-142646
+Total Inferences Logged: 12
+Average Round-Trip Time: 0.5087s
+Min Round-Trip Time: 0.0867s
+Max Round-Trip Time: 4.7552s

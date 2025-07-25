@@ -1,9 +1,12 @@
+# The old_m2a_transformer do some special things when it calculate loss.
+# The old excludes the melody tokens from the loss calculation. Now, we want to include all tokens in the loss calculation.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.models.roformer.modeling_roformer import RoFormerConfig, RoFormerEncoder
-from schema.model_io_schema import M2AModelInputData,M2AModelOutputData
-from schema.model_schema import OldM2ATransformerSchema
+from schema.model_io_schema import M2AModelInputData
+from schema.model_schema import OldM2ANomaskTransformerSchema
+import pytorch_lightning as L
 from typing import Optional
 from .base_pytorch_lightning_model import BasePyTorchLightningModel
 
@@ -18,13 +21,14 @@ SOS_TOKEN = N_NORMAL_TOKENS
 EOS_TOKEN = N_NORMAL_TOKENS + 1
 PAD_TOKEN = N_NORMAL_TOKENS + 2
 
+
 def fill_with_neg_inf(t):
     """FP16-compatible function that fills a tensor with -inf."""
     return t.float().fill_(float("-inf")).type_as(t)
 
 
-class OldM2ATransformer(BasePyTorchLightningModel):
-    def __init__(self, model_schema: OldM2ATransformerSchema):
+class OldM2ANomaskTransformer(BasePyTorchLightningModel):
+    def __init__(self, model_schema: OldM2ANomaskTransformerSchema):
         super().__init__(model_schema)
         large = model_schema.large
         self.hidden_size = model_schema.hidden_size
@@ -223,7 +227,6 @@ class OldM2ATransformer(BasePyTorchLightningModel):
     def forward(self, x):
         # x: [batch, seq, subseq]
         # Use local encoder to encode subsequences
-        # torch.cuda.memory._record_memory_history() # tool for GPU memory
         batch_size, seq_len, subseq_len = x.shape  # 10*384*8
         assert seq_len % 2 == 0, "Expected even number of frames (2*S interleaved)."
 
@@ -288,11 +291,13 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         x = stacked.view(batch_size, seq_len * 2, subseq_len)
 
         x_target = x.clone()
-        # build a mask: True at every odd timestep
-        idx = torch.arange(seq_len * 2, device=x.device)
-        mel_mask = (idx % 2 == 1).unsqueeze(0).unsqueeze(-1)  # [1, 2*S, 1]
-        mel_mask = mel_mask.expand(batch_size, seq_len * 2, subseq_len)  # [B, 2*S, L]
-        x_target[mel_mask] = PAD_TOKEN
+        # build a mask: True at every odd timestep, means rule out the mel tokens
+        # In this version, we do not use the mask, we involve both melody and accompaniment tokens 
+        # in the loss calculation
+        # idx = torch.arange(seq_len * 2, device=x.device)
+        # mel_mask = (idx % 2 == 1).unsqueeze(0).unsqueeze(-1)  # [1, 2*S, 1]
+        # mel_mask = mel_mask.expand(batch_size, seq_len * 2, subseq_len)  # [B, 2*S, L]
+        # x_target[mel_mask] = PAD_TOKEN
 
         y = self(x)
 
@@ -308,6 +313,7 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         scheduler.step()
         self.log("training/lr", scheduler.get_last_lr()[0], on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
+    
 
     def validation_step(self, batch: M2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)

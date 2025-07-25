@@ -1,14 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.models.roformer.modeling_roformer import RoFormerConfig, RoFormerEncoder
-from schema.model_io_schema import M2AModelInputData,M2AModelOutputData
-from schema.model_schema import OldM2ATransformerSchema
+from transformers.models.roformer.modeling_roformer import (
+    RoFormerConfig,
+    RoFormerEncoder,
+)
+from schema.model_io_schema import NewPtM2AModelInputData
+from schema.model_schema import NewM2ATransformerSchema
 from typing import Optional
 from .base_pytorch_lightning_model import BasePyTorchLightningModel
 
-TRAIN_LENGTH = 192
-MAX_STEPS = 50000
+# TRAIN_LENGTH = 192
+TRAIN_LENGTH = 412
+
+MAX_STEPS = 1000000
 
 # Indicator: 0
 # pitch+duration*2: 3200 (25*128)
@@ -18,13 +23,14 @@ SOS_TOKEN = N_NORMAL_TOKENS
 EOS_TOKEN = N_NORMAL_TOKENS + 1
 PAD_TOKEN = N_NORMAL_TOKENS + 2
 
+
 def fill_with_neg_inf(t):
     """FP16-compatible function that fills a tensor with -inf."""
     return t.float().fill_(float("-inf")).type_as(t)
 
 
-class OldM2ATransformer(BasePyTorchLightningModel):
-    def __init__(self, model_schema: OldM2ATransformerSchema):
+class NewM2ATransformer(BasePyTorchLightningModel):
+    def __init__(self, model_schema: NewM2ATransformerSchema):
         super().__init__(model_schema)
         large = model_schema.large
         self.hidden_size = model_schema.hidden_size
@@ -34,6 +40,7 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         self.local_model_num_layers = model_schema.local_model_num_layers
         self.local_model_num_attention_heads = model_schema.local_model_num_attention_heads
         self.local_model_intermediate_size = model_schema.local_model_intermediate_size
+        self.frame_shift = model_schema.frame_shift
         main_roformer_config = RoFormerConfig(
             hidden_size=self.hidden_size,
             num_hidden_layers=self.num_layers,
@@ -57,21 +64,11 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         self.token_type_embeddings = nn.Embedding(2, self.hidden_size)
         with torch.no_grad():
             self.token_type_embeddings.weight.mul_(2.0)
-        # self.token_type_embeddings.weight.requires_grad_(True)
         self.local_encoder = RoFormerEncoder(local_encoder_config)
         self.local_decoder = RoFormerEncoder(local_decoder_config)
         self.final_decoder = nn.Linear(self.hidden_size, N_TOKENS)
         self.global_sos = nn.Parameter(torch.randn(self.hidden_size))
         self._future_mask = torch.empty(0)
-        # self.type_classifier = nn.Linear(self.hidden_size, 2)
-        # self.type_classifier.weight.requires_grad_(False)
-
-        # self.type_scale = nn.Parameter(torch.tensor(1.0))
-        # self.mix_proj = nn.Linear(2 * self.hidden_size, self.hidden_size)
-        # self.type_proj = nn.Sequential(
-        #     nn.Linear(self.hidden_size, self.hidden_size),
-        #     nn.ReLU()
-        # )
 
     def get_base_model(self, config):
         return RoFormerEncoder(config)
@@ -81,7 +78,13 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         x = x.view(-1, subseq_len)
 
         # prepend SOS:
-        x = torch.cat([torch.full((x.shape[0], 1), SOS_TOKEN, dtype=torch.long, device=x.device), x], dim=-1)  # now [B*seq_len, subseq_len+1]
+        x = torch.cat(
+            [
+                torch.full((x.shape[0], 1), SOS_TOKEN, dtype=torch.long, device=x.device),
+                x,
+            ],
+            dim=-1,
+        )  # now [B*seq_len, subseq_len+1]
 
         mask = x != PAD_TOKEN  # [B*seq_len, subseq_len+1]
         word_emb = self.local_embedding(x)  # → [B*seq_len, subseq_len+1, H]
@@ -124,7 +127,13 @@ class OldM2ATransformer(BasePyTorchLightningModel):
                 break
 
             # 5a) now append the embedding (always ACCOMPANIMENT), so token_type_ids = 1
-            emb = torch.cat([emb, self.local_embedding(y_next) + self.token_type_embeddings(torch.ones_like(y_next))], dim=1)
+            emb = torch.cat(
+                [
+                    emb,
+                    self.local_embedding(y_next) + self.token_type_embeddings(torch.ones_like(y_next)),
+                ],
+                dim=1,
+            )
 
         return y
 
@@ -138,7 +147,13 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         token_type_ids = torch.cat([sos_type, token_type_ids], dim=-1)
         h, _ = self.local_encode(x, token_type_ids)
         h_mel, _ = self.local_encode(
-            x_mel_gt, torch.zeros(*x_mel_gt.shape[:-1], x_mel_gt.shape[-1] + 1, device=x_mel_gt.device, dtype=x_mel_gt.dtype)
+            x_mel_gt,
+            torch.zeros(
+                *x_mel_gt.shape[:-1],
+                x_mel_gt.shape[-1] + 1,
+                device=x_mel_gt.device,
+                dtype=x_mel_gt.dtype,
+            ),
         )
         h = h.view(batch_size, seq_len, -1)
         h_mel = h_mel.view(batch_size, seq_len_gt, -1)
@@ -152,12 +167,22 @@ class OldM2ATransformer(BasePyTorchLightningModel):
                     # print('Sampling', i, '/', max_seq_len)
                     ...
                 if i % 2 == 0:
-                    h_out = self.model(h, attention_mask=self.buffered_future_mask(h), interleave_pos=True)[0]
+                    h_out = self.model(
+                        h,
+                        attention_mask=self.buffered_future_mask(h),
+                        interleave_pos=True,
+                    )[0]
                     y_next = self.local_sampling(h_out[:, -1], max_subseq_len=subseq_len, temperature=temperature)
                     y.append(y_next)
                     b, s, l = y_next.unsqueeze(1).shape
                     token_type_ids = torch.ones((b, s, l + 1), dtype=torch.long, device=y_next.device)
-                    h = torch.cat([h, self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1)], dim=1)
+                    h = torch.cat(
+                        [
+                            h,
+                            self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1),
+                        ],
+                        dim=1,
+                    )
                 else:
                     # token_type_ids = torch.zeros((b, s, l+1), dtype=torch.long, device=y_next.device)
                     h_prev_mel = h_mel[:, i // 2, :].unsqueeze(1)  # [B, 1, H]
@@ -175,7 +200,13 @@ class OldM2ATransformer(BasePyTorchLightningModel):
                     token_type_ids = torch.ones((b, s, l + 1), dtype=torch.long, device=y_next.device)
                 else:
                     token_type_ids = torch.zeros((b, s, l + 1), dtype=torch.long, device=y_next.device)
-                h = torch.cat([h, self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1)], dim=1)
+                h = torch.cat(
+                    [
+                        h,
+                        self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1),
+                    ],
+                    dim=1,
+                )
         return y
 
     def global_sampling_from_scratch(self, x_mel: torch.LongTensor, temperature: float = 1.0, max_seq_len=384):
@@ -209,7 +240,13 @@ class OldM2ATransformer(BasePyTorchLightningModel):
             y.append(y_next)
             b, s, l = y_next.unsqueeze(1).shape
             token_type_ids = torch.ones((b, s, l + 1), dtype=torch.long, device=y_next.device)
-            h = torch.cat([h, self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1)], dim=1)
+            h = torch.cat(
+                [
+                    h,
+                    self.local_encode(y_next.unsqueeze(1), token_type_ids=token_type_ids)[0].unsqueeze(1),
+                ],
+                dim=1,
+            )
         return y  # list of S tensors [B, L]
 
     def buffered_future_mask(self, tensor):
@@ -223,7 +260,7 @@ class OldM2ATransformer(BasePyTorchLightningModel):
     def forward(self, x):
         # x: [batch, seq, subseq]
         # Use local encoder to encode subsequences
-        # torch.cuda.memory._record_memory_history() # tool for GPU memory
+        torch.cuda.memory._record_memory_history()  # tool for GPU memory
         batch_size, seq_len, subseq_len = x.shape  # 10*384*8
         assert seq_len % 2 == 0, "Expected even number of frames (2*S interleaved)."
 
@@ -253,12 +290,19 @@ class OldM2ATransformer(BasePyTorchLightningModel):
     ):
         batch_size, seq_length, subseq_length = x.shape
         x = x.long().view(batch_size, seq_length, subseq_length // 3, 3)
-        x_processed = torch.zeros(batch_size, seq_length, subseq_length // 3, 2, dtype=torch.long, device=x.device)
+        x_processed = torch.zeros(
+            batch_size,
+            seq_length,
+            subseq_length // 3,
+            2,
+            dtype=torch.long,
+            device=x.device,
+        )
         pad_indices = x[:, :, :, 1] == 255  # pitch is 255 that need to be pad
         eos_indices = x[:, :, :, 0] == 254  # program is 254
         is_not_drum = x[:, :, :, 0] != 127
         x_processed[:, :, :, 0] = 0  # program 不变
-        x_processed[:, :, :, 1] = x[:, :, :, 1] + (x[:, :, :, 2]) * 128 + 2 + pitch_shift[:, None, None] * is_not_drum
+        x_processed[:, :, :, 1] = x[:, :, :, 1] + (x[:, :, :, 2]) * 128 + 2 + pitch_shift * is_not_drum
         x_processed[pad_indices] = PAD_TOKEN
         x_processed[:, :, :, 0][eos_indices] = EOS_TOKEN
 
@@ -267,12 +311,19 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         else:
             batch_size_y, seq_length_y, subseq_length_y = y.shape
             y = y.long().view(batch_size_y, seq_length_y, subseq_length_y // 3, 3)
-            y_processed = torch.zeros(batch_size_y, seq_length_y, subseq_length_y // 3, 2, dtype=torch.long, device=y.device)
+            y_processed = torch.zeros(
+                batch_size_y,
+                seq_length_y,
+                subseq_length_y // 3,
+                2,
+                dtype=torch.long,
+                device=y.device,
+            )
             pad_indices_y = y[:, :, :, 1] == 255  # pitch is 255 that need to be pad
             eos_indices_y = y[:, :, :, 0] == 254  # program is 254
             is_not_drum_y = y[:, :, :, 0] != 127
             y_processed[:, :, :, 0] = 1  # program 不变
-            y_processed[:, :, :, 1] = y[:, :, :, 1] + (y[:, :, :, 2]) * 128 + 2 + pitch_shift[:, None, None] * is_not_drum_y
+            y_processed[:, :, :, 1] = y[:, :, :, 1] + (y[:, :, :, 2]) * 128 + 2 + pitch_shift * is_not_drum_y
             y_processed[pad_indices_y] = PAD_TOKEN
             y_processed[:, :, :, 0][eos_indices_y] = EOS_TOKEN
 
@@ -298,31 +349,55 @@ class OldM2ATransformer(BasePyTorchLightningModel):
 
         return F.cross_entropy(y.view(-1, N_TOKENS), x_target.view(-1), ignore_index=PAD_TOKEN)
 
-    def training_step(self, batch: M2AModelInputData, batch_idx):
+    def training_step(self, batch: NewPtM2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)
-        x_mel, x_acc, pitch_shift = batch.mel_data, batch.acc_data, batch.pitch_shift
+        x_mel, x_acc = self._new_interleave_process(batch)
+        pitch_shift = batch.pitch_shift
+        
         loss = self.loss(x_mel, x_acc, pitch_shift)
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log(
+            "train_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+            batch_size=x_mel.shape[0],
+        )
         # scheduler step
         scheduler = self.lr_schedulers()
         scheduler.step()
-        self.log("training/lr", scheduler.get_last_lr()[0], on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log(
+            "training/lr",
+            scheduler.get_last_lr()[0],
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+            batch_size=x_mel.shape[0],
+        )
         return loss
 
-    def validation_step(self, batch: M2AModelInputData, batch_idx):
+    def validation_step(self, batch: NewPtM2AModelInputData, batch_idx):
         batch = self._move_to_device(batch)
-        x_mel, x_acc, pitch_shift = batch.mel_data, batch.acc_data, batch.pitch_shift
+        x_mel, x_acc = self._new_interleave_process(batch)
+        pitch_shift = batch.pitch_shift
         loss = self.loss(x_mel, x_acc, pitch_shift)
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log(
+            "val_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+            batch_size=x_mel.shape[0],
+        )
         return loss
 
-    def configure_optimizers(self):
-        max_lr = 1e-4
-        optimizer = torch.optim.AdamW(self.parameters(), lr=max_lr)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=max_lr, total_steps=MAX_STEPS, pct_start=0.005)
-        return [optimizer], [scheduler]
-
-    def _move_to_device(self, batch: M2AModelInputData) -> M2AModelInputData:
+    def _move_to_device(self, batch: NewPtM2AModelInputData) -> NewPtM2AModelInputData:
         """
         Move the batch data to the appropriate device.
         Args:
@@ -330,8 +405,89 @@ class OldM2ATransformer(BasePyTorchLightningModel):
         Returns:
             M2AModelInputData: The batch data moved to the appropriate device.
         """
-        return M2AModelInputData(
+        return NewPtM2AModelInputData(
             mel_data=batch.mel_data.to(self.device),
             acc_data=batch.acc_data.to(self.device),
-            pitch_shift=batch.pitch_shift.to(self.device),
+            pitch_shift=batch.pitch_shift.to(self.device).view(-1),
         )
+
+    def _new_interleave_process(self, batch: NewPtM2AModelInputData) :
+        # x = [a0,m0,a5,m1,a6,m2...m(n-6),a(n-1),m(n-5)]
+        # y = [m0,a5,m1,a6,m2,a7...a(n-1),m(n-5),a(n)]
+
+        frame_shift = self.frame_shift
+        mel_data = batch.mel_data
+        acc_data = batch.acc_data
+        assert mel_data.ndim == 3 and acc_data.ndim == 3, (
+            f"mel_data and acc_data must be 3-dimensional tensors,but got mel_data:{mel_data.shape} acc_data:{acc_data.shape}"
+        )
+
+        x = torch.empty(
+            mel_data.shape[0],
+            mel_data.shape[1] + acc_data.shape[1] - 2 * frame_shift,
+            mel_data.shape[2],
+            dtype=mel_data.dtype,
+            device=mel_data.device,
+        )
+
+        y = torch.empty(
+            mel_data.shape[0],
+            mel_data.shape[1] + acc_data.shape[1] - 2 * frame_shift,
+            mel_data.shape[2],
+            dtype=mel_data.dtype,
+            device=mel_data.device,
+        )
+
+        x[:, 0, :] = acc_data[:, 0, :]
+        x[:, 1::2, :] = mel_data[:, :-frame_shift, :]
+        x[:, 2::2, :] = acc_data[:, frame_shift:-1, :]
+
+        y[:, 0::2, :] = mel_data[:, :-frame_shift, :]
+        y[:, 1::2, :] = acc_data[:, frame_shift:, :]
+        return x, y
+
+    # def _new_interleave_process(
+    #     self, batch: NewPtM2AModelInputData
+    # ) -> NewPtM2AModelInputData:
+    #     # input_mel = [m0,m1,m2...]
+    #     # input_acc = [a0,a1,a2...] x
+    #     # target_mel = [m5,m6,m7...] X
+    #     # target_acc = [a5,a6,a7...]
+
+    #     # x = [a0,m0,a5,m1,a6,m2...,a(n-1),m(n-5)]
+    #     # y = [m0,a5,m1,a6,m2,a7...,m(n-5),a(n)]
+    #     input_mel = batch.input_mel_data
+    #     input_acc = batch.input_acc_data
+    #     target_mel = batch.target_mel_data
+    #     target_acc = batch.target_acc_data
+    #     frame_shift = self.frame_shift
+    #     assert (
+    #         input_mel.ndim == 3
+    #         and input_acc.ndim == 3
+    #         and target_mel.ndim == 3
+    #         and target_acc.ndim == 3
+    #     ), (
+    #         f"input_mel and input_acc must be 3D tensors,[batch_size, seq_len, subseq_len],however got input_mel:{input_mel.shape} input_acc:{input_acc.shape} ttarget_mel:{target_mel.shape} target_acc:{target_acc.shape}"
+    #     )
+
+    #     x = torch.empty(
+    #         input_mel.shape[0],
+    #         input_mel.shape[1] * 2,
+    #         input_mel.shape[2],
+    #         dtype=input_mel.dtype,
+    #         device=input_mel.device,
+    #     )
+    #     y = torch.empty(
+    #         target_mel.shape[0],
+    #         target_mel.shape[1] * 2,
+    #         target_mel.shape[2],
+    #         dtype=target_mel.dtype,
+    #         device=target_mel.device,
+    #     )
+
+    #     x[:, 0, :] = input_acc[:, 0, :]
+    #     x[:, 2::2, :] = target_acc[:,:-1,:]
+    #     x[:, 1::2, :] = input_mel[:,:-frame_shift,:]
+
+    #     y[:, 0::2, :] = input_mel[:,:-frame_shift,:]
+    #     y[:, 1::2, :] = target_acc[:,frame_shift:,:]

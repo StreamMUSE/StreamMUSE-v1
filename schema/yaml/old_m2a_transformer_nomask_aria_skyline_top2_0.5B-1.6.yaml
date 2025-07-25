@@ -1,11 +1,10 @@
 project: &project "Real-Time Accompaniment Generation "
-description: |
+description: | 
   "symbolic music generation with XinYue's tokenization and customed RoFormer, 
-  trained on aria dataset(skyline_v0). The model size is around 1 B"
-  Test meory.
+  trained on aria dataset(skyline_top2) without the mel mask. The model size is around 0.5 B"
 
-name: &name "old_m2a_aria"
-version: &version "1.2"
+name: &name "old_m2a_nomask_aria"
+version: &version "1.6"
 save_dir: &save_dir "logs/"
 loggers:
   csv_logger:
@@ -22,36 +21,35 @@ loggers:
 dataset:
   tokenizer: "XinYue's"
   train_config:
-    batch_size: 4
+    batch_size: 8
     num_workers: 0
-    file_path: "data/data_aria_skyline_v0/aria_skyline_v0_acc_cp10.pt" # path to the preprocessed training data
+    file_path: "data/data_aria_skyline_top2/top2_acc_cp10.pt" # path to the preprocessed training data
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
   val_config:
-    batch_size: 4
+    batch_size: 8
     num_workers: 0
-    file_path: "data/data_aria_skyline_v0/aria_skyline_v0_acc_cp10.pt"
+    file_path: "data/data_aria_skyline_top2/top2_acc_cp10.pt"
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
 
 model:
-  model_name: "XinYue's + customed RoFormer"
-  model_type: "Old-M2A-Transformer"
-
-  hidden_size: 2304  # Hidden layer dimension of the global model. Overrides 'large' setting if specified.
-  num_layers: 14  # Number of Transformer encoder layers in the global model. Overrides 'large' setting if specified.
+  model_name: "XinYue's + nomask + customed RoFormer"
+  model_type: "Old-M2A-Transformer-Nomask"
+  hidden_size: 1536  # Hidden layer dimension of the global model. Overrides 'large' setting if specified.
+  num_layers: 12  # Number of Transformer encoder layers in the global model. Overrides 'large' setting if specified.
   num_attention_heads: 16  # Number of attention heads in the global model. Overrides 'large' setting if specified.
-  intermediate_size: 7168  # Intermediate size of the feed-forward network in the global model. Overrides 'large' setting if specified.
+  intermediate_size: 6144  # Intermediate size of the feed-forward network in the global model. Overrides 'large' setting if specified.
 
   # Local Model (Encoder/Decoder) Hyperparameters
   local_model_num_layers: 3  # Number of layers in the local encoder/decoder.
-  local_model_num_attention_heads: 12  # Number of attention heads in the local encoder/decoder.
+  local_model_num_attention_heads: 16  # Number of attention heads in the local encoder/decoder.
   local_model_intermediate_size: 3072  # Intermediate size of the feed-forward network in the local encoder/decoder.
   
 trainer:
   max_epochs: 5000
   accelerator: "gpu"
-  devices: [ 6 ]
+  devices: [ 1 ]
 seed: 42
