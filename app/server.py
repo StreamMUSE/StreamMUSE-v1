@@ -9,8 +9,9 @@ from pydantic import BaseModel
 import uvicorn
 import time
 from contextlib import asynccontextmanager
-
+from app.midi_input_script import midi_to_note
 from app.inference_engines.transformer_engine import TransformerInferenceEngine
+from app.inference_engines.transformer_engine_stanley import InferenceEngineStanley
 
 class MelodyNoteEvent(BaseModel):
     pitch: int
@@ -67,12 +68,20 @@ async def lifespan(app: FastAPI):
         print(f"Loading model from {checkpoint_path}...")
         print(f"Using Model Max Sequence Length (Frames): {model_max_seq_len_frames}")
         print(f"Using Generation Length (Frames): {generation_length_frames}")
-        inference_engine = TransformerInferenceEngine(
+        inference_engine = InferenceEngineStanley(
             checkpoint_path=checkpoint_path,
             model_max_seq_len_frames=model_max_seq_len_frames,
             generation_length_frames=generation_length_frames
         )
         print("Inference engine loaded successfully.")
+        # # preload part
+        # acc_notes, _ = midi_to_note("/home/bowen.zheng/Documents/StreamMUSE/input/acc/001.mid", max_tick=9600)
+        # inference_engine.accompaniment_history = acc_notes
+        # print(f"预加载了 {len(acc_notes)} 条伴奏到 history")
+        # mel_notes, _ = midi_to_note("/home/bowen.zheng/Documents/StreamMUSE/input/mel/001.mid", max_tick=9600)
+        # inference_engine.melody_history = mel_notes
+        # print(f"预加载了 {len(mel_notes)} 条旋律到 history")
+
     except FileNotFoundError as e:
         print(f"Fatal Error: {e}")
         exit()
@@ -88,7 +97,7 @@ async def generate_accompaniment(request: InferenceRequest):
     Returns generated list of accompaniment events with timing info.
     """
     request_arrival_time = time.perf_counter()
- 
+
     if not inference_engine:
         return JSONResponse(status_code=503, content={"error": "Inference engine not loaded"})
     

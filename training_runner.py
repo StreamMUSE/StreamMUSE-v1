@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 # The first few messages might come from all ranks if this runs before DDP is fully set up.
 logger.info("Application started. Initial logging setup complete.")
 
-temp_dir = 'my-temp-space'
-os.environ['TMPDIR'] = temp_dir
-# 确保这个目录存在
-os.makedirs(temp_dir, exist_ok=True)
+# temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
+# os.environ['TMPDIR'] = temp_dir
+# # 确保这个目录存在
+# os.makedirs(temp_dir, exist_ok=True)
 
 class ProjectRunner:
     def __init__(self, config_path: str):
@@ -183,14 +183,13 @@ class ProjectRunner:
             self.trainer = Trainer(
                 precision="bf16-mixed",  # data precision
                 logger=self.loggers,
-                # val_check_interval=5,
-                # log_every_n_steps=1,
-                # limit_val_batches=5,
-                log_every_n_steps=5,
+                val_check_interval=100,
+                limit_val_batches=10,
+                log_every_n_steps=1,
                 **self.config.trainer.model_dump(),
                 callbacks=[
                     ModelCheckpoint(
-                        every_n_train_steps=500,
+                        every_n_train_steps=200,
                         save_top_k=5,
                         monitor="val_loss",
                         mode="min",
@@ -311,8 +310,8 @@ if __name__ == "__main__":
     # torch.cuda.memory._record_memory_history() # start memory snapshot
 
     # Example usage
-    # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_skyline_v0-1.2.yaml")
-    runner = ProjectRunner(config_path="schema/yaml/new_m2a_transformer_pop909_v0-1.0.yaml")  # Use your specific config
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_deduped_skyline_top2_0.25B-1.5.yaml")
+    # runner = ProjectRunner(config_path="schema/yaml/new_m2a_transformer_pop909_v0-1.0.yaml")  # Use your specific config
 
     try:
         runner.run_experiment()

@@ -8,6 +8,7 @@ from schema.model_schema import ModelSchema
 from schema.model_io_schema import ModelInputData
 from schema.model_schema import TrainingProbingLoggerSchema
 from typing import Any, Optional
+from collections import OrderedDict
 import sys
 logging.basicConfig(
     level=logging.INFO,  # Changed to INFO for better initial visibility
@@ -35,8 +36,9 @@ class BasePyTorchLightningModel(L.LightningModule):
 
         self.loss_history = deque(maxlen=self.loss_avg_window_Y)
         self.recorded_events = []
-        self.gradient_buffer = deque(maxlen=self.recording_window_N)
-        self._current_batch_gradients = {}
+        self.batch_buffer = OrderedDict() 
+        # self.gradient_buffer = deque(maxlen=self.recording_window_N)
+        # self._current_batch_gradients = {}
 
         # This will be set by _setup_training_probing_logger on rank 0
         self.abnormal_event_save_dir = None
@@ -73,57 +75,60 @@ class BasePyTorchLightningModel(L.LightningModule):
                 "average_loss_Y_steps": avg_loss,
                 "learning_rate": lr,
                 "gradient_file": None,
+                "batch_files": [],  # <--- FIX: Initialize 'batch_files' as an empty list
             }
 
-            gradients_to_save = {name: grad.cpu() for name, grad in self._current_batch_gradients.items() if grad is not None}
-            batch_dict = batch.model_dump()
-            batchs_to_save = {
-                name: tensor.cpu() for name, tensor in batch_dict.items() if isinstance(tensor, torch.Tensor)
-            }
-            if gradients_to_save:
-                # Ensure abnormal_event_save_dir is set (it will be by _setup_training_probing_logger on rank 0)
-                if self.abnormal_event_save_dir:
-                    filename = f"global_step_{global_step}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pt"
-                    filepath = os.path.join(self.abnormal_event_save_dir, filename)
+            # gradients_to_save = {name: grad.cpu() for name, grad in self._current_batch_gradients.items() if grad is not None}
+
+            # if gradients_to_save:
+            #     # Ensure abnormal_event_save_dir is set (it will be by _setup_training_probing_logger on rank 0)
+            #     if self.abnormal_event_save_dir:
+            #         filename = f"global_step_{global_step}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pt"
+            #         filepath = os.path.join(self.abnormal_event_save_dir, filename)
+            #         try:
+            #             torch.save(gradients_to_save, filepath)
+            #             event_info["gradient_file"] = filepath
+            #             logger.info(f"[RANK {self.trainer.global_rank}] Gradients saved to {filepath}")
+            #         except Exception as e:
+            #             logger.error(f"[RANK {self.trainer.global_rank}] Failed to save gradients to {filepath}: {e}", exc_info=True)
+            #     else:
+            #         logger.warning(
+            #             f"[RANK {self.trainer.global_rank}] abnormal_event_save_dir not set. Cannot save gradients for step {global_step}."
+            #         )
+            # else:
+            #     logger.warning(f"[RANK {self.trainer.global_rank}] No gradients to save at step {global_step}.")
+            if self.batch_buffer:
+                for file_name, b in self.batch_buffer.items():
+                    batch_data = {name: tensor.cpu() for name, tensor in b.model_dump().items() if isinstance(tensor, torch.Tensor)}
+                    batch_filepath = os.path.join(self.abnormal_event_save_dir, file_name)
                     try:
-                        torch.save(gradients_to_save, filepath)
-                        event_info["gradient_file"] = filepath
-                        logger.info(f"[RANK {self.trainer.global_rank}] Gradients saved to {filepath}")
+                        torch.save(batch_data, batch_filepath)
+                        event_info["batch_files"].append(batch_filepath)
                     except Exception as e:
-                        logger.error(f"[RANK {self.trainer.global_rank}] Failed to save gradients to {filepath}: {e}", exc_info=True)
-                else:
-                    logger.warning(
-                        f"[RANK {self.trainer.global_rank}] abnormal_event_save_dir not set. Cannot save gradients for step {global_step}."
-                    )
+                        logger.error(f"[RANK {self.trainer.global_rank}] Failed to save batch to {batch_filepath}: {e}", exc_info=True)
+                logger.info(f"[RANK {self.trainer.global_rank}] Saved {len(event_info['batch_files'])} batch files for abnormal event at step {global_step}")
             else:
-                logger.warning(f"[RANK {self.trainer.global_rank}] No gradients to save at step {global_step}.")
-
-            if batchs_to_save:
-                batch_filename = f"batch_data_global_step_{global_step}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pt"
-                batch_filepath = os.path.join(self.abnormal_event_save_dir, batch_filename)
-                try:
-                    torch.save(batchs_to_save, batch_filepath)
-                    event_info["batch_data_file"] = batch_filepath
-                    logger.info(f"[RANK {self.trainer.global_rank}] Batch data saved to {batch_filepath}")
-                except Exception as e:
-                    logger.error(f"[RANK {self.trainer.global_rank}] Failed to save batch data to {batch_filepath}: {e}", exc_info=True)
-            
-            
+                logger.warning(f"[RANK {self.trainer.global_rank}] Batch buffer is empty at step {global_step}.")
             self.recorded_events.append(event_info)
+            self.batch_buffer.clear()  # 清空buffer
 
-    def on_train_batch_end(self, outputs: dict, batch: Any, batch_idx: int):  # Changed batch type to Any for broader compatibility
-        loss = outputs.get("loss")  # Use .get() for safer access
+    def on_train_batch_end(self, outputs: dict, batch: Any, batch_idx: int):
+        loss = outputs.get("loss")
+        # 生成唯一文件名
+        batch_file_name = f"batch_{self.global_step}_{batch_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pt"
+        # 记录到buffer
+        self.batch_buffer[batch_file_name] = batch
+        # 控制buffer长度
+        while len(self.batch_buffer) > self.recording_window_N:
+            self.batch_buffer.popitem(last=False)
         if loss is not None:
-            # _check_for_loss_jump will handle its own rank-based logging
-            self._check_for_loss_jump(loss, self.global_step,batch)
+            self._check_for_loss_jump(loss, self.global_step, batch)
 
-        # Clear gradients buffer on all ranks, as it's per-batch and needed for next batch
-        self._current_batch_gradients = {}
 
-    def on_after_backward(self):
-        # Gradients are collected locally per rank, so this can run on all ranks.
-        # Saving these gradients to file, however, must be rank 0.
-        self._current_batch_gradients = {name: param.grad.clone() if param.grad is not None else None for name, param in self.named_parameters()}
+    # def on_after_backward(self):
+    #     # Gradients are collected locally per rank, so this can run on all ranks.
+    #     # Saving these gradients to file, however, must be rank 0.
+    #     self._current_batch_gradients = {name: param.grad.clone() if param.grad is not None else None for name, param in self.named_parameters()}
 
     def _setup_training_probing_logger(self):
         # This entire setup process should only happen on rank 0

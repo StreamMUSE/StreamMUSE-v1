@@ -1,0 +1,54 @@
+project: &project "Real-Time Accompaniment Generation"
+description: |
+  symbolic music generation with XinYue's tokenization and customed RoFormer, trained on pop 909 dataset, 
+  change the small model's layers.
+
+name: &name "old_m2a_pop909"
+version: &version "1.1"
+save_dir: &save_dir "logs/"
+
+loggers:
+  csv_logger:
+    type: "csv"
+  tensorboard_logger:
+    type: "tensorboard"
+  # wandb_logger:
+  #   type: "wandb"
+  #   project: *project
+
+dataset:
+  tokenizer: "XinYue's"
+  train_config:
+    batch_size: 24
+    num_workers: 0
+    file_path: "data/pop909/pop909_acc_cp4.pt" # path to the preprocessed training data
+    target_length: 384
+    tokenization_type: "XinYue's"
+    split_ratio: 10
+  val_config:
+    batch_size: 24
+    num_workers: 0
+    file_path: "data/pop909/pop909_acc_cp4.pt"
+    target_length: 384
+    tokenization_type: "XinYue's"
+    split_ratio: 10
+
+model:
+  model_name: "XinYue's + customed RoFormer"
+  model_type: "Old-M2A-Transformer"
+  hidden_size: 768  # Hidden layer dimension of the global model. Overrides 'large' setting if specified.
+  num_layers: 12  # Number of Transformer encoder layers in the global model. Overrides 'large' setting if specified.
+  num_attention_heads: 12  # Number of attention heads in the global model. Overrides 'large' setting if specified.
+  intermediate_size: 3072  # Intermediate size of the feed-forward network in the global model. Overrides 'large' setting if specified.
+
+  # Local Model (Encoder/Decoder) Hyperparameters
+  local_model_num_layers: 6  # Number of layers in the local encoder/decoder.
+  local_model_num_attention_heads: 8  # Number of attention heads in the local encoder/decoder.
+  local_model_intermediate_size: 768  # Intermediate size of the feed-forward network in the local encoder/decoder.
+  # ckpt_path: "/mnt/ugrip/stanleyz/StreamMUSE/logs/old_m2a_pop909/1.1.3/ckpt/epoch=264-val_loss=1.46.ckpt"
+
+trainer:
+  max_epochs: 5000
+  accelerator: "gpu"
+  devices: [ 1, 2, 3, 4 ]
+seed: 42

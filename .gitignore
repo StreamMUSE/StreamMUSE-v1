@@ -25,10 +25,9 @@ aria-extract.py
 src/transformers/
 app/.DS_Store
 .DS_Store
-.DS_Store
-.DS_Store
 /app/logs
 .python-version
 results/
 /app/results
 my-temp-space
+/app/logs

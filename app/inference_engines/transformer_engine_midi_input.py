@@ -6,7 +6,6 @@ import sys
 import json
 import os
 from datetime import datetime
-import matplotlib.pyplot as plt
 
 # Add the project root to the Python path to allow for absolute imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -27,11 +26,6 @@ class TransformerInferenceEngine:
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
-        # for debugging purposes
-        self.save_x_counter = 0  # 新增计数器
-        self.x_save_dir = "app/logs/server/x_distribution"
-        os.makedirs(self.x_save_dir, exist_ok=True)
-
         print(f"Loading model from: {checkpoint_path}")
         # Determine model size from checkpoint path name
         if 'small' in checkpoint_path:
@@ -46,7 +40,7 @@ class TransformerInferenceEngine:
                                                                           )
         
         if torch.cuda.is_available():
-            self.model.to('cuda:0')
+            self.model.cuda()
         self.model.eval()
         print("Model loaded successfully.")
         
@@ -138,9 +132,7 @@ class TransformerInferenceEngine:
             if polyphony_counts[i] > 1:
                 sorted_indices = np.argsort(rolls[i, :polyphony_counts[i], 1])
                 rolls[i, :polyphony_counts[i]] = rolls[i, :polyphony_counts[i]][sorted_indices]
-            if polyphony_counts[i] < max_polyphony:
-                rolls[i, polyphony_counts[i], 0] = 254 
-                
+
         # Reshape the tensor to the final format expected by the model's preprocess function.
         # Shape becomes (max_tick, max_polyphony * 3), e.g., (48, 12).
         return torch.tensor(rolls.reshape(max_tick, -1))
@@ -155,8 +147,9 @@ class TransformerInferenceEngine:
         Args:
             output_tensors (list): A list of tensors from the model's output. Each tensor
                                    in the list represents one frame of music.
-            start_frame_offset (int): The frame number where the generation began.
-                                    We take the input as the first position, and the frame number is relative to this.
+            start_frame_offset (int): The frame number where the generation began. This is
+                                      used to calculate the ticks relative to the start of
+                                      the *newly generated* music, not the start of the prompt.
             single (bool): If True, assumes each frame is one tick (not interleaved).
 
         Returns:
@@ -172,12 +165,12 @@ class TransformerInferenceEngine:
         for i in range(n_samples):
             sample_notes = []
             # We only iterate from the start of the generated content.
-            for time_step in range(start_frame_offset*2, num_timesteps):
+            for time_step in range(start_frame_offset, num_timesteps):
                 data = output_tensors[time_step][i]
                 content = data.flatten()
                 
                 # Calculate the tick relative to the start of the *generation*.
-                relative_time_step = time_step - start_frame_offset * 2
+                relative_time_step = time_step - start_frame_offset
                 tick = relative_time_step if single else relative_time_step // 2
                 
                 # Each note is encoded as two tokens: (program, pitch_duration_combo).
@@ -231,10 +224,10 @@ class TransformerInferenceEngine:
         prompt_end_tick = generation_start_tick
         prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
         
+        # This is the fixed context length the model expects.
+        model_context_len = self.prompt_length_ticks
         # This is the actual duration of the history we have available for the prompt.
         actual_history_duration = prompt_end_tick - prompt_start_tick
-        # This is the fixed context length the model expects.
-        model_context_len = actual_history_duration
         
         # If there's no history to use, there's nothing to generate from.
         if actual_history_duration <= 0:
@@ -247,10 +240,12 @@ class TransformerInferenceEngine:
         # This aligns the existing history to the END of the context window.
         # For example, if padding_duration is 10, the first note's tick will be 10, not 0.
         prompt_melody = [
-            n for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
+            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
+            for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         prompt_acc = [
-            n for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
+            {**n, 'tick': (n['tick'] - prompt_start_tick) + padding_duration}
+            for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
         # # Log the prompt_acc to a file for debugging purposes.
         # with open(self.log_filename_promt, "a") as f:
@@ -280,31 +275,15 @@ class TransformerInferenceEngine:
 
         # Step 5: Run the core inference.
         inference_start_time = time.perf_counter()
-
-        # # Debugging: Save the x tensor distribution to visualize PAD_TOKEN (3204) distribution.
-        # print(f"x, {x.shape}, {x}")
-        # self.save_x_counter += 1
-        # if self.save_x_counter % 10 == 0:
-        #     x_2d = x[0].detach().cpu().numpy()  # shape: (num_frames, subseq_len)
-        #     mask_3204 = (x_2d == 3204).astype(int)
-        #     plt.figure(figsize=(12, 6))
-        #     plt.imshow(mask_3204.T, aspect='auto', cmap='gray_r', interpolation='nearest')
-        #     plt.xlabel('Frame')
-        #     plt.ylabel('Token Index')
-        #     plt.title(f'3204 (PAD_TOKEN) Distribution, call {self.save_x_counter}')
-        #     plt.colorbar(label='Is 3204')
-        #     save_path = os.path.join(self.x_save_dir, f"x_pad_{self.save_x_counter}.png")
-        #     plt.savefig(save_path)
-        #     plt.close()
         with torch.no_grad():
-            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=self.generation_length_frames)
+            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=0.5, max_seq_len=self.generation_length_frames)
         inference_end_time = time.perf_counter()
 
         postprocess_start_time = time.perf_counter()
         
         # Step 6: Decode the model's full tensor output (prompt + generation) into note events.
         # The resulting note ticks are relative to the beginning of the prompt tensor.
-        all_notes_relative_to_prompt = self._tensors_to_notes(output_tensors, start_frame_offset=actual_history_duration)
+        all_notes_relative_to_prompt = self._tensors_to_notes(output_tensors, start_frame_offset=0)
         all_notes_relative_to_prompt = all_notes_relative_to_prompt[0] if all_notes_relative_to_prompt else []
 
         # Step 7: Post-process by first converting all decoded notes to have absolute ticks.

@@ -1,11 +1,12 @@
 from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
-from StreamMUSE.preprocess.preprocess_midi2pt_dataset import preprocess_midi, DURATION_TEMPLATES
+from preprocess.preprocess_midi2pt_dataset import preprocess_midi, DURATION_TEMPLATES
 import torch
 import pretty_midi
 import os
 import argparse
 from typing import Literal
-
+import numpy as np
+import pdb
 
 def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
@@ -53,7 +54,10 @@ def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     midi.write(save_path)
 
-
+# change dim, and do the preprocess
+# a list of subseq: [num_logical_ticks, max_polyphony*3] 
+# ->
+# [1, num_logical_ticks, max_polyphony*2]
 def decompress(model, byte_arr_mel, byte_arr_acc):
     x = torch.tensor(byte_arr_mel).unsqueeze(0)
     x = x.cuda()
@@ -62,7 +66,7 @@ def decompress(model, byte_arr_mel, byte_arr_acc):
     return model.preprocess(x, pitch_shift=torch.zeros(1, dtype=torch.int8).cuda(), y=y)
 
 
-def continuation(model, midi_path, prompt_length=100, generation_length=384, temperature=1.0, n_samples=1, gt_mel=True):
+def continuation(model, midi_path, prompt_length=100, generation_length=400, temperature=1.0, n_samples=1, gt_mel=True):
     if os.path.isfile(midi_path):
         pass
     else:
@@ -123,6 +127,8 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
 
     for i in range(n_samples):
         output_i = [output[j][i : i + 1, :] for j in range(len(output))]
+        with open(f"tensor_output_original_inference_wo_gt_{i}.txt", "w") as f:
+            f.write(str(output_i))
         decode_output(output_i, f"temp/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
 
 
@@ -131,7 +137,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--model_path", type=str, help="path to model checkpoint")
     parser.add_argument("--prompt_len", type=int, default=75, help="length of prompt")
-    parser.add_argument("--n_samples", type=int, default=2, help="number of samples")
+    parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
 
     args = parser.parse_args()
@@ -146,9 +152,10 @@ if __name__ == "__main__":
     model.cuda()
     model.eval()
 
-    for midi in os.listdir('./input/mel'):
-        if midi.endswith('mid'):
-            midi = os.path.join('./input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=384, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
+    # for midi in os.listdir('./input/mel'):
+    #     if midi.endswith('mid'):
+    #         midi = os.path.join('./input/mel', midi)
+    #         continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)
 
-
+    midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
+    continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)

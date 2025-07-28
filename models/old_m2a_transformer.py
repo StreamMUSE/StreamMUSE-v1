@@ -8,7 +8,7 @@ from typing import Optional
 from .base_pytorch_lightning_model import BasePyTorchLightningModel
 
 TRAIN_LENGTH = 192
-MAX_STEPS = 1000000
+MAX_STEPS = 5000000
 
 # Indicator: 0
 # pitch+duration*2: 3200 (25*128)
@@ -223,7 +223,7 @@ class OldM2ATransformer(BasePyTorchLightningModel):
     def forward(self, x):
         # x: [batch, seq, subseq]
         # Use local encoder to encode subsequences
-        torch.cuda.memory._record_memory_history() # tool for GPU memory
+        # torch.cuda.memory._record_memory_history() # tool for GPU memory
         batch_size, seq_len, subseq_len = x.shape  # 10*384*8
         assert seq_len % 2 == 0, "Expected even number of frames (2*S interleaved)."
 
