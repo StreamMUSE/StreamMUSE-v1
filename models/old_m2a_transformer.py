@@ -8,7 +8,7 @@ from typing import Optional
 from .base_pytorch_lightning_model import BasePyTorchLightningModel
 
 TRAIN_LENGTH = 192
-MAX_STEPS = 50000
+MAX_STEPS = 5000000
 
 # Indicator: 0
 # pitch+duration*2: 3200 (25*128)

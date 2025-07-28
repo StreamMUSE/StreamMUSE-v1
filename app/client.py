@@ -175,8 +175,9 @@ def tick_loop(
         
         if is_trigger_tick:# and notes_for_next_request:
             # The model should start generating from the beginning of the *next* generation interval.
-            current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
-            next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
+            # current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
+            # next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
+            next_interval_start_tick = tick_count + 1
 
             request_data = {
                 "melody_notes": notes_for_next_request,

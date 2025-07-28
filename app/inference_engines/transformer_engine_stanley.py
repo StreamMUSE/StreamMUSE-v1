@@ -1,8 +1,6 @@
-# This is the fake real time
-
 import pretty_midi
-from inference_engines.transformer_engine import TransformerInferenceEngine
 import os
+import time
 import json
 import torch
 import numpy as np
@@ -12,13 +10,12 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from m2a_transformer_inference import decode_output
 import pdb
 
-def midi_to_note(midi_path, min_pitch=0, max_pitch=127, beat_div=4, program=None, max_tick=None):
+def midi_to_note(midi_path, min_pitch=0, max_pitch=127, beat_div=4, program=None):
     """
     用 XFMidi 读取 midi 文件，返回 notes 列表，每个元素是 {'pitch', 'tick', 'duration'} 字典。
     """
     midi = XFMidi(midi_path, constant_tempo=60.0 / beat_div)
-    if max_tick is None:
-        max_tick = int(midi.get_end_time())
+    max_tick = int(midi.get_end_time())
     notes = []
     for inst in midi.instruments:
         # 如果只想要某种 program，可以加判断
@@ -61,7 +58,7 @@ def note_list_to_pretty_midi(notes, tempo=90, program=0, name="track"):
         inst.notes.append(midi_note)
     return inst
 
-class MyInferenceEngine():
+class InferenceEngineStanley():
     def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=2, model_max_seq_len_frames=384):
         # Check if the checkpoint file exists
         if not os.path.exists(checkpoint_path):
@@ -259,6 +256,8 @@ class MyInferenceEngine():
 
     def generate_accompaniment(self, melody_notes, generation_start_tick, acc_notes=None):
 
+        preprocess_start_time = time.perf_counter()
+
         # update the melody and accompaniment history
         if len(self.accompaniment_history) == 0 and acc_notes is not None:
             # If this is the first call, we need to initialize the accompaniment history
@@ -301,18 +300,24 @@ class MyInferenceEngine():
         batch_size, seq_len, subseq_len = x_mel.shape
         stacked = torch.stack([x_acc, x_mel], dim=2)
         x = stacked.view(batch_size, seq_len * 2, subseq_len)
+
+        inference_start_time = time.perf_counter()
+
         # pdb.set_trace()
-        np.set_printoptions(threshold=np.inf)
-        with open("tensor_dump.txt", "w") as f:
-            f.write(str(x.cpu().numpy()))
+        # np.set_printoptions(threshold=np.inf)
+        # with open("tensor_dump.txt", "w") as f:
+        #     f.write(str(x.cpu().numpy()))
 
         with torch.no_grad():
             output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=self.generation_length_frames)
 
-        output_0 = [output_tensors[j][0 : 0 + 1, :] for j in range(len(output_tensors))]
-        with open("tensor_output_dump.txt", "w") as f:
-            f.write(str(output_0))
-        decode_output(output_0, "temp1/testTensorToNotes.mid", tempo=90.0)
+        inference_end_time = time.perf_counter()
+        postprocess_start_time = time.perf_counter()
+
+        # output_0 = [output_tensors[j][0 : 0 + 1, :] for j in range(len(output_tensors))]
+        # with open("tensor_output_dump.txt", "w") as f:
+        #     f.write(str(output_0))
+        # decode_output(output_0, "temp1/testTensorToNotes.mid", tempo=90.0)
 
         # Decode the model's full tensor output (prompt + generation) into note events.
         # The resulting note ticks are relative to the beginning of the prompt tensor.
@@ -354,7 +359,7 @@ class MyInferenceEngine():
         self.melody_history = [n for n in self.melody_history if n['tick'] >= prompt_start_tick]
         self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] >= prompt_start_tick]
 
-        return final_generated_notes
+        return (final_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
 
 if __name__ == "__main__":
     # seed = 42
@@ -386,7 +391,7 @@ if __name__ == "__main__":
         #     model_max_seq_len_frames=model_max_seq_len_frames,
         #     generation_length_frames=generation_length_frames
         # )
-        inference_engine = MyInferenceEngine(
+        inference_engine = InferenceEngineStanley(
             checkpoint_path=checkpoint_path,
             model_max_seq_len_frames=model_max_seq_len_frames,
             generation_length_frames=generation_length_frames
@@ -415,7 +420,7 @@ if __name__ == "__main__":
     current_acc = [n for n in acc_notes if n['tick'] < generation_start_tick]
     acc_history.extend(current_acc)
     # pdb.set_trace()
-    acc_notes = inference_engine.generate_accompaniment(current_mel, generation_start_tick=generation_start_tick, acc_notes=current_acc)
+    acc_notes, _, _, _, _ = inference_engine.generate_accompaniment(current_mel, generation_start_tick=generation_start_tick, acc_notes=current_acc)
     acc_history.extend(acc_notes)
     for i in range(generation_start_tick+1, max_tick):
         # if i > 175:
@@ -427,7 +432,7 @@ if __name__ == "__main__":
 
 
         # 关键：传入完整的 melody_history
-        acc_notes = inference_engine.generate_accompaniment(current_mel, generation_start_tick=i)
+        acc_notes, _, _, _, _ = inference_engine.generate_accompaniment(current_mel, generation_start_tick=i)
         acc_history.extend(acc_notes)
 
         print(f"Step {i}, tick={i}, melody={current_mel}, generated acc={acc_notes}")
