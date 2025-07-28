@@ -363,7 +363,7 @@ if __name__ == "__main__":
     # torch.cuda.manual_seed_all(seed)
 
     # 1. 初始化 engine
-    checkpoint_path = os.getenv('CHECKPOINT_PATH', "/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
+    checkpoint_path = os.getenv('CHECKPOINT_PATH', "/home/ubuntu/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
     if not checkpoint_path:
         print('Fatal Error: CHECKPOINT_PATH environment variable is not set')
         print("Please run the server like: CHECKPOINT_PATH=path/to/model.ckpt uvicorn ...")
@@ -417,6 +417,7 @@ if __name__ == "__main__":
     # pdb.set_trace()
     acc_notes = inference_engine.generate_accompaniment(current_mel, generation_start_tick=generation_start_tick, acc_notes=current_acc)
     acc_history.extend(acc_notes)
+    # 外面已经生成过一次了，所以 + 1.
     for i in range(generation_start_tick+1, max_tick):
         # if i > 175:
         #     pdb.set_trace()
