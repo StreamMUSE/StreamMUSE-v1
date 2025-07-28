@@ -1,24 +1,30 @@
 # Inference Benchmark Configuration File
 # This file defines the datasets and scripts to be used in the next inference benchmark.
 
-benchmark_name: "testing"
+benchmark_name: "survey_offlines"
 
 # Inference Parameters
 inference_params: 
-  prompt_length: 200
+  prompt_length: 150
   n_samples: 1
-  output_len: 192
+  output_len: 100
   temperature: 1.0
 
 # All datasets available for benchmarking
 datasets_all:
   - aria_unique_skyline_top2
+  - aria_unique_skyline_top2_subset_5
   - pop909_dataset
+  - pop909_dataset_subset_5
+  - test_set
+  - misc
 
 # Datasets to be included in the next benchmark run
 datasets_to_run:
-  - aria_unique_skyline_top2
-  - pop909_dataset
+  - aria_unique_skyline_top2_subset_5
+  - pop909_dataset_subset_5
+  - test_set
+  - misc
 
 # All scripts available for benchmarking
 scripts_all:
@@ -31,8 +37,8 @@ scripts_all:
 
 # Scripts to be included in the next benchmark run
 scripts_to_run:
-  - real_offline_Xinyue_new_chord_script
+  # - real_offline_Xinyue_new_chord_script
   - real_offline_script
-  - real_offline_Xinyue_new_script
+  # - real_offline_Xinyue_new_script
   - fake_offline_script
   - fake_offline_script_lantency2

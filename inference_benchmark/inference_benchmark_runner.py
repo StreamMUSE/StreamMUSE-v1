@@ -107,20 +107,20 @@ def main():
                 continue
             for input_midi in tqdm(input_midis):
                 output_midi = output_dataset_path / input_midi.name
-                # try:
-                #     script.run(
-                #         input_midi=str(input_midi),
-                #         output_midi=str(output_midi).replace('.mid', 'output') + '.mid',
-                #         prompt_len=prompt_len,
-                #         n_samples=n_samples,
-                #         output_len=output_len,
-                #         temperature=temperature
-                #     )
-                #     print(f'input_midi: {input_midi}, output_midi: {output_midi}')
-                # except Exception as e:
-                #     print(f"Error running {script.__class__.__name__} for {input_midi}: {e}")
-                #     error_paths_scripts.append((input_midi, script))
-                #     continue
+                try:
+                    script.run(
+                        input_midi=str(input_midi),
+                        output_midi=str(output_midi).replace('.mid', 'output') + '.mid',
+                        prompt_len=prompt_len,
+                        n_samples=n_samples,
+                        output_len=output_len,
+                        temperature=temperature
+                    )
+                    print(f'input_midi: {input_midi}, output_midi: {output_midi}')
+                except Exception as e:
+                    print(f"Error running {script.__class__.__name__} for {input_midi}: {e}")
+                    error_paths_scripts.append((input_midi, script))
+                    continue
                 print('-' * 100)
             print(f"        Finished running the benchmark script: {dataset}")
             print('-' * 100)
