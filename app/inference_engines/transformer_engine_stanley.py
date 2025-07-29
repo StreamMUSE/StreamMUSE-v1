@@ -102,6 +102,9 @@ class InferenceEngineStanley():
         # These are stored with absolute ticks relative to the start of the performance.
         self.melody_history = []
         self.accompaniment_history = []
+
+        # this is a counter for debugging purposes, to track how many times we have generated accompaniment
+        self.counter = 0
     
     def clear_history(self):
         """Clears the performance history."""
@@ -280,6 +283,13 @@ class InferenceEngineStanley():
         prompt_acc = [
             n for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
+
+        # record the prompt into a log file
+        with open("prompt_log.txt", "a") as f:
+            f.write(f"Number of inference: {self.counter}\n")
+            f.write(f"Prompt start tick: {prompt_start_tick}, end tick: {prompt_end_tick}\n")
+            f.write(f"Melody notes: {json.dumps(prompt_melody, indent=2)}\n")
+            f.write(f"Accompaniment notes: {json.dumps(prompt_acc, indent=2)}\n")
 
         # Convert note events into tensor 'rolls' using the fixed model context length.
         # The resulting tensors will have shape (48, 12).
