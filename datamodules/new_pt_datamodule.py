@@ -22,7 +22,7 @@ class NewPtDataset(Dataset):
             self.input_mel_data_full = torch.load(self.file_path.replace("acc", "mel"), mmap=True)  # 完整的 input 旋律数据
             self.pitch_shift_range_acc = torch.load(self.file_path[:-3] + ".pitch_shift_range.pt", mmap=True).reshape(-1, 2)
             self.pitch_shift_range_mel = torch.load(
-                self.file_path.replace("acc.pt", "mel.pt")[:-3] + ".pitch_shift_range.pt", mmap=True
+                self.file_path.replace("acc", "mel")[:-3] + ".pitch_shift_range.pt", mmap=True
             ).reshape(-1, 2)
         except Exception as e:
             raise RuntimeError(f"Error loading .pt files for {self.file_path} in FramedDataset: {e}")
