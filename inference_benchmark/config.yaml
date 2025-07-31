@@ -1,7 +1,7 @@
 # Inference Benchmark Configuration File
 # This file defines the datasets and scripts to be used in the next inference benchmark.
 
-benchmark_name: "survey_offlines"
+benchmark_name: "survey_offlines_2"
 
 # Inference Parameters
 inference_params: 
@@ -21,10 +21,10 @@ datasets_all:
 
 # Datasets to be included in the next benchmark run
 datasets_to_run:
-  - aria_unique_skyline_top2_subset_5
-  - pop909_dataset_subset_5
+  # - aria_unique_skyline_top2_subset_5
+  # - pop909_dataset_subset_5
   - test_set
-  - misc
+  # - misc
 
 # All scripts available for benchmarking
 scripts_all:

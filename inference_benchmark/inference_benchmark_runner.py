@@ -102,6 +102,7 @@ def main():
 
             # Find input MIDI files in the dataset directory
             input_midis = list(input_dir.glob('mel/*.mid', ))
+            print(input_midis)
             if not input_midis:
                 print(f"No MIDI files found in {input_dir}. Skipping dataset {dataset}.")
                 continue
