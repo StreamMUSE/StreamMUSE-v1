@@ -156,3 +156,29 @@ class NewPtDataModule(pl.LightningDataModule):
             acc_data=acc_data,
             pitch_shift=pitch_shift
         )
+        
+        
+if __name__ == "__main__":
+    # Example usage
+    from schema.dataset_schema import NewPtDatasetSchema, NewPtDataModuleSchema
+    
+    dataset_config = NewPtDatasetSchema(
+        file_path="/home/ubuntu/ugrip/data/pop909/pop909_acc_cp4.pt",
+        target_length=16,
+        split_ratio=10,
+        stage="train",
+        sequence_shift=128
+    )
+    
+    datamodule_config = NewPtDataModuleSchema(
+        train_config=dataset_config,
+        val_config=dataset_config,
+        test_config=dataset_config,
+        predict_config=dataset_config
+    )
+    
+    datamodule = NewPtDataModule(datamodule_config)
+    datamodule.setup("fit")
+    print(len(datamodule.train_dataset))
+    
+    print(datamodule.train_dataset.__getitem__(0))  # Example to get the first item
