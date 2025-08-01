@@ -9,8 +9,8 @@ class TrainingProbingLoggerSchema(BaseModel):
     """TrainingProbingLoggerSchema."""
 
     loss_jump_threshold_X: float = Field(1.5, description="Threshold for loss jump")
-    loss_avg_window_Y: int = Field(10, description="Window size for loss average")
-    recording_window_N: int = Field(5, description="Window size for recording")
+    loss_avg_window_Y: int = Field(15, description="Window size for loss average")
+    recording_window_N: int = Field(10, description="Window size for recording")
 
 
 class OptimizerSchema(BaseModel):
