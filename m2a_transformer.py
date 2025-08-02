@@ -40,6 +40,11 @@ class RoFormerSymbolicTransformer(L.LightningModule):
         self.local_model_num_layers = 3 # is original number
         self.local_model_num_attention_heads = 8
         self.local_model_intermediate_size = 768
+
+        # 0.25 B
+        self.hidden_size = 1152
+        self.intermediate_size = 4352
+
         main_roformer_config = RoFormerConfig(
             hidden_size=self.hidden_size,
             num_hidden_layers=self.num_layers,

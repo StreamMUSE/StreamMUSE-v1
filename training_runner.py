@@ -31,10 +31,19 @@ logger = logging.getLogger(__name__)
 # The first few messages might come from all ranks if this runs before DDP is fully set up.
 logger.info("Application started. Initial logging setup complete.")
 
-# temp_dir = '/opt/dlami/nvme/stanley/my-temp-space'
-# os.environ['TMPDIR'] = temp_dir
-# # 确保这个目录存在
-# os.makedirs(temp_dir, exist_ok=True)
+temp_dir = '/home/ubuntu/stanleyz/StreamMUSE/my-temp-space'
+os.environ['TMPDIR'] = temp_dir
+os.environ['TMP'] = temp_dir  
+os.environ['TEMP'] = temp_dir
+os.environ['PYTORCH_KERNEL_CACHE_PATH'] = os.path.join(temp_dir, 'pytorch_cache')
+os.environ['TORCH_HOME'] = os.path.join(temp_dir, 'torch')
+os.environ['HF_HOME'] = os.path.join(temp_dir, 'huggingface')
+# 确保所有目录存在
+for dir_path in [temp_dir, 
+                 os.environ['PYTORCH_KERNEL_CACHE_PATH'],
+                 os.environ['TORCH_HOME'],
+                 os.environ['HF_HOME']]:
+    os.makedirs(dir_path, exist_ok=True)
 
 class ProjectRunner:
     def __init__(self, config_path: str):
@@ -165,20 +174,20 @@ class ProjectRunner:
                 f"version_{self.loggers[0].version}",  # This is the full versioned path
             )
 
-            callbacks_list = [
-                ModelCheckpoint(
-                    every_n_train_steps=1000,
-                    save_top_k=5,
-                    monitor="val_loss",
-                    mode="min",
-                    dirpath=os.path.join(base_log_path, "checkpoints"),  # Checkpoints within versioned dir
-                    filename="{epoch:02d}-{val_loss:.2f}",
-                ),
-            ]
+            # callbacks_list = [
+            #     ModelCheckpoint(
+            #         every_n_train_steps=1000,
+            #         save_top_k=5,
+            #         monitor="val_loss",
+            #         mode="min",
+            #         dirpath=os.path.join(base_log_path, "checkpoints"),  # Checkpoints within versioned dir
+            #         filename="{epoch:02d}-{val_loss:.2f}",
+            #     ),
+            # ]
 
-            # **self.config.trainer.model_dump() might include callbacks from config.
-            # It's better to exclude it if you manage callbacks explicitly like this.
-            trainer_config_dict = self.config.trainer.model_dump(exclude={"callbacks"})
+            # # **self.config.trainer.model_dump() might include callbacks from config.
+            # # It's better to exclude it if you manage callbacks explicitly like this.
+            # trainer_config_dict = self.config.trainer.model_dump(exclude={"callbacks"})
 
             self.trainer = Trainer(
                 precision="bf16-mixed",  # data precision
@@ -310,8 +319,8 @@ if __name__ == "__main__":
     # torch.cuda.memory._record_memory_history() # start memory snapshot
 
     # Example usage
-    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_deduped_skyline_top2_0.25B-1.5.yaml")
-    # runner = ProjectRunner(config_path="schema/yaml/new_m2a_transformer_pop909_v0-1.0.yaml")  # Use your specific config
+    # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_deduped_skyline_top2_0.5B-1.4.yaml")
+    runner = ProjectRunner(config_path="logs/old_m2a_aria/1.0.2/old_m2a_transformer_aria_deduped_skyline_top2_0.5B-1.4.yaml")  # Use your specific config
 
     try:
         runner.run_experiment()
