@@ -133,6 +133,11 @@ def continuation(model, midi_path, prompt_length=100, generation_length=400, tem
 
 
 if __name__ == "__main__":
+    # seed = 42
+    # np.random.seed(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)
+
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
 
     parser.add_argument("--model_path", type=str, default="logs/old_m2a_aria/1.5.5/ckpt/epoch=36-val_loss=0.75.ckpt", help="path to model checkpoint")
