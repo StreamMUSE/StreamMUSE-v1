@@ -135,22 +135,20 @@ def continuation(model, midi_path, prompt_length=100, generation_length=400, tem
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
 
-    parser.add_argument("--model_path", type=str, default="logs/old_m2a_aria/1.5.5/ckpt/epoch=19-val_loss=0.77.ckpt", help="path to model checkpoint")
+    parser.add_argument("--model_path", type=str, default="logs/old_m2a_aria/1.5.5/ckpt/epoch=36-val_loss=0.75.ckpt", help="path to model checkpoint")
     parser.add_argument("--prompt_len", type=int, default=75, help="length of prompt")
     parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
+    parser.add_argument("--model_size", type=str, default='0.12B', help="model size")
 
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     model_path = args.model_path
 
-    if "small" in model_path:
-        model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=False, map_location=device)
-    else:
-        model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=True, map_location=device)
+    model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, model_size=args.model_size, map_location=device)
     model.save_name = os.path.basename(model_path)
     model.to(device)  # Move model to GPU
     model.eval()

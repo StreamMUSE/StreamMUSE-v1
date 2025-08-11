@@ -319,8 +319,8 @@ if __name__ == "__main__":
     # torch.cuda.memory._record_memory_history() # start memory snapshot
 
     # Example usage
-    # runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_deduped_skyline_top2_0.5B-1.4.yaml")
-    runner = ProjectRunner(config_path="logs/old_m2a_aria/1.0.2/old_m2a_transformer_aria_deduped_skyline_top2_0.5B-1.4.yaml")  # Use your specific config
+    runner = ProjectRunner(config_path="schema/yaml/old_m2a_transformer_aria_unique_skyline_top2_0.5B-1.9.yaml")
+    # runner = ProjectRunner(config_path="logs/old_m2a_aria/1.0.2/old_m2a_transformer_aria_deduped_skyline_top2_0.5B-1.4.yaml")  # Use your specific config
 
     try:
         runner.run_experiment()
