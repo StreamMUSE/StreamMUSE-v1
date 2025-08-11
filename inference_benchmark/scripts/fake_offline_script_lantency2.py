@@ -43,7 +43,7 @@ class fake_offline_script_lantency2:
 
 if __name__ == "__main__":
     # Example usage
-    script = fake_offline_script()
+    script = fake_offline_script_lantency2()
     script.run(
         input_midi="inputs/pop909_dataset/mel/001.mid",
         output_midi="outputs/testtttt.mid",

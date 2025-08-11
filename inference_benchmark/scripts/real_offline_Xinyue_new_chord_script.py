@@ -9,9 +9,9 @@ class real_offline_Xinyue_new_chord_script:
     def run(self,
             input_midi,
             output_midi,
-            prompt_len=200,
+            prompt_len=75,
             n_samples=1,
-            output_len=200,
+            output_len=192,
             temperature=1.0
         ):
         model_path="../results/ModelXinyueNewChord/m2a_transformer_v0.4_chord_small_batch_20_schedule.epoch=00.val_loss=0.72838.ckpt"
@@ -33,5 +33,4 @@ class real_offline_Xinyue_new_chord_script:
             n_samples=n_samples,
             output_path=output_midi
         )
-        
         print(f'Save output MIDI to {output_midi}')
