@@ -105,7 +105,7 @@ def read_midi_file_input(
     main_loop_tempo: float,
     main_loop_ticks_per_beat: int,
     delay_ticks: int = 0,
-    use_original_duration: bool = False,
+    use_original_duration: bool = True,
     default_duration_ticks: int = 2
 ):
     """
