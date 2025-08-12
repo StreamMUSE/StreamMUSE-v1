@@ -1,11 +1,10 @@
 project: &project "Real-Time Accompaniment Generation "
 description: | 
-  "symbolic music generation with XinYue's tokenization and customed RoFormer, continue 
-  trained on Xinyue's model with aria unique dataset(skyline_top2). The model size is around 
-  0.12 B"
+  "symbolic music generation with XinYue's tokenization and customed RoFormer,  
+  trained on aria unique dataset(skyline_top2). The model size is around 0.12 B"
 
 name: &name "old_m2a_aria"
-version: &version "1.4"
+version: &version "1.7"
 save_dir: &save_dir "logs/"
 loggers:
   csv_logger:
@@ -22,16 +21,16 @@ loggers:
 dataset:
   tokenizer: "XinYue's"
   train_config:
-    batch_size: 16
+    batch_size: 32
     num_workers: 0
-    file_path: "data/data_aria_unique_skyline_top2/aria_unique_skyline_top2_acc_cp10.pt" # path to the preprocessed training data
+    file_path: "data/aria_unique_skyline_top2/aria_unique_acc_cp4.pt" # path to the preprocessed training data
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
   val_config:
-    batch_size: 16
+    batch_size: 32
     num_workers: 0
-    file_path: "data/data_aria_unique_skyline_top2/aria_unique_skyline_top2_acc_cp10.pt"
+    file_path: "data/aria_unique_skyline_top2/aria_unique_acc_cp4.pt"
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
@@ -44,5 +43,5 @@ model:
 trainer:
   max_epochs: 5000
   accelerator: "gpu"
-  devices: [ 4 ]
+  devices: [ 2 ]
 seed: 42
