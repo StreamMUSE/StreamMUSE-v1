@@ -357,7 +357,7 @@ def main():
     # Display arguments
     parser.add_argument("--log_lines", type=int, default=config.DEFAULT_LOG_LINES,
                        help="Number of log lines to display")
-    parser.add_argument("--metronome", action="store_true", default=True,
+    parser.add_argument("--metronome", action="store_true", 
                        help="Enable audible MIDI metronome click")
     
     # MIDI I/O arguments
