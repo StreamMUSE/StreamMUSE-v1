@@ -271,7 +271,6 @@ class XinyueTokenizer(MusicTokenizer):
         # Add time events
         all_events = []
         current_tick = 0
-        current_tick = 0
         ticks_per_frame = self._compute_ticks_per_frame(time_division)
         events.sort(key=lambda e: e.time)
 
@@ -289,6 +288,9 @@ class XinyueTokenizer(MusicTokenizer):
             while current_tick <= event.time:
                 self._add_position_event(all_events, current_tick, ticks_per_frame)
                 current_tick += ticks_per_frame
+
+            # Now that the timeline is up-to-date, add the musical event
+            all_events.append(event)
 
         return all_events
 
@@ -714,32 +716,7 @@ class XinyueTokenizer(MusicTokenizer):
                         score.tracks.append(track)
 
         return score
-
-    def decode(
-        self,
-        tokens: TokSequence | list[TokSequence] | list[int | list[int]] | np.ndarray,
-        programs: list[tuple[int, bool]] | None = None,
-        output_path: str | Path | None = None,
-    ) -> Score:
-        r"""
-        Detokenize one or several sequences of tokens into a ``symusic.Score``.
-
-        You can give the tokens sequences either as :class:`miditok.TokSequence`
-        objects, lists of integers, numpy arrays or PyTorch/Jax/Tensorflow tensors.
-        The Score's time division will be the same as the tokenizer's:
-        ``tokenizer.time_division``.
-
-        :param tokens: tokens to convert. Can be either a list of
-            :class:`miditok.TokSequence`, a Tensor (PyTorch and Tensorflow are
-            supported), a numpy array or a Python list of ints. The first dimension
-            represents tracks, unless the tokenizer handle tracks altogether as a
-            single token sequence (``tokenizer.one_token_stream == True``).
-        :param programs: programs of the tracks. If none is given, will default to
-            piano, program 0. (default: ``None``)
-        :param output_path: path to save the file. (default: ``None``)
-        :return: the ``symusic.Score`` object.
-        """
-        return super().decode(tokens, programs, output_path)
+    
 
 
 if __name__ == "__main__":

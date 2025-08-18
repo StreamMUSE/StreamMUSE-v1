@@ -5,13 +5,12 @@ tb_logs
 .idea
 /data
 /temp/
-m2a_transformer_new.py
+/temp1/
 cp_transformer.py
 /wandb
 preprocess_large_midi_dataset_private.py
 cp_transformer_pt_inference.py
 cp_transformer_pt.py
-m2a_transformer_inference_copy.py
 .vscode/
 *.zip
 /datasets/
@@ -19,7 +18,6 @@ m2a_transformer_inference_copy.py
 aria-dataset
 POP909-Dataset
 /test/
-*.mid
 aria-extract.py
 /dataset/
 src/transformers/
@@ -29,4 +27,10 @@ app/.DS_Store
 .python-version
 results/
 /app/results
+my-temp-space
 /app/logs
+temp3/
+prep_samples/
+inference_benchmark/temp/
+inference_benchmark/inputs/
+inference_benchmark/outputs/

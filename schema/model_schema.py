@@ -9,8 +9,8 @@ class TrainingProbingLoggerSchema(BaseModel):
     """TrainingProbingLoggerSchema."""
 
     loss_jump_threshold_X: float = Field(1.5, description="Threshold for loss jump")
-    loss_avg_window_Y: int = Field(10, description="Window size for loss average")
-    recording_window_N: int = Field(5, description="Window size for recording")
+    loss_avg_window_Y: int = Field(15, description="Window size for loss average")
+    recording_window_N: int = Field(10, description="Window size for recording")
 
 
 class OptimizerSchema(BaseModel):
@@ -197,8 +197,14 @@ class OldM2ANomaskTransformerSchema(BaseModelSchema):
                 self.num_attention_heads = 8
             if self.intermediate_size is None:
                 self.intermediate_size = 1024
+                
+class NewM2ATransformerSchema(OldM2ATransformerSchema):
+    model_name: str = Field("XinYue's + customed RoFormer", description="Name of the M2A Transformer model.")
+    model_type: Literal["New-M2A-Transformer"] = Field("New-M2A-Transformer", description="Type of the model.")
+    frame_shift: int = Field(4, description="Number of frame shift.")
+    
 
-ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema, OldM2ANomaskTransformerSchema]
+ModelSchema = Union[M2AModelSchema, OldM2ATransformerSchema, OldM2ANomaskTransformerSchema,NewM2ATransformerSchema]
 # ModelSchema = OldM2ATransformerSchema
 
 

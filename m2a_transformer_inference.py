@@ -5,7 +5,8 @@ import pretty_midi
 import os
 import argparse
 from typing import Literal
-
+import numpy as np
+import pdb
 
 def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
@@ -53,16 +54,19 @@ def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     midi.write(save_path)
 
-
-def decompress(model, byte_arr_mel, byte_arr_acc):
+# change dim, and do the preprocess
+# a list of subseq: [num_logical_ticks, max_polyphony*3] 
+# ->
+# [1, num_logical_ticks, max_polyphony*2]
+def decompress(model, byte_arr_mel, byte_arr_acc, device):
     x = torch.tensor(byte_arr_mel).unsqueeze(0)
-    x = x.cuda()
+    x = x.to(device)  # Move to the specified device
     y = torch.tensor(byte_arr_acc).unsqueeze(0)
-    y = y.cuda()
-    return model.preprocess(x, pitch_shift=torch.zeros(1, dtype=torch.int8).cuda(), y=y)
+    y = y.to(device)  # Move to the specified device
+    return model.preprocess(x, pitch_shift=torch.zeros(1, dtype=torch.int8).to(device), y=y)
 
 
-def continuation(model, midi_path, prompt_length=100, generation_length=384, temperature=1.0, n_samples=1, gt_mel=True):
+def continuation(model, midi_path, prompt_length=100, generation_length=400, temperature=1.0, n_samples=1, gt_mel=True, device='cuda'):
     if os.path.isfile(midi_path):
         pass
     else:
@@ -77,7 +81,7 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
         print(f"Error: preprocess_midi returned None for acc file: {midi_path.replace('mel', 'acc')}")
         return  # Skip this MIDI file
 
-    x_mel, x_acc = decompress(model, byte_arr_mel[0], byte_arr_acc[0])
+    x_mel, x_acc = decompress(model, byte_arr_mel[0], byte_arr_acc[0], device=device)
 
     if prompt_length == 0:
         B, S, L = x_mel.shape
@@ -123,32 +127,41 @@ def continuation(model, midi_path, prompt_length=100, generation_length=384, tem
 
     for i in range(n_samples):
         output_i = [output[j][i : i + 1, :] for j in range(len(output))]
+        with open(f"tensor_output_original_inference_wo_gt_{i}.txt", "w") as f:
+            f.write(str(output_i))
         decode_output(output_i, f"temp/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
 
 
 if __name__ == "__main__":
+    # seed = 42
+    # np.random.seed(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)
+
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
 
-    parser.add_argument("--model_path", type=str, help="path to model checkpoint")
+    parser.add_argument("--model_path", type=str, default="logs/old_m2a_aria/1.5.5/ckpt/epoch=36-val_loss=0.75.ckpt", help="path to model checkpoint")
     parser.add_argument("--prompt_len", type=int, default=75, help="length of prompt")
-    parser.add_argument("--n_samples", type=int, default=2, help="number of samples")
+    parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
+    parser.add_argument("--model_size", type=str, default='0.12B', help="model size")
 
     args = parser.parse_args()
 
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     model_path = args.model_path
 
-    if "small" in model_path:
-        model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=False)
-    else:
-        model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=True)
+    model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, model_size=args.model_size, map_location=device)
     model.save_name = os.path.basename(model_path)
-    model.cuda()
+    model.to(device)  # Move model to GPU
     model.eval()
 
     for midi in os.listdir('./input/mel'):
         if midi.endswith('mid'):
             midi = os.path.join('./input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=384, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
+            continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
 
-
+    # midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
+    # continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)

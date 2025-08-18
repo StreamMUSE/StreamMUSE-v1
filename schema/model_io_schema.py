@@ -47,13 +47,24 @@ class M2AModelInputData(BaseModelInputData):
 
     pitch_shift: Optional[torch.Tensor] = Field(None, description="Pitch shift values for the melody and accompaniment data.")
 
+class NewPtM2AModelInputData(M2AModelInputData):
+    """
+    Schema for M2A Transformer model input.
+    """
+
+
 
 class M2AModelOutputData(BaseModelOutputData):
     """
     Schema for M2A Transformer model output.
     """
 
+class NewPtM2AModelOutputData(BaseModelOutputData):
+    """
+    Schema for M2A Transformer model output.
+    """
 
-ModelOutputData = Union[M2AModelOutputData]
 
-ModelInputData = Union[M2AModelInputData]
+
+ModelInputData = Union[M2AModelInputData,NewPtM2AModelInputData]
+ModelOutputData = Union[M2AModelOutputData,NewPtM2AModelInputData]

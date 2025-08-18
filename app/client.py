@@ -1,8 +1,19 @@
 """
-This is the client side for the StreamMUSE end to end system.
+StreamMUSE Client Application
+
+This is the client side for the StreamMUSE end-to-end real-time music generation system.
+It provides multiple input modes (MIDI devices, computer keyboard, MIDI files) and
+communicates with a StreamMUSE server to generate musical accompaniment in real-time.
+
+Usage:
+    python client.py [options]
+    
+Input modes:
+    - MIDI device (default): Uses connected MIDI input device
+    - Keyboard: python client.py --use-keyboard-input
+    - MIDI file: python client.py --midi-file-input path/to/file.mid
 """
 
-import sys
 import os
 import time
 import requests
@@ -15,11 +26,64 @@ from output_handlers.cli_output import CLIOutputHandler
 from output_handlers.audio_output import AudioOutputHandler
 from output_handlers.midi_file_handler import MidiFileHandler
 from output_handlers.json_log_handler import JsonLogHandler
-from input_handlers.input_handler import read_midi_input, read_keyboard_input
+from input_handlers.input_handler import read_midi_input, read_keyboard_input, read_midi_file_input
+
+# --- Configuration ---
+class StreamMUSEConfig:
+    """Configuration settings for StreamMUSE client"""
+    
+    # Network
+    DEFAULT_SERVER_URL = "http://localhost:8000/generate_accompaniment"
+    
+    # Musical timing
+    DEFAULT_TEMPO = 90.0
+    DEFAULT_TICKS_PER_BEAT = 4
+    DEFAULT_BEATS_PER_BAR = 4
+    DEFAULT_GENERATION_INTERVAL_TICKS = 2
+    
+    # Note handling
+    DEFAULT_NOTE_DURATION_TICKS = 2
+    LATENCY_OFFSET_TICKS = 2
+    DEFAULT_ACCOMPANIMENT_VELOCITY = 50
+    
+    # Display
+    DEFAULT_LOG_LINES = 10
+    
+    # MIDI File Input
+    DEFAULT_MIDI_FILE_DELAY_TICKS = 0
+    
+    @staticmethod
+    def validate_args(args):
+        """Validate command line arguments."""
+        if args.accompaniment_velocity < 0 or args.accompaniment_velocity > 127:
+            print("Error: accompaniment-velocity must be between 0 and 127")
+            return False
+        
+        if args.tempo <= 0:
+            print("Error: tempo must be positive")
+            return False
+            
+        if args.ticks_per_beat <= 0:
+            print("Error: ticks_per_beat must be positive")
+            return False
+            
+        if args.beats_per_bar <= 0:
+            print("Error: beats_per_bar must be positive")
+            return False
+            
+        if args.generation_interval_ticks <= 0:
+            print("Error: generation_interval_ticks must be positive")
+            return False
+            
+        if args.midi_file_delay_ticks < 0:
+            print("Error: midi_file_delay_ticks must be non-negative")
+            return False
+        
+        return True
 
 # --- Constants ---
-DEFAULT_NOTE_DURATION_TICKS = 2
-LATENCY_OFFSET_TICKS = 2
+DEFAULT_NOTE_DURATION_TICKS = StreamMUSEConfig.DEFAULT_NOTE_DURATION_TICKS
+LATENCY_OFFSET_TICKS = StreamMUSEConfig.LATENCY_OFFSET_TICKS
 
 def inference_worker(request_queue: Queue, response_queue: Queue, server_url: str):
     """
@@ -65,7 +129,8 @@ def tick_loop(
     beats_per_bar: int, 
     all_timing_data: list, # Pass list in to be mutated
     metronome_enabled: bool,
-    generation_interval_ticks: int
+    generation_interval_ticks: int,
+    current_tick_ref: dict = None  # Optional shared tick reference for MIDI file input
 ):
     """
     Main tick loop for the client. (main thread)
@@ -82,6 +147,10 @@ def tick_loop(
     # --- Main Loop ---
     while True:
         tick_count += 1
+        
+        # Update shared tick reference for MIDI file input
+        if current_tick_ref is not None:
+            current_tick_ref['current_tick'] = tick_count
         
         # --- 1. Process User Input ---
         user_notes_this_tick = []
@@ -137,7 +206,6 @@ def tick_loop(
                 all_timing_data.append(timings)
                 
                 # --- Tick Consistency Filter ---
-                generation_start_tick = response_data['generation_start_tick']
                 newly_generated_notes = response_data['accompaniment']
 
                 # --- Clear stale notes from the previous generation ---
@@ -175,8 +243,9 @@ def tick_loop(
         
         if is_trigger_tick:# and notes_for_next_request:
             # The model should start generating from the beginning of the *next* generation interval.
-            current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
-            next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
+            # current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
+            # next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
+            next_interval_start_tick = tick_count + 1
 
             request_data = {
                 "melody_notes": notes_for_next_request,
@@ -253,29 +322,67 @@ def tick_loop(
         time.sleep(seconds_per_tick)
 
 def main():
-    SERVER_URL = "http://localhost:8000/generate_accompaniment"
-    TEMPO = 90.0
-    TICKS_PER_BEAT = 4
-    BEATS_PER_BAR = 4
+    config = StreamMUSEConfig()
+    
+    parser = argparse.ArgumentParser(
+        description="StreamMUSE Client - Real-time music generation with AI accompaniment",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+            Input Modes:
+            Default:     Use connected MIDI device
+            Keyboard:    --use-keyboard-input
+            MIDI file:   --midi-file-input path/to/file.mid
 
-    parser = argparse.ArgumentParser(description="StreamMUSE Client")
-    parser.add_argument("--server_url", type=str, default=SERVER_URL)
-    parser.add_argument("--tempo", type=float, default=TEMPO)
-    parser.add_argument("--ticks_per_beat", type=int, default=TICKS_PER_BEAT)
-    parser.add_argument("--beats_per_bar", type=int, default=BEATS_PER_BAR)
-    parser.add_argument(
-        "--generation_interval_ticks",
-        type=int,
-        default=2,
-        help="The number of ticks between generation requests."
+            Examples:
+            %(prog)s
+            %(prog)s --use-keyboard-input --tempo 120
+            %(prog)s --midi-file-input song.mid --midi-file-delay-ticks 8
+        """
     )
-    parser.add_argument("--log_lines", type=int, default=10)
-    parser.add_argument("--metronome", action="store_true", help="Enable an audible MIDI metronome click.")
-    parser.add_argument("--midi_output_name", type=str, default=None, help="Specify the MIDI output port name.")
-    parser.add_argument("--midi_input_name", type=str, default=None, help="Specify the MIDI input port name.")
-    parser.add_argument("--use-keyboard-input", action="store_true", help="Use the computer keyboard as MIDI input.")
-    parser.add_argument("--accompaniment-velocity", type=int, default=50, help="MIDI velocity for generated accompaniment notes (0-127).")
+    
+    # Network arguments
+    parser.add_argument("--server_url", type=str, default=config.DEFAULT_SERVER_URL,
+                       help="URL of the StreamMUSE server")
+    
+    # Musical timing arguments
+    parser.add_argument("--tempo", type=float, default=config.DEFAULT_TEMPO,
+                       help="Tempo in BPM")
+    parser.add_argument("--ticks_per_beat", type=int, default=config.DEFAULT_TICKS_PER_BEAT,
+                       help="Number of ticks per beat")
+    parser.add_argument("--beats_per_bar", type=int, default=config.DEFAULT_BEATS_PER_BAR,
+                       help="Number of beats per bar")
+    parser.add_argument("--generation_interval_ticks", type=int, default=config.DEFAULT_GENERATION_INTERVAL_TICKS,
+                       help="Number of ticks between generation requests")
+    
+    # Display arguments
+    parser.add_argument("--log_lines", type=int, default=config.DEFAULT_LOG_LINES,
+                       help="Number of log lines to display")
+    parser.add_argument("--metronome", action="store_true", 
+                       help="Enable audible MIDI metronome click")
+    
+    # MIDI I/O arguments
+    parser.add_argument("--midi_output_name", type=str, default=None,
+                       help="Specify MIDI output port name")
+    parser.add_argument("--midi_input_name", type=str, default=None,
+                       help="Specify MIDI input port name")
+    parser.add_argument("--accompaniment-velocity", type=int, default=config.DEFAULT_ACCOMPANIMENT_VELOCITY,
+                       help="MIDI velocity for generated accompaniment notes (0-127)")
+    
+    # Input mode arguments
+    parser.add_argument("--use-keyboard-input", action="store_true",
+                       help="Use computer keyboard as MIDI input")
+    parser.add_argument("--midi-file-input", type=str, default=None,
+                       help="Path to MIDI file to simulate user input")
+    parser.add_argument("--midi-file-delay-ticks", type=int, default=config.DEFAULT_MIDI_FILE_DELAY_TICKS,
+                       help="Number of ticks to delay before MIDI file starts playing")
+    parser.add_argument("--midi-file-use-original-duration", action="store_true",
+                       help="Use original MIDI note durations instead of fixed duration")
+    
     args = parser.parse_args()
+
+    # --- Validate Arguments ---
+    if not StreamMUSEConfig.validate_args(args):
+        return
 
     # --- Create Session Log Directory ---
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -294,7 +401,30 @@ def main():
     json_log_handler = JsonLogHandler()
     all_timing_data = [] # Initialize list in main scope
 
-    if args.use_keyboard_input:
+    # Create shared reference for current tick count (for MIDI file input)
+    current_tick_ref = {'current_tick': 0}
+
+    if args.midi_file_input:
+        # MIDI file input mode
+        print(f"Using MIDI file input: {args.midi_file_input}")
+        if args.midi_file_delay_ticks > 0:
+            print(f"MIDI file will start after {args.midi_file_delay_ticks} ticks delay")
+        
+        input_thread = threading.Thread(
+            target=read_midi_file_input,
+            args=(
+                event_queue,
+                args.midi_file_input,
+                current_tick_ref,
+                args.tempo,
+                args.ticks_per_beat,
+                args.midi_file_delay_ticks,
+                args.midi_file_use_original_duration,
+                DEFAULT_NOTE_DURATION_TICKS
+            ),
+            daemon=True
+        )
+    elif args.use_keyboard_input:
         input_thread = threading.Thread(target=read_keyboard_input, args=(event_queue,), daemon=True)
     else:
         # A check to see if MIDI input is available.
@@ -333,7 +463,8 @@ def main():
             args.beats_per_bar,
             all_timing_data,
             args.metronome,
-            args.generation_interval_ticks),
+            args.generation_interval_ticks,
+            current_tick_ref),
         daemon=True
     )
 

@@ -25,26 +25,72 @@ SOS_TOKEN = N_NORMAL_TOKENS
 EOS_TOKEN = N_NORMAL_TOKENS + 1
 PAD_TOKEN = N_NORMAL_TOKENS + 2
 
+MODEL_CONFIGS = {
+    'small': {
+        'hidden_size': 512,
+        'num_layers': 6,
+        'num_attention_heads': 8,
+        'intermediate_size': 1024,
+        'local_model_num_layers': 3,
+        'local_model_num_attention_heads': 8,
+        'local_model_intermediate_size': 768,
+    },
+    '0.12B': {
+        'hidden_size': 768,
+        'num_layers': 12,
+        'num_attention_heads': 12,
+        'intermediate_size': 3072,
+        'local_model_num_layers': 3,
+        'local_model_num_attention_heads': 8,
+        'local_model_intermediate_size': 768,
+    },
+    '0.25B': { 
+        'hidden_size': 1152,
+        'num_layers': 12, 
+        'num_attention_heads': 12, 
+        'intermediate_size': 4352,
+        'local_model_num_layers': 3,
+        'local_model_num_attention_heads': 8,
+        'local_model_intermediate_size': 768,
+    },
+    '0.5B': {
+        'hidden_size': 1536,
+        'num_layers': 12,
+        'num_attention_heads': 16,
+        'intermediate_size': 6144,
+        'local_model_num_layers': 3,
+        'local_model_num_attention_heads': 16,
+        'local_model_intermediate_size': 3072,
+    }
+}
+
 def fill_with_neg_inf(t):
     """FP16-compatible function that fills a tensor with -inf."""
     return t.float().fill_(float("-inf")).type_as(t)
 
 class RoFormerSymbolicTransformer(L.LightningModule):
 
-    def __init__(self, large=False):
+    def __init__(self, model_size='0.12B'):
         super().__init__()
-        self.hidden_size = 768 if large else 512
-        self.num_layers = 12 if large else 6
-        self.num_attention_heads = 12 if large else 8
-        self.intermediate_size = 3072 if large else 1024
-        self.local_model_num_layers = 3
-        self.local_model_num_attention_heads = 8
-        self.local_model_intermediate_size = 768
+
+        # --- 从配置字典中获取参数 ---
+        if model_size not in MODEL_CONFIGS:
+            raise ValueError(f"Unknown model_size: {model_size}. Available sizes: {list(MODEL_CONFIGS.keys())}")
+
+        self.hidden_size = MODEL_CONFIGS[model_size]['hidden_size']
+        self.num_layers = MODEL_CONFIGS[model_size]['num_layers']
+        self.num_attention_heads = MODEL_CONFIGS[model_size]['num_attention_heads']
+        self.intermediate_size = MODEL_CONFIGS[model_size]['intermediate_size']
+        self.local_model_num_layers = MODEL_CONFIGS[model_size]['local_model_num_layers']
+        self.local_model_num_attention_heads = MODEL_CONFIGS[model_size]['local_model_num_attention_heads']
+        self.local_model_intermediate_size = MODEL_CONFIGS[model_size]['local_model_intermediate_size'] 
+
         main_roformer_config = RoFormerConfig(
             hidden_size=self.hidden_size,
             num_hidden_layers=self.num_layers,
             num_attention_heads=self.num_attention_heads,
             intermediate_size=self.intermediate_size,
+            # max_position_embeddings=96, # test
             hidden_act="gelu",
             hidden_dropout_prob=0.1,
             attention_probs_dropout_prob=0.1
@@ -55,6 +101,7 @@ class RoFormerSymbolicTransformer(L.LightningModule):
             num_hidden_layers=self.local_model_num_layers,
             num_attention_heads=self.local_model_num_attention_heads,
             intermediate_size=self.local_model_intermediate_size,
+            # max_position_embeddings=96, #test
             hidden_act="gelu",
             hidden_dropout_prob=0.1,
             attention_probs_dropout_prob=0.1
@@ -136,12 +183,15 @@ class RoFormerSymbolicTransformer(L.LightningModule):
 
             # 5a) now append the embedding (always ACCOMPANIMENT), so token_type_ids = 1
             emb = torch.cat([emb, self.local_embedding(y_next) + self.token_type_embeddings(torch.ones_like(y_next))], dim=1)
-
+        # 补齐到 max_subseq_len
+        if y.shape[1] < max_subseq_len:
+            pad_len = max_subseq_len - y.shape[1]
+            pad = torch.full((batch_size, pad_len), PAD_TOKEN, dtype=y.dtype, device=y.device)
+            y = torch.cat([y, pad], dim=1)
         return y
    
 
     def global_sampling(self, x, x_mel_gt=None, max_seq_len=384, temperature=1.0):
-        
         batch_size, seq_len, subseq_len = x.shape
         idx = torch.arange(seq_len, device=x.device)
         frame_type = (idx % 2 == 0).long()  # → [seq_len], 1 at even idx (acc), 0 at odd idx (mel)
@@ -425,7 +475,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
     
     parser.add_argument("--batch_size",type=int, default=10, help="batch size")
-    parser.add_argument("--model_size", type=str, default='small', help="large or small")
+    parser.add_argument("--model_size", type=str, default='0.12B', help="0.5B, 0.25B, 0.12B or small")
     parser.add_argument("--path_to_dataset",type=str,help="name to your accompaniment .pt file")
     parser.add_argument("--model_name",type=str,default=None, help="name to your model")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="continue training from checkpoint")
@@ -438,13 +488,13 @@ if __name__ == '__main__':
     dataset = args.path_to_dataset
     checkpoint_path = args.checkpoint_path
 
-    assert model_size in ['small', 'large']
+    assert model_size in ['0.5B', '0.25B', '0.12B', 'small']
     n_gpus = max(torch.cuda.device_count(), 1) # check issues when doing big dataset
     # n_gpus = 1 
 
     default_name = f"m2a_transformer_{model_size}_batch_{batch_size * n_gpus}_schedule"
     model_name = args.model_name if args.model_name is not None else default_name
-    net = RoFormerSymbolicTransformer(model_size == 'large')
+    net = RoFormerSymbolicTransformer(model_size)
     train_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'train'), batch_size=None, num_workers=0)
     val_set_loader = DataLoader(FramedDataset(dataset, TRAIN_LENGTH, batch_size, split = 'val'), batch_size=None, num_workers=0)
     checkpoint_callback = L.callbacks.ModelCheckpoint(monitor='val_loss',
