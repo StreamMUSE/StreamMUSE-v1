@@ -205,15 +205,19 @@ class InferenceEngineStanley():
         
         n_samples = output_tensors[0].shape[0]
 
+        # Because we have a prompt windows, the window length is not fix, at first, the window is 
+        # small, later on, we'll have a maximun window length, then we need the relative position.
+        relative_start_tike = min(generation_start_tick*2, self.prompt_length_ticks*2)
+
         for i in range(n_samples):
             sample_notes = []
             # We only iterate from the start of the generated content.
-            for time_step in range(generation_start_tick*2, num_timesteps):
+            for time_step in range(relative_start_tike, num_timesteps):
                 data = output_tensors[time_step][i]
                 content = data.flatten()
                 
                 # Calculate the tick relative to the start of the *generation*.
-                tick = time_step // 2
+                tick = (time_step - relative_start_tike +  generation_start_tick*2) // 2
                 
                 # Each note is encoded as two tokens: (program, pitch_duration_combo).
                 for j in range(0, len(content), 2):

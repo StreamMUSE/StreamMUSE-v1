@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "deepspeed>=0.17.1",
+  "fastapi>=0.116.1",
   "ipykernel>=6.29.5",
   "joblib>=1.5.1",
   "lightning>=2.5.2",
@@ -29,6 +30,7 @@ dependencies = [
   "torch-tb-profiler>=0.4.3",
   "torchvision>=0.22.0",
   "transformers",
+  "uvicorn>=0.35.0",
   "wandb>=0.20.1",
 ]
 
