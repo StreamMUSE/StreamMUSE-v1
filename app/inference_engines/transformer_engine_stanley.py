@@ -66,14 +66,8 @@ class InferenceEngineStanley():
         print(f"Loading model from: {checkpoint_path}")
 
         # Determine model size from checkpoint path name
-        if 'small' in checkpoint_path:
-            self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, 
-                                                                          large=False, 
-                                                                          map_location=lambda storage, loc: storage.cuda(0) if torch.cuda.is_available() else 'cpu'
-                                                                          )
-        else:
-            self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, 
-                                                                          large=True, 
+        self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, 
+                                                                          model_size='0.12B', 
                                                                           map_location=lambda storage, loc: storage.cuda(0) if torch.cuda.is_available() else 'cpu'
                                                                           )
         
