@@ -99,7 +99,19 @@ class InferenceEngineStanley():
 
         # this is a counter for debugging purposes, to track how many times we have generated accompaniment
         self.counter = 0
+
+        # 添加注入偏移跟踪
+        self.injection_offset_ticks = 0  # 注入的tick数量
     
+    def set_injection_offset(self, offset_ticks: int):
+        """
+        设置注入偏移量
+        Args:
+            offset_ticks: 注入的tick数量
+        """
+        self.injection_offset_ticks = offset_ticks
+        print(f"设置注入偏移: {offset_ticks} ticks")
+
     def clear_history(self):
         """Clears the performance history."""
         self.melody_history = []
@@ -185,8 +197,7 @@ class InferenceEngineStanley():
         Args:
             output_tensors (list): A list of tensors from the model's output. Each tensor
                                    in the list represents one frame of music.
-            start_frame_offset (int): The frame number where the generation began.
-                                    We take the input as the first position, and the frame number is relative to this.
+            generation_start_tick (int): The tick where generation began (relative to prompt start).
             single (bool): If True, assumes each frame is one tick (not interleaved).
 
         Returns:
@@ -199,20 +210,19 @@ class InferenceEngineStanley():
         
         n_samples = output_tensors[0].shape[0]
 
-        # Because we have a prompt windows, the window length is not fix, at first, the window is 
-        # small, later on, we'll have a maximun window length, then we need the relative position.
-        relative_start_tike = min(generation_start_tick*2, self.prompt_length_ticks*2)
+        # The generation_start_tick is already relative to the prompt start tick
+        relative_start_tick = generation_start_tick
 
         for i in range(n_samples):
             sample_notes = []
             # We only iterate from the start of the generated content.
-            for time_step in range(relative_start_tike, num_timesteps):
+            for time_step in range(relative_start_tick*2, num_timesteps):
                 data = output_tensors[time_step][i]
                 content = data.flatten()
                 
                 # Calculate the tick relative to the start of the *generation*.
-                tick = (time_step - relative_start_tike +  generation_start_tick*2) // 2
-                
+                tick = time_step // 2
+
                 # Each note is encoded as two tokens: (program, pitch_duration_combo).
                 for j in range(0, len(content), 2):
                     program = int(content[j].item())
@@ -256,17 +266,36 @@ class InferenceEngineStanley():
         return notes_per_sample
 
     def generate_accompaniment(self, melody_notes, generation_start_tick, acc_notes=None):
-
+        """
+        生成伴奏
+        Args:
+            melody_notes: 相对时间的旋律音符(从0开始,不包含注入偏移)
+            generation_start_tick: 相对时间的生成开始位置
+            acc_notes: 可选的伴奏音符（用于初始化）
+        """
         preprocess_start_time = time.perf_counter()
+
+        absolute_melody_notes = []
+        for note in melody_notes:
+            absolute_note = note.copy()
+            absolute_note['tick'] = note['tick'] + self.injection_offset_ticks
+            absolute_melody_notes.append(absolute_note)
+        self.melody_history.extend(absolute_melody_notes)
+
+        absolute_generation_start_tick = generation_start_tick + self.injection_offset_ticks
 
         # update the melody and accompaniment history
         if len(self.accompaniment_history) == 0 and acc_notes is not None:
             # If this is the first call, we need to initialize the accompaniment history
-            self.accompaniment_history.extend(acc_notes)
-        self.melody_history.extend(melody_notes)
+            absolute_acc_notes = []
+            for note in acc_notes:
+                absolute_note = note.copy()
+                absolute_note['tick'] = note['tick'] + self.injection_offset_ticks
+                absolute_acc_notes.append(absolute_note)
+            self.accompaniment_history.extend(absolute_acc_notes)
 
         # Get the length of our actually prompt 
-        prompt_end_tick = generation_start_tick
+        prompt_end_tick = absolute_generation_start_tick
         prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
         actual_prompt_length_ticks = prompt_end_tick - prompt_start_tick
         if actual_prompt_length_ticks <= 0: # check if prompt length is valid
@@ -282,6 +311,19 @@ class InferenceEngineStanley():
             n for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
         ]
 
+        # 调整提示音符为相对时间（用于模型处理)
+        relative_prompt_melody = []
+        for note in prompt_melody:
+            relative_note = note.copy()
+            relative_note['tick'] = note['tick'] - prompt_start_tick
+            relative_prompt_melody.append(relative_note)
+            
+        relative_prompt_acc = []
+        for note in prompt_acc:
+            relative_note = note.copy()
+            relative_note['tick'] = note['tick'] - prompt_start_tick
+            relative_prompt_acc.append(relative_note)
+
         # record the prompt into a log file
         with open("prompt_log.txt", "a") as f:
             f.write(f"Number of inference: {self.counter}\n")
@@ -291,8 +333,8 @@ class InferenceEngineStanley():
 
         # Convert note events into tensor 'rolls' using the fixed model context length.
         # The resulting tensors will have shape (48, 12).
-        x_mel_raw = self._notes_to_rolls(prompt_melody, actual_prompt_length_ticks, self.max_polyphony, program=0)
-        x_acc_raw = self._notes_to_rolls(prompt_acc, actual_prompt_length_ticks, self.max_polyphony, program=1)
+        x_mel_raw = self._notes_to_rolls(relative_prompt_melody, actual_prompt_length_ticks, self.max_polyphony, program=0)
+        x_acc_raw = self._notes_to_rolls(relative_prompt_acc, actual_prompt_length_ticks, self.max_polyphony, program=1)
 
         # Preprocess the rolls and prepare them for the model (e.g., move to GPU).
         # `preprocess` combines (program, pitch, duration) into the single combined token
@@ -329,28 +371,30 @@ class InferenceEngineStanley():
 
         # Decode the model's full tensor output (prompt + generation) into note events.
         # The resulting note ticks are relative to the beginning of the prompt tensor.
-        notes_output = self._tensors_to_notes(output_tensors, generation_start_tick=generation_start_tick)
+
+        # 解码时需要考虑绝对时间
+        # generation_start_tick 在这里应该是相对于prompt_start_tick的相对位置
+        relative_generation_start = absolute_generation_start_tick - prompt_start_tick
+        notes_output = self._tensors_to_notes(output_tensors, generation_start_tick=relative_generation_start)
         notes_output = notes_output[0] if notes_output else []
 
+        # 将解码的音符转换回绝对时间，然后过滤**
         # Now, filter the notes using their absolute ticks.
         # - Filter for notes that occur at or after the generation_start_tick.
         # - Filter for accompaniment notes only (program == 1).
-        # - Filter for unique notes to prevent duplicates. (Temporarily Disabled)
-        # unique_notes_tracker = set()
-        final_generated_notes = []
+        absolute_generated_notes = []
         for note in notes_output:
-            if note['tick'] >= generation_start_tick and note['program'] == 1:
-                # The uniqueness filter below is temporarily disabled.
-                # A note is unique based on its absolute tick, pitch, and duration.
-                # note_signature = (note['tick'], note['pitch'], note['duration'])
-                # if note_signature not in unique_notes_tracker:
-                #     unique_notes_tracker.add(note_signature)
-                final_generated_notes.append(note)
+            # note['tick'] 是相对于 prompt_start_tick 的
+            absolute_tick = note['tick'] + prompt_start_tick
+            if absolute_tick >= absolute_generation_start_tick and note['program'] == 1:
+                absolute_note = note.copy()
+                absolute_note['tick'] = absolute_tick
+                absolute_generated_notes.append(absolute_note)
 
         # Update the history with the newly generated accompaniment notes.
         # This ensures they become part of the context for the next turn.
         # 先收集新生成的所有 tick
-        new_ticks = set(note['tick'] for note in final_generated_notes)
+        new_ticks = set(note['tick'] for note in absolute_generated_notes)
         # print(f"final generated notes:{final_generated_notes}")
         # print(f"acc history 1:{self.accompaniment_history}")
 
@@ -359,7 +403,7 @@ class InferenceEngineStanley():
         self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] not in new_ticks]
         tem = set(json.dumps(n, sort_keys=True) for n in tem) - set(json.dumps(n, sort_keys=True) for n in self.accompaniment_history)
         print(f"difference{tem}")
-        self.accompaniment_history.extend(final_generated_notes)
+        self.accompaniment_history.extend(absolute_generated_notes)
 
         # Prune history to prevent memory leaks in long-running sessions.
         # We can safely remove any notes that are older than the prompt window we just used.
@@ -367,7 +411,15 @@ class InferenceEngineStanley():
         self.melody_history = [n for n in self.melody_history if n['tick'] >= prompt_start_tick]
         self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] >= prompt_start_tick]
 
-        return (final_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
+        # 返回相对时间的音符（减去注入偏移）.
+        # 这样我们就把 injection 的部分隐藏起来了
+        relative_generated_notes = []
+        for note in absolute_generated_notes:
+            relative_note = note.copy()
+            relative_note['tick'] = note['tick'] - self.injection_offset_ticks
+            relative_generated_notes.append(relative_note)
+
+        return (relative_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
 
 if __name__ == "__main__":
     # seed = 42
