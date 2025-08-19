@@ -34,6 +34,8 @@ class StreamMUSEConfig:
     
     # Network
     DEFAULT_SERVER_URL = "http://localhost:8000/generate_accompaniment"
+    DEFAULT_INJECTION_URL = "http://localhost:8988/inject_music"
+    DEFAULT_INJECTION_STATUS_URL = "http://localhost:8988/injection_status"
     
     # Musical timing
     DEFAULT_TEMPO = 90.0
@@ -84,6 +86,49 @@ class StreamMUSEConfig:
 # --- Constants ---
 DEFAULT_NOTE_DURATION_TICKS = StreamMUSEConfig.DEFAULT_NOTE_DURATION_TICKS
 LATENCY_OFFSET_TICKS = StreamMUSEConfig.LATENCY_OFFSET_TICKS
+
+# 添加注入功能函数
+def inject_music_to_server(server_base_url: str, injection_file_path: str, injection_length_ticks: int):
+    """
+    向服务器注入音乐
+    """
+    injection_url = server_base_url.replace('/generate_accompaniment', '/inject_music')
+    
+    try:
+        request_data = {
+            "injection_file_path": injection_file_path,
+            "injection_length_ticks": injection_length_ticks
+        }
+        
+        print(f"注入音乐: {injection_file_path} (前 {injection_length_ticks} ticks)")
+        response = requests.post(injection_url, json=request_data)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result['success']:
+            print(f"✓ 注入成功: {result['melody_notes_injected']} 旋律音符, {result['accompaniment_notes_injected']} 伴奏音符")
+            return result['injection_length_ticks']
+        else:
+            print(f"✗ 注入失败: {result['message']}")
+            return 0
+            
+    except requests.exceptions.RequestException as e:
+        print(f"✗ 注入请求失败: {e}")
+        return 0
+
+def get_injection_status(server_base_url: str):
+    """
+    获取服务器注入状态
+    """
+    status_url = server_base_url.replace('/generate_accompaniment', '/injection_status')
+    
+    try:
+        response = requests.get(status_url)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"获取注入状态失败: {e}")
+        return {'is_injected': False, 'injection_length_ticks': 0}
 
 def inference_worker(request_queue: Queue, response_queue: Queue, server_url: str):
     """
@@ -332,11 +377,14 @@ def main():
             Default:     Use connected MIDI device
             Keyboard:    --use-keyboard-input
             MIDI file:   --midi-file-input path/to/file.mid
+            Music Injection:
+            --injection-file path/to/music.mid --injection-length 100
 
             Examples:
             %(prog)s
             %(prog)s --use-keyboard-input --tempo 120
             %(prog)s --midi-file-input song.mid --midi-file-delay-ticks 8
+             %(prog)s --injection-file prelude.mid --injection-length 50 --use-keyboard-input
         """
     )
     
@@ -378,11 +426,39 @@ def main():
     parser.add_argument("--midi-file-use-original-duration", action="store_true",
                        help="Use original MIDI note durations instead of fixed duration")
     
+    # 添加音乐注入参数
+    parser.add_argument("--injection-file", type=str, default=None,
+                       help="Path to MIDI file to inject into inference engine history")
+    parser.add_argument("--injection-length", type=int, default=0,
+                       help="Number of ticks to inject from the injection file")
+
     args = parser.parse_args()
 
     # --- Validate Arguments ---
     if not StreamMUSEConfig.validate_args(args):
         return
+    
+    # 验证注入参数
+    if args.injection_file and args.injection_length <= 0:
+        print("Error: injection-length must be positive when injection-file is specified")
+        return
+    
+    if args.injection_file and not os.path.exists(args.injection_file):
+        print(f"Error: injection file not found: {args.injection_file}")
+        return
+    
+    # --- 处理音乐注入 ---
+    injection_offset_ticks = 0
+    if args.injection_file:
+        injection_offset_ticks = inject_music_to_server(
+            args.server_url, 
+            args.injection_file, 
+            args.injection_length
+        )
+        
+        if injection_offset_ticks == 0:
+            print("注入失败，程序退出")
+            return
 
     # --- Create Session Log Directory ---
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -405,10 +481,8 @@ def main():
     current_tick_ref = {'current_tick': 0}
 
     if args.midi_file_input:
-        # MIDI file input mode
+        # MIDI file input mode - 考虑偏移，以及跳过注入的部分
         print(f"Using MIDI file input: {args.midi_file_input}")
-        if args.midi_file_delay_ticks > 0:
-            print(f"MIDI file will start after {args.midi_file_delay_ticks} ticks delay")
         
         input_thread = threading.Thread(
             target=read_midi_file_input,
@@ -419,6 +493,7 @@ def main():
                 args.tempo,
                 args.ticks_per_beat,
                 args.midi_file_delay_ticks,
+                injection_offset_ticks,
                 args.midi_file_use_original_duration,
                 DEFAULT_NOTE_DURATION_TICKS
             ),

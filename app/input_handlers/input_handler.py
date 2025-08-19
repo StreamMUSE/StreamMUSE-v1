@@ -105,6 +105,7 @@ def read_midi_file_input(
     main_loop_tempo: float,
     main_loop_ticks_per_beat: int,
     delay_ticks: int = 0,
+    skip_ticks: int = 0, # Skip how many ticks, for injection
     use_original_duration: bool = True,
     default_duration_ticks: int = 2
 ):
@@ -121,6 +122,7 @@ def read_midi_file_input(
         main_loop_tempo: Tempo of the main loop (BPM)
         main_loop_ticks_per_beat: Ticks per beat in main loop
         delay_ticks: Number of ticks to delay before starting playback
+        skip_ticks: Number of ticks to skip from the beginning of the MIDI file, it's for injection
         use_original_duration: If True, use original MIDI durations; if False, use fixed duration
         default_duration_ticks: Fixed duration when use_original_duration is False
     """
@@ -147,15 +149,35 @@ def read_midi_file_input(
         # Find melody track by selecting notes from the track with the most activity
         # Group notes by their timing characteristics to identify the main melody line
         print(f"Loaded {len(notes)} notes from MIDI file")
+
+        # 过滤掉前 skip_ticks 的音符，并重新调整时间
+        filtered_notes = []
+        for note in notes:
+            if note['tick'] >= skip_ticks:  # 只保留 skip_ticks 之后的音符
+                # 重新调整时间：减去 skip_ticks，从 0 开始
+                adjusted_note = note.copy()
+                adjusted_note['tick'] = note['tick'] - skip_ticks
+                filtered_notes.append(adjusted_note)
+        
+        if not filtered_notes:
+            print(f"No notes found after skipping first {skip_ticks} ticks")
+            event_queue.put(None)
+            return
+        
+        print(f"After skipping first {skip_ticks} ticks: {len(filtered_notes)} notes remaining")
         
         # Create tick-indexed schedule with delay offset
         # No tempo conversion needed - the main loop's tempo will control playback speed
         tick_schedule = {}
         start_offset_tick = delay_ticks
         
-        print(f"Scheduling notes with delay offset: {delay_ticks} ticks")
-        
-        for note in notes:
+        if skip_ticks > 0:
+            print(f"Skipped first {skip_ticks} ticks of MIDI file")
+        if delay_ticks > 0:
+            print(f"Delayed start by {delay_ticks} ticks")
+
+        for note in filtered_notes:
+            # 现在 note['tick'] 已经是从 0 开始的了
             # Use original tick timing + delay offset
             scheduled_tick = note['tick'] + start_offset_tick
             
@@ -178,10 +200,9 @@ def read_midi_file_input(
                 'time': time.time()  # Will be updated when actually sent
             })
         
-        scheduled_ticks = sorted(tick_schedule.keys())
-        print(f"Scheduled {len(notes)} notes from tick {scheduled_ticks[0]} to {scheduled_ticks[-1]}")
-        if delay_ticks > 0:
-            print(f"Delayed start by {delay_ticks} ticks")
+        if tick_schedule:
+            scheduled_ticks = sorted(tick_schedule.keys())
+            print(f"Scheduled {len(filtered_notes)} notes from tick {scheduled_ticks[0]} to {scheduled_ticks[-1]}")
         
         # Main playback loop - wait for the right tick and send events
         last_tick = -1
