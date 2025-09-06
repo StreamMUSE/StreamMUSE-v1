@@ -372,7 +372,7 @@ class InferenceEngineStanley():
         # Decode the model's full tensor output (prompt + generation) into note events.
         # The resulting note ticks are relative to the beginning of the prompt tensor.
 
-        # 解码时需要考虑绝对时间
+        # 解码时需要用相对时间
         # generation_start_tick 在这里应该是相对于prompt_start_tick的相对位置
         relative_generation_start = absolute_generation_start_tick - prompt_start_tick
         notes_output = self._tensors_to_notes(output_tensors, generation_start_tick=relative_generation_start)
@@ -416,7 +416,7 @@ class InferenceEngineStanley():
         relative_generated_notes = []
         for note in absolute_generated_notes:
             relative_note = note.copy()
-            relative_note['tick'] = note['tick'] - self.injection_offset_ticks
+            relative_note['tick'] = note['tick'] - self.injection_offset_ticks + 1
             relative_generated_notes.append(relative_note)
 
         return (relative_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)

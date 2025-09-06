@@ -158,10 +158,13 @@ if __name__ == "__main__":
     model.to(device)  # Move model to GPU
     model.eval()
 
-    for midi in os.listdir('./input/mel'):
-        if midi.endswith('mid'):
-            midi = os.path.join('./input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
+    midi_file_path_set = ['inference_benchmark/inputs/aria_unique_skyline_top2_subset_5/mel', 'input/mel', 'inference_benchmark/inputs/test_set/mel']
+
+    for midi_file_path in midi_file_path_set:
+        for midi in os.listdir(midi_file_path):
+            if midi.endswith('mid'):
+                midi = os.path.join(midi_file_path, midi)
+                continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
 
     # midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
     # continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)
