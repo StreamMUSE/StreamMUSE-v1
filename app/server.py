@@ -70,8 +70,15 @@ async def lifespan(app: FastAPI):
     try:
         model_max_seq_len_frames = int(os.getenv('MODEL_MAX_SEQ_LEN_FRAMES', 96))
         generation_length_frames = int(os.getenv('GENERATION_LENGTH_FRAMES', 20))
+        model_size = os.getenv('MODEL_SIZE', '0.12B')
     except ValueError:
         print("Fatal Error: Invalid integer value for model parameters in environment variables.")
+        exit()
+
+    # 验证 model_size 是否有效
+    valid_model_sizes = ['small', '0.12B', '0.25B', '0.5B']
+    if model_size not in valid_model_sizes:
+        print(f"Fatal Error: Invalid MODEL_SIZE '{model_size}'. Valid options: {valid_model_sizes}")
         exit()
 
     global inference_engine, injection_state
@@ -81,6 +88,7 @@ async def lifespan(app: FastAPI):
         print(f"Using Generation Length (Frames): {generation_length_frames}")
         inference_engine = InferenceEngineStanley(
             checkpoint_path=checkpoint_path,
+            model_size=model_size,
             model_max_seq_len_frames=model_max_seq_len_frames,
             generation_length_frames=generation_length_frames
         )

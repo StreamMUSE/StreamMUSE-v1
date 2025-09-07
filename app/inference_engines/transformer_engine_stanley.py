@@ -59,7 +59,7 @@ def note_list_to_pretty_midi(notes, tempo=90, program=0, name="track"):
     return inst
 
 class InferenceEngineStanley():
-    def __init__(self, checkpoint_path: str, max_polyphony=4, generation_length_frames=2, model_max_seq_len_frames=384):
+    def __init__(self, checkpoint_path: str, model_size: str, max_polyphony=4, generation_length_frames=2, model_max_seq_len_frames=384):
         # Check if the checkpoint file exists
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
@@ -67,7 +67,7 @@ class InferenceEngineStanley():
 
         # Determine model size from checkpoint path name
         self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, 
-                                                                          model_size='0.12B', 
+                                                                          model_size=model_size, 
                                                                           map_location=lambda storage, loc: storage.cuda(0) if torch.cuda.is_available() else 'cpu'
                                                                           )
         
