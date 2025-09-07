@@ -140,7 +140,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
 
-    parser.add_argument("--model_path", type=str, default="logs/old_m2a_aria/1.5.5/ckpt/epoch=36-val_loss=0.75.ckpt", help="path to model checkpoint")
+    parser.add_argument("--model_path", type=str, default="results/Baseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt", help="path to model checkpoint")
     parser.add_argument("--prompt_len", type=int, default=75, help="length of prompt")
     parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
@@ -148,7 +148,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     model_path = args.model_path
@@ -158,10 +158,13 @@ if __name__ == "__main__":
     model.to(device)  # Move model to GPU
     model.eval()
 
-    for midi in os.listdir('./input/mel'):
-        if midi.endswith('mid'):
-            midi = os.path.join('./input/mel', midi)
-            continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
+    midi_file_path_set = ['inference_benchmark/inputs/aria_unique_skyline_top2_subset_5/mel', 'input/mel', 'inference_benchmark/inputs/test_set/mel']
+
+    for midi_file_path in midi_file_path_set:
+        for midi in os.listdir(midi_file_path):
+            if midi.endswith('mid'):
+                midi = os.path.join(midi_file_path, midi)
+                continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
 
     # midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
     # continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)
