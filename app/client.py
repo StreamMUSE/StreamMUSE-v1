@@ -33,7 +33,7 @@ class StreamMUSEConfig:
     """Configuration settings for StreamMUSE client"""
     
     # Network
-    DEFAULT_SERVER_URL = "http://localhost:8000/generate_accompaniment"
+    DEFAULT_SERVER_URL = "http://localhost:8988/generate_accompaniment"
     DEFAULT_INJECTION_URL = "http://localhost:8988/inject_music"
     DEFAULT_INJECTION_STATUS_URL = "http://localhost:8988/injection_status"
     
@@ -87,6 +87,102 @@ class StreamMUSEConfig:
 DEFAULT_NOTE_DURATION_TICKS = StreamMUSEConfig.DEFAULT_NOTE_DURATION_TICKS
 LATENCY_OFFSET_TICKS = StreamMUSEConfig.LATENCY_OFFSET_TICKS
 
+def save_prompt_midi(original_file_path: str, injection_length_ticks: int, session_log_dir: str, client_ticks_per_beat: int = 4, injected_notes: dict = None):
+    """
+    保存注入的 prompt 为单独的 MIDI 文件
+    injection_length_ticks: 以客户端 tick 为单位的长度 (1 tick = 1/4 beat)
+    client_ticks_per_beat: 客户端使用的 ticks_per_beat (默认4)
+    """
+    
+    try:
+        # 确定 mel 和 acc 文件路径
+        mel_file_path = original_file_path
+        acc_file_path = original_file_path.replace("mel", "acc")
+        
+        print(f"处理 Melody 文件: {mel_file_path}")
+        print(f"处理 Accompaniment 文件: {acc_file_path}")
+        
+        # 创建合并的 MIDI 文件
+        prompt_midi = mido.MidiFile()
+        
+        # 使用 mel 文件的 ticks_per_beat 作为基准
+        mel_midi = mido.MidiFile(mel_file_path)
+        prompt_midi.ticks_per_beat = mel_midi.ticks_per_beat
+        
+        # 转换客户端 ticks 到 MIDI ticks
+        midi_ticks_per_client_tick = prompt_midi.ticks_per_beat / client_ticks_per_beat
+        injection_length_midi_ticks = int(injection_length_ticks * midi_ticks_per_client_tick)
+        
+        print(f"客户端 ticks: {injection_length_ticks}, MIDI ticks: {injection_length_midi_ticks}")
+        print(f"MIDI文件 ticks_per_beat: {prompt_midi.ticks_per_beat}, 客户端 ticks_per_beat: {client_ticks_per_beat}")
+        
+        # 处理文件列表
+        files_to_process = [
+            ("melody", mel_file_path),
+            ("accompaniment", acc_file_path)
+        ]
+        
+        # 处理每个文件（mel 和 acc）
+        for file_type, file_path in files_to_process:
+            print(f"处理 {file_type} 文件: {file_path}")
+            
+            try:
+                if not os.path.exists(file_path):
+                    print(f"警告: {file_type} 文件不存在: {file_path}")
+                    continue
+                    
+                original_midi = mido.MidiFile(file_path)
+                
+                # 处理每个轨道
+                for track_idx, track in enumerate(original_midi.tracks):
+                    new_track = mido.MidiTrack()
+                    # 设置轨道名称
+                    track_name = f"{file_type}_track_{track_idx}"
+                    new_track.append(mido.MetaMessage('track_name', name=track_name, time=0))
+                    
+                    current_time = 0
+                    
+                    for msg in track:
+                        # 计算这个消息的绝对时间位置（MIDI ticks）
+                        msg_absolute_time = current_time + msg.time
+                        
+                        if msg_absolute_time <= injection_length_midi_ticks:
+                            # 完全在范围内，直接添加
+                            new_track.append(msg.copy())
+                            current_time = msg_absolute_time
+                            
+                        elif current_time < injection_length_midi_ticks:
+                            # 跨越边界的情况
+                            if msg.type in ['note_off', 'control_change', 'program_change', 'end_of_track']:
+                                # 重要的结束消息，调整时间后添加
+                                adjusted_time = injection_length_midi_ticks - current_time
+                                adjusted_msg = msg.copy(time=adjusted_time)
+                                new_track.append(adjusted_msg)
+                            break
+                        else:
+                            # 完全超出范围
+                            break
+                    
+                    # 确保轨道以 end_of_track 结束
+                    if new_track and new_track[-1].type != 'end_of_track':
+                        new_track.append(mido.MetaMessage('end_of_track', time=0))
+                    
+                    if new_track:
+                        prompt_midi.tracks.append(new_track)
+                        
+            except Exception as e:
+                print(f"处理 {file_type} 文件时出错: {e}")
+                continue
+        
+        # 保存 prompt MIDI 文件
+        prompt_file_path = os.path.join(session_log_dir, "prompt.mid")
+        prompt_midi.save(prompt_file_path)
+        print(f"✓ Prompt 已保存到: {prompt_file_path}")
+        print(f"  包含 {len(prompt_midi.tracks)} 个轨道")
+        
+    except Exception as e:
+        print(f"✗ 保存 prompt MIDI 文件失败: {e}")
+        
 # 添加注入功能函数
 def inject_music_to_server(server_base_url: str, injection_file_path: str, injection_length_ticks: int):
     """
@@ -447,6 +543,12 @@ def main():
         print(f"Error: injection file not found: {args.injection_file}")
         return
     
+    # --- Create Session Log Directory ---
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    session_log_dir = os.path.join("app", "logs", f"session_{timestamp}")
+    os.makedirs(session_log_dir, exist_ok=True)
+
+    
     # --- 处理音乐注入 ---
     injection_offset_ticks = 0
     if args.injection_file:
@@ -459,12 +561,15 @@ def main():
         if injection_offset_ticks == 0:
             print("注入失败，程序退出")
             return
-
-    # --- Create Session Log Directory ---
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    session_log_dir = os.path.join("app", "logs", f"session_{timestamp}")
-    os.makedirs(session_log_dir, exist_ok=True)
-
+        else:
+            # 保存 prompt MIDI 文件
+            save_prompt_midi(
+                args.injection_file, 
+                args.injection_length, 
+                session_log_dir, 
+                args.ticks_per_beat
+            )
+    
     event_queue = Queue()
     inference_request_queue = Queue()
     inference_response_queue = Queue()

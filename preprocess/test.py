@@ -10,11 +10,11 @@ import json
 import pretty_midi
 import argparse
 
-sys.path.append("/Users/zhengbowen/Library/CloudStorage/OneDrive-UW-Madison/MBZUAI/For Xiaosong‘s Group")
+sys.path.append("/home/ubuntu/stanleyz/")
 from StreamMUSE.m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 # from preprocess_midi2pt_dataset import preprocess_midi
 
-midi_path = "/Users/zhengbowen/Library/CloudStorage/OneDrive-UW-Madison/MBZUAI/For Xiaosong‘s Group/StreamMUSE/input/mel/001.mid"
+midi_path = "input/mel/001.mid"
 
 tokenize_dict = {'<sos>': 0, '<eos>': 1, '<pad>': 2}
 tokenize_count = [-1, -1, -1]
@@ -141,7 +141,7 @@ print("test_res1_acc shape:", test_res1_acc[0].shape, test_res1_acc[1].shape)
 #         f.write(str(row) + "\n")
 # print(f"rolls 已保存到 {log_path}")
 
-model_path = "results/Baseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
+model_path = "results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
 model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path)
 
 test_res2_mel, test_res2_acc = decompress(model, test_res1_mel[0], test_res1_acc[0])
@@ -149,7 +149,7 @@ test_res2_mel, test_res2_acc = decompress(model, test_res1_mel[0], test_res1_acc
 print("test_res2_mel shape:", test_res2_mel.shape)
 
 # # print("test_res2_acc:", test_res2_acc)
-# print("test_res2_acc shape:", test_res2_acc.shape)
+print("test_res2_acc shape:", test_res2_acc.shape)
 # log_path = "test_res2_acc.txt"
 # with open(log_path, "w") as f:
 #     f.write(f"test_res2_acc shape: {test_res2_acc.shape}\n")
@@ -157,33 +157,33 @@ print("test_res2_mel shape:", test_res2_mel.shape)
 #         f.write(str(row) + "\n")
 # print(f"rolls 已保存到 {log_path}")
 
-# first_timestep = 1 # prompt_length != 0
-# prompt_length = 5
+first_timestep = 1 # prompt_length != 0
+prompt_length = 5
 
-# x_mel_gt = test_res2_mel.clone()
-# print("x_mel_gt shape:", x_mel_gt.shape)
-# test_res2_mel = test_res2_mel[:, :prompt_length]
-# print("test_res2_mel shape after slicing:", test_res2_mel.shape)
-# test_res2_acc = test_res2_acc[:, :prompt_length]
-# print("test_res2_acc shape after slicing:", test_res2_acc.shape)
-# batch_size, seq_len, subseq_len = test_res2_mel.shape  # 10*384*8
-# stacked = torch.stack([test_res2_acc, test_res2_mel], dim=2)
-# x = stacked.view(batch_size, seq_len * 2, subseq_len)
-# print("x:", x)
-# print("x shape:", x.shape)
+x_mel_gt = test_res2_mel.clone()
+print("x_mel_gt shape:", x_mel_gt.shape)
+test_res2_mel = test_res2_mel[:, :prompt_length]
+print("test_res2_mel shape after slicing:", test_res2_mel.shape)
+test_res2_acc = test_res2_acc[:, :prompt_length]
+print("test_res2_acc shape after slicing:", test_res2_acc.shape)
+batch_size, seq_len, subseq_len = test_res2_mel.shape  # 10*384*8
+stacked = torch.stack([test_res2_acc, test_res2_mel], dim=2)
+x = stacked.view(batch_size, seq_len * 2, subseq_len)
+print("x:", x)
+print("x shape:", x.shape)
 
-# output = model.global_sampling(x, temperature=1.0, max_seq_len=2)
-# # print("output:", output)
-# print("output len:", len(output))
-# output_0 = [output[j][0 : 0 + 1, :] for j in range(len(output))]
-# print("output:", output_0)
-# print("output len:", len(output_0))
+output = model.global_sampling(x, temperature=1.0, max_seq_len=2)
+print("output:", output)
+print("output len:", len(output))
+output_0 = [output[j][0 : 0 + 1, :] for j in range(len(output))]
+print("output:", output_0)
+print("output len:", len(output_0))
 
-# output_tensor = torch.cat(output_0, dim=0).unsqueeze(0)
-# print("output_tensor shape:", output_tensor.shape)
-# print("output_tensor:", output_tensor)
+output_tensor = torch.cat(output_0, dim=0).unsqueeze(0)
+print("output_tensor shape:", output_tensor.shape)
+print("output_tensor:", output_tensor)
 
-# print("x_mel_gt 0-6:", x_mel_gt[:, :prompt_length+1])
-# x_mel_i = x_mel_gt[:, prompt_length]
-# output_tensor[0, -1] = x_mel_i
-# print("output_tensor after setting x_mel_i:", output_tensor)
+print("x_mel_gt 0-6:", x_mel_gt[:, :prompt_length+1])
+x_mel_i = x_mel_gt[:, prompt_length]
+output_tensor[0, -1] = x_mel_i
+print("output_tensor after setting x_mel_i:", output_tensor)
