@@ -39,6 +39,7 @@ model:
   model_name: "XinYue's + customed RoFormer"
   model_type: "Old-M2A-Transformer"
   large: true
+  
 trainer:
   max_epochs: 5000
   accelerator: "gpu"

@@ -1,8 +1,19 @@
 """
-This is the client side for the StreamMUSE end to end system.
+StreamMUSE Client Application
+
+This is the client side for the StreamMUSE end-to-end real-time music generation system.
+It provides multiple input modes (MIDI devices, computer keyboard, MIDI files) and
+communicates with a StreamMUSE server to generate musical accompaniment in real-time.
+
+Usage:
+    python client.py [options]
+    
+Input modes:
+    - MIDI device (default): Uses connected MIDI input device
+    - Keyboard: python client.py --use-keyboard-input
+    - MIDI file: python client.py --midi-file-input path/to/file.mid
 """
 
-import sys
 import os
 import time
 import requests
@@ -15,11 +26,205 @@ from output_handlers.cli_output import CLIOutputHandler
 from output_handlers.audio_output import AudioOutputHandler
 from output_handlers.midi_file_handler import MidiFileHandler
 from output_handlers.json_log_handler import JsonLogHandler
-from input_handlers.input_handler import read_midi_input, read_keyboard_input
+from input_handlers.input_handler import read_midi_input, read_keyboard_input, read_midi_file_input
+
+# --- Configuration ---
+class StreamMUSEConfig:
+    """Configuration settings for StreamMUSE client"""
+    
+    # Network
+    DEFAULT_SERVER_URL = "http://localhost:8988/generate_accompaniment"
+    DEFAULT_INJECTION_URL = "http://localhost:8988/inject_music"
+    DEFAULT_INJECTION_STATUS_URL = "http://localhost:8988/injection_status"
+    
+    # Musical timing
+    DEFAULT_TEMPO = 90.0
+    DEFAULT_TICKS_PER_BEAT = 4
+    DEFAULT_BEATS_PER_BAR = 4
+    DEFAULT_GENERATION_INTERVAL_TICKS = 2
+    
+    # Note handling
+    DEFAULT_NOTE_DURATION_TICKS = 2
+    LATENCY_OFFSET_TICKS = 2
+    DEFAULT_ACCOMPANIMENT_VELOCITY = 50
+    
+    # Display
+    DEFAULT_LOG_LINES = 10
+    
+    # MIDI File Input
+    DEFAULT_MIDI_FILE_DELAY_TICKS = 0
+    
+    @staticmethod
+    def validate_args(args):
+        """Validate command line arguments."""
+        if args.accompaniment_velocity < 0 or args.accompaniment_velocity > 127:
+            print("Error: accompaniment-velocity must be between 0 and 127")
+            return False
+        
+        if args.tempo <= 0:
+            print("Error: tempo must be positive")
+            return False
+            
+        if args.ticks_per_beat <= 0:
+            print("Error: ticks_per_beat must be positive")
+            return False
+            
+        if args.beats_per_bar <= 0:
+            print("Error: beats_per_bar must be positive")
+            return False
+            
+        if args.generation_interval_ticks <= 0:
+            print("Error: generation_interval_ticks must be positive")
+            return False
+            
+        if args.midi_file_delay_ticks < 0:
+            print("Error: midi_file_delay_ticks must be non-negative")
+            return False
+        
+        return True
 
 # --- Constants ---
-DEFAULT_NOTE_DURATION_TICKS = 2
-LATENCY_OFFSET_TICKS = 2
+DEFAULT_NOTE_DURATION_TICKS = StreamMUSEConfig.DEFAULT_NOTE_DURATION_TICKS
+LATENCY_OFFSET_TICKS = StreamMUSEConfig.LATENCY_OFFSET_TICKS
+
+def save_prompt_midi(original_file_path: str, injection_length_ticks: int, session_log_dir: str, client_ticks_per_beat: int = 4, injected_notes: dict = None):
+    """
+    保存注入的 prompt 为单独的 MIDI 文件
+    injection_length_ticks: 以客户端 tick 为单位的长度 (1 tick = 1/4 beat)
+    client_ticks_per_beat: 客户端使用的 ticks_per_beat (默认4)
+    """
+    
+    try:
+        # 确定 mel 和 acc 文件路径
+        mel_file_path = original_file_path
+        acc_file_path = original_file_path.replace("mel", "acc")
+        
+        print(f"处理 Melody 文件: {mel_file_path}")
+        print(f"处理 Accompaniment 文件: {acc_file_path}")
+        
+        # 创建合并的 MIDI 文件
+        prompt_midi = mido.MidiFile()
+        
+        # 使用 mel 文件的 ticks_per_beat 作为基准
+        mel_midi = mido.MidiFile(mel_file_path)
+        prompt_midi.ticks_per_beat = mel_midi.ticks_per_beat
+        
+        # 转换客户端 ticks 到 MIDI ticks
+        midi_ticks_per_client_tick = prompt_midi.ticks_per_beat / client_ticks_per_beat
+        injection_length_midi_ticks = int(injection_length_ticks * midi_ticks_per_client_tick)
+        
+        print(f"客户端 ticks: {injection_length_ticks}, MIDI ticks: {injection_length_midi_ticks}")
+        print(f"MIDI文件 ticks_per_beat: {prompt_midi.ticks_per_beat}, 客户端 ticks_per_beat: {client_ticks_per_beat}")
+        
+        # 处理文件列表
+        files_to_process = [
+            ("melody", mel_file_path),
+            ("accompaniment", acc_file_path)
+        ]
+        
+        # 处理每个文件（mel 和 acc）
+        for file_type, file_path in files_to_process:
+            print(f"处理 {file_type} 文件: {file_path}")
+            
+            try:
+                if not os.path.exists(file_path):
+                    print(f"警告: {file_type} 文件不存在: {file_path}")
+                    continue
+                    
+                original_midi = mido.MidiFile(file_path)
+                
+                # 处理每个轨道
+                for track_idx, track in enumerate(original_midi.tracks):
+                    new_track = mido.MidiTrack()
+                    # 设置轨道名称
+                    track_name = f"{file_type}_track_{track_idx}"
+                    new_track.append(mido.MetaMessage('track_name', name=track_name, time=0))
+                    
+                    current_time = 0
+                    
+                    for msg in track:
+                        # 计算这个消息的绝对时间位置（MIDI ticks）
+                        msg_absolute_time = current_time + msg.time
+                        
+                        if msg_absolute_time <= injection_length_midi_ticks:
+                            # 完全在范围内，直接添加
+                            new_track.append(msg.copy())
+                            current_time = msg_absolute_time
+                            
+                        elif current_time < injection_length_midi_ticks:
+                            # 跨越边界的情况
+                            if msg.type in ['note_off', 'control_change', 'program_change', 'end_of_track']:
+                                # 重要的结束消息，调整时间后添加
+                                adjusted_time = injection_length_midi_ticks - current_time
+                                adjusted_msg = msg.copy(time=adjusted_time)
+                                new_track.append(adjusted_msg)
+                            break
+                        else:
+                            # 完全超出范围
+                            break
+                    
+                    # 确保轨道以 end_of_track 结束
+                    if new_track and new_track[-1].type != 'end_of_track':
+                        new_track.append(mido.MetaMessage('end_of_track', time=0))
+                    
+                    if new_track:
+                        prompt_midi.tracks.append(new_track)
+                        
+            except Exception as e:
+                print(f"处理 {file_type} 文件时出错: {e}")
+                continue
+        
+        # 保存 prompt MIDI 文件
+        prompt_file_path = os.path.join(session_log_dir, "prompt.mid")
+        prompt_midi.save(prompt_file_path)
+        print(f"✓ Prompt 已保存到: {prompt_file_path}")
+        print(f"  包含 {len(prompt_midi.tracks)} 个轨道")
+        
+    except Exception as e:
+        print(f"✗ 保存 prompt MIDI 文件失败: {e}")
+        
+# 添加注入功能函数
+def inject_music_to_server(server_base_url: str, injection_file_path: str, injection_length_ticks: int):
+    """
+    向服务器注入音乐
+    """
+    injection_url = server_base_url.replace('/generate_accompaniment', '/inject_music')
+    
+    try:
+        request_data = {
+            "injection_file_path": injection_file_path,
+            "injection_length_ticks": injection_length_ticks
+        }
+        
+        print(f"注入音乐: {injection_file_path} (前 {injection_length_ticks} ticks)")
+        response = requests.post(injection_url, json=request_data)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result['success']:
+            print(f"✓ 注入成功: {result['melody_notes_injected']} 旋律音符, {result['accompaniment_notes_injected']} 伴奏音符")
+            return result['injection_length_ticks']
+        else:
+            print(f"✗ 注入失败: {result['message']}")
+            return 0
+            
+    except requests.exceptions.RequestException as e:
+        print(f"✗ 注入请求失败: {e}")
+        return 0
+
+def get_injection_status(server_base_url: str):
+    """
+    获取服务器注入状态
+    """
+    status_url = server_base_url.replace('/generate_accompaniment', '/injection_status')
+    
+    try:
+        response = requests.get(status_url)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"获取注入状态失败: {e}")
+        return {'is_injected': False, 'injection_length_ticks': 0}
 
 def inference_worker(request_queue: Queue, response_queue: Queue, server_url: str):
     """
@@ -65,7 +270,8 @@ def tick_loop(
     beats_per_bar: int, 
     all_timing_data: list, # Pass list in to be mutated
     metronome_enabled: bool,
-    generation_interval_ticks: int
+    generation_interval_ticks: int,
+    current_tick_ref: dict = None  # Optional shared tick reference for MIDI file input
 ):
     """
     Main tick loop for the client. (main thread)
@@ -82,6 +288,10 @@ def tick_loop(
     # --- Main Loop ---
     while True:
         tick_count += 1
+        
+        # Update shared tick reference for MIDI file input
+        if current_tick_ref is not None:
+            current_tick_ref['current_tick'] = tick_count
         
         # --- 1. Process User Input ---
         user_notes_this_tick = []
@@ -137,7 +347,6 @@ def tick_loop(
                 all_timing_data.append(timings)
                 
                 # --- Tick Consistency Filter ---
-                generation_start_tick = response_data['generation_start_tick']
                 newly_generated_notes = response_data['accompaniment']
 
                 # --- Clear stale notes from the previous generation ---
@@ -175,8 +384,9 @@ def tick_loop(
         
         if is_trigger_tick:# and notes_for_next_request:
             # The model should start generating from the beginning of the *next* generation interval.
-            current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
-            next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
+            # current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
+            # next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
+            next_interval_start_tick = tick_count + 1
 
             request_data = {
                 "melody_notes": notes_for_next_request,
@@ -253,35 +463,113 @@ def tick_loop(
         time.sleep(seconds_per_tick)
 
 def main():
-    SERVER_URL = "http://localhost:8000/generate_accompaniment"
-    TEMPO = 90.0
-    TICKS_PER_BEAT = 4
-    BEATS_PER_BAR = 4
+    config = StreamMUSEConfig()
+    
+    parser = argparse.ArgumentParser(
+        description="StreamMUSE Client - Real-time music generation with AI accompaniment",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+            Input Modes:
+            Default:     Use connected MIDI device
+            Keyboard:    --use-keyboard-input
+            MIDI file:   --midi-file-input path/to/file.mid
+            Music Injection:
+            --injection-file path/to/music.mid --injection-length 100
 
-    parser = argparse.ArgumentParser(description="StreamMUSE Client")
-    parser.add_argument("--server_url", type=str, default=SERVER_URL)
-    parser.add_argument("--tempo", type=float, default=TEMPO)
-    parser.add_argument("--ticks_per_beat", type=int, default=TICKS_PER_BEAT)
-    parser.add_argument("--beats_per_bar", type=int, default=BEATS_PER_BAR)
-    parser.add_argument(
-        "--generation_interval_ticks",
-        type=int,
-        default=2,
-        help="The number of ticks between generation requests."
+            Examples:
+            %(prog)s
+            %(prog)s --use-keyboard-input --tempo 120
+            %(prog)s --midi-file-input song.mid --midi-file-delay-ticks 8
+             %(prog)s --injection-file prelude.mid --injection-length 50 --use-keyboard-input
+        """
     )
-    parser.add_argument("--log_lines", type=int, default=10)
-    parser.add_argument("--metronome", action="store_true", help="Enable an audible MIDI metronome click.")
-    parser.add_argument("--midi_output_name", type=str, default=None, help="Specify the MIDI output port name.")
-    parser.add_argument("--midi_input_name", type=str, default=None, help="Specify the MIDI input port name.")
-    parser.add_argument("--use-keyboard-input", action="store_true", help="Use the computer keyboard as MIDI input.")
-    parser.add_argument("--accompaniment-velocity", type=int, default=50, help="MIDI velocity for generated accompaniment notes (0-127).")
+    
+    # Network arguments
+    parser.add_argument("--server_url", type=str, default=config.DEFAULT_SERVER_URL,
+                       help="URL of the StreamMUSE server")
+    
+    # Musical timing arguments
+    parser.add_argument("--tempo", type=float, default=config.DEFAULT_TEMPO,
+                       help="Tempo in BPM")
+    parser.add_argument("--ticks_per_beat", type=int, default=config.DEFAULT_TICKS_PER_BEAT,
+                       help="Number of ticks per beat")
+    parser.add_argument("--beats_per_bar", type=int, default=config.DEFAULT_BEATS_PER_BAR,
+                       help="Number of beats per bar")
+    parser.add_argument("--generation_interval_ticks", type=int, default=config.DEFAULT_GENERATION_INTERVAL_TICKS,
+                       help="Number of ticks between generation requests")
+    
+    # Display arguments
+    parser.add_argument("--log_lines", type=int, default=config.DEFAULT_LOG_LINES,
+                       help="Number of log lines to display")
+    parser.add_argument("--metronome", action="store_true", 
+                       help="Enable audible MIDI metronome click")
+    
+    # MIDI I/O arguments
+    parser.add_argument("--midi_output_name", type=str, default=None,
+                       help="Specify MIDI output port name")
+    parser.add_argument("--midi_input_name", type=str, default=None,
+                       help="Specify MIDI input port name")
+    parser.add_argument("--accompaniment-velocity", type=int, default=config.DEFAULT_ACCOMPANIMENT_VELOCITY,
+                       help="MIDI velocity for generated accompaniment notes (0-127)")
+    
+    # Input mode arguments
+    parser.add_argument("--use-keyboard-input", action="store_true",
+                       help="Use computer keyboard as MIDI input")
+    parser.add_argument("--midi-file-input", type=str, default=None,
+                       help="Path to MIDI file to simulate user input")
+    parser.add_argument("--midi-file-delay-ticks", type=int, default=config.DEFAULT_MIDI_FILE_DELAY_TICKS,
+                       help="Number of ticks to delay before MIDI file starts playing")
+    parser.add_argument("--midi-file-use-original-duration", action="store_true",
+                       help="Use original MIDI note durations instead of fixed duration")
+    
+    # 添加音乐注入参数
+    parser.add_argument("--injection-file", type=str, default=None,
+                       help="Path to MIDI file to inject into inference engine history")
+    parser.add_argument("--injection-length", type=int, default=0,
+                       help="Number of ticks to inject from the injection file")
+
     args = parser.parse_args()
 
+    # --- Validate Arguments ---
+    if not StreamMUSEConfig.validate_args(args):
+        return
+    
+    # 验证注入参数
+    if args.injection_file and args.injection_length <= 0:
+        print("Error: injection-length must be positive when injection-file is specified")
+        return
+    
+    if args.injection_file and not os.path.exists(args.injection_file):
+        print(f"Error: injection file not found: {args.injection_file}")
+        return
+    
     # --- Create Session Log Directory ---
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     session_log_dir = os.path.join("app", "logs", f"session_{timestamp}")
     os.makedirs(session_log_dir, exist_ok=True)
 
+    
+    # --- 处理音乐注入 ---
+    injection_offset_ticks = 0
+    if args.injection_file:
+        injection_offset_ticks = inject_music_to_server(
+            args.server_url, 
+            args.injection_file, 
+            args.injection_length
+        )
+        
+        if injection_offset_ticks == 0:
+            print("注入失败，程序退出")
+            return
+        else:
+            # 保存 prompt MIDI 文件
+            save_prompt_midi(
+                args.injection_file, 
+                args.injection_length, 
+                session_log_dir, 
+                args.ticks_per_beat
+            )
+    
     event_queue = Queue()
     inference_request_queue = Queue()
     inference_response_queue = Queue()
@@ -294,7 +582,29 @@ def main():
     json_log_handler = JsonLogHandler()
     all_timing_data = [] # Initialize list in main scope
 
-    if args.use_keyboard_input:
+    # Create shared reference for current tick count (for MIDI file input)
+    current_tick_ref = {'current_tick': 0}
+
+    if args.midi_file_input:
+        # MIDI file input mode - 考虑偏移，以及跳过注入的部分
+        print(f"Using MIDI file input: {args.midi_file_input}")
+        
+        input_thread = threading.Thread(
+            target=read_midi_file_input,
+            args=(
+                event_queue,
+                args.midi_file_input,
+                current_tick_ref,
+                args.tempo,
+                args.ticks_per_beat,
+                args.midi_file_delay_ticks,
+                injection_offset_ticks,
+                args.midi_file_use_original_duration,
+                DEFAULT_NOTE_DURATION_TICKS
+            ),
+            daemon=True
+        )
+    elif args.use_keyboard_input:
         input_thread = threading.Thread(target=read_keyboard_input, args=(event_queue,), daemon=True)
     else:
         # A check to see if MIDI input is available.
@@ -333,7 +643,8 @@ def main():
             args.beats_per_bar,
             all_timing_data,
             args.metronome,
-            args.generation_interval_ticks),
+            args.generation_interval_ticks,
+            current_tick_ref),
         daemon=True
     )
 

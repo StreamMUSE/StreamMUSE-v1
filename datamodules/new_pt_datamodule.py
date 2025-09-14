@@ -22,7 +22,7 @@ class NewPtDataset(Dataset):
             self.input_mel_data_full = torch.load(self.file_path.replace("acc", "mel"), mmap=True)  # 完整的 input 旋律数据
             self.pitch_shift_range_acc = torch.load(self.file_path[:-3] + ".pitch_shift_range.pt", mmap=True).reshape(-1, 2)
             self.pitch_shift_range_mel = torch.load(
-                self.file_path.replace("acc.pt", "mel.pt")[:-3] + ".pitch_shift_range.pt", mmap=True
+                self.file_path.replace("acc", "mel")[:-3] + ".pitch_shift_range.pt", mmap=True
             ).reshape(-1, 2)
         except Exception as e:
             raise RuntimeError(f"Error loading .pt files for {self.file_path} in FramedDataset: {e}")
@@ -156,3 +156,29 @@ class NewPtDataModule(pl.LightningDataModule):
             acc_data=acc_data,
             pitch_shift=pitch_shift
         )
+        
+        
+if __name__ == "__main__":
+    # Example usage
+    from schema.dataset_schema import NewPtDatasetSchema, NewPtDataModuleSchema
+    
+    dataset_config = NewPtDatasetSchema(
+        file_path="/home/ubuntu/ugrip/data/pop909/pop909_acc_cp4.pt",
+        target_length=16,
+        split_ratio=10,
+        stage="train",
+        sequence_shift=128
+    )
+    
+    datamodule_config = NewPtDataModuleSchema(
+        train_config=dataset_config,
+        val_config=dataset_config,
+        test_config=dataset_config,
+        predict_config=dataset_config
+    )
+    
+    datamodule = NewPtDataModule(datamodule_config)
+    datamodule.setup("fit")
+    print(len(datamodule.train_dataset))
+    
+    print(datamodule.train_dataset.__getitem__(0))  # Example to get the first item

@@ -14,11 +14,10 @@ class OldPtDataset(Dataset):
             self.length = torch.load(self.file_path[:-3] + ".length.pt", mmap=True)
             self.start = torch.cumsum(self.length, dim=0) - self.length
             self.data_acc = torch.load(self.file_path, mmap=True)  # 伴奏
-            self.data_mel = torch.load(self.file_path.replace("acc.pt", "mel.pt"), mmap=True)  # 旋律
-
+            self.data_mel = torch.load(self.file_path.replace("acc", "mel"), mmap=True)  # 旋律
             self.pitch_shift_range_acc = torch.load(self.file_path[:-3] + ".pitch_shift_range.pt", mmap=True).reshape(-1, 2)
             self.pitch_shift_range_mel = torch.load(
-                self.file_path.replace("acc.pt", "mel.pt")[:-3] + ".pitch_shift_range.pt", mmap=True
+                self.file_path.replace("acc", "mel")[:-3] + ".pitch_shift_range.pt", mmap=True
             ).reshape(-1, 2)
         except Exception as e:
             raise RuntimeError(f"Error loading .pt files for {self.file_path} in FramedDataset: {e}")

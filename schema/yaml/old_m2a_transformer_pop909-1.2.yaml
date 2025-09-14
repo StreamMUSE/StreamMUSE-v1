@@ -21,14 +21,14 @@ dataset:
   train_config:
     batch_size: 16
     num_workers: 0
-    file_path: "data/pop909_acc_cp4.pt" # path to the preprocessed training data
+    file_path: "/home/ubuntu/ugrip/data/pop909/pop909_acc_cp4.pt" # path to the preprocessed training data
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10
   val_config:
     batch_size: 16
     num_workers: 0
-    file_path: "data/pop909_acc_cp4.pt"
+    file_path: "/home/ubuntu/ugrip/data/pop909/pop909_acc_cp4.pt"
     target_length: 384
     tokenization_type: "XinYue's"
     split_ratio: 10

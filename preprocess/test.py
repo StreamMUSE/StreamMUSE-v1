@@ -10,11 +10,11 @@ import json
 import pretty_midi
 import argparse
 
-sys.path.append("/home/ubuntu/ugrip/stanleyz")
+sys.path.append("/home/ubuntu/stanleyz/")
 from StreamMUSE.m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 # from preprocess_midi2pt_dataset import preprocess_midi
 
-midi_path = "/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid"
+midi_path = "input/mel/001.mid"
 
 tokenize_dict = {'<sos>': 0, '<eos>': 1, '<pad>': 2}
 tokenize_count = [-1, -1, -1]
@@ -30,7 +30,7 @@ def preprocess_midi(midi_path, max_polyphony, beat_div=4, ins_ids='all'):
         return None
     print(midi)
     midi_end_time = int(midi.get_end_time())
-    print("midi_end_time:",midi_end_time)
+    print("midi_end_time:", midi_end_time)
     if midi_end_time <= 0:
         return None
     if not isinstance(ins_ids, list):
@@ -141,21 +141,21 @@ print("test_res1_acc shape:", test_res1_acc[0].shape, test_res1_acc[1].shape)
 #         f.write(str(row) + "\n")
 # print(f"rolls 已保存到 {log_path}")
 
-model_path = "/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
-model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, large=True)
+model_path = "results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt"
+model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path)
 
 test_res2_mel, test_res2_acc = decompress(model, test_res1_mel[0], test_res1_acc[0])
 # print("test_res2_mel:", test_res2_mel)
 print("test_res2_mel shape:", test_res2_mel.shape)
 
-# print("test_res2_acc:", test_res2_acc)
+# # print("test_res2_acc:", test_res2_acc)
 print("test_res2_acc shape:", test_res2_acc.shape)
-log_path = "test_res2_acc.txt"
-with open(log_path, "w") as f:
-    f.write(f"test_res2_acc shape: {test_res2_acc.shape}\n")
-    for row in test_res2_acc.tolist():
-        f.write(str(row) + "\n")
-print(f"rolls 已保存到 {log_path}")
+# log_path = "test_res2_acc.txt"
+# with open(log_path, "w") as f:
+#     f.write(f"test_res2_acc shape: {test_res2_acc.shape}\n")
+#     for row in test_res2_acc.tolist():
+#         f.write(str(row) + "\n")
+# print(f"rolls 已保存到 {log_path}")
 
 first_timestep = 1 # prompt_length != 0
 prompt_length = 5
@@ -173,7 +173,7 @@ print("x:", x)
 print("x shape:", x.shape)
 
 output = model.global_sampling(x, temperature=1.0, max_seq_len=2)
-# print("output:", output)
+print("output:", output)
 print("output len:", len(output))
 output_0 = [output[j][0 : 0 + 1, :] for j in range(len(output))]
 print("output:", output_0)

@@ -1,7 +1,7 @@
 # This is the fake real time
 
 import pretty_midi
-from inference_engines.transformer_engine import TransformerInferenceEngine
+# from inference_engines.transformer_engine import TransformerInferenceEngine
 import os
 import json
 import torch
@@ -12,12 +12,13 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from m2a_transformer_inference import decode_output
 import pdb
 
-def midi_to_note(midi_path, min_pitch=0, max_pitch=127, beat_div=4, program=None):
+def midi_to_note(midi_path, min_pitch=0, max_pitch=127, beat_div=4, program=None, max_tick=None):
     """
     用 XFMidi 读取 midi 文件，返回 notes 列表，每个元素是 {'pitch', 'tick', 'duration'} 字典。
     """
     midi = XFMidi(midi_path, constant_tempo=60.0 / beat_div)
-    max_tick = int(midi.get_end_time())
+    if max_tick is None:
+        max_tick = int(midi.get_end_time())
     notes = []
     for inst in midi.instruments:
         # 如果只想要某种 program，可以加判断
@@ -362,7 +363,7 @@ if __name__ == "__main__":
     # torch.cuda.manual_seed_all(seed)
 
     # 1. 初始化 engine
-    checkpoint_path = os.getenv('CHECKPOINT_PATH', "/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
+    checkpoint_path = os.getenv('CHECKPOINT_PATH', "/home/ubuntu/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
     if not checkpoint_path:
         print('Fatal Error: CHECKPOINT_PATH environment variable is not set')
         print("Please run the server like: CHECKPOINT_PATH=path/to/model.ckpt uvicorn ...")
@@ -416,6 +417,7 @@ if __name__ == "__main__":
     # pdb.set_trace()
     acc_notes = inference_engine.generate_accompaniment(current_mel, generation_start_tick=generation_start_tick, acc_notes=current_acc)
     acc_history.extend(acc_notes)
+    # 外面已经生成过一次了，所以 + 1.
     for i in range(generation_start_tick+1, max_tick):
         # if i > 175:
         #     pdb.set_trace()
