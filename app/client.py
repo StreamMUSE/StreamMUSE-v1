@@ -42,6 +42,7 @@ class StreamMUSEConfig:
     DEFAULT_TICKS_PER_BEAT = 4
     DEFAULT_BEATS_PER_BAR = 4
     DEFAULT_GENERATION_INTERVAL_TICKS = 2
+    DEFAULT_GENERATION_LENGTH = None  # For experiments only
     
     # Note handling
     DEFAULT_NOTE_DURATION_TICKS = 2
@@ -226,6 +227,20 @@ def get_injection_status(server_base_url: str):
         print(f"获取注入状态失败: {e}")
         return {'is_injected': False, 'injection_length_ticks': 0}
 
+def clear_server_history(server_base_url: str) -> bool:
+    """
+    请求服务器清除历史和注入状态，返回是否成功
+    """
+    clear_url = server_base_url.replace('/generate_accompaniment', '/clear_history')
+    try:
+        resp = requests.post(clear_url)
+        resp.raise_for_status()
+        print("✓ 已请求服务器清除历史")
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"✗ 请求服务器清除历史失败: {e}")
+        return False
+
 def inference_worker(request_queue: Queue, response_queue: Queue, server_url: str):
     """
     Worker function for sending requests to the server and receiving responses.
@@ -271,6 +286,7 @@ def tick_loop(
     all_timing_data: list, # Pass list in to be mutated
     metronome_enabled: bool,
     generation_interval_ticks: int,
+    generation_length_ticks: int = None,
     current_tick_ref: dict = None  # Optional shared tick reference for MIDI file input
 ):
     """
@@ -289,6 +305,11 @@ def tick_loop(
     while True:
         tick_count += 1
         
+        if generation_length_ticks is not None and tick_count >= generation_length_ticks:
+            print(f"Reached generation_length {generation_length_ticks} ticks — stopping tick loop.")
+            # 可在此放置清理/通知逻辑，例如向其他队列放置终止事件
+            return
+
         # Update shared tick reference for MIDI file input
         if current_tick_ref is not None:
             current_tick_ref['current_tick'] = tick_count
@@ -380,7 +401,9 @@ def tick_loop(
                 last_inference_timings = timings
 
         # --- 3. Trigger New Inference (Latency-Aware) ---
-        is_trigger_tick = (tick_count % generation_interval_ticks) == (generation_interval_ticks - LATENCY_OFFSET_TICKS)
+        # 感觉这个所谓的 leniency aware 没意义，而且我们的建模不是这样的，改成固定间隔
+        # is_trigger_tick = (tick_count % generation_interval_ticks) == (generation_interval_ticks - LATENCY_OFFSET_TICKS)
+        is_trigger_tick = (tick_count % generation_interval_ticks) == 0
         
         if is_trigger_tick:# and notes_for_next_request:
             # The model should start generating from the beginning of the *next* generation interval.
@@ -497,7 +520,9 @@ def main():
                        help="Number of beats per bar")
     parser.add_argument("--generation_interval_ticks", type=int, default=config.DEFAULT_GENERATION_INTERVAL_TICKS,
                        help="Number of ticks between generation requests")
-    
+    parser.add_argument("--generation_length", type=int, default=config.DEFAULT_GENERATION_LENGTH,
+                       help="Number of frames to generate in total (for experiments only)")
+
     # Display arguments
     parser.add_argument("--log_lines", type=int, default=config.DEFAULT_LOG_LINES,
                        help="Number of log lines to display")
@@ -548,7 +573,10 @@ def main():
     session_log_dir = os.path.join("app", "logs", f"session_{timestamp}")
     os.makedirs(session_log_dir, exist_ok=True)
 
-    
+    # 清除服务器历史
+    if not clear_server_history(args.server_url):
+        return
+
     # --- 处理音乐注入 ---
     injection_offset_ticks = 0
     if args.injection_file:
@@ -644,6 +672,7 @@ def main():
             all_timing_data,
             args.metronome,
             args.generation_interval_ticks,
+            args.generation_length//2,
             current_tick_ref),
         daemon=True
     )
@@ -663,12 +692,24 @@ def main():
     except KeyboardInterrupt:
         print("\r\nCtrl+C detected. Exiting application.")
     finally:
-        print("\n--- Saving all session logs ---")
-        # Pass the benchmark data to be saved
-        output_handler.save_log_on_exit(session_log_dir, all_timing_data)
-        midi_file_handler.save_to_midi(session_log_dir)
-        json_log_handler.save_logs(session_log_dir)
-        audio_output_handler.close()
+        if args.generation_length is None:
+            print("\n--- Saving all session logs ---")
+            # Pass the benchmark data to be saved
+            output_handler.save_log_on_exit(session_log_dir, all_timing_data)
+            midi_file_handler.save_to_midi(session_log_dir)
+            json_log_handler.save_logs(session_log_dir)
+            audio_output_handler.close()
+        else:
+            print("\nExperiment Mode: Generation length reached, exiting without saving logs.")
+            test_midi_file_name = os.path.splitext(os.path.basename(args.midi_file_input))[0]
+            session_log_dir = os.path.join("app", "experiment_log", test_midi_file_name)
+            os.makedirs(session_log_dir, exist_ok=True)
+            output_handler.save_log_on_exit(session_log_dir, all_timing_data)
+            experiment_dir = "experiments/realtime/prompt_75_gen_384/generated"
+            os.makedirs(experiment_dir, exist_ok=True)
+            midi_file_handler.save_to_midi(experiment_dir, midi_file_name=test_midi_file_name)
+            json_log_handler.save_logs(session_log_dir)
+            audio_output_handler.close()
 
 if __name__ == "__main__":
     main()
