@@ -174,39 +174,34 @@ class GenerationLengthAnalyzer:
             def safe_stats(series):
                 if len(series) == 0:
                     return {'mean': 0, 'std': 0, 'min': 0, 'max': 0, 'median': 0, 'p95': 0, 'p99': 0,
-                           'ci_80_lower': 0, 'ci_80_upper': 0, 'ci_85_lower': 0, 'ci_85_upper': 0,
-                           'ci_90_lower': 0, 'ci_90_upper': 0, 'ci_95_lower': 0, 'ci_95_upper': 0,
-                           'ci_98_lower': 0, 'ci_98_upper': 0, 'ci_99_lower': 0, 'ci_99_upper': 0,
-                           'ci_99_5_lower': 0, 'ci_99_5_upper': 0, 'ci_99_9_lower': 0, 'ci_99_9_upper': 0}
+                           'upper_bound_60': 0, 'upper_bound_70': 0, 'upper_bound_80': 0, 'upper_bound_85': 0,
+                           'upper_bound_90': 0, 'upper_bound_95': 0, 'upper_bound_98': 0, 'upper_bound_99': 0,
+                           'upper_bound_99_5': 0, 'upper_bound_99_9': 0}
                 
-                # Calculate confidence intervals if we have enough data
-                confidence_intervals = {}
-                if len(series) >= 3:  # Need at least 3 samples for meaningful CI
+                # Calculate one-sided upper bounds (percentiles)
+                upper_bounds = {}
+                if len(series) >= 5:  # Need at least 5 samples for meaningful percentiles
                     try:
-                        # Calculate confidence intervals using t-distribution
-                        mean = series.mean()
-                        sem = stats.sem(series)  # Standard error of the mean
+                        # Calculate percentiles directly from the data
+                        # These represent: "X% of measurements are below this value"
+                        percentiles = [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]
                         
-                        confidence_levels = [0.80, 0.85, 0.90, 0.95, 0.98, 0.99, 0.995, 0.999]
-                        ci_names = ['ci_80', 'ci_85', 'ci_90', 'ci_95', 'ci_98', 'ci_99', 'ci_99_5', 'ci_99_9']
-                        
-                        for conf_level, ci_name in zip(confidence_levels, ci_names):
-                            # t-distribution critical value
-                            t_crit = stats.t.ppf((1 + conf_level) / 2, len(series) - 1)
-                            margin_error = t_crit * sem
+                        for percentile in percentiles:
+                            value = series.quantile(percentile / 100.0)
+                            key_name = f'upper_bound_{int(percentile)}' if percentile == int(percentile) else f'upper_bound_{percentile}'.replace('.', '_')
+                            upper_bounds[key_name] = value
                             
-                            confidence_intervals[f'{ci_name}_lower'] = mean - margin_error
-                            confidence_intervals[f'{ci_name}_upper'] = mean + margin_error
-                    except:
+                    except Exception as e:
+                        print(f"Warning: Error calculating percentiles: {e}")
                         # Fallback to zeros if calculation fails
-                        for ci_name in ['ci_80', 'ci_85', 'ci_90', 'ci_95', 'ci_98', 'ci_99', 'ci_99_5', 'ci_99_9']:
-                            confidence_intervals[f'{ci_name}_lower'] = 0
-                            confidence_intervals[f'{ci_name}_upper'] = 0
+                        for p in [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]:
+                            key_name = f'upper_bound_{int(p)}' if p == int(p) else f'upper_bound_{p}'.replace('.', '_')
+                            upper_bounds[key_name] = 0
                 else:
-                    # Not enough data for meaningful confidence intervals
-                    for ci_name in ['ci_80', 'ci_85', 'ci_90', 'ci_95', 'ci_98', 'ci_99', 'ci_99_5', 'ci_99_9']:
-                        confidence_intervals[f'{ci_name}_lower'] = 0
-                        confidence_intervals[f'{ci_name}_upper'] = 0
+                    # Not enough data for meaningful percentiles
+                    for p in [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]:
+                        key_name = f'upper_bound_{int(p)}' if p == int(p) else f'upper_bound_{p}'.replace('.', '_')
+                        upper_bounds[key_name] = 0
                 
                 base_stats = {
                     'mean': series.mean(),
@@ -218,8 +213,8 @@ class GenerationLengthAnalyzer:
                     'p99': series.quantile(0.99)
                 }
                 
-                # Combine base stats with confidence intervals
-                base_stats.update(confidence_intervals)
+                # Combine base stats with upper bounds
+                base_stats.update(upper_bounds)
                 return base_stats
             
             summary = {'generation_length': gen_length, 'num_requests': len(df_subset)}
@@ -523,7 +518,7 @@ class GenerationLengthAnalyzer:
         plt.close()
     
     def _plot_confidence_intervals(self):
-        """Plot confidence intervals for round trip time only."""
+        """Plot upper bound percentiles for round trip time."""
         fig, ax = plt.subplots(figsize=(14, 8))
         
         metric = 'round_trip_time'
@@ -533,7 +528,7 @@ class GenerationLengthAnalyzer:
         if mean_col not in self.summary_data.columns:
             ax.text(0.5, 0.5, 'No round trip time data available', 
                    transform=ax.transAxes, ha='center', va='center')
-            ax.set_title('Round Trip Time Confidence Intervals', fontsize=16, fontweight='bold')
+            ax.set_title('Round Trip Time Upper Bounds', fontsize=16, fontweight='bold')
             plt.tight_layout()
             plt.savefig(self.plots_dir / "confidence_intervals.png", dpi=300, bbox_inches='tight')
             plt.close()
@@ -545,47 +540,41 @@ class GenerationLengthAnalyzer:
         # Plot mean line
         ax.plot(x, y_mean, 'ko-', linewidth=3, markersize=8, label='Mean', zorder=10)
         
-        # Define confidence levels and colors (lighter to darker as confidence increases)
-        confidence_levels = ['80', '85', '90', '95', '98', '99', '99_5', '99_9']
-        colors = ['#e6f3ff', '#cce7ff', '#99d6ff', '#66c2ff', '#33adff', '#0099ff', '#0080cc', '#006699']
-        alphas = [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75]
+        # Define percentile levels and colors
+        percentiles = ['60', '70', '80', '85', '90', '95', '98', '99', '99_5', '99_9']
+        colors = ['#f0f8ff', '#e0f0ff', '#d0e8ff', '#c0e0ff', '#b0d8ff', '#90c8ff', '#70b8ff', '#50a8ff', '#3098ff', '#1088ff']
         
-        # Plot confidence intervals from widest to narrowest (so narrower ones appear on top)
-        for conf_level, color, alpha in zip(reversed(confidence_levels), reversed(colors), reversed(alphas)):
-            lower_col = f"{metric}_ci_{conf_level}_lower"
-            upper_col = f"{metric}_ci_{conf_level}_upper"
+        # Plot upper bounds
+        for i, (percentile, color) in enumerate(zip(percentiles, colors)):
+            upper_col = f"{metric}_upper_bound_{percentile}"
             
-            if lower_col in self.summary_data.columns and upper_col in self.summary_data.columns:
-                y_lower = self.summary_data[lower_col] * scale
+            if upper_col in self.summary_data.columns:
                 y_upper = self.summary_data[upper_col] * scale
                 
-                # Convert confidence level name for display
-                display_level = conf_level.replace('_', '.')
-                
-                # Plot confidence interval as filled area
-                ax.fill_between(x, y_lower, y_upper, 
-                               alpha=alpha, color=color, 
-                               label=f'{display_level}% CI', zorder=len(confidence_levels)-confidence_levels.index(conf_level))
+                # Check if we have valid data (not all zeros)
+                if y_upper.sum() > 0:
+                    # Convert percentile name for display
+                    display_level = percentile.replace('_', '.')
+                    
+                    # Plot upper bound line
+                    ax.plot(x, y_upper, '--', color=color, linewidth=2, markersize=6, 
+                           marker='o', label=f'{display_level}% upper bound', alpha=0.8)
         
         ax.set_xlabel('Generation Length (Frames)', fontsize=14, fontweight='bold')
         ax.set_ylabel('Round Trip Time (milliseconds)', fontsize=14, fontweight='bold')
-        ax.set_title('Round Trip Time with Confidence Intervals', fontsize=16, fontweight='bold')
+        ax.set_title('Round Trip Time Upper Bounds\n(X% of requests complete within this time)', fontsize=16, fontweight='bold')
         
-        # Arrange legend with most common CIs first
+        # Create a better legend layout
         handles, labels = ax.get_legend_handles_labels()
-        # Reorder to show mean first, then common CIs (95%, 99%), then others
-        common_order = ['Mean', '95% CI', '99% CI', '90% CI', '99.5% CI', '80% CI', '85% CI', '98% CI', '99.9% CI']
-        ordered_handles = []
-        ordered_labels = []
         
-        for desired_label in common_order:
-            for handle, label in zip(handles, labels):
-                if label == desired_label:
-                    ordered_handles.append(handle)
-                    ordered_labels.append(label)
-                    break
+        # Split legend into two columns for better readability
+        if len(handles) > 6:
+            legend1 = ax.legend(handles[:6], labels[:6], loc='upper left', fontsize=10, framealpha=0.9, title='Lower Percentiles')
+            ax.add_artist(legend1)
+            ax.legend(handles[6:], labels[6:], loc='upper right', fontsize=10, framealpha=0.9, title='Higher Percentiles')
+        else:
+            ax.legend(fontsize=11, loc='best', framealpha=0.9)
         
-        ax.legend(ordered_handles, ordered_labels, fontsize=11, loc='best', framealpha=0.9)
         ax.grid(True, alpha=0.3)
         self._set_fine_x_ticks(ax)
         
@@ -755,16 +744,14 @@ class GenerationLengthAnalyzer:
                 entry['Mean RTT (ms)'] = f"{row['round_trip_time_mean'] * 1000:.1f}"
                 entry['Std RTT (ms)'] = f"{row['round_trip_time_std'] * 1000:.1f}"
                 
-                # Add confidence intervals for RTT
-                if 'round_trip_time_ci_95_lower' in row:
-                    ci_95_lower = row['round_trip_time_ci_95_lower'] * 1000
-                    ci_95_upper = row['round_trip_time_ci_95_upper'] * 1000
-                    entry['95% CI RTT (ms)'] = f"[{ci_95_lower:.1f}, {ci_95_upper:.1f}]"
+                # Add upper bounds for RTT
+                if 'round_trip_time_upper_bound_95' in row:
+                    upper_95 = row['round_trip_time_upper_bound_95'] * 1000
+                    entry['95% Upper Bound RTT (ms)'] = f"{upper_95:.1f}"
                 
-                if 'round_trip_time_ci_99_lower' in row:
-                    ci_99_lower = row['round_trip_time_ci_99_lower'] * 1000
-                    ci_99_upper = row['round_trip_time_ci_99_upper'] * 1000
-                    entry['99% CI RTT (ms)'] = f"[{ci_99_lower:.1f}, {ci_99_upper:.1f}]"
+                if 'round_trip_time_upper_bound_99' in row:
+                    upper_99 = row['round_trip_time_upper_bound_99'] * 1000
+                    entry['99% Upper Bound RTT (ms)'] = f"{upper_99:.1f}"
             
             if 'inference_duration_mean' in row:
                 entry['Mean Inference (ms)'] = f"{row['inference_duration_mean'] * 1000:.1f}"
@@ -792,7 +779,7 @@ class GenerationLengthAnalyzer:
         print(export_df.to_string(index=False))
     
     def _export_confidence_intervals_table(self):
-        """Export a detailed confidence intervals table for round trip time only."""
+        """Export a detailed upper bounds table for round trip time only."""
         if self.summary_data is None:
             return
             
@@ -801,7 +788,7 @@ class GenerationLengthAnalyzer:
         for _, row in self.summary_data.iterrows():
             gen_length = int(row['generation_length'])
             
-            # Round trip time confidence intervals only
+            # Round trip time upper bounds only
             if 'round_trip_time_mean' in row:
                 base_entry = {
                     'Generation Length': gen_length,
@@ -810,30 +797,28 @@ class GenerationLengthAnalyzer:
                     'Sample Size': int(row['num_requests'])
                 }
                 
-                # Add all standard confidence intervals
-                ci_levels = ['80', '85', '90', '95', '98', '99', '99_5', '99_9']
+                # Add all upper bounds (percentiles)
+                percentiles = [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]
                 
-                for ci_level in ci_levels:
-                    lower_col = f"round_trip_time_ci_{ci_level}_lower"
-                    upper_col = f"round_trip_time_ci_{ci_level}_upper"
+                for percentile in percentiles:
+                    if percentile == int(percentile):
+                        col_name = f"round_trip_time_upper_bound_{int(percentile)}"
+                        display_name = f"{int(percentile)}%"
+                    else:
+                        col_name = f"round_trip_time_upper_bound_{str(percentile).replace('.', '_')}"
+                        display_name = f"{percentile}%"
                     
-                    if lower_col in row and upper_col in row:
-                        lower = row[lower_col] * 1000
-                        upper = row[upper_col] * 1000
-                        width = upper - lower
-                        
-                        level_name = ci_level.replace('_', '.')
-                        base_entry[f'{level_name}% CI Lower'] = f"{lower:.2f}"
-                        base_entry[f'{level_name}% CI Upper'] = f"{upper:.2f}"
-                        base_entry[f'{level_name}% CI Width'] = f"{width:.2f}"
+                    if col_name in row:
+                        upper_bound = row[col_name] * 1000
+                        base_entry[f'{display_name} Upper Bound (ms)'] = f"{upper_bound:.2f}"
                 
                 ci_data.append(base_entry)
         
         if ci_data:
             ci_df = pd.DataFrame(ci_data)
-            ci_file = self.output_dir / "round_trip_time_confidence_intervals.csv"
+            ci_file = self.output_dir / "round_trip_time_upper_bounds.csv"
             ci_df.to_csv(ci_file, index=False)
-            print(f"📊 Round trip time confidence intervals saved to: {ci_file}")
+            print(f"📊 Round trip time upper bounds saved to: {ci_file}")
 
 
 def main():
