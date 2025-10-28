@@ -30,3 +30,6 @@
 
 # Notebooks as binary
 *.ipynb -text
+
+# Do not apply text normalization in vendored upstream code
+transformers/** -text
