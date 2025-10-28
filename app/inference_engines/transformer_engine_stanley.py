@@ -416,7 +416,7 @@ class InferenceEngineStanley():
         relative_generated_notes = []
         for note in absolute_generated_notes:
             relative_note = note.copy()
-            relative_note['tick'] = note['tick'] - self.injection_offset_ticks + 1
+            relative_note['tick'] = note['tick'] - self.injection_offset_ticks
             relative_generated_notes.append(relative_note)
 
         return (relative_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)

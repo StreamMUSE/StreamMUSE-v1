@@ -295,11 +295,20 @@ def tick_loop(
     seconds_per_tick = (60.0 / tempo) / ticks_per_beat
     tick_count = -1
     playback_schedule = {}
-    
+    number_of_hit = 0
+    total_backup_level = 0
+
     # New state variables
     notes_for_next_request = []
     last_inference_timings = {} # To persist timing info for display
     ticks_per_bar = ticks_per_beat * beats_per_bar
+
+    # 读取期望每次生成的帧数（以 client tick 为单位），由环境变量控制
+    try:
+        GENERATION_FRAMES = int(os.environ.get("GENERATION_LENGTH_FRAMES")) if os.environ.get("GENERATION_LENGTH_FRAMES") is not None else 6
+        print(f"Using GENERATION_LENGTH_FRAMES = {GENERATION_FRAMES}")
+    except Exception:
+        GENERATION_FRAMES = None # temperary for debugging
 
     # --- Main Loop ---
     while True:
@@ -307,6 +316,8 @@ def tick_loop(
         
         if generation_length_ticks is not None and tick_count >= generation_length_ticks:
             print(f"Reached generation_length {generation_length_ticks} ticks — stopping tick loop.")
+            print(f"hit rate: {number_of_hit}/{generation_length_ticks} = {number_of_hit/generation_length_ticks:.2%}")
+            print(f"average backup level: {total_backup_level/number_of_hit if number_of_hit > 0 else 0:.2f}")
             # 可在此放置清理/通知逻辑，例如向其他队列放置终止事件
             return
 
@@ -370,6 +381,30 @@ def tick_loop(
                 # --- Tick Consistency Filter ---
                 newly_generated_notes = response_data['accompaniment']
 
+                gen_start = None
+                if isinstance(request_data, dict):
+                    gen_start = request_data.get("generation_start_tick")
+
+                # 如果知道期望帧数和 generation 起始 tick，补全缺失 ticks（占位 pitch=-1）
+                if GENERATION_FRAMES is not None and gen_start is not None:
+                    # map existing ticks
+                    existing_ticks = {n['tick'] for n in newly_generated_notes}
+                    for t in range(gen_start, gen_start + GENERATION_FRAMES//2):
+                        if t not in existing_ticks:
+                            newly_generated_notes.append({
+                                "pitch": -1,
+                                "tick": t,
+                                "duration": DEFAULT_NOTE_DURATION_TICKS,
+                                "is_placeholder": True
+                            })
+                    # 现在为所有生成的 note 按相对 tick 顺序简单赋 backup_level = tick - gen_start
+                    for n in newly_generated_notes:
+                        n['backup_level'] = int(n['tick'] - gen_start)
+                else:
+                    # 无法补全时给默认 backup_level=0
+                    for n in newly_generated_notes:
+                        n['backup_level'] = 0
+                
                 # --- Clear stale notes from the previous generation ---
                 # This ensures that if a new response arrives before the old one is
                 # fully played out, we only replace future model-generated notes.
@@ -424,12 +459,21 @@ def tick_loop(
         
         # Check the schedule for events supposed to happen on the current tick
         scheduled_events = playback_schedule.pop(tick_count, [])
+        is_hit = False
+        this_backup_level = 0
         for event in scheduled_events:
+            if event.get('source') == 'model':
+                is_hit = True
+                this_backup_level = event.get('backup_level', 0)
+                if event.get('is_placeholder', False):
+                    continue # Skip placeholder notes
             if event.get('type') == 'note_off':
                 notes_to_stop_this_tick.append(event)
             else: # It's a note_on
                 notes_to_play_this_tick.append(event)
-        
+        if is_hit:
+            number_of_hit += 1
+            total_backup_level += this_backup_level
         # Process note-offs first
         for event in notes_to_stop_this_tick:
             audio_output_handler.off(event['pitch'])
@@ -656,6 +700,11 @@ def main():
         args=(inference_request_queue, inference_response_queue, args.server_url),
         daemon=True
     )
+
+    if args.generation_length is not None:
+        generation_length_tcks = args.generation_length // 2
+    else:
+        generation_length_tcks = None
     music_pacer_thread = threading.Thread(
         target=tick_loop,
         args=(
@@ -672,7 +721,7 @@ def main():
             all_timing_data,
             args.metronome,
             args.generation_interval_ticks,
-            args.generation_length//2,
+            generation_length_tcks,
             current_tick_ref),
         daemon=True
     )
