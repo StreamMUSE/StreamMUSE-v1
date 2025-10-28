@@ -21,6 +21,7 @@ POP909-Dataset
 aria-extract.py
 /dataset/
 src/transformers/
+transformers/
 app/.DS_Store
 .DS_Store
 /app/logs
