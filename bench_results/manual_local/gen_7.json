@@ -1,0 +1,5474 @@
+{
+  "metadata": {
+    "server_url": "http://0.0.0.0:8988/generate_accompaniment",
+    "num_requests": 100,
+    "total_successful_requests": 100,
+    "melody_notes_sent": [
+      {
+        "pitch": 64,
+        "tick": 0,
+        "duration": 4
+      },
+      {
+        "pitch": 62,
+        "tick": 4,
+        "duration": 4
+      },
+      {
+        "pitch": 60,
+        "tick": 8,
+        "duration": 4
+      },
+      {
+        "pitch": 62,
+        "tick": 12,
+        "duration": 4
+      }
+    ],
+    "generation_start_tick": 16,
+    "benchmark_timestamp": "2025-10-27 21:08:36"
+  },
+  "responses": [
+    {
+      "request_id": 1,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114126.924030193
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 64,
+            "tick": 20,
+            "duration": 12,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114126.925770388,
+          "response_output_time": 114127.376578956,
+          "preprocess_start_time": 114126.925821088,
+          "inference_start_time": 114126.999001379,
+          "inference_end_time": 114127.375223056,
+          "postprocess_start_time": 114127.375223156
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114126.924030993,
+        "request_end_time": 114127.377378156,
+        "round_trip_time": 0.45334716299839783,
+        "total_network_latency": 0.0025385949993506074,
+        "server_processing_duration": 0.4508085679990472,
+        "preprocess_duration": 0.0731802909867838,
+        "inference_duration": 0.37622167701192666,
+        "postprocess_duration": 0.001355799991870299
+      }
+    },
+    {
+      "request_id": 2,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114127.477621229
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 45,
+            "tick": 20,
+            "duration": 6,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114127.479102928,
+          "response_output_time": 114127.660772883,
+          "preprocess_start_time": 114127.479154228,
+          "inference_start_time": 114127.481059028,
+          "inference_end_time": 114127.659474683,
+          "postprocess_start_time": 114127.659474783
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114127.477622429,
+        "request_end_time": 114127.661670183,
+        "round_trip_time": 0.18404775400995277,
+        "total_network_latency": 0.0023777990136295557,
+        "server_processing_duration": 0.1816699549963232,
+        "preprocess_duration": 0.0019047999958274886,
+        "inference_duration": 0.17841565499838907,
+        "postprocess_duration": 0.0012981000036234036
+      }
+    },
+    {
+      "request_id": 3,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114127.761971459
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114127.763431258,
+          "response_output_time": 114127.939914616,
+          "preprocess_start_time": 114127.763480458,
+          "inference_start_time": 114127.766132458,
+          "inference_end_time": 114127.938622116,
+          "postprocess_start_time": 114127.938622316
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114127.761972959,
+        "request_end_time": 114127.940780916,
+        "round_trip_time": 0.1788079570105765,
+        "total_network_latency": 0.002324599015992135,
+        "server_processing_duration": 0.17648335799458437,
+        "preprocess_duration": 0.0026519999955780804,
+        "inference_duration": 0.17248965799808502,
+        "postprocess_duration": 0.0012923000031150877
+      }
+    },
+    {
+      "request_id": 4,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114128.041079392
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114128.042528191,
+          "response_output_time": 114128.219725949,
+          "preprocess_start_time": 114128.042578091,
+          "inference_start_time": 114128.045266591,
+          "inference_end_time": 114128.218307049,
+          "postprocess_start_time": 114128.218307249
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114128.041080492,
+        "request_end_time": 114128.220631649,
+        "round_trip_time": 0.17955115700897295,
+        "total_network_latency": 0.0023533990024589,
+        "server_processing_duration": 0.17719775800651405,
+        "preprocess_duration": 0.002688499997020699,
+        "inference_duration": 0.17304045800119638,
+        "postprocess_duration": 0.0014187000051606447
+      }
+    },
+    {
+      "request_id": 5,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114128.320942025
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114128.322340424,
+          "response_output_time": 114128.494224383,
+          "preprocess_start_time": 114128.322391124,
+          "inference_start_time": 114128.324278224,
+          "inference_end_time": 114128.492843084,
+          "postprocess_start_time": 114128.492843284
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114128.320943125,
+        "request_end_time": 114128.495063383,
+        "round_trip_time": 0.17412025800149422,
+        "total_network_latency": 0.0022362989984685555,
+        "server_processing_duration": 0.17188395900302567,
+        "preprocess_duration": 0.001887099992018193,
+        "inference_duration": 0.1685648599959677,
+        "postprocess_duration": 0.0013810990058118477
+      }
+    },
+    {
+      "request_id": 6,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114128.595402361
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114128.59689736,
+          "response_output_time": 114128.771925824,
+          "preprocess_start_time": 114128.59694736,
+          "inference_start_time": 114128.59951886,
+          "inference_end_time": 114128.770659624,
+          "postprocess_start_time": 114128.770659824
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114128.595403461,
+        "request_end_time": 114128.772789024,
+        "round_trip_time": 0.17738556300173514,
+        "total_network_latency": 0.0023570990015286952,
+        "server_processing_duration": 0.17502846400020644,
+        "preprocess_duration": 0.002571500008343719,
+        "inference_duration": 0.17114076399593614,
+        "postprocess_duration": 0.00126599999202881
+      }
+    },
+    {
+      "request_id": 7,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114128.872995503
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114128.874485002,
+          "response_output_time": 114129.049512166,
+          "preprocess_start_time": 114128.874537002,
+          "inference_start_time": 114128.877437702,
+          "inference_end_time": 114129.048202266,
+          "postprocess_start_time": 114129.048202466
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114128.872996903,
+        "request_end_time": 114129.050382366,
+        "round_trip_time": 0.1773854630009737,
+        "total_network_latency": 0.002358298996114172,
+        "server_processing_duration": 0.17502716400485951,
+        "preprocess_duration": 0.002900699997553602,
+        "inference_duration": 0.17076456399809103,
+        "postprocess_duration": 0.0013097000046400353
+      }
+    },
+    {
+      "request_id": 8,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114129.150691545
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114129.152113945,
+          "response_output_time": 114129.337016506,
+          "preprocess_start_time": 114129.152164745,
+          "inference_start_time": 114129.155272044,
+          "inference_end_time": 114129.335554306,
+          "postprocess_start_time": 114129.335554506
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114129.150692645,
+        "request_end_time": 114129.337870006,
+        "round_trip_time": 0.1871773610037053,
+        "total_network_latency": 0.0022748000046703964,
+        "server_processing_duration": 0.1849025609990349,
+        "preprocess_duration": 0.0031072989950189367,
+        "inference_duration": 0.18028226200840436,
+        "postprocess_duration": 0.0014620000001741573
+      }
+    },
+    {
+      "request_id": 9,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114129.438163785
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114129.439606785,
+          "response_output_time": 114129.61477675,
+          "preprocess_start_time": 114129.439666985,
+          "inference_start_time": 114129.442643484,
+          "inference_end_time": 114129.613425551,
+          "postprocess_start_time": 114129.613425751
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114129.438164885,
+        "request_end_time": 114129.61561555,
+        "round_trip_time": 0.17745066501083784,
+        "total_network_latency": 0.002280700020492077,
+        "server_processing_duration": 0.17516996499034576,
+        "preprocess_duration": 0.0029764990031253546,
+        "inference_duration": 0.17078206699807197,
+        "postprocess_duration": 0.0013509989948943257
+      }
+    },
+    {
+      "request_id": 10,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114129.715915032
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114129.717326732,
+          "response_output_time": 114129.893770601,
+          "preprocess_start_time": 114129.717377132,
+          "inference_start_time": 114129.720506232,
+          "inference_end_time": 114129.892458401,
+          "postprocess_start_time": 114129.892458601
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114129.715916532,
+        "request_end_time": 114129.894693101,
+        "round_trip_time": 0.1787765689950902,
+        "total_network_latency": 0.0023326999944401905,
+        "server_processing_duration": 0.17644386900065,
+        "preprocess_duration": 0.0031291000050259754,
+        "inference_duration": 0.17195216899563093,
+        "postprocess_duration": 0.0013120000076014549
+      }
+    },
+    {
+      "request_id": 11,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114129.994990783
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114129.996427683,
+          "response_output_time": 114130.171124051,
+          "preprocess_start_time": 114129.996476683,
+          "inference_start_time": 114129.999747582,
+          "inference_end_time": 114130.169825752,
+          "postprocess_start_time": 114130.169825852
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114129.994992083,
+        "request_end_time": 114130.171952651,
+        "round_trip_time": 0.17696056800195947,
+        "total_network_latency": 0.002264199996716343,
+        "server_processing_duration": 0.17469636800524313,
+        "preprocess_duration": 0.0032708990038372576,
+        "inference_duration": 0.17007817000558134,
+        "postprocess_duration": 0.0012981990003027022
+      }
+    },
+    {
+      "request_id": 12,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114130.272247434
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114130.273675733,
+          "response_output_time": 114130.4582658,
+          "preprocess_start_time": 114130.273725033,
+          "inference_start_time": 114130.277084233,
+          "inference_end_time": 114130.456853401,
+          "postprocess_start_time": 114130.456853601
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114130.272249034,
+        "request_end_time": 114130.4591201,
+        "round_trip_time": 0.18687106600555126,
+        "total_network_latency": 0.002280999004142359,
+        "server_processing_duration": 0.1845900670014089,
+        "preprocess_duration": 0.0033592000108910725,
+        "inference_duration": 0.17976916799671017,
+        "postprocess_duration": 0.0014121989952400327
+      }
+    },
+    {
+      "request_id": 13,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114130.559414583
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114130.560904483,
+          "response_output_time": 114130.743250056,
+          "preprocess_start_time": 114130.560955283,
+          "inference_start_time": 114130.564210082,
+          "inference_end_time": 114130.741691056,
+          "postprocess_start_time": 114130.741691256
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114130.559415683,
+        "request_end_time": 114130.744103856,
+        "round_trip_time": 0.1846881730016321,
+        "total_network_latency": 0.002342600011616014,
+        "server_processing_duration": 0.18234557299001608,
+        "preprocess_duration": 0.003254798997659236,
+        "inference_duration": 0.17748097400180995,
+        "postprocess_duration": 0.001558799995109439
+      }
+    },
+    {
+      "request_id": 14,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114130.844428241
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114130.845860741,
+          "response_output_time": 114131.020474015,
+          "preprocess_start_time": 114130.845910341,
+          "inference_start_time": 114130.849214441,
+          "inference_end_time": 114131.019163316,
+          "postprocess_start_time": 114131.019163516
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114130.844429341,
+        "request_end_time": 114131.021311215,
+        "round_trip_time": 0.17688187399471644,
+        "total_network_latency": 0.0022686000011162832,
+        "server_processing_duration": 0.17461327399360016,
+        "preprocess_duration": 0.003304099998786114,
+        "inference_duration": 0.1699488750018645,
+        "postprocess_duration": 0.001310498992097564
+      }
+    },
+    {
+      "request_id": 15,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114131.121603601
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 61,
+            "tick": 18,
+            "duration": 1,
+            "program": 1
+          },
+          {
+            "pitch": 46,
+            "tick": 20,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 72,
+            "tick": 20,
+            "duration": 1,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114131.12306,
+          "response_output_time": 114131.325554871,
+          "preprocess_start_time": 114131.1231091,
+          "inference_start_time": 114131.1263662,
+          "inference_end_time": 114131.324078371,
+          "postprocess_start_time": 114131.324078471
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114131.121604601,
+        "request_end_time": 114131.326434171,
+        "round_trip_time": 0.20482957000785973,
+        "total_network_latency": 0.0023346990055870265,
+        "server_processing_duration": 0.2024948710022727,
+        "preprocess_duration": 0.0032571000047028065,
+        "inference_duration": 0.19771217100787908,
+        "postprocess_duration": 0.00147639999340754
+      }
+    },
+    {
+      "request_id": 16,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114131.426676056
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114131.428090956,
+          "response_output_time": 114131.604855078,
+          "preprocess_start_time": 114131.428141856,
+          "inference_start_time": 114131.431524755,
+          "inference_end_time": 114131.603234981,
+          "postprocess_start_time": 114131.603235181
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114131.426677456,
+        "request_end_time": 114131.605686076,
+        "round_trip_time": 0.1790086200053338,
+        "total_network_latency": 0.0022444980131695047,
+        "server_processing_duration": 0.1767641219921643,
+        "preprocess_duration": 0.0033828989980975166,
+        "inference_duration": 0.17171022600086872,
+        "postprocess_duration": 0.0016198969969991595
+      }
+    },
+    {
+      "request_id": 17,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114131.706017771
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114131.707475968,
+          "response_output_time": 114131.882383409,
+          "preprocess_start_time": 114131.707527968,
+          "inference_start_time": 114131.710827661,
+          "inference_end_time": 114131.881015812,
+          "postprocess_start_time": 114131.881016012
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114131.706019271,
+        "request_end_time": 114131.883233608,
+        "round_trip_time": 0.1772143369889818,
+        "total_network_latency": 0.0023068959853844717,
+        "server_processing_duration": 0.17490744100359734,
+        "preprocess_duration": 0.003299692994914949,
+        "inference_duration": 0.17018815100891516,
+        "postprocess_duration": 0.0013673969951923937
+      }
+    },
+    {
+      "request_id": 18,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114131.983564502
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114131.984978399,
+          "response_output_time": 114132.173333513,
+          "preprocess_start_time": 114131.985027799,
+          "inference_start_time": 114131.988674791,
+          "inference_end_time": 114132.171705416,
+          "postprocess_start_time": 114132.171705616
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114131.983565702,
+        "request_end_time": 114132.174162611,
+        "round_trip_time": 0.19059690900030546,
+        "total_network_latency": 0.002241795009467751,
+        "server_processing_duration": 0.1883551139908377,
+        "preprocess_duration": 0.0036469920014496893,
+        "inference_duration": 0.1830306249903515,
+        "postprocess_duration": 0.0016278969997074455
+      }
+    },
+    {
+      "request_id": 19,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114132.274493306
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114132.275960003,
+          "response_output_time": 114132.451443943,
+          "preprocess_start_time": 114132.276012003,
+          "inference_start_time": 114132.279606395,
+          "inference_end_time": 114132.450111446,
+          "postprocess_start_time": 114132.450111846
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114132.274494506,
+        "request_end_time": 114132.452272541,
+        "round_trip_time": 0.17777803500939626,
+        "total_network_latency": 0.0022940950002521276,
+        "server_processing_duration": 0.17548394000914413,
+        "preprocess_duration": 0.003594391993829049,
+        "inference_duration": 0.17050505100633018,
+        "postprocess_duration": 0.001332097002887167
+      }
+    },
+    {
+      "request_id": 20,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114132.552480736
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114132.553906334,
+          "response_output_time": 114132.741019556,
+          "preprocess_start_time": 114132.553952833,
+          "inference_start_time": 114132.557592226,
+          "inference_end_time": 114132.739639659,
+          "postprocess_start_time": 114132.739639859
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114132.552482236,
+        "request_end_time": 114132.741848854,
+        "round_trip_time": 0.18936661799671128,
+        "total_network_latency": 0.002253396000014618,
+        "server_processing_duration": 0.18711322199669667,
+        "preprocess_duration": 0.0036393930058693513,
+        "inference_duration": 0.18204743300157133,
+        "postprocess_duration": 0.0013796969869872555
+      }
+    },
+    {
+      "request_id": 21,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114132.842188552
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114132.843634749,
+          "response_output_time": 114133.019734493,
+          "preprocess_start_time": 114132.843684249,
+          "inference_start_time": 114132.847187042,
+          "inference_end_time": 114133.018435096,
+          "postprocess_start_time": 114133.018435296
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114132.842189852,
+        "request_end_time": 114133.020598791,
+        "round_trip_time": 0.17840893899847288,
+        "total_network_latency": 0.0023091949988156557,
+        "server_processing_duration": 0.17609974399965722,
+        "preprocess_duration": 0.003502792998915538,
+        "inference_duration": 0.17124805400089826,
+        "postprocess_duration": 0.001299196999752894
+      }
+    },
+    {
+      "request_id": 22,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114133.120831889
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 54,
+            "tick": 18,
+            "duration": 8,
+            "program": 1
+          },
+          {
+            "pitch": 63,
+            "tick": 18,
+            "duration": 16,
+            "program": 1
+          },
+          {
+            "pitch": 70,
+            "tick": 18,
+            "duration": 8,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114133.122312286,
+          "response_output_time": 114133.334022259,
+          "preprocess_start_time": 114133.122361786,
+          "inference_start_time": 114133.125875979,
+          "inference_end_time": 114133.332281762,
+          "postprocess_start_time": 114133.332281962
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114133.120833389,
+        "request_end_time": 114133.334865857,
+        "round_trip_time": 0.21403246800764464,
+        "total_network_latency": 0.002322494998225011,
+        "server_processing_duration": 0.21170997300941963,
+        "preprocess_duration": 0.0035141930129611865,
+        "inference_duration": 0.20640578299935441,
+        "postprocess_duration": 0.001740297011565417
+      }
+    },
+    {
+      "request_id": 23,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114133.435164155
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114133.436655552,
+          "response_output_time": 114133.612394799,
+          "preprocess_start_time": 114133.436704752,
+          "inference_start_time": 114133.440260144,
+          "inference_end_time": 114133.610882402,
+          "postprocess_start_time": 114133.610882602
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114133.435165855,
+        "request_end_time": 114133.613225197,
+        "round_trip_time": 0.17805934199714102,
+        "total_network_latency": 0.002320094994502142,
+        "server_processing_duration": 0.17573924700263888,
+        "preprocess_duration": 0.0035553919879021123,
+        "inference_duration": 0.1706222580105532,
+        "postprocess_duration": 0.0015121969918254763
+      }
+    },
+    {
+      "request_id": 24,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114133.713546498
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114133.714939795,
+          "response_output_time": 114133.888315651,
+          "preprocess_start_time": 114133.714988595,
+          "inference_start_time": 114133.718925487,
+          "inference_end_time": 114133.886841654,
+          "postprocess_start_time": 114133.886841854
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114133.713547698,
+        "request_end_time": 114133.889197049,
+        "round_trip_time": 0.1756493509892607,
+        "total_network_latency": 0.0022734949889127165,
+        "server_processing_duration": 0.173375856000348,
+        "preprocess_duration": 0.0039368919970002025,
+        "inference_duration": 0.16791616700356826,
+        "postprocess_duration": 0.0014737970050191507
+      }
+    },
+    {
+      "request_id": 25,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114133.989493749
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114133.990960647,
+          "response_output_time": 114134.194676842,
+          "preprocess_start_time": 114133.991016646,
+          "inference_start_time": 114133.994894039,
+          "inference_end_time": 114134.193139145,
+          "postprocess_start_time": 114134.193139345
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114133.989495149,
+        "request_end_time": 114134.19550784,
+        "round_trip_time": 0.20601269100734498,
+        "total_network_latency": 0.0022964960080571473,
+        "server_processing_duration": 0.20371619499928784,
+        "preprocess_duration": 0.00387739299912937,
+        "inference_duration": 0.19824510600301437,
+        "postprocess_duration": 0.0015374969952972606
+      }
+    },
+    {
+      "request_id": 26,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114134.29585384
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 45,
+            "tick": 18,
+            "duration": 1,
+            "program": 1
+          },
+          {
+            "pitch": 80,
+            "tick": 18,
+            "duration": 2,
+            "program": 1
+          },
+          {
+            "pitch": 76,
+            "tick": 20,
+            "duration": 2,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114134.297308538,
+          "response_output_time": 114134.52770088,
+          "preprocess_start_time": 114134.297357937,
+          "inference_start_time": 114134.301442629,
+          "inference_end_time": 114134.525960783,
+          "postprocess_start_time": 114134.525960883
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114134.29585514,
+        "request_end_time": 114134.528540478,
+        "round_trip_time": 0.2326853380072862,
+        "total_network_latency": 0.002292996010510251,
+        "server_processing_duration": 0.23039234199677594,
+        "preprocess_duration": 0.00408469200192485,
+        "inference_duration": 0.22451815399108455,
+        "postprocess_duration": 0.001739997009281069
+      }
+    },
+    {
+      "request_id": 27,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114134.628796981
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114134.630343178,
+          "response_output_time": 114134.804832637,
+          "preprocess_start_time": 114134.630392278,
+          "inference_start_time": 114134.63465647,
+          "inference_end_time": 114134.803455039,
+          "postprocess_start_time": 114134.803455239
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114134.628798381,
+        "request_end_time": 114134.805681635,
+        "round_trip_time": 0.1768832539964933,
+        "total_network_latency": 0.0023937949881656095,
+        "server_processing_duration": 0.17448945900832769,
+        "preprocess_duration": 0.0042641920008463785,
+        "inference_duration": 0.16879856899322476,
+        "postprocess_duration": 0.001377398002659902
+      }
+    },
+    {
+      "request_id": 28,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114134.905921039
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114134.907332636,
+          "response_output_time": 114135.082837493,
+          "preprocess_start_time": 114134.907382836,
+          "inference_start_time": 114134.911012329,
+          "inference_end_time": 114135.081190896,
+          "postprocess_start_time": 114135.081190996
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114134.905922539,
+        "request_end_time": 114135.083673291,
+        "round_trip_time": 0.1777507520018844,
+        "total_network_latency": 0.002245894997031428,
+        "server_processing_duration": 0.17550485700485297,
+        "preprocess_duration": 0.003629493003245443,
+        "inference_duration": 0.17017856700113043,
+        "postprocess_duration": 0.00164649699581787
+      }
+    },
+    {
+      "request_id": 29,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114135.183914695
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 41,
+            "tick": 18,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 53,
+            "tick": 18,
+            "duration": 8,
+            "program": 1
+          },
+          {
+            "pitch": 56,
+            "tick": 18,
+            "duration": 2,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114135.185333292,
+          "response_output_time": 114135.414392444,
+          "preprocess_start_time": 114135.185384592,
+          "inference_start_time": 114135.189289384,
+          "inference_end_time": 114135.412453847,
+          "postprocess_start_time": 114135.412454147
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114135.183915995,
+        "request_end_time": 114135.415238042,
+        "round_trip_time": 0.23132204699504655,
+        "total_network_latency": 0.002262894995510578,
+        "server_processing_duration": 0.22905915199953597,
+        "preprocess_duration": 0.0039047919999575242,
+        "inference_duration": 0.2231644630082883,
+        "postprocess_duration": 0.0019382970058359206
+      }
+    },
+    {
+      "request_id": 30,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114135.515530346
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114135.516995443,
+          "response_output_time": 114135.692530104,
+          "preprocess_start_time": 114135.517044543,
+          "inference_start_time": 114135.521032435,
+          "inference_end_time": 114135.691065707,
+          "postprocess_start_time": 114135.691065907
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114135.515531746,
+        "request_end_time": 114135.693419602,
+        "round_trip_time": 0.17788785599987023,
+        "total_network_latency": 0.0023531949991593137,
+        "server_processing_duration": 0.1755346610007109,
+        "preprocess_duration": 0.0039878920069895685,
+        "inference_duration": 0.17003327199199703,
+        "postprocess_duration": 0.0014641970046795905
+      }
+    },
+    {
+      "request_id": 31,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114135.793657809
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 39,
+            "tick": 19,
+            "duration": 12,
+            "program": 1
+          },
+          {
+            "pitch": 51,
+            "tick": 19,
+            "duration": 8,
+            "program": 1
+          },
+          {
+            "pitch": 55,
+            "tick": 19,
+            "duration": 1,
+            "program": 1
+          },
+          {
+            "pitch": 58,
+            "tick": 20,
+            "duration": 2,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114135.795176306,
+          "response_output_time": 114136.008181296,
+          "preprocess_start_time": 114135.795225706,
+          "inference_start_time": 114135.799295498,
+          "inference_end_time": 114136.006422099,
+          "postprocess_start_time": 114136.006422299
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114135.793659509,
+        "request_end_time": 114136.009037194,
+        "round_trip_time": 0.21537768500274979,
+        "total_network_latency": 0.002372695002122782,
+        "server_processing_duration": 0.213004990000627,
+        "preprocess_duration": 0.004069792004884221,
+        "inference_duration": 0.20712660100252833,
+        "postprocess_duration": 0.0017589969938853756
+      }
+    },
+    {
+      "request_id": 32,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114136.109388101
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114136.110813498,
+          "response_output_time": 114136.286571998,
+          "preprocess_start_time": 114136.110862898,
+          "inference_start_time": 114136.11481859,
+          "inference_end_time": 114136.285114298,
+          "postprocess_start_time": 114136.285114498
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114136.109389901,
+        "request_end_time": 114136.287404098,
+        "round_trip_time": 0.17801419699389953,
+        "total_network_latency": 0.002255696992506273,
+        "server_processing_duration": 0.17575850000139326,
+        "preprocess_duration": 0.003955691994633526,
+        "inference_duration": 0.1702957080124179,
+        "postprocess_duration": 0.0014575000095646828
+      }
+    },
+    {
+      "request_id": 33,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114136.387742271
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114136.38923377,
+          "response_output_time": 114136.562758724,
+          "preprocess_start_time": 114136.38928377,
+          "inference_start_time": 114136.393297269,
+          "inference_end_time": 114136.561347824,
+          "postprocess_start_time": 114136.561348024
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114136.387743771,
+        "request_end_time": 114136.563585424,
+        "round_trip_time": 0.17584165299194865,
+        "total_network_latency": 0.0023166989849414676,
+        "server_processing_duration": 0.17352495400700718,
+        "preprocess_duration": 0.00401349899766501,
+        "inference_duration": 0.16805055500299204,
+        "postprocess_duration": 0.0014107000024523586
+      }
+    },
+    {
+      "request_id": 34,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114136.663795
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114136.665216699,
+          "response_output_time": 114136.840486157,
+          "preprocess_start_time": 114136.665265999,
+          "inference_start_time": 114136.669517998,
+          "inference_end_time": 114136.838862257,
+          "postprocess_start_time": 114136.838862357
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114136.6637965,
+        "request_end_time": 114136.841320257,
+        "round_trip_time": 0.17752375699637923,
+        "total_network_latency": 0.002254298990010284,
+        "server_processing_duration": 0.17526945800636895,
+        "preprocess_duration": 0.004251998994732276,
+        "inference_duration": 0.1693442590039922,
+        "postprocess_duration": 0.0016237999952863902
+      }
+    },
+    {
+      "request_id": 35,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114136.941622333
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114136.943040132,
+          "response_output_time": 114137.11838549,
+          "preprocess_start_time": 114136.943090132,
+          "inference_start_time": 114136.947075331,
+          "inference_end_time": 114137.116935091,
+          "postprocess_start_time": 114137.116935291
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114136.941623733,
+        "request_end_time": 114137.11924679,
+        "round_trip_time": 0.17762305699579883,
+        "total_network_latency": 0.002277698993566446,
+        "server_processing_duration": 0.1753453580022324,
+        "preprocess_duration": 0.0039851990004535764,
+        "inference_duration": 0.16985976000432856,
+        "postprocess_duration": 0.0014501990081043914
+      }
+    },
+    {
+      "request_id": 36,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114137.219581266
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114137.221013766,
+          "response_output_time": 114137.396624523,
+          "preprocess_start_time": 114137.221065466,
+          "inference_start_time": 114137.225434465,
+          "inference_end_time": 114137.395206424,
+          "postprocess_start_time": 114137.395206624
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114137.219583166,
+        "request_end_time": 114137.397478623,
+        "round_trip_time": 0.17789545698906295,
+        "total_network_latency": 0.0022846999927423894,
+        "server_processing_duration": 0.17561075699632056,
+        "preprocess_duration": 0.004368998997961171,
+        "inference_duration": 0.169771959001082,
+        "postprocess_duration": 0.0014178989949868992
+      }
+    },
+    {
+      "request_id": 37,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114137.497728999
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 38,
+            "tick": 18,
+            "duration": 2,
+            "program": 1
+          },
+          {
+            "pitch": 38,
+            "tick": 20,
+            "duration": 2,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114137.499164799,
+          "response_output_time": 114137.719421251,
+          "preprocess_start_time": 114137.499215399,
+          "inference_start_time": 114137.503471798,
+          "inference_end_time": 114137.717826952,
+          "postprocess_start_time": 114137.717827152
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114137.497730399,
+        "request_end_time": 114137.720312351,
+        "round_trip_time": 0.22258195199538022,
+        "total_network_latency": 0.002325499997823499,
+        "server_processing_duration": 0.22025645199755672,
+        "preprocess_duration": 0.004256398999132216,
+        "inference_duration": 0.2143551539920736,
+        "postprocess_duration": 0.00159409899788443
+      }
+    },
+    {
+      "request_id": 38,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114137.82064683
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114137.82204623,
+          "response_output_time": 114137.998102293,
+          "preprocess_start_time": 114137.82209473,
+          "inference_start_time": 114137.826477429,
+          "inference_end_time": 114137.996769093,
+          "postprocess_start_time": 114137.996769193
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114137.82064823,
+        "request_end_time": 114137.998953993,
+        "round_trip_time": 0.1783057629945688,
+        "total_network_latency": 0.0022496999881695956,
+        "server_processing_duration": 0.1760560630063992,
+        "preprocess_duration": 0.0043826990004163235,
+        "inference_duration": 0.1702916640060721,
+        "postprocess_duration": 0.0013330999936442822
+      }
+    },
+    {
+      "request_id": 39,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114138.099287072
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114138.100714271,
+          "response_output_time": 114138.277416234,
+          "preprocess_start_time": 114138.100763371,
+          "inference_start_time": 114138.10509877,
+          "inference_end_time": 114138.276036034,
+          "postprocess_start_time": 114138.276036334
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114138.099288572,
+        "request_end_time": 114138.278271334,
+        "round_trip_time": 0.17898276199412066,
+        "total_network_latency": 0.002280798988067545,
+        "server_processing_duration": 0.17670196300605312,
+        "preprocess_duration": 0.004335399004048668,
+        "inference_duration": 0.17093726400344167,
+        "postprocess_duration": 0.0013799000007566065
+      }
+    },
+    {
+      "request_id": 40,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114138.378542013
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 41,
+            "tick": 17,
+            "duration": 1,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114138.379983113,
+          "response_output_time": 114138.572332573,
+          "preprocess_start_time": 114138.380068413,
+          "inference_start_time": 114138.384350312,
+          "inference_end_time": 114138.570885174,
+          "postprocess_start_time": 114138.570885274
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114138.378543513,
+        "request_end_time": 114138.573182473,
+        "round_trip_time": 0.19463896000524983,
+        "total_network_latency": 0.002289500000188127,
+        "server_processing_duration": 0.1923494600050617,
+        "preprocess_duration": 0.004281899004126899,
+        "inference_duration": 0.18653486200491898,
+        "postprocess_duration": 0.0014472990005742759
+      }
+    },
+    {
+      "request_id": 41,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114138.673513755
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 50,
+            "tick": 18,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 54,
+            "tick": 18,
+            "duration": 12,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114138.674927055,
+          "response_output_time": 114138.86973232,
+          "preprocess_start_time": 114138.674976955,
+          "inference_start_time": 114138.679527254,
+          "inference_end_time": 114138.86830182,
+          "postprocess_start_time": 114138.86830202
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114138.673515155,
+        "request_end_time": 114138.87060442,
+        "round_trip_time": 0.19708926499879453,
+        "total_network_latency": 0.0022840000019641593,
+        "server_processing_duration": 0.19480526499683037,
+        "preprocess_duration": 0.0045502990105887875,
+        "inference_duration": 0.1887745659914799,
+        "postprocess_duration": 0.0014303000061772764
+      }
+    },
+    {
+      "request_id": 42,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114138.970906102
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 36,
+            "tick": 19,
+            "duration": 2,
+            "program": 1
+          },
+          {
+            "pitch": 74,
+            "tick": 19,
+            "duration": 24,
+            "program": 1
+          },
+          {
+            "pitch": 72,
+            "tick": 19,
+            "duration": 4,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114138.972357901,
+          "response_output_time": 114139.174810165,
+          "preprocess_start_time": 114138.972409901,
+          "inference_start_time": 114138.976867601,
+          "inference_end_time": 114139.173310765,
+          "postprocess_start_time": 114139.173310965
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114138.970907502,
+        "request_end_time": 114139.175654165,
+        "round_trip_time": 0.20474666300287936,
+        "total_network_latency": 0.0022943990043131635,
+        "server_processing_duration": 0.2024522639985662,
+        "preprocess_duration": 0.004457699993508868,
+        "inference_duration": 0.19644316400808748,
+        "postprocess_duration": 0.0014992000069469213
+      }
+    },
+    {
+      "request_id": 43,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114139.275993547
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114139.277423747,
+          "response_output_time": 114139.451762915,
+          "preprocess_start_time": 114139.277475947,
+          "inference_start_time": 114139.281923546,
+          "inference_end_time": 114139.450324616,
+          "postprocess_start_time": 114139.450324816
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114139.275994847,
+        "request_end_time": 114139.452589515,
+        "round_trip_time": 0.17659466799523216,
+        "total_network_latency": 0.0022554999886779115,
+        "server_processing_duration": 0.17433916800655425,
+        "preprocess_duration": 0.0044475989998318255,
+        "inference_duration": 0.16840106999734417,
+        "postprocess_duration": 0.001438099003280513
+      }
+    },
+    {
+      "request_id": 44,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114139.552881842
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114139.554346537,
+          "response_output_time": 114139.728433867,
+          "preprocess_start_time": 114139.554397437,
+          "inference_start_time": 114139.55877822,
+          "inference_end_time": 114139.727012672,
+          "postprocess_start_time": 114139.727012872
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114139.552883542,
+        "request_end_time": 114139.729281364,
+        "round_trip_time": 0.1763978219969431,
+        "total_network_latency": 0.002310491996468045,
+        "server_processing_duration": 0.17408733000047505,
+        "preprocess_duration": 0.004380783007945865,
+        "inference_duration": 0.16823445199406706,
+        "postprocess_duration": 0.0014209950022632256
+      }
+    },
+    {
+      "request_id": 45,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114139.829613578
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114139.831046372,
+          "response_output_time": 114140.015400363,
+          "preprocess_start_time": 114139.831095372,
+          "inference_start_time": 114139.835486655,
+          "inference_end_time": 114140.013772969,
+          "postprocess_start_time": 114140.013773069
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114139.829614878,
+        "request_end_time": 114140.016266959,
+        "round_trip_time": 0.18665208099992014,
+        "total_network_latency": 0.002298089995747432,
+        "server_processing_duration": 0.1843539910041727,
+        "preprocess_duration": 0.004391283000586554,
+        "inference_duration": 0.1782863139960682,
+        "postprocess_duration": 0.0016272939974442124
+      }
+    },
+    {
+      "request_id": 46,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114140.116590873
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114140.118028968,
+          "response_output_time": 114140.29420649,
+          "preprocess_start_time": 114140.118078668,
+          "inference_start_time": 114140.122453951,
+          "inference_end_time": 114140.292873895,
+          "postprocess_start_time": 114140.292874095
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114140.116592173,
+        "request_end_time": 114140.295049287,
+        "round_trip_time": 0.17845711400150321,
+        "total_network_latency": 0.0022795920085627586,
+        "server_processing_duration": 0.17617752199294046,
+        "preprocess_duration": 0.004375282995169982,
+        "inference_duration": 0.17041994399914984,
+        "postprocess_duration": 0.0013323949970072135
+      }
+    },
+    {
+      "request_id": 47,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114140.395382701
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114140.396769295,
+          "response_output_time": 114140.570356028,
+          "preprocess_start_time": 114140.396818795,
+          "inference_start_time": 114140.401364278,
+          "inference_end_time": 114140.568914934,
+          "postprocess_start_time": 114140.568915034
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114140.395384201,
+        "request_end_time": 114140.571182325,
+        "round_trip_time": 0.1757981240079971,
+        "total_network_latency": 0.002211391009041108,
+        "server_processing_duration": 0.173586732998956,
+        "preprocess_duration": 0.004545483010588214,
+        "inference_duration": 0.16755065599863883,
+        "postprocess_duration": 0.0014409939903998747
+      }
+    },
+    {
+      "request_id": 48,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114140.671474442
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114140.672880837,
+          "response_output_time": 114140.849613662,
+          "preprocess_start_time": 114140.672931737,
+          "inference_start_time": 114140.677781718,
+          "inference_end_time": 114140.848213567,
+          "postprocess_start_time": 114140.848213767
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114140.671475842,
+        "request_end_time": 114140.850464459,
+        "round_trip_time": 0.17898861700086854,
+        "total_network_latency": 0.002255792001960799,
+        "server_processing_duration": 0.17673282499890774,
+        "preprocess_duration": 0.004849980992730707,
+        "inference_duration": 0.17043184900830965,
+        "postprocess_duration": 0.0013998949871165678
+      }
+    },
+    {
+      "request_id": 49,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114140.950772676
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114140.95234287,
+          "response_output_time": 114141.128436398,
+          "preprocess_start_time": 114140.95239517,
+          "inference_start_time": 114140.957305851,
+          "inference_end_time": 114141.127054803,
+          "postprocess_start_time": 114141.127054903
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114140.950774276,
+        "request_end_time": 114141.129276894,
+        "round_trip_time": 0.17850261800049338,
+        "total_network_latency": 0.002409090011497028,
+        "server_processing_duration": 0.17609352798899636,
+        "preprocess_duration": 0.004910681003821082,
+        "inference_duration": 0.1697489520011004,
+        "postprocess_duration": 0.001381494992529042
+      }
+    },
+    {
+      "request_id": 50,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114141.229604211
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114141.231071806,
+          "response_output_time": 114141.408296029,
+          "preprocess_start_time": 114141.231123906,
+          "inference_start_time": 114141.235887787,
+          "inference_end_time": 114141.406695835,
+          "postprocess_start_time": 114141.406696035
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114141.229605911,
+        "request_end_time": 114141.409156426,
+        "round_trip_time": 0.1795505150075769,
+        "total_network_latency": 0.0023262920149136335,
+        "server_processing_duration": 0.17722422299266327,
+        "preprocess_duration": 0.004763880991959013,
+        "inference_duration": 0.1708080480020726,
+        "postprocess_duration": 0.0015999939932953566
+      }
+    },
+    {
+      "request_id": 51,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114141.509449243
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114141.510923738,
+          "response_output_time": 114141.686404572,
+          "preprocess_start_time": 114141.510971037,
+          "inference_start_time": 114141.515722619,
+          "inference_end_time": 114141.685046077,
+          "postprocess_start_time": 114141.685046277
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114141.509450643,
+        "request_end_time": 114141.687464868,
+        "round_trip_time": 0.17801422499178443,
+        "total_network_latency": 0.0025333909870823845,
+        "server_processing_duration": 0.17548083400470205,
+        "preprocess_duration": 0.004751582004246302,
+        "inference_duration": 0.16932345798704773,
+        "postprocess_duration": 0.0013582950050476938
+      }
+    },
+    {
+      "request_id": 52,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114141.787819588
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114141.789223783,
+          "response_output_time": 114141.966170512,
+          "preprocess_start_time": 114141.789272182,
+          "inference_start_time": 114141.794142364,
+          "inference_end_time": 114141.964746818,
+          "postprocess_start_time": 114141.964746918
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114141.787820988,
+        "request_end_time": 114141.967023109,
+        "round_trip_time": 0.17920212099852506,
+        "total_network_latency": 0.0022553919989150017,
+        "server_processing_duration": 0.17694672899961006,
+        "preprocess_duration": 0.0048701820051064715,
+        "inference_duration": 0.17060445400420576,
+        "postprocess_duration": 0.0014235939888749272
+      }
+    },
+    {
+      "request_id": 53,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114142.067352529
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114142.068791324,
+          "response_output_time": 114142.244695458,
+          "preprocess_start_time": 114142.068841624,
+          "inference_start_time": 114142.073810005,
+          "inference_end_time": 114142.243308063,
+          "postprocess_start_time": 114142.243308263
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114142.067353929,
+        "request_end_time": 114142.245546454,
+        "round_trip_time": 0.17819252499612048,
+        "total_network_latency": 0.0022883909987285733,
+        "server_processing_duration": 0.1759041339973919,
+        "preprocess_duration": 0.004968380992067978,
+        "inference_duration": 0.1694980580068659,
+        "postprocess_duration": 0.0013871949922759086
+      }
+    },
+    {
+      "request_id": 54,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114142.345843974
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114142.347274469,
+          "response_output_time": 114142.522881804,
+          "preprocess_start_time": 114142.347324469,
+          "inference_start_time": 114142.352973047,
+          "inference_end_time": 114142.521487309,
+          "postprocess_start_time": 114142.521487509
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114142.345845774,
+        "request_end_time": 114142.523716301,
+        "round_trip_time": 0.17787052699713968,
+        "total_network_latency": 0.002263191985548474,
+        "server_processing_duration": 0.1756073350115912,
+        "preprocess_duration": 0.005648578007821925,
+        "inference_duration": 0.16851426199718844,
+        "postprocess_duration": 0.0013942950026830658
+      }
+    },
+    {
+      "request_id": 55,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114142.624009224
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 43,
+            "tick": 18,
+            "duration": 4,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114142.625423418,
+          "response_output_time": 114142.811061621,
+          "preprocess_start_time": 114142.625473718,
+          "inference_start_time": 114142.630733798,
+          "inference_end_time": 114142.809474527,
+          "postprocess_start_time": 114142.809474927
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114142.624010724,
+        "request_end_time": 114142.811925817,
+        "round_trip_time": 0.18791509300353937,
+        "total_network_latency": 0.00227688999439124,
+        "server_processing_duration": 0.18563820300914813,
+        "preprocess_duration": 0.005260079997242428,
+        "inference_duration": 0.17874072901031468,
+        "postprocess_duration": 0.0015866940084379166
+      }
+    },
+    {
+      "request_id": 56,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114142.912219741
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114142.913665635,
+          "response_output_time": 114143.087817106,
+          "preprocess_start_time": 114142.913717435,
+          "inference_start_time": 114142.918734116,
+          "inference_end_time": 114143.086341607,
+          "postprocess_start_time": 114143.086341807
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114142.912221041,
+        "request_end_time": 114143.088653406,
+        "round_trip_time": 0.17643236499861814,
+        "total_network_latency": 0.002280893997522071,
+        "server_processing_duration": 0.17415147100109607,
+        "preprocess_duration": 0.005016680996050127,
+        "inference_duration": 0.16760749100649264,
+        "postprocess_duration": 0.001475299010053277
+      }
+    },
+    {
+      "request_id": 57,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114143.188981764
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 35,
+            "tick": 17,
+            "duration": 8,
+            "program": 1
+          },
+          {
+            "pitch": 47,
+            "tick": 17,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 51,
+            "tick": 17,
+            "duration": 4,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114143.190436363,
+          "response_output_time": 114143.390719081,
+          "preprocess_start_time": 114143.190484563,
+          "inference_start_time": 114143.195576161,
+          "inference_end_time": 114143.388995981,
+          "postprocess_start_time": 114143.388996181
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114143.188983064,
+        "request_end_time": 114143.39156618,
+        "round_trip_time": 0.2025831159990048,
+        "total_network_latency": 0.0023003980022622272,
+        "server_processing_duration": 0.20028271799674258,
+        "preprocess_duration": 0.005091597995487973,
+        "inference_duration": 0.1934198200033279,
+        "postprocess_duration": 0.0017228999931830913
+      }
+    },
+    {
+      "request_id": 58,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114143.491897839
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114143.493324738,
+          "response_output_time": 114143.66786177,
+          "preprocess_start_time": 114143.493376338,
+          "inference_start_time": 114143.498605136,
+          "inference_end_time": 114143.66624537,
+          "postprocess_start_time": 114143.66624547
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114143.491899239,
+        "request_end_time": 114143.669289069,
+        "round_trip_time": 0.1773898300016299,
+        "total_network_latency": 0.002852798003004864,
+        "server_processing_duration": 0.17453703199862503,
+        "preprocess_duration": 0.005228798007010482,
+        "inference_duration": 0.1676402339944616,
+        "postprocess_duration": 0.0016162999963853508
+      }
+    },
+    {
+      "request_id": 59,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114143.769612231
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114143.77107253,
+          "response_output_time": 114143.95502936,
+          "preprocess_start_time": 114143.77112353,
+          "inference_start_time": 114143.776260428,
+          "inference_end_time": 114143.95349416,
+          "postprocess_start_time": 114143.95349426
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114143.769613831,
+        "request_end_time": 114143.955878459,
+        "round_trip_time": 0.18626462800602894,
+        "total_network_latency": 0.0023077980004018173,
+        "server_processing_duration": 0.18395683000562713,
+        "preprocess_duration": 0.0051368980057304725,
+        "inference_duration": 0.1772337319998769,
+        "postprocess_duration": 0.001535100003820844
+      }
+    },
+    {
+      "request_id": 60,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114144.056172321
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114144.05757522,
+          "response_output_time": 114144.231169654,
+          "preprocess_start_time": 114144.05762562,
+          "inference_start_time": 114144.062748318,
+          "inference_end_time": 114144.229650054,
+          "postprocess_start_time": 114144.229650154
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114144.056173621,
+        "request_end_time": 114144.231997453,
+        "round_trip_time": 0.17582383200351615,
+        "total_network_latency": 0.0022293980000540614,
+        "server_processing_duration": 0.17359443400346208,
+        "preprocess_duration": 0.005122697999468073,
+        "inference_duration": 0.16690173599636182,
+        "postprocess_duration": 0.0015195000014500692
+      }
+    },
+    {
+      "request_id": 61,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114144.332293615
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114144.333697814,
+          "response_output_time": 114144.507218148,
+          "preprocess_start_time": 114144.333748414,
+          "inference_start_time": 114144.339060612,
+          "inference_end_time": 114144.505794948,
+          "postprocess_start_time": 114144.505795148
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114144.332295315,
+        "request_end_time": 114144.508051947,
+        "round_trip_time": 0.17575663200113922,
+        "total_network_latency": 0.0022362979943864048,
+        "server_processing_duration": 0.17352033400675282,
+        "preprocess_duration": 0.005312197987223044,
+        "inference_duration": 0.16673433600226417,
+        "postprocess_duration": 0.0014230000087991357
+      }
+    },
+    {
+      "request_id": 62,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114144.608383511
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 41,
+            "tick": 19,
+            "duration": 12,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114144.60980561,
+          "response_output_time": 114144.793871745,
+          "preprocess_start_time": 114144.60985491,
+          "inference_start_time": 114144.615060509,
+          "inference_end_time": 114144.792307046,
+          "postprocess_start_time": 114144.792307246
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114144.608385011,
+        "request_end_time": 114144.794870845,
+        "round_trip_time": 0.18648583399772178,
+        "total_network_latency": 0.0024196989979827777,
+        "server_processing_duration": 0.184066134999739,
+        "preprocess_duration": 0.005205598994507454,
+        "inference_duration": 0.17724653700133786,
+        "postprocess_duration": 0.0015644990053260699
+      }
+    },
+    {
+      "request_id": 63,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114144.89520991
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114144.896666109,
+          "response_output_time": 114145.069851548,
+          "preprocess_start_time": 114144.896715609,
+          "inference_start_time": 114144.901977007,
+          "inference_end_time": 114145.068491948,
+          "postprocess_start_time": 114145.068492148
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114144.89521141,
+        "request_end_time": 114145.070712747,
+        "round_trip_time": 0.17550133699842263,
+        "total_network_latency": 0.0023158979893196374,
+        "server_processing_duration": 0.173185439009103,
+        "preprocess_duration": 0.005261398007860407,
+        "inference_duration": 0.1665149409964215,
+        "postprocess_duration": 0.0013594000047305599
+      }
+    },
+    {
+      "request_id": 64,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114145.170998412
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114145.172417211,
+          "response_output_time": 114145.34631765,
+          "preprocess_start_time": 114145.172465511,
+          "inference_start_time": 114145.17777041,
+          "inference_end_time": 114145.34495775,
+          "postprocess_start_time": 114145.34495795
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114145.170999912,
+        "request_end_time": 114145.34715935,
+        "round_trip_time": 0.17615943799319211,
+        "total_network_latency": 0.0022589989966945723,
+        "server_processing_duration": 0.17390043899649754,
+        "preprocess_duration": 0.005304898993927054,
+        "inference_duration": 0.16718734000460245,
+        "postprocess_duration": 0.0013596999924629927
+      }
+    },
+    {
+      "request_id": 65,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114145.447451214
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114145.448947414,
+          "response_output_time": 114145.623635654,
+          "preprocess_start_time": 114145.448997014,
+          "inference_start_time": 114145.454462812,
+          "inference_end_time": 114145.622221255,
+          "postprocess_start_time": 114145.622221355
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114145.447452914,
+        "request_end_time": 114145.624483654,
+        "round_trip_time": 0.17703074000019114,
+        "total_network_latency": 0.0023424999963026494,
+        "server_processing_duration": 0.1746882400038885,
+        "preprocess_duration": 0.005465798007207923,
+        "inference_duration": 0.1677584429999115,
+        "postprocess_duration": 0.0014142989966785535
+      }
+    },
+    {
+      "request_id": 66,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114145.724775822
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114145.726177221,
+          "response_output_time": 114145.904936663,
+          "preprocess_start_time": 114145.726227521,
+          "inference_start_time": 114145.73147932,
+          "inference_end_time": 114145.903556164,
+          "postprocess_start_time": 114145.903556364
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114145.724777322,
+        "request_end_time": 114145.905770363,
+        "round_trip_time": 0.1809930409945082,
+        "total_network_latency": 0.0022335989924613386,
+        "server_processing_duration": 0.17875944200204685,
+        "preprocess_duration": 0.005251799011602998,
+        "inference_duration": 0.1720768439990934,
+        "postprocess_duration": 0.001380298999720253
+      }
+    },
+    {
+      "request_id": 67,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114146.006063731
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114146.00752993,
+          "response_output_time": 114146.190489971,
+          "preprocess_start_time": 114146.00758223,
+          "inference_start_time": 114146.012850528,
+          "inference_end_time": 114146.189060471,
+          "postprocess_start_time": 114146.189060671
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114146.006065431,
+        "request_end_time": 114146.191314671,
+        "round_trip_time": 0.18524924000666942,
+        "total_network_latency": 0.0022891989938216284,
+        "server_processing_duration": 0.1829600410128478,
+        "preprocess_duration": 0.005268298002192751,
+        "inference_duration": 0.17620994300523307,
+        "postprocess_duration": 0.0014293000131146982
+      }
+    },
+    {
+      "request_id": 68,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114146.291603438
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114146.293067538,
+          "response_output_time": 114146.473430079,
+          "preprocess_start_time": 114146.293117538,
+          "inference_start_time": 114146.298448436,
+          "inference_end_time": 114146.47201858,
+          "postprocess_start_time": 114146.47201878
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114146.291605038,
+        "request_end_time": 114146.474343179,
+        "round_trip_time": 0.18273814099666197,
+        "total_network_latency": 0.002375600000959821,
+        "server_processing_duration": 0.18036254099570215,
+        "preprocess_duration": 0.005330897998646833,
+        "inference_duration": 0.17357014399021864,
+        "postprocess_duration": 0.0014112990029389039
+      }
+    },
+    {
+      "request_id": 69,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114146.574618148
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114146.576090547,
+          "response_output_time": 114146.755540595,
+          "preprocess_start_time": 114146.576140847,
+          "inference_start_time": 114146.580635146,
+          "inference_end_time": 114146.754028195,
+          "postprocess_start_time": 114146.754028395
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114146.574619848,
+        "request_end_time": 114146.756433294,
+        "round_trip_time": 0.18181344598997384,
+        "total_network_latency": 0.002363397987210192,
+        "server_processing_duration": 0.17945004800276365,
+        "preprocess_duration": 0.0044942990061827,
+        "inference_duration": 0.17339304900087882,
+        "postprocess_duration": 0.0015122000040719286
+      }
+    },
+    {
+      "request_id": 70,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114146.856727565
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114146.858166564,
+          "response_output_time": 114147.035848812,
+          "preprocess_start_time": 114146.858217864,
+          "inference_start_time": 114146.864509163,
+          "inference_end_time": 114147.034374313,
+          "postprocess_start_time": 114147.034374513
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114146.856729565,
+        "request_end_time": 114147.036729212,
+        "round_trip_time": 0.1799996470072074,
+        "total_network_latency": 0.0023173990048235282,
+        "server_processing_duration": 0.17768224800238386,
+        "preprocess_duration": 0.0062912989960750565,
+        "inference_duration": 0.16986515000462532,
+        "postprocess_duration": 0.0014742990024387836
+      }
+    },
+    {
+      "request_id": 71,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114147.136955083
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 66,
+            "tick": 19,
+            "duration": 3,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114147.138380282,
+          "response_output_time": 114147.347422921,
+          "preprocess_start_time": 114147.138429182,
+          "inference_start_time": 114147.14545378,
+          "inference_end_time": 114147.345912721,
+          "postprocess_start_time": 114147.345912821
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114147.136956783,
+        "request_end_time": 114147.34829752,
+        "round_trip_time": 0.21134073700523004,
+        "total_network_latency": 0.002298098013852723,
+        "server_processing_duration": 0.20904263899137732,
+        "preprocess_duration": 0.0070245980023173615,
+        "inference_duration": 0.20045894099166617,
+        "postprocess_duration": 0.0015101000026334077
+      }
+    },
+    {
+      "request_id": 72,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114147.448627191
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114147.450061991,
+          "response_output_time": 114147.624460296,
+          "preprocess_start_time": 114147.450114091,
+          "inference_start_time": 114147.455593189,
+          "inference_end_time": 114147.623002599,
+          "postprocess_start_time": 114147.623002899
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114147.448628691,
+        "request_end_time": 114147.625291594,
+        "round_trip_time": 0.1766629030025797,
+        "total_network_latency": 0.0022645979915978387,
+        "server_processing_duration": 0.17439830501098186,
+        "preprocess_duration": 0.005479098006617278,
+        "inference_duration": 0.16740940998715814,
+        "postprocess_duration": 0.0014573970111086965
+      }
+    },
+    {
+      "request_id": 73,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114147.725585378
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114147.727081775,
+          "response_output_time": 114147.9015999,
+          "preprocess_start_time": 114147.727130575,
+          "inference_start_time": 114147.733219362,
+          "inference_end_time": 114147.900242103,
+          "postprocess_start_time": 114147.900242303
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114147.725587178,
+        "request_end_time": 114147.902433198,
+        "round_trip_time": 0.17684601999644656,
+        "total_network_latency": 0.0023278949956875294,
+        "server_processing_duration": 0.17451812500075903,
+        "preprocess_duration": 0.0060887869913131,
+        "inference_duration": 0.1670227410068037,
+        "postprocess_duration": 0.0013575969933299348
+      }
+    },
+    {
+      "request_id": 74,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114148.002726882
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 42,
+            "tick": 17,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 49,
+            "tick": 17,
+            "duration": 2,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114148.004134379,
+          "response_output_time": 114148.214173828,
+          "preprocess_start_time": 114148.004183979,
+          "inference_start_time": 114148.009595968,
+          "inference_end_time": 114148.212593831,
+          "postprocess_start_time": 114148.212594031
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114148.002728782,
+        "request_end_time": 114148.215099626,
+        "round_trip_time": 0.21237084400490858,
+        "total_network_latency": 0.002331395007786341,
+        "server_processing_duration": 0.21003944899712224,
+        "preprocess_duration": 0.005411988997366279,
+        "inference_duration": 0.2029978630016558,
+        "postprocess_duration": 0.0015797969972481951
+      }
+    },
+    {
+      "request_id": 75,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114148.31543011
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114148.316882007,
+          "response_output_time": 114148.490270434,
+          "preprocess_start_time": 114148.316932507,
+          "inference_start_time": 114148.322675895,
+          "inference_end_time": 114148.488880037,
+          "postprocess_start_time": 114148.488880237
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114148.31543191,
+        "request_end_time": 114148.491096332,
+        "round_trip_time": 0.1756644220004091,
+        "total_network_latency": 0.0022759949933970347,
+        "server_processing_duration": 0.17338842700701207,
+        "preprocess_duration": 0.005743387999245897,
+        "inference_duration": 0.16620414199132938,
+        "postprocess_duration": 0.001390197008731775
+      }
+    },
+    {
+      "request_id": 76,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114148.591301219
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114148.592801815,
+          "response_output_time": 114148.767293646,
+          "preprocess_start_time": 114148.592853415,
+          "inference_start_time": 114148.599346002,
+          "inference_end_time": 114148.765876749,
+          "postprocess_start_time": 114148.765876949
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114148.591302519,
+        "request_end_time": 114148.768140744,
+        "round_trip_time": 0.17683822500112,
+        "total_network_latency": 0.002346394001506269,
+        "server_processing_duration": 0.17449183099961374,
+        "preprocess_duration": 0.0064925869955914095,
+        "inference_duration": 0.16653074701025616,
+        "postprocess_duration": 0.001416697006789036
+      }
+    },
+    {
+      "request_id": 77,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114148.868396531
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114148.870030528,
+          "response_output_time": 114149.046060855,
+          "preprocess_start_time": 114148.870085928,
+          "inference_start_time": 114148.876385814,
+          "inference_end_time": 114149.044717157,
+          "postprocess_start_time": 114149.044717257
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114148.868398331,
+        "request_end_time": 114149.046934653,
+        "round_trip_time": 0.17853632199694403,
+        "total_network_latency": 0.0025059949985006824,
+        "server_processing_duration": 0.17603032699844334,
+        "preprocess_duration": 0.006299885993939824,
+        "inference_duration": 0.16833134299668018,
+        "postprocess_duration": 0.0013435980072245002
+      }
+    },
+    {
+      "request_id": 78,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114149.14725914
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114149.148669637,
+          "response_output_time": 114149.325577662,
+          "preprocess_start_time": 114149.148718637,
+          "inference_start_time": 114149.155870222,
+          "inference_end_time": 114149.323925366,
+          "postprocess_start_time": 114149.323925566
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114149.14726094,
+        "request_end_time": 114149.32643896,
+        "round_trip_time": 0.17917802000010852,
+        "total_network_latency": 0.00226999499136582,
+        "server_processing_duration": 0.1769080250087427,
+        "preprocess_duration": 0.0071515849995194,
+        "inference_duration": 0.16805514399311505,
+        "postprocess_duration": 0.0016520960052730516
+      }
+    },
+    {
+      "request_id": 79,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114149.426768547
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 54,
+            "tick": 17,
+            "duration": 4,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114149.428217744,
+          "response_output_time": 114149.612457756,
+          "preprocess_start_time": 114149.428273244,
+          "inference_start_time": 114149.434373931,
+          "inference_end_time": 114149.61069826,
+          "postprocess_start_time": 114149.61069846
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114149.426770047,
+        "request_end_time": 114149.613353954,
+        "round_trip_time": 0.18658390700875316,
+        "total_network_latency": 0.0023438950156560168,
+        "server_processing_duration": 0.18424001199309714,
+        "preprocess_duration": 0.00610068699461408,
+        "inference_duration": 0.17632432900427375,
+        "postprocess_duration": 0.0017592959920875728
+      }
+    },
+    {
+      "request_id": 80,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114149.713600245
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114149.715005842,
+          "response_output_time": 114149.892407671,
+          "preprocess_start_time": 114149.715055842,
+          "inference_start_time": 114149.721526928,
+          "inference_end_time": 114149.891043074,
+          "postprocess_start_time": 114149.891043274
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114149.713601545,
+        "request_end_time": 114149.893231869,
+        "round_trip_time": 0.17963032401166856,
+        "total_network_latency": 0.0022284950100583956,
+        "server_processing_duration": 0.17740182900161017,
+        "preprocess_duration": 0.006471086002420634,
+        "inference_duration": 0.16951614600839093,
+        "postprocess_duration": 0.001364397001452744
+      }
+    },
+    {
+      "request_id": 81,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114149.99352776
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114149.994938657,
+          "response_output_time": 114150.171272588,
+          "preprocess_start_time": 114149.994988856,
+          "inference_start_time": 114150.002264941,
+          "inference_end_time": 114150.169655891,
+          "postprocess_start_time": 114150.169656091
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114149.99352926,
+        "request_end_time": 114150.172109086,
+        "round_trip_time": 0.17857982599525712,
+        "total_network_latency": 0.0022458949824795127,
+        "server_processing_duration": 0.1763339310127776,
+        "preprocess_duration": 0.007276085001649335,
+        "inference_duration": 0.16739095000957604,
+        "postprocess_duration": 0.0016164970002137125
+      }
+    },
+    {
+      "request_id": 82,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114150.272351777
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 57,
+            "tick": 19,
+            "duration": 16,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114150.273829974,
+          "response_output_time": 114150.457971489,
+          "preprocess_start_time": 114150.273880774,
+          "inference_start_time": 114150.28017386,
+          "inference_end_time": 114150.456479592,
+          "postprocess_start_time": 114150.456479792
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114150.272352977,
+        "request_end_time": 114150.458811587,
+        "round_trip_time": 0.18645860999822617,
+        "total_network_latency": 0.0023170950007624924,
+        "server_processing_duration": 0.18414151499746367,
+        "preprocess_duration": 0.00629308600036893,
+        "inference_duration": 0.17630573200585786,
+        "postprocess_duration": 0.0014916969957994297
+      }
+    },
+    {
+      "request_id": 83,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114150.559106178
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 60,
+            "tick": 17,
+            "duration": 1,
+            "program": 1
+          },
+          {
+            "pitch": 60,
+            "tick": 18,
+            "duration": 1,
+            "program": 1
+          },
+          {
+            "pitch": 60,
+            "tick": 20,
+            "duration": 1,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114150.560583075,
+          "response_output_time": 114150.812542256,
+          "preprocess_start_time": 114150.560632975,
+          "inference_start_time": 114150.566944662,
+          "inference_end_time": 114150.81060606,
+          "postprocess_start_time": 114150.81060616
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114150.559107478,
+        "request_end_time": 114150.813400654,
+        "round_trip_time": 0.2542931760108331,
+        "total_network_latency": 0.0023339950130321085,
+        "server_processing_duration": 0.251959180997801,
+        "preprocess_duration": 0.0063116870005615056,
+        "inference_duration": 0.24366139799531084,
+        "postprocess_duration": 0.0019360959995537996
+      }
+    },
+    {
+      "request_id": 84,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114150.913735747
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114150.915188444,
+          "response_output_time": 114151.093578477,
+          "preprocess_start_time": 114150.915238744,
+          "inference_start_time": 114150.923054328,
+          "inference_end_time": 114151.09220008,
+          "postprocess_start_time": 114151.09220028
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114150.913737447,
+        "request_end_time": 114151.094410675,
+        "round_trip_time": 0.18067322799470276,
+        "total_network_latency": 0.0022831950045656413,
+        "server_processing_duration": 0.17839003299013712,
+        "preprocess_duration": 0.007815584001946263,
+        "inference_duration": 0.16914575200644322,
+        "postprocess_duration": 0.0013781969901174307
+      }
+    },
+    {
+      "request_id": 85,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114151.194741468
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114151.196169665,
+          "response_output_time": 114151.373193801,
+          "preprocess_start_time": 114151.196219665,
+          "inference_start_time": 114151.202477852,
+          "inference_end_time": 114151.371830003,
+          "postprocess_start_time": 114151.371830203
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114151.194742568,
+        "request_end_time": 114151.374024499,
+        "round_trip_time": 0.17928193100669887,
+        "total_network_latency": 0.0022577950003324077,
+        "server_processing_duration": 0.17702413600636646,
+        "preprocess_duration": 0.006258187000639737,
+        "inference_duration": 0.16935215100238565,
+        "postprocess_duration": 0.0013635979994433
+      }
+    },
+    {
+      "request_id": 86,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114151.474320392
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114151.475744489,
+          "response_output_time": 114151.65022788,
+          "preprocess_start_time": 114151.475794789,
+          "inference_start_time": 114151.481772677,
+          "inference_end_time": 114151.648799481,
+          "postprocess_start_time": 114151.648799681
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114151.474321792,
+        "request_end_time": 114151.65106778,
+        "round_trip_time": 0.17674598799203523,
+        "total_network_latency": 0.0022625969868386164,
+        "server_processing_duration": 0.1744833910051966,
+        "preprocess_duration": 0.005977887994959019,
+        "inference_duration": 0.16702680400339887,
+        "postprocess_duration": 0.0014281990006566048
+      }
+    },
+    {
+      "request_id": 87,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114151.751382534
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 50,
+            "tick": 20,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 53,
+            "tick": 20,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 58,
+            "tick": 20,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 81,
+            "tick": 20,
+            "duration": 4,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114151.752776333,
+          "response_output_time": 114151.961680137,
+          "preprocess_start_time": 114151.752826133,
+          "inference_start_time": 114151.75952733,
+          "inference_end_time": 114151.959957338,
+          "postprocess_start_time": 114151.959957438
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114151.751384034,
+        "request_end_time": 114151.962520137,
+        "round_trip_time": 0.21113610301108565,
+        "total_network_latency": 0.0022322990116663277,
+        "server_processing_duration": 0.20890380399941932,
+        "preprocess_duration": 0.0067011969949817285,
+        "inference_duration": 0.20043000800069422,
+        "postprocess_duration": 0.001722699002129957
+      }
+    },
+    {
+      "request_id": 88,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114152.06281599
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114152.06426249,
+          "response_output_time": 114152.242908808,
+          "preprocess_start_time": 114152.06430979,
+          "inference_start_time": 114152.070557187,
+          "inference_end_time": 114152.241103209,
+          "postprocess_start_time": 114152.241103409
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114152.06281729,
+        "request_end_time": 114152.243755207,
+        "round_trip_time": 0.18093791700084694,
+        "total_network_latency": 0.0022915990120964125,
+        "server_processing_duration": 0.17864631798875052,
+        "preprocess_duration": 0.0062473970028804615,
+        "inference_duration": 0.17054602199641522,
+        "postprocess_duration": 0.0018053989915642887
+      }
+    },
+    {
+      "request_id": 89,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114152.344089261
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114152.345543861,
+          "response_output_time": 114152.522772579,
+          "preprocess_start_time": 114152.345594561,
+          "inference_start_time": 114152.352187658,
+          "inference_end_time": 114152.52126938,
+          "postprocess_start_time": 114152.52126958
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114152.344090761,
+        "request_end_time": 114152.523670379,
+        "round_trip_time": 0.17957961799402256,
+        "total_network_latency": 0.0023508999875048175,
+        "server_processing_duration": 0.17722871800651774,
+        "preprocess_duration": 0.006593097001314163,
+        "inference_duration": 0.16908172199327964,
+        "postprocess_duration": 0.001502999002696015
+      }
+    },
+    {
+      "request_id": 90,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114152.624000535
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114152.625463535,
+          "response_output_time": 114152.803227758,
+          "preprocess_start_time": 114152.625514535,
+          "inference_start_time": 114152.633043231,
+          "inference_end_time": 114152.801664859,
+          "postprocess_start_time": 114152.801665059
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114152.624002235,
+        "request_end_time": 114152.804064958,
+        "round_trip_time": 0.1800627230113605,
+        "total_network_latency": 0.0022985000105109066,
+        "server_processing_duration": 0.1777642230008496,
+        "preprocess_duration": 0.007528696005465463,
+        "inference_duration": 0.1686216279922519,
+        "postprocess_duration": 0.001562699006171897
+      }
+    },
+    {
+      "request_id": 91,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114152.904310315
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114152.905764414,
+          "response_output_time": 114153.116695323,
+          "preprocess_start_time": 114152.905815314,
+          "inference_start_time": 114152.913780811,
+          "inference_end_time": 114153.114912624,
+          "postprocess_start_time": 114153.114912824
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114152.904311815,
+        "request_end_time": 114153.117567823,
+        "round_trip_time": 0.21325600800628308,
+        "total_network_latency": 0.0023250990052474663,
+        "server_processing_duration": 0.21093090900103562,
+        "preprocess_duration": 0.007965496988617815,
+        "inference_duration": 0.2011318130098516,
+        "postprocess_duration": 0.0017824989918153733
+      }
+    },
+    {
+      "request_id": 92,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114153.21786268
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 45,
+            "tick": 17,
+            "duration": 2,
+            "program": 1
+          },
+          {
+            "pitch": 67,
+            "tick": 17,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 45,
+            "tick": 19,
+            "duration": 6,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114153.219303379,
+          "response_output_time": 114153.459408776,
+          "preprocess_start_time": 114153.219354279,
+          "inference_start_time": 114153.228101676,
+          "inference_end_time": 114153.457370077,
+          "postprocess_start_time": 114153.457370277
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114153.21786458,
+        "request_end_time": 114153.460272476,
+        "round_trip_time": 0.2424078960029874,
+        "total_network_latency": 0.0023024989932309836,
+        "server_processing_duration": 0.24010539700975642,
+        "preprocess_duration": 0.008747396990656853,
+        "inference_duration": 0.2292684010026278,
+        "postprocess_duration": 0.0020384990057209507
+      }
+    },
+    {
+      "request_id": 93,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114153.560572233
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114153.561986933,
+          "response_output_time": 114153.748668658,
+          "preprocess_start_time": 114153.562037433,
+          "inference_start_time": 114153.56959033,
+          "inference_end_time": 114153.747081359,
+          "postprocess_start_time": 114153.747081559
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114153.560573533,
+        "request_end_time": 114153.749542558,
+        "round_trip_time": 0.1889690249954583,
+        "total_network_latency": 0.002287299997988157,
+        "server_processing_duration": 0.18668172499747016,
+        "preprocess_duration": 0.00755289699009154,
+        "inference_duration": 0.17749102901143488,
+        "postprocess_duration": 0.001587098988238722
+      }
+    },
+    {
+      "request_id": 94,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114153.849779018
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 46,
+            "tick": 20,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 53,
+            "tick": 20,
+            "duration": 4,
+            "program": 1
+          },
+          {
+            "pitch": 57,
+            "tick": 20,
+            "duration": 8,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114153.851203017,
+          "response_output_time": 114154.056025135,
+          "preprocess_start_time": 114153.851252017,
+          "inference_start_time": 114153.858222314,
+          "inference_end_time": 114154.054058236,
+          "postprocess_start_time": 114154.054058436
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114153.849780918,
+        "request_end_time": 114154.056880035,
+        "round_trip_time": 0.20709911700396333,
+        "total_network_latency": 0.002276999002788216,
+        "server_processing_duration": 0.2048221180011751,
+        "preprocess_duration": 0.006970296992221847,
+        "inference_duration": 0.19583592200069688,
+        "postprocess_duration": 0.00196669899742119
+      }
+    },
+    {
+      "request_id": 95,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114154.157205694
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114154.158634194,
+          "response_output_time": 114154.337921622,
+          "preprocess_start_time": 114154.158682894,
+          "inference_start_time": 114154.166312191,
+          "inference_end_time": 114154.336515823,
+          "postprocess_start_time": 114154.336516023
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114154.157207094,
+        "request_end_time": 114154.338773722,
+        "round_trip_time": 0.18156662800174672,
+        "total_network_latency": 0.0022791999945184216,
+        "server_processing_duration": 0.1792874280072283,
+        "preprocess_duration": 0.007629296989762224,
+        "inference_duration": 0.1702036320057232,
+        "postprocess_duration": 0.0014055990031920373
+      }
+    },
+    {
+      "request_id": 96,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114154.439047582
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114154.440486381,
+          "response_output_time": 114154.617658212,
+          "preprocess_start_time": 114154.440538581,
+          "inference_start_time": 114154.449422878,
+          "inference_end_time": 114154.616263413,
+          "postprocess_start_time": 114154.616263513
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114154.439048782,
+        "request_end_time": 114154.618496212,
+        "round_trip_time": 0.17944742999679875,
+        "total_network_latency": 0.0022755990066798404,
+        "server_processing_duration": 0.1771718309901189,
+        "preprocess_duration": 0.008884296999895014,
+        "inference_duration": 0.16684053500648588,
+        "postprocess_duration": 0.0013946989929536358
+      }
+    },
+    {
+      "request_id": 97,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114154.718791675
+      },
+      "response_data": {
+        "accompaniment": [
+          {
+            "pitch": 52,
+            "tick": 17,
+            "duration": 12,
+            "program": 1
+          },
+          {
+            "pitch": 68,
+            "tick": 17,
+            "duration": 12,
+            "program": 1
+          },
+          {
+            "pitch": 59,
+            "tick": 18,
+            "duration": 12,
+            "program": 1
+          },
+          {
+            "pitch": 64,
+            "tick": 20,
+            "duration": 12,
+            "program": 1
+          }
+        ],
+        "timings": {
+          "request_arrival_time": 114154.720233174,
+          "response_output_time": 114154.965519184,
+          "preprocess_start_time": 114154.720283774,
+          "inference_start_time": 114154.728426371,
+          "inference_end_time": 114154.963485784,
+          "postprocess_start_time": 114154.963485884
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114154.718793075,
+        "request_end_time": 114154.966376283,
+        "round_trip_time": 0.24758320800901856,
+        "total_network_latency": 0.002297198006999679,
+        "server_processing_duration": 0.24528601000201888,
+        "preprocess_duration": 0.00814259699836839,
+        "inference_duration": 0.2350594129966339,
+        "postprocess_duration": 0.0020332999993115664
+      }
+    },
+    {
+      "request_id": 98,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114155.066702346
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114155.068132745,
+          "response_output_time": 114155.24568668,
+          "preprocess_start_time": 114155.068182745,
+          "inference_start_time": 114155.075851143,
+          "inference_end_time": 114155.24416038,
+          "postprocess_start_time": 114155.24416058
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114155.066703646,
+        "request_end_time": 114155.246511579,
+        "round_trip_time": 0.17980793298920617,
+        "total_network_latency": 0.002253997983643785,
+        "server_processing_duration": 0.17755393500556238,
+        "preprocess_duration": 0.007668398000532761,
+        "inference_duration": 0.16830923699308187,
+        "postprocess_duration": 0.0015261000080499798
+      }
+    },
+    {
+      "request_id": 99,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114155.346748342
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114155.348157342,
+          "response_output_time": 114155.523502962,
+          "preprocess_start_time": 114155.348207942,
+          "inference_start_time": 114155.356289539,
+          "inference_end_time": 114155.522067964,
+          "postprocess_start_time": 114155.522068264
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114155.346749742,
+        "request_end_time": 114155.524337361,
+        "round_trip_time": 0.17758761899312958,
+        "total_network_latency": 0.002241998998215422,
+        "server_processing_duration": 0.17534561999491416,
+        "preprocess_duration": 0.008081596999545582,
+        "inference_duration": 0.16577842499827966,
+        "postprocess_duration": 0.001434697987861
+      }
+    },
+    {
+      "request_id": 100,
+      "request_data": {
+        "melody_notes": [
+          {
+            "pitch": 64,
+            "tick": 0,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 4,
+            "duration": 4
+          },
+          {
+            "pitch": 60,
+            "tick": 8,
+            "duration": 4
+          },
+          {
+            "pitch": 62,
+            "tick": 12,
+            "duration": 4
+          }
+        ],
+        "generation_start_tick": 16,
+        "client_request_send_time": 114155.624666851
+      },
+      "response_data": {
+        "accompaniment": [],
+        "timings": {
+          "request_arrival_time": 114155.62615075,
+          "response_output_time": 114155.801339059,
+          "preprocess_start_time": 114155.62619945,
+          "inference_start_time": 114155.633452242,
+          "inference_end_time": 114155.799796661,
+          "postprocess_start_time": 114155.799796861
+        },
+        "generation_start_tick": 16
+      },
+      "client_timing": {
+        "request_start_time": 114155.624668251,
+        "request_end_time": 114155.802183858,
+        "round_trip_time": 0.1775156070070807,
+        "total_network_latency": 0.0023272980033652857,
+        "server_processing_duration": 0.1751883090037154,
+        "preprocess_duration": 0.007252791998325847,
+        "inference_duration": 0.16634441900532693,
+        "postprocess_duration": 0.0015421980060636997
+      }
+    }
+  ]
+}
