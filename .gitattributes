@@ -1,0 +1,32 @@
+* text=auto
+
+# Normalize common text to LF
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.sh text eol=lf
+
+# Binary formats
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.sf2 binary
+*.sf3 binary
+*.mid binary
+*.ckpt binary
+*.pt binary
+*.pth binary
+*.onnx binary
+*.npz binary
+*.zip binary
+*.tar binary
+*.tar.gz binary
+
+# Notebooks as binary
+*.ipynb -text

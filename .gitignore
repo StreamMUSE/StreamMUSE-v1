@@ -1,3 +1,43 @@
+# OS/editor
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Envs
+.env
+.venv
+venv/
+
+# Editors
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs/temps
+*.log
+*.tmp
+.nfs*
+
+# Caches
+.cache/
+.mypy_cache/
+.pytest_cache/
+
+# Project-specific
 __pycache__
 ckpt
 lightning_logs
@@ -11,7 +51,6 @@ cp_transformer.py
 preprocess_large_midi_dataset_private.py
 cp_transformer_pt_inference.py
 cp_transformer_pt.py
-.vscode/
 *.zip
 /datasets/
 /logs/
@@ -22,7 +61,6 @@ aria-extract.py
 /dataset/
 src/transformers/
 app/.DS_Store
-.DS_Store
 /app/logs
 .python-version
 results/
@@ -34,3 +72,5 @@ prep_samples/
 inference_benchmark/temp/
 inference_benchmark/inputs/
 inference_benchmark/outputs/
+
+# Note: analysis_results_local_server, analysis_results_local, analysis_results_remote are tracked
