@@ -184,22 +184,27 @@ class GenerationLengthAnalyzer:
                     try:
                         # Calculate percentiles directly from the data
                         # These represent: "X% of measurements are below this value"
-                        percentiles = [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]
+                        percentiles = [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9, 100]
                         
                         for percentile in percentiles:
-                            value = series.quantile(percentile / 100.0)
-                            key_name = f'upper_bound_{int(percentile)}' if percentile == int(percentile) else f'upper_bound_{percentile}'.replace('.', '_')
+                            if percentile == 100:
+                                # 100% = maximum value observed
+                                value = series.max()
+                                key_name = 'upper_bound_100'
+                            else:
+                                value = series.quantile(percentile / 100.0)
+                                key_name = f'upper_bound_{int(percentile)}' if percentile == int(percentile) else f'upper_bound_{percentile}'.replace('.', '_')
                             upper_bounds[key_name] = value
                             
                     except Exception as e:
                         print(f"Warning: Error calculating percentiles: {e}")
                         # Fallback to zeros if calculation fails
-                        for p in [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]:
+                        for p in [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9, 100]:
                             key_name = f'upper_bound_{int(p)}' if p == int(p) else f'upper_bound_{p}'.replace('.', '_')
                             upper_bounds[key_name] = 0
                 else:
                     # Not enough data for meaningful percentiles
-                    for p in [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]:
+                    for p in [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9, 100]:
                         key_name = f'upper_bound_{int(p)}' if p == int(p) else f'upper_bound_{p}'.replace('.', '_')
                         upper_bounds[key_name] = 0
                 
@@ -595,8 +600,8 @@ class GenerationLengthAnalyzer:
         ax.plot(x, y_mean, 'ko-', linewidth=3, markersize=8, label='Mean', zorder=10)
         
         # Define percentile levels and colors
-        percentiles = ['60', '70', '80', '85', '90', '95', '98', '99', '99_5', '99_9']
-        colors = ['#f0f8ff', '#e0f0ff', '#d0e8ff', '#c0e0ff', '#b0d8ff', '#90c8ff', '#70b8ff', '#50a8ff', '#3098ff', '#1088ff']
+        percentiles = ['60', '70', '80', '85', '90', '95', '98', '99', '99_5', '99_9', '100']
+        colors = ['#f0f8ff', '#e0f0ff', '#d0e8ff', '#c0e0ff', '#b0d8ff', '#90c8ff', '#70b8ff', '#50a8ff', '#3098ff', '#1088ff', '#000080']
         
         # Plot upper bounds
         for i, (percentile, color) in enumerate(zip(percentiles, colors)):
@@ -934,7 +939,7 @@ class GenerationLengthAnalyzer:
                 }
                 
                 # Add all upper bounds (percentiles)
-                percentiles = [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9]
+                percentiles = [60, 70, 80, 85, 90, 95, 98, 99, 99.5, 99.9, 100]
                 
                 for percentile in percentiles:
                     if percentile == int(percentile):
