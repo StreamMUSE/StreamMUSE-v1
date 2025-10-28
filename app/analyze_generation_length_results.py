@@ -329,15 +329,69 @@ class GenerationLengthAnalyzer:
             ax.set_xticks(x_ticks)
             ax.set_xlim(x_min - tick_step, x_max + tick_step)
         
+        # Add musical time constraint lines
+        gen_lengths = sorted(self.summary_data['generation_length'].unique())
+        if len(gen_lengths) > 0:
+            frontier_x = []
+            musical_time_y = []
+            buffer_minus1_y = []
+            buffer_minus2_y = []
+            
+            min_gen = int(min(gen_lengths))
+            max_gen = int(max(gen_lengths))
+            
+            for gen_length in range(min_gen, max_gen + 1):
+                # Calculate how many complete ticks this represents
+                # gen_length 1,2 → 1 tick; gen_length 3,4 → 2 ticks; etc.
+                num_ticks = (gen_length + 1) // 2  # Ceiling division by 2
+                musical_time_ms = num_ticks * 125  # milliseconds of musical time (0.125s = 125ms)
+                buffer_minus1_ms = musical_time_ms - 125  # - 1 tick buffer (125ms)
+                buffer_minus2_ms = musical_time_ms - 250  # - 2 tick buffer (250ms)
+                
+                frontier_x.append(gen_length)
+                musical_time_y.append(musical_time_ms)
+                buffer_minus1_y.append(max(0, buffer_minus1_ms))  # Don't go below 0
+                buffer_minus2_y.append(max(0, buffer_minus2_ms))  # Don't go below 0
+            
+            # Plot as custom step functions with steps exactly at even numbers (2,4,6,8...)
+            step_x = []
+            step_musical_y = []
+            step_minus1_y = []
+            step_minus2_y = []
+            
+            for i, gen_length in enumerate(frontier_x):
+                # Add the horizontal segment
+                step_x.append(gen_length)
+                step_musical_y.append(musical_time_y[i])
+                step_minus1_y.append(buffer_minus1_y[i])
+                step_minus2_y.append(buffer_minus2_y[i])
+                
+                # Add vertical line at even numbers
+                if gen_length % 2 == 0 and i < len(frontier_x) - 1:  # Even number and not last point
+                    step_x.append(gen_length)
+                    step_musical_y.append(musical_time_y[i + 1])
+                    step_minus1_y.append(buffer_minus1_y[i + 1])
+                    step_minus2_y.append(buffer_minus2_y[i + 1])
+            
+            ax.plot(step_x, step_musical_y, color='red', linewidth=2, 
+                   linestyle='-', alpha=0.8, label='Musical Time Deadline', zorder=5)
+            
+            ax.plot(step_x, step_minus1_y, color='purple', linewidth=2, 
+                   linestyle='-', alpha=0.8, label='1 Useable Tick', zorder=5)
+            
+            ax.plot(step_x, step_minus2_y, color='darkblue', linewidth=2, 
+                   linestyle='-', alpha=0.8, label='2 Useable Ticks', zorder=5)
+        
         # Add trend line for round trip time
         if 'round_trip_time_mean' in self.summary_data.columns:
             x = self.summary_data['generation_length']
             y = self.summary_data['round_trip_time_mean'] * 1000
             z = np.polyfit(x, y, 1)
             p = np.poly1d(z)
-            ax.plot(x, p(x), "r--", alpha=0.5, linewidth=1, 
+            ax.plot(x, p(x), "gray", linestyle=":", alpha=0.7, linewidth=1, 
                    label=f'Trend: {z[0]:.2f}ms/frame')
-            ax.legend(fontsize=12, framealpha=0.9)
+        
+        ax.legend(fontsize=11, framealpha=0.9)
         
         plt.tight_layout()
         plt.savefig(self.plots_dir / "latency_vs_generation_length.png", 
@@ -564,16 +618,98 @@ class GenerationLengthAnalyzer:
         ax.set_ylabel('Round Trip Time (milliseconds)', fontsize=14, fontweight='bold')
         ax.set_title('Round Trip Time Upper Bounds\n(X% of requests complete within this time)', fontsize=16, fontweight='bold')
         
-        # Create a better legend layout
+        # Add musical time constraint lines (before legend creation)
+        # 2 frames = 1 tick = 0.125s = 125ms of musical time
+        # Steps occur at even numbers (2,4,6,8...) when new ticks start
+        frontier_x = []
+        musical_time_y = []
+        buffer_minus1_y = []
+        buffer_minus2_y = []
+        
+        min_gen = int(min(x))
+        max_gen = int(max(x))
+        
+        for gen_length in range(min_gen, max_gen + 1):
+            # Calculate how many complete ticks this represents
+            # gen_length 1,2 → 1 tick; gen_length 3,4 → 2 ticks; etc.
+            num_ticks = (gen_length + 1) // 2  # Ceiling division by 2
+            musical_time_ms = num_ticks * 125  # milliseconds of musical time (0.125s = 125ms)
+            buffer_minus1_ms = musical_time_ms - 125  # - 1 tick buffer (125ms)
+            buffer_minus2_ms = musical_time_ms - 250  # - 2 tick buffer (250ms)
+            
+            frontier_x.append(gen_length)
+            musical_time_y.append(musical_time_ms)
+            buffer_minus1_y.append(max(0, buffer_minus1_ms))  # Don't go below 0
+            buffer_minus2_y.append(max(0, buffer_minus2_ms))  # Don't go below 0
+        
+        # Plot as custom step functions with steps exactly at even numbers (2,4,6,8...)
+        # Create custom step data to get vertical lines exactly at 2,4,6,8...
+        step_x = []
+        step_musical_y = []
+        step_minus1_y = []
+        step_minus2_y = []
+        
+        for i, gen_length in enumerate(frontier_x):
+            # Add the horizontal segment
+            step_x.append(gen_length)
+            step_musical_y.append(musical_time_y[i])
+            step_minus1_y.append(buffer_minus1_y[i])
+            step_minus2_y.append(buffer_minus2_y[i])
+            
+            # Add vertical line at even numbers
+            if gen_length % 2 == 0 and i < len(frontier_x) - 1:  # Even number and not last point
+                step_x.append(gen_length)
+                step_musical_y.append(musical_time_y[i + 1])
+                step_minus1_y.append(buffer_minus1_y[i + 1])
+                step_minus2_y.append(buffer_minus2_y[i + 1])
+        
+        # Musical time deadline (red line)
+        ax.plot(step_x, step_musical_y, color='red', linewidth=3, 
+               linestyle='-', alpha=0.9, label='Musical Time Deadline', zorder=5)
+        
+        # 1 useable tick line (purple)
+        ax.plot(step_x, step_minus1_y, color='purple', linewidth=3, 
+               linestyle='-', alpha=0.9, label='1 Useable Tick', zorder=5)
+        
+        # 2 useable ticks line (dark blue)
+        ax.plot(step_x, step_minus2_y, color='darkblue', linewidth=3, 
+               linestyle='-', alpha=0.9, label='2 Useable Ticks', zorder=5)
+        
+        # Create legend after all lines are plotted
         handles, labels = ax.get_legend_handles_labels()
         
-        # Split legend into two columns for better readability
-        if len(handles) > 6:
-            legend1 = ax.legend(handles[:6], labels[:6], loc='upper left', fontsize=10, framealpha=0.9, title='Lower Percentiles')
+        # Separate percentile lines from frontier lines
+        percentile_handles = []
+        percentile_labels = []
+        frontier_handles = []
+        frontier_labels = []
+        
+        for handle, label in zip(handles, labels):
+            if any(frontier_name in label for frontier_name in ['Musical Time Deadline', 'Useable Tick']):
+                frontier_handles.append(handle)
+                frontier_labels.append(label)
+            else:
+                percentile_handles.append(handle)
+                percentile_labels.append(label)
+        
+        # Create main legend for percentiles (upper area)
+        if len(percentile_handles) > 6:
+            legend1 = ax.legend(percentile_handles[:6], percentile_labels[:6], 
+                               loc='upper left', fontsize=10, framealpha=0.9, title='Lower Percentiles')
             ax.add_artist(legend1)
-            ax.legend(handles[6:], labels[6:], loc='upper right', fontsize=10, framealpha=0.9, title='Higher Percentiles')
+            legend2 = ax.legend(percentile_handles[6:], percentile_labels[6:], 
+                               loc='upper right', fontsize=10, framealpha=0.9, title='Higher Percentiles')
+            ax.add_artist(legend2)
         else:
-            ax.legend(fontsize=11, loc='best', framealpha=0.9)
+            if percentile_handles:
+                legend1 = ax.legend(percentile_handles, percentile_labels, 
+                                   loc='upper left', fontsize=10, framealpha=0.9, title='Percentiles')
+                ax.add_artist(legend1)
+        
+        # Create frontier legend (bottom right)
+        if frontier_handles:
+            ax.legend(frontier_handles, frontier_labels, 
+                     loc='lower right', fontsize=11, framealpha=0.9, title='Musical Time Constraints')
         
         ax.grid(True, alpha=0.3)
         self._set_fine_x_ticks(ax)
