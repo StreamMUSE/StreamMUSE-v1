@@ -21,6 +21,7 @@ from pathlib import Path
 import json
 from typing import List, Dict, Any, Optional
 import statistics
+from scipy import stats
 
 class GenerationLengthAnalyzer:
     """
@@ -172,8 +173,42 @@ class GenerationLengthAnalyzer:
             
             def safe_stats(series):
                 if len(series) == 0:
-                    return {'mean': 0, 'std': 0, 'min': 0, 'max': 0, 'median': 0, 'p95': 0, 'p99': 0}
-                return {
+                    return {'mean': 0, 'std': 0, 'min': 0, 'max': 0, 'median': 0, 'p95': 0, 'p99': 0,
+                           'ci_80_lower': 0, 'ci_80_upper': 0, 'ci_85_lower': 0, 'ci_85_upper': 0,
+                           'ci_90_lower': 0, 'ci_90_upper': 0, 'ci_95_lower': 0, 'ci_95_upper': 0,
+                           'ci_98_lower': 0, 'ci_98_upper': 0, 'ci_99_lower': 0, 'ci_99_upper': 0,
+                           'ci_99_5_lower': 0, 'ci_99_5_upper': 0, 'ci_99_9_lower': 0, 'ci_99_9_upper': 0}
+                
+                # Calculate confidence intervals if we have enough data
+                confidence_intervals = {}
+                if len(series) >= 3:  # Need at least 3 samples for meaningful CI
+                    try:
+                        # Calculate confidence intervals using t-distribution
+                        mean = series.mean()
+                        sem = stats.sem(series)  # Standard error of the mean
+                        
+                        confidence_levels = [0.80, 0.85, 0.90, 0.95, 0.98, 0.99, 0.995, 0.999]
+                        ci_names = ['ci_80', 'ci_85', 'ci_90', 'ci_95', 'ci_98', 'ci_99', 'ci_99_5', 'ci_99_9']
+                        
+                        for conf_level, ci_name in zip(confidence_levels, ci_names):
+                            # t-distribution critical value
+                            t_crit = stats.t.ppf((1 + conf_level) / 2, len(series) - 1)
+                            margin_error = t_crit * sem
+                            
+                            confidence_intervals[f'{ci_name}_lower'] = mean - margin_error
+                            confidence_intervals[f'{ci_name}_upper'] = mean + margin_error
+                    except:
+                        # Fallback to zeros if calculation fails
+                        for ci_name in ['ci_80', 'ci_85', 'ci_90', 'ci_95', 'ci_98', 'ci_99', 'ci_99_5', 'ci_99_9']:
+                            confidence_intervals[f'{ci_name}_lower'] = 0
+                            confidence_intervals[f'{ci_name}_upper'] = 0
+                else:
+                    # Not enough data for meaningful confidence intervals
+                    for ci_name in ['ci_80', 'ci_85', 'ci_90', 'ci_95', 'ci_98', 'ci_99', 'ci_99_5', 'ci_99_9']:
+                        confidence_intervals[f'{ci_name}_lower'] = 0
+                        confidence_intervals[f'{ci_name}_upper'] = 0
+                
+                base_stats = {
                     'mean': series.mean(),
                     'std': series.std(),
                     'min': series.min(),
@@ -182,6 +217,10 @@ class GenerationLengthAnalyzer:
                     'p95': series.quantile(0.95),
                     'p99': series.quantile(0.99)
                 }
+                
+                # Combine base stats with confidence intervals
+                base_stats.update(confidence_intervals)
+                return base_stats
             
             summary = {'generation_length': gen_length, 'num_requests': len(df_subset)}
             
@@ -205,6 +244,21 @@ class GenerationLengthAnalyzer:
         
         self.summary_data = pd.DataFrame(summary_list)
     
+    def _set_fine_x_ticks(self, ax):
+        """Set finer x-axis ticks for better readability."""
+        if self.summary_data is None:
+            return
+            
+        gen_lengths = sorted(self.summary_data['generation_length'].unique())
+        if len(gen_lengths) > 1:
+            min_gap = min(gen_lengths[i+1] - gen_lengths[i] for i in range(len(gen_lengths)-1))
+            tick_step = max(1, min_gap // 2)  # Use half the minimum gap, but at least 1
+            
+            x_min, x_max = min(gen_lengths), max(gen_lengths)
+            x_ticks = np.arange(x_min, x_max + tick_step, tick_step)
+            ax.set_xticks(x_ticks)
+            ax.set_xlim(x_min - tick_step, x_max + tick_step)
+    
     def generate_all_visualizations(self):
         """Generate comprehensive visualization suite."""
         print("📊 Generating visualizations...")
@@ -223,6 +277,7 @@ class GenerationLengthAnalyzer:
         self._plot_distribution_comparison()
         self._plot_component_breakdown()
         self._plot_performance_metrics()
+        self._plot_confidence_intervals()
         
         if self.detailed_data is not None:
             self._plot_detailed_distributions()
@@ -267,6 +322,17 @@ class GenerationLengthAnalyzer:
         ax.set_title('Server Latency vs Generation Length', fontsize=16, fontweight='bold')
         ax.legend(fontsize=12, framealpha=0.9)
         ax.grid(True, alpha=0.3)
+        
+        # Set smaller tick gaps on x-axis
+        gen_lengths = sorted(self.summary_data['generation_length'].unique())
+        if len(gen_lengths) > 1:
+            min_gap = min(gen_lengths[i+1] - gen_lengths[i] for i in range(len(gen_lengths)-1))
+            tick_step = max(1, min_gap // 2)  # Use half the minimum gap, but at least 1
+            
+            x_min, x_max = min(gen_lengths), max(gen_lengths)
+            x_ticks = np.arange(x_min, x_max + tick_step, tick_step)
+            ax.set_xticks(x_ticks)
+            ax.set_xlim(x_min - tick_step, x_max + tick_step)
         
         # Add trend line for round trip time
         if 'round_trip_time_mean' in self.summary_data.columns:
@@ -313,6 +379,9 @@ class GenerationLengthAnalyzer:
         ax1.legend(fontsize=10)
         ax1.grid(True, alpha=0.3)
         
+        # Set smaller tick gaps on x-axis for left plot
+        self._set_fine_x_ticks(ax1)
+        
         # Right: Coefficient of variation (std/mean)
         for metric, label, color in metrics:
             mean_col = f"{metric}_mean"
@@ -334,6 +403,9 @@ class GenerationLengthAnalyzer:
         ax2.set_title('Relative Variability vs Generation Length', fontsize=14, fontweight='bold')
         ax2.legend(fontsize=10)
         ax2.grid(True, alpha=0.3)
+        
+        # Set smaller tick gaps on x-axis for right plot
+        self._set_fine_x_ticks(ax2)
         
         plt.tight_layout()
         plt.savefig(self.plots_dir / "variability_analysis.png", 
@@ -429,6 +501,7 @@ class GenerationLengthAnalyzer:
             ax1.set_ylabel('Estimated Throughput (req/sec)', fontsize=12, fontweight='bold')
             ax1.set_title('Request Throughput vs Generation Length', fontsize=14, fontweight='bold')
             ax1.grid(True, alpha=0.3)
+            self._set_fine_x_ticks(ax1)
         
         # Right: Generation efficiency (notes per second)
         if ('num_generated_notes_mean' in self.summary_data.columns and 
@@ -442,9 +515,82 @@ class GenerationLengthAnalyzer:
             ax2.set_ylabel('Notes Generated per Second', fontsize=12, fontweight='bold')
             ax2.set_title('Generation Efficiency vs Generation Length', fontsize=14, fontweight='bold')
             ax2.grid(True, alpha=0.3)
+            self._set_fine_x_ticks(ax2)
         
         plt.tight_layout()
         plt.savefig(self.plots_dir / "performance_metrics.png", 
+                   dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_confidence_intervals(self):
+        """Plot confidence intervals for round trip time only."""
+        fig, ax = plt.subplots(figsize=(14, 8))
+        
+        metric = 'round_trip_time'
+        scale = 1000  # Convert to ms
+        
+        mean_col = f"{metric}_mean"
+        if mean_col not in self.summary_data.columns:
+            ax.text(0.5, 0.5, 'No round trip time data available', 
+                   transform=ax.transAxes, ha='center', va='center')
+            ax.set_title('Round Trip Time Confidence Intervals', fontsize=16, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(self.plots_dir / "confidence_intervals.png", dpi=300, bbox_inches='tight')
+            plt.close()
+            return
+        
+        x = self.summary_data['generation_length']
+        y_mean = self.summary_data[mean_col] * scale
+        
+        # Plot mean line
+        ax.plot(x, y_mean, 'ko-', linewidth=3, markersize=8, label='Mean', zorder=10)
+        
+        # Define confidence levels and colors (lighter to darker as confidence increases)
+        confidence_levels = ['80', '85', '90', '95', '98', '99', '99_5', '99_9']
+        colors = ['#e6f3ff', '#cce7ff', '#99d6ff', '#66c2ff', '#33adff', '#0099ff', '#0080cc', '#006699']
+        alphas = [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75]
+        
+        # Plot confidence intervals from widest to narrowest (so narrower ones appear on top)
+        for conf_level, color, alpha in zip(reversed(confidence_levels), reversed(colors), reversed(alphas)):
+            lower_col = f"{metric}_ci_{conf_level}_lower"
+            upper_col = f"{metric}_ci_{conf_level}_upper"
+            
+            if lower_col in self.summary_data.columns and upper_col in self.summary_data.columns:
+                y_lower = self.summary_data[lower_col] * scale
+                y_upper = self.summary_data[upper_col] * scale
+                
+                # Convert confidence level name for display
+                display_level = conf_level.replace('_', '.')
+                
+                # Plot confidence interval as filled area
+                ax.fill_between(x, y_lower, y_upper, 
+                               alpha=alpha, color=color, 
+                               label=f'{display_level}% CI', zorder=len(confidence_levels)-confidence_levels.index(conf_level))
+        
+        ax.set_xlabel('Generation Length (Frames)', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Round Trip Time (milliseconds)', fontsize=14, fontweight='bold')
+        ax.set_title('Round Trip Time with Confidence Intervals', fontsize=16, fontweight='bold')
+        
+        # Arrange legend with most common CIs first
+        handles, labels = ax.get_legend_handles_labels()
+        # Reorder to show mean first, then common CIs (95%, 99%), then others
+        common_order = ['Mean', '95% CI', '99% CI', '90% CI', '99.5% CI', '80% CI', '85% CI', '98% CI', '99.9% CI']
+        ordered_handles = []
+        ordered_labels = []
+        
+        for desired_label in common_order:
+            for handle, label in zip(handles, labels):
+                if label == desired_label:
+                    ordered_handles.append(handle)
+                    ordered_labels.append(label)
+                    break
+        
+        ax.legend(ordered_handles, ordered_labels, fontsize=11, loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.3)
+        self._set_fine_x_ticks(ax)
+        
+        plt.tight_layout()
+        plt.savefig(self.plots_dir / "confidence_intervals.png", 
                    dpi=300, bbox_inches='tight')
         plt.close()
     
@@ -608,9 +754,26 @@ class GenerationLengthAnalyzer:
             if 'round_trip_time_mean' in row:
                 entry['Mean RTT (ms)'] = f"{row['round_trip_time_mean'] * 1000:.1f}"
                 entry['Std RTT (ms)'] = f"{row['round_trip_time_std'] * 1000:.1f}"
+                
+                # Add confidence intervals for RTT
+                if 'round_trip_time_ci_95_lower' in row:
+                    ci_95_lower = row['round_trip_time_ci_95_lower'] * 1000
+                    ci_95_upper = row['round_trip_time_ci_95_upper'] * 1000
+                    entry['95% CI RTT (ms)'] = f"[{ci_95_lower:.1f}, {ci_95_upper:.1f}]"
+                
+                if 'round_trip_time_ci_99_lower' in row:
+                    ci_99_lower = row['round_trip_time_ci_99_lower'] * 1000
+                    ci_99_upper = row['round_trip_time_ci_99_upper'] * 1000
+                    entry['99% CI RTT (ms)'] = f"[{ci_99_lower:.1f}, {ci_99_upper:.1f}]"
             
             if 'inference_duration_mean' in row:
                 entry['Mean Inference (ms)'] = f"{row['inference_duration_mean'] * 1000:.1f}"
+                
+                # Add confidence intervals for inference duration
+                if 'inference_duration_ci_95_lower' in row:
+                    ci_95_lower = row['inference_duration_ci_95_lower'] * 1000
+                    ci_95_upper = row['inference_duration_ci_95_upper'] * 1000
+                    entry['95% CI Inference (ms)'] = f"[{ci_95_lower:.1f}, {ci_95_upper:.1f}]"
                 
             if 'num_generated_notes_mean' in row:
                 entry['Notes Generated'] = f"{row['num_generated_notes_mean']:.1f}"
@@ -621,9 +784,56 @@ class GenerationLengthAnalyzer:
         export_file = self.output_dir / "summary_table.csv"
         export_df.to_csv(export_file, index=False)
         
+        # Also create a confidence intervals specific table
+        self._export_confidence_intervals_table()
+        
         print(f"📊 Summary table saved to: {export_file}")
         print("\nSummary Table:")
         print(export_df.to_string(index=False))
+    
+    def _export_confidence_intervals_table(self):
+        """Export a detailed confidence intervals table for round trip time only."""
+        if self.summary_data is None:
+            return
+            
+        ci_data = []
+        
+        for _, row in self.summary_data.iterrows():
+            gen_length = int(row['generation_length'])
+            
+            # Round trip time confidence intervals only
+            if 'round_trip_time_mean' in row:
+                base_entry = {
+                    'Generation Length': gen_length,
+                    'Mean (ms)': f"{row['round_trip_time_mean'] * 1000:.2f}",
+                    'Std (ms)': f"{row['round_trip_time_std'] * 1000:.2f}",
+                    'Sample Size': int(row['num_requests'])
+                }
+                
+                # Add all standard confidence intervals
+                ci_levels = ['80', '85', '90', '95', '98', '99', '99_5', '99_9']
+                
+                for ci_level in ci_levels:
+                    lower_col = f"round_trip_time_ci_{ci_level}_lower"
+                    upper_col = f"round_trip_time_ci_{ci_level}_upper"
+                    
+                    if lower_col in row and upper_col in row:
+                        lower = row[lower_col] * 1000
+                        upper = row[upper_col] * 1000
+                        width = upper - lower
+                        
+                        level_name = ci_level.replace('_', '.')
+                        base_entry[f'{level_name}% CI Lower'] = f"{lower:.2f}"
+                        base_entry[f'{level_name}% CI Upper'] = f"{upper:.2f}"
+                        base_entry[f'{level_name}% CI Width'] = f"{width:.2f}"
+                
+                ci_data.append(base_entry)
+        
+        if ci_data:
+            ci_df = pd.DataFrame(ci_data)
+            ci_file = self.output_dir / "round_trip_time_confidence_intervals.csv"
+            ci_df.to_csv(ci_file, index=False)
+            print(f"📊 Round trip time confidence intervals saved to: {ci_file}")
 
 
 def main():
