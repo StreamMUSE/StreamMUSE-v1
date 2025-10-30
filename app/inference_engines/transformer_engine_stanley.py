@@ -265,14 +265,18 @@ class InferenceEngineStanley():
             notes_per_sample.append(sample_notes)
         return notes_per_sample
 
-    def generate_accompaniment(self, melody_notes, generation_start_tick, acc_notes=None):
+    def generate_accompaniment(self, melody_notes, generation_start_tick, acc_notes=None, generation_length_frames=None):
         """
         生成伴奏
         Args:
             melody_notes: 相对时间的旋律音符(从0开始,不包含注入偏移)
             generation_start_tick: 相对时间的生成开始位置
             acc_notes: 可选的伴奏音符（用于初始化）
+            generation_length_frames: 可选的生成帧数，覆盖默认值
         """
+        # Use provided generation length or fall back to instance default
+        effective_generation_length = generation_length_frames or self.generation_length_frames
+        
         preprocess_start_time = time.perf_counter()
 
         absolute_melody_notes = []
@@ -359,7 +363,7 @@ class InferenceEngineStanley():
         #     f.write(str(x.cpu().numpy()))
 
         with torch.no_grad():
-            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=self.generation_length_frames)
+            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=effective_generation_length)
 
         inference_end_time = time.perf_counter()
         postprocess_start_time = time.perf_counter()

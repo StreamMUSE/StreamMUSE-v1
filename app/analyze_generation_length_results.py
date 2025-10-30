@@ -259,6 +259,23 @@ class GenerationLengthAnalyzer:
             ax.set_xticks(x_ticks)
             ax.set_xlim(x_min - tick_step, x_max + tick_step)
     
+    def _prepare_tick_based_data(self):
+        """Filter data to odd generation lengths and convert to tick-based X-axis."""
+        if self.summary_data is None:
+            return None
+            
+        # Filter to only odd generation lengths (accompaniment frames)
+        odd_data = self.summary_data[self.summary_data['generation_length'] % 2 == 1].copy()
+        
+        if len(odd_data) == 0:
+            print("⚠️ No odd generation lengths found in data")
+            return None
+        
+        # Convert frames to ticks: (odd_frame + 1) / 2
+        odd_data['generation_ticks'] = (odd_data['generation_length'] + 1) / 2
+        
+        return odd_data
+    
     def generate_all_visualizations(self):
         """Generate comprehensive visualization suite."""
         print("📊 Generating visualizations...")
@@ -286,8 +303,20 @@ class GenerationLengthAnalyzer:
         print(f"✅ Visualizations saved to {self.plots_dir}")
     
     def _plot_latency_vs_generation_length(self):
-        """Primary relationship plot: latency vs generation length."""
+        """Primary relationship plot: latency vs generation ticks (accompaniment focus)."""
         fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # Get tick-based data (odd generation lengths only)
+        tick_data = self._prepare_tick_based_data()
+        if tick_data is None:
+            ax.text(0.5, 0.5, 'No odd generation lengths available for tick-based analysis', 
+                   transform=ax.transAxes, ha='center', va='center')
+            ax.set_title('Server Latency vs Generation Ticks', fontsize=16, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(self.plots_dir / "latency_vs_generation_length.png", 
+                       dpi=300, bbox_inches='tight')
+            plt.close()
+            return
         
         metrics = [
             ('round_trip_time', 'Round Trip Time', 'o-', '#1f77b4'),
@@ -300,12 +329,12 @@ class GenerationLengthAnalyzer:
             mean_col = f"{metric}_mean"
             std_col = f"{metric}_std"
             
-            if mean_col in self.summary_data.columns:
-                # Plot with error bars
+            if mean_col in tick_data.columns:
+                # Plot with error bars using ticks as X-axis
                 ax.errorbar(
-                    self.summary_data['generation_length'],
-                    self.summary_data[mean_col] * 1000,  # Convert to ms
-                    yerr=self.summary_data[std_col] * 1000 if std_col in self.summary_data.columns else None,
+                    tick_data['generation_ticks'],
+                    tick_data[mean_col] * 1000,  # Convert to ms
+                    yerr=tick_data[std_col] * 1000 if std_col in tick_data.columns else None,
                     label=label,
                     marker=style[0],
                     linestyle=style[1:],
@@ -317,84 +346,44 @@ class GenerationLengthAnalyzer:
                     alpha=0.8
                 )
         
-        ax.set_xlabel('Generation Length (Frames)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Generation Length (Ticks)', fontsize=14, fontweight='bold')
         ax.set_ylabel('Latency (milliseconds)', fontsize=14, fontweight='bold')
-        ax.set_title('Server Latency vs Generation Length', fontsize=16, fontweight='bold')
+        ax.set_title('Server Latency vs Generation Ticks\n(Accompaniment Frame Focus)', fontsize=16, fontweight='bold')
         ax.legend(fontsize=12, framealpha=0.9)
         ax.grid(True, alpha=0.3)
         
-        # Set smaller tick gaps on x-axis
-        gen_lengths = sorted(self.summary_data['generation_length'].unique())
-        if len(gen_lengths) > 1:
-            min_gap = min(gen_lengths[i+1] - gen_lengths[i] for i in range(len(gen_lengths)-1))
-            tick_step = max(1, min_gap // 2)  # Use half the minimum gap, but at least 1
-            
-            x_min, x_max = min(gen_lengths), max(gen_lengths)
-            x_ticks = np.arange(x_min, x_max + tick_step, tick_step)
-            ax.set_xticks(x_ticks)
-            ax.set_xlim(x_min - tick_step, x_max + tick_step)
+        # Set integer tick marks for ticks
+        tick_values = sorted(tick_data['generation_ticks'].unique())
+        ax.set_xticks(tick_values)
+        ax.set_xlim(min(tick_values) - 0.5, max(tick_values) + 0.5)
         
-        # Add musical time constraint lines
-        gen_lengths = sorted(self.summary_data['generation_length'].unique())
-        if len(gen_lengths) > 0:
-            frontier_x = []
-            musical_time_y = []
-            buffer_minus1_y = []
-            buffer_minus2_y = []
+        # Add musical time constraint lines (now much simpler with tick-based X-axis)
+        if tick_values:
+            frontier_x = tick_values
             
-            min_gen = int(min(gen_lengths))
-            max_gen = int(max(gen_lengths))
+            # With tick-based X-axis, musical time is simply: ticks * 125ms
+            musical_time_y = [tick * 125 for tick in frontier_x]
+            buffer_minus1_y = [max(0, tick * 125 - 125) for tick in frontier_x]  # -1 tick buffer
+            buffer_minus2_y = [max(0, tick * 125 - 250) for tick in frontier_x]  # -2 tick buffer
             
-            for gen_length in range(min_gen, max_gen + 1):
-                # Calculate how many complete ticks this represents
-                # gen_length 1,2 → 1 tick; gen_length 3,4 → 2 ticks; etc.
-                num_ticks = (gen_length + 1) // 2  # Ceiling division by 2
-                musical_time_ms = num_ticks * 125  # milliseconds of musical time (0.125s = 125ms)
-                buffer_minus1_ms = musical_time_ms - 125  # - 1 tick buffer (125ms)
-                buffer_minus2_ms = musical_time_ms - 250  # - 2 tick buffer (250ms)
-                
-                frontier_x.append(gen_length)
-                musical_time_y.append(musical_time_ms)
-                buffer_minus1_y.append(max(0, buffer_minus1_ms))  # Don't go below 0
-                buffer_minus2_y.append(max(0, buffer_minus2_ms))  # Don't go below 0
-            
-            # Plot as custom step functions with steps exactly at even numbers (2,4,6,8...)
-            step_x = []
-            step_musical_y = []
-            step_minus1_y = []
-            step_minus2_y = []
-            
-            for i, gen_length in enumerate(frontier_x):
-                # Add the horizontal segment
-                step_x.append(gen_length)
-                step_musical_y.append(musical_time_y[i])
-                step_minus1_y.append(buffer_minus1_y[i])
-                step_minus2_y.append(buffer_minus2_y[i])
-                
-                # Add vertical line at even numbers
-                if gen_length % 2 == 0 and i < len(frontier_x) - 1:  # Even number and not last point
-                    step_x.append(gen_length)
-                    step_musical_y.append(musical_time_y[i + 1])
-                    step_minus1_y.append(buffer_minus1_y[i + 1])
-                    step_minus2_y.append(buffer_minus2_y[i + 1])
-            
-            ax.plot(step_x, step_musical_y, color='red', linewidth=2, 
+            # Plot as simple lines (no complex step functions needed)
+            ax.plot(frontier_x, musical_time_y, color='red', linewidth=2, 
                    linestyle='-', alpha=0.8, label='Musical Time Deadline', zorder=5)
             
-            ax.plot(step_x, step_minus1_y, color='purple', linewidth=2, 
+            ax.plot(frontier_x, buffer_minus1_y, color='purple', linewidth=2, 
                    linestyle='-', alpha=0.8, label='1 Useable Tick', zorder=5)
             
-            ax.plot(step_x, step_minus2_y, color='darkblue', linewidth=2, 
+            ax.plot(frontier_x, buffer_minus2_y, color='darkblue', linewidth=2, 
                    linestyle='-', alpha=0.8, label='2 Useable Ticks', zorder=5)
         
         # Add trend line for round trip time
-        if 'round_trip_time_mean' in self.summary_data.columns:
-            x = self.summary_data['generation_length']
-            y = self.summary_data['round_trip_time_mean'] * 1000
-            z = np.polyfit(x, y, 1)
+        if 'round_trip_time_mean' in tick_data.columns:
+            x_ticks = tick_data['generation_ticks']
+            y = tick_data['round_trip_time_mean'] * 1000
+            z = np.polyfit(x_ticks, y, 1)
             p = np.poly1d(z)
-            ax.plot(x, p(x), "gray", linestyle=":", alpha=0.7, linewidth=1, 
-                   label=f'Trend: {z[0]:.2f}ms/frame')
+            ax.plot(x_ticks, p(x_ticks), "gray", linestyle=":", alpha=0.7, linewidth=1, 
+                   label=f'Trend: {z[0]:.2f}ms/tick')
         
         ax.legend(fontsize=11, framealpha=0.9)
         
@@ -577,14 +566,25 @@ class GenerationLengthAnalyzer:
         plt.close()
     
     def _plot_confidence_intervals(self):
-        """Plot upper bound percentiles for round trip time."""
+        """Plot upper bound percentiles for round trip time (tick-based)."""
         fig, ax = plt.subplots(figsize=(14, 8))
+        
+        # Get tick-based data (odd generation lengths only)
+        tick_data = self._prepare_tick_based_data()
+        if tick_data is None:
+            ax.text(0.5, 0.5, 'No odd generation lengths available for tick-based analysis', 
+                   transform=ax.transAxes, ha='center', va='center')
+            ax.set_title('Round Trip Time Upper Bounds', fontsize=16, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(self.plots_dir / "confidence_intervals.png", dpi=300, bbox_inches='tight')
+            plt.close()
+            return
         
         metric = 'round_trip_time'
         scale = 1000  # Convert to ms
         
         mean_col = f"{metric}_mean"
-        if mean_col not in self.summary_data.columns:
+        if mean_col not in tick_data.columns:
             ax.text(0.5, 0.5, 'No round trip time data available', 
                    transform=ax.transAxes, ha='center', va='center')
             ax.set_title('Round Trip Time Upper Bounds', fontsize=16, fontweight='bold')
@@ -593,8 +593,8 @@ class GenerationLengthAnalyzer:
             plt.close()
             return
         
-        x = self.summary_data['generation_length']
-        y_mean = self.summary_data[mean_col] * scale
+        x = tick_data['generation_ticks']
+        y_mean = tick_data[mean_col] * scale
         
         # Plot mean line
         ax.plot(x, y_mean, 'ko-', linewidth=3, markersize=8, label='Mean', zorder=10)
@@ -607,8 +607,8 @@ class GenerationLengthAnalyzer:
         for i, (percentile, color) in enumerate(zip(percentiles, colors)):
             upper_col = f"{metric}_upper_bound_{percentile}"
             
-            if upper_col in self.summary_data.columns:
-                y_upper = self.summary_data[upper_col] * scale
+            if upper_col in tick_data.columns:
+                y_upper = tick_data[upper_col] * scale
                 
                 # Check if we have valid data (not all zeros)
                 if y_upper.sum() > 0:
@@ -619,65 +619,26 @@ class GenerationLengthAnalyzer:
                     ax.plot(x, y_upper, '--', color=color, linewidth=2, markersize=6, 
                            marker='o', label=f'{display_level}% upper bound', alpha=0.8)
         
-        ax.set_xlabel('Generation Length (Frames)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Generation Length (Ticks)', fontsize=14, fontweight='bold')
         ax.set_ylabel('Round Trip Time (milliseconds)', fontsize=14, fontweight='bold')
-        ax.set_title('Round Trip Time Upper Bounds\n(X% of requests complete within this time)', fontsize=16, fontweight='bold')
+        ax.set_title('Round Trip Time Upper Bounds\n(X% of requests complete within this time - Accompaniment Focus)', fontsize=16, fontweight='bold')
         
-        # Add musical time constraint lines (before legend creation)
-        # 2 frames = 1 tick = 0.125s = 125ms of musical time
-        # Steps occur at even numbers (2,4,6,8...) when new ticks start
-        frontier_x = []
-        musical_time_y = []
-        buffer_minus1_y = []
-        buffer_minus2_y = []
+        # Add musical time constraint lines (much simpler with tick-based X-axis)
+        tick_values = sorted(tick_data['generation_ticks'].unique())
         
-        min_gen = int(min(x))
-        max_gen = int(max(x))
+        # With tick-based X-axis, musical time is simply: ticks * 125ms
+        musical_time_y = [tick * 125 for tick in tick_values]
+        buffer_minus1_y = [max(0, tick * 125 - 125) for tick in tick_values]  # -1 tick buffer
+        buffer_minus2_y = [max(0, tick * 125 - 250) for tick in tick_values]  # -2 tick buffer
         
-        for gen_length in range(min_gen, max_gen + 1):
-            # Calculate how many complete ticks this represents
-            # gen_length 1,2 → 1 tick; gen_length 3,4 → 2 ticks; etc.
-            num_ticks = (gen_length + 1) // 2  # Ceiling division by 2
-            musical_time_ms = num_ticks * 125  # milliseconds of musical time (0.125s = 125ms)
-            buffer_minus1_ms = musical_time_ms - 125  # - 1 tick buffer (125ms)
-            buffer_minus2_ms = musical_time_ms - 250  # - 2 tick buffer (250ms)
-            
-            frontier_x.append(gen_length)
-            musical_time_y.append(musical_time_ms)
-            buffer_minus1_y.append(max(0, buffer_minus1_ms))  # Don't go below 0
-            buffer_minus2_y.append(max(0, buffer_minus2_ms))  # Don't go below 0
-        
-        # Plot as custom step functions with steps exactly at even numbers (2,4,6,8...)
-        # Create custom step data to get vertical lines exactly at 2,4,6,8...
-        step_x = []
-        step_musical_y = []
-        step_minus1_y = []
-        step_minus2_y = []
-        
-        for i, gen_length in enumerate(frontier_x):
-            # Add the horizontal segment
-            step_x.append(gen_length)
-            step_musical_y.append(musical_time_y[i])
-            step_minus1_y.append(buffer_minus1_y[i])
-            step_minus2_y.append(buffer_minus2_y[i])
-            
-            # Add vertical line at even numbers
-            if gen_length % 2 == 0 and i < len(frontier_x) - 1:  # Even number and not last point
-                step_x.append(gen_length)
-                step_musical_y.append(musical_time_y[i + 1])
-                step_minus1_y.append(buffer_minus1_y[i + 1])
-                step_minus2_y.append(buffer_minus2_y[i + 1])
-        
-        # Musical time deadline (red line)
-        ax.plot(step_x, step_musical_y, color='red', linewidth=3, 
+        # Plot as simple lines (no complex step functions needed)
+        ax.plot(tick_values, musical_time_y, color='red', linewidth=3, 
                linestyle='-', alpha=0.9, label='Musical Time Deadline', zorder=5)
         
-        # 1 useable tick line (purple)
-        ax.plot(step_x, step_minus1_y, color='purple', linewidth=3, 
+        ax.plot(tick_values, buffer_minus1_y, color='purple', linewidth=3, 
                linestyle='-', alpha=0.9, label='1 Useable Tick', zorder=5)
         
-        # 2 useable ticks line (dark blue)
-        ax.plot(step_x, step_minus2_y, color='darkblue', linewidth=3, 
+        ax.plot(tick_values, buffer_minus2_y, color='darkblue', linewidth=3, 
                linestyle='-', alpha=0.9, label='2 Useable Ticks', zorder=5)
         
         # Create legend after all lines are plotted

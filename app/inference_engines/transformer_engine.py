@@ -214,11 +214,14 @@ class TransformerInferenceEngine:
             notes_per_sample.append(sample_notes)
         return notes_per_sample
 
-    def generate_accompaniment(self, melody_notes, generation_start_tick: int, accompaniment_notes=[]):
+    def generate_accompaniment(self, melody_notes, generation_start_tick: int, accompaniment_notes=[], generation_length_frames=None):
         """
         Generates musical accompaniment based on a history of melody and accompaniment notes.
         This is the main public method for the engine.
         """
+        # Use provided generation length or fall back to instance default
+        effective_generation_length = generation_length_frames or self.generation_length_frames
+        
         preprocess_start_time = time.perf_counter()
 
         # Step 1: Update the internal melody history with the new user notes for this turn.
@@ -297,7 +300,7 @@ class TransformerInferenceEngine:
         #     plt.savefig(save_path)
         #     plt.close()
         with torch.no_grad():
-            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=self.generation_length_frames)
+            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=effective_generation_length)
         inference_end_time = time.perf_counter()
 
         postprocess_start_time = time.perf_counter()

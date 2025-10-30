@@ -271,7 +271,8 @@ def tick_loop(
     all_timing_data: list, # Pass list in to be mutated
     metronome_enabled: bool,
     generation_interval_ticks: int,
-    current_tick_ref: dict = None  # Optional shared tick reference for MIDI file input
+    current_tick_ref: dict = None,  # Optional shared tick reference for MIDI file input
+    generation_length_frames: int = None  # Optional generation length override
 ):
     """
     Main tick loop for the client. (main thread)
@@ -392,6 +393,10 @@ def tick_loop(
                 "melody_notes": notes_for_next_request,
                 "generation_start_tick": next_interval_start_tick
             }
+            
+            # Add generation length if specified
+            if generation_length_frames is not None:
+                request_data["generation_length_frames"] = generation_length_frames
             inference_request_queue.put((request_data, request_data.copy())) # Pass a copy for logging
             notes_for_next_request = [] # Clear the buffer
 
@@ -497,6 +502,8 @@ def main():
                        help="Number of beats per bar")
     parser.add_argument("--generation_interval_ticks", type=int, default=config.DEFAULT_GENERATION_INTERVAL_TICKS,
                        help="Number of ticks between generation requests")
+    parser.add_argument("--generation_length_frames", type=int, default=None,
+                       help="Number of frames to generate per request (overrides server default)")
     
     # Display arguments
     parser.add_argument("--log_lines", type=int, default=config.DEFAULT_LOG_LINES,
@@ -644,7 +651,8 @@ def main():
             all_timing_data,
             args.metronome,
             args.generation_interval_ticks,
-            current_tick_ref),
+            current_tick_ref,
+            args.generation_length_frames),
         daemon=True
     )
 

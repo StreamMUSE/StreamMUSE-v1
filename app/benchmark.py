@@ -18,7 +18,7 @@ def clear_server_history(server_url):
         print(f"Error clearing server history: {e}")
         return False
 
-def run_benchmark(server_url: str, num_requests: int, output_file: str):
+def run_benchmark(server_url: str, num_requests: int, output_file: str, generation_length_frames: int = None):
     """
     Runs the benchmark by sending a fixed set of notes to the server multiple times.
 
@@ -26,6 +26,7 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str):
         server_url (str): The full URL to the /generate_accompaniment endpoint.
         num_requests (int): The number of requests to send.
         output_file (str): The path to save the resulting CSV file.
+        generation_length_frames (int): Optional generation length to test specific values.
     """
     # A consistent set of notes to send for each request to ensure a fair test.
     # This simulates playing a C major scale.
@@ -73,6 +74,10 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str):
             "generation_start_tick": generation_start_tick,
             "client_request_send_time": time.perf_counter()
         }
+        
+        # Add generation length if specified
+        if generation_length_frames is not None:
+            request_data["generation_length_frames"] = generation_length_frames
 
         try:
             # --- Send Request and Measure Time ---
@@ -181,6 +186,7 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str):
             'total_successful_requests': len(all_results),
             'melody_notes_sent': melody_notes,
             'generation_start_tick': generation_start_tick,
+            'generation_length_frames': generation_length_frames,
             'benchmark_timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
         },
         'responses': all_responses
@@ -234,6 +240,12 @@ if __name__ == "__main__":
         required=True,
         help="Path to save the output CSV file (e.g., 'results/my_test.csv')."
     )
+    parser.add_argument(
+        "--generation_length_frames",
+        type=int,
+        default=None,
+        help="Number of frames to generate per request (overrides server default)."
+    )
     args = parser.parse_args()
 
-    run_benchmark(args.server_url, args.num_requests, args.output_file) 
+    run_benchmark(args.server_url, args.num_requests, args.output_file, args.generation_length_frames) 

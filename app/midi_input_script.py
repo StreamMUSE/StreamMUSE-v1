@@ -6,6 +6,10 @@ import os
 import json
 import torch
 import numpy as np
+
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from preprocess.xf_midi import XFMidi
 from preprocess.preprocess_midi2pt_dataset import DURATION_TEMPLATES
 from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN

@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from typing import Optional
 import uvicorn
 import time
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ class InferenceRequest(BaseModel):
     melody_notes: list[MelodyNoteEvent]
     generation_start_tick: int
     client_request_send_time: float
+    generation_length_frames: Optional[int] = None
 
 class AccompanimentNoteEvent(BaseModel):
     pitch: int
@@ -232,9 +234,13 @@ async def generate_accompaniment(request: InferenceRequest):
     
     melody_notes_dicts = [note.dict() for note in request.melody_notes]
     
+    # Use request-specific generation length or fall back to server default
+    generation_length = request.generation_length_frames or inference_engine.generation_length_frames
+    
     accompaniment_dicts, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time = inference_engine.generate_accompaniment(
         melody_notes_dicts,
-        generation_start_tick=request.generation_start_tick
+        generation_start_tick=request.generation_start_tick,
+        generation_length_frames=generation_length
     )
     
     response_output_time = time.perf_counter()
