@@ -67,6 +67,7 @@ results/
 /app/results
 my-temp-space
 /app/logs
+/app/experiment_log/
 temp3/
 prep_samples/
 inference_benchmark/temp/
