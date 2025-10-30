@@ -160,7 +160,7 @@ class InferenceEngineStanley():
 
             # Drop notes that exceed the maximum polyphony for a given tick.
             if polyphony_counts[tick] >= max_polyphony:
-                print(f"Warning: Exceeded max polyphony at tick {tick}. Note with pitch {note['pitch']} dropped.")
+                # print(f"Warning: Exceeded max polyphony at tick {tick}. Note with pitch {note['pitch']} dropped.")
                 continue
             
             # Find the index of the closest duration template.

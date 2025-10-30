@@ -38,7 +38,7 @@ class StreamMUSEConfig:
     DEFAULT_INJECTION_STATUS_URL = "http://localhost:8988/injection_status"
     
     # Musical timing
-    DEFAULT_TEMPO = 90.0
+    DEFAULT_TEMPO = 120.0
     DEFAULT_TICKS_PER_BEAT = 4
     DEFAULT_BEATS_PER_BAR = 4
     DEFAULT_GENERATION_INTERVAL_TICKS = 2

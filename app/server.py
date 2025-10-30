@@ -23,6 +23,10 @@ class InferenceRequest(BaseModel):
     generation_start_tick: int
     client_request_send_time: float
     generation_length_frames: Optional[int] = None
+    # Analysis parameters
+    inference_interval_ticks: Optional[int] = None
+    tempo: Optional[float] = None
+    assumed_network_latency_ms: Optional[float] = None
 
 class AccompanimentNoteEvent(BaseModel):
     pitch: int
@@ -221,6 +225,69 @@ async def get_injection_status():
     global injection_state
     return injection_state
 
+# Global state for accumulated latency tracking
+accumulated_latency_ms = 0.0
+
+def calculate_musical_timing_analysis(
+    inference_duration_ms: float, 
+    generation_length_frames: int,
+    inference_interval_ticks: Optional[int] = None,
+    tempo: Optional[float] = None,
+    assumed_network_latency_ms: Optional[float] = None
+):
+    """
+    Calculate compact timing analysis for real-time requests.
+    
+    Args:
+        inference_duration_ms: Actual inference time in milliseconds
+        generation_length_frames: Number of frames generated
+        inference_interval_ticks: Specific interval to analyze (if provided)
+        tempo: BPM for musical timing calculation
+        assumed_network_latency_ms: Additional network latency to include
+    
+    Returns:
+        String with one-line timing analysis
+    """
+    global accumulated_latency_ms
+    
+    # Check if we have all parameters for full analysis
+    has_full_params = all([
+        inference_interval_ticks is not None,
+        tempo is not None,
+        assumed_network_latency_ms is not None
+    ])
+    
+    if not has_full_params:
+        # Show basic info and what's missing
+        missing = []
+        if inference_interval_ticks is None:
+            missing.append("inference_interval_ticks")
+        if tempo is None:
+            missing.append("tempo")
+        if assumed_network_latency_ms is None:
+            missing.append("assumed_network_latency_ms")
+        
+        return (f"TIMING: Inference={inference_duration_ms:.1f}ms, "
+                f"Gen={generation_length_frames}f | "
+                f"Missing for full analysis: {', '.join(missing)}")
+    
+    # Full analysis with all parameters
+    tick_duration_ms = (60000 / tempo) / 4  # 4 ticks per beat
+    target_musical_time = tick_duration_ms * inference_interval_ticks
+    total_latency = inference_duration_ms + assumed_network_latency_ms
+    difference = total_latency - target_musical_time
+    
+    # Update accumulated latency (doesn't go below 0)
+    accumulated_latency_ms = max(0, accumulated_latency_ms + difference)
+    
+    status = "EARLY" if difference < 0 else "LATE" if difference > 0 else "EXACT"
+    
+    return (f"TIMING: Inf={inference_duration_ms:.1f}ms + Net={assumed_network_latency_ms:.1f}ms = "
+            f"{total_latency:.1f}ms vs Target={target_musical_time:.1f}ms "
+            f"({difference:+.1f}ms {status}) | "
+            f"Accumulated={accumulated_latency_ms:.1f}ms | "
+            f"Interval={inference_interval_ticks}ticks @ {tempo:.0f}BPM")
+
 @app.post('/generate_accompaniment', response_model=AccompanimentResponse)
 async def generate_accompaniment(request: InferenceRequest):
     """
@@ -244,6 +311,17 @@ async def generate_accompaniment(request: InferenceRequest):
     )
     
     response_output_time = time.perf_counter()
+    
+    # Calculate and display musical timing analysis
+    inference_duration_ms = (inference_end_time - inference_start_time) * 1000
+    timing_analysis = calculate_musical_timing_analysis(
+        inference_duration_ms, 
+        generation_length,
+        inference_interval_ticks=request.inference_interval_ticks,
+        tempo=request.tempo,
+        assumed_network_latency_ms=request.assumed_network_latency_ms
+    )
+    print(timing_analysis)
 
     return AccompanimentResponse(
         accompaniment=accompaniment_dicts,
@@ -263,15 +341,16 @@ async def clear_history():
     """
     清除历史和注入状态
     """
-    global injection_state
+    global injection_state, accumulated_latency_ms
     
     if inference_engine:
         inference_engine.clear_history()
         inference_engine.set_injection_offset(0)  # 重置注入偏移
+        accumulated_latency_ms = 0.0  # Reset accumulated latency
         injection_state = {
             'is_injected': False,
             'injection_length_ticks': 0,
             'injection_file_path': None
         }
-        return {"message": "History and injection state cleared successfully."}
+        return {"message": "History, injection state, and accumulated latency cleared successfully."}
     return JSONResponse(status_code=503, content={"error": "Inference engine not loaded"})
