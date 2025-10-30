@@ -18,7 +18,8 @@ def clear_server_history(server_url):
         print(f"Error clearing server history: {e}")
         return False
 
-def run_benchmark(server_url: str, num_requests: int, output_file: str, generation_length_frames: int = None):
+def run_benchmark(server_url: str, num_requests: int, output_file: str, generation_length_frames: int = None, 
+                 tempo: float = None, assumed_network_latency_ms: float = None, inference_interval_ticks: int = None):
     """
     Runs the benchmark by sending a fixed set of notes to the server multiple times.
 
@@ -27,6 +28,9 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
         num_requests (int): The number of requests to send.
         output_file (str): The path to save the resulting CSV file.
         generation_length_frames (int): Optional generation length to test specific values.
+        tempo (float): BPM for musical timing analysis.
+        assumed_network_latency_ms (float): Additional network latency to include in analysis.
+        inference_interval_ticks (int): Specific tick interval to analyze.
     """
     # A consistent set of notes to send for each request to ensure a fair test.
     # This simulates playing a C major scale.
@@ -78,6 +82,14 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
         # Add generation length if specified
         if generation_length_frames is not None:
             request_data["generation_length_frames"] = generation_length_frames
+            
+        # Add timing analysis parameters if specified
+        if tempo is not None:
+            request_data["tempo"] = tempo
+        if assumed_network_latency_ms is not None:
+            request_data["assumed_network_latency_ms"] = assumed_network_latency_ms
+        if inference_interval_ticks is not None:
+            request_data["inference_interval_ticks"] = inference_interval_ticks
 
         try:
             # --- Send Request and Measure Time ---
@@ -187,6 +199,9 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
             'melody_notes_sent': melody_notes,
             'generation_start_tick': generation_start_tick,
             'generation_length_frames': generation_length_frames,
+            'tempo': tempo,
+            'assumed_network_latency_ms': assumed_network_latency_ms,
+            'inference_interval_ticks': inference_interval_ticks,
             'benchmark_timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
         },
         'responses': all_responses
@@ -246,6 +261,25 @@ if __name__ == "__main__":
         default=None,
         help="Number of frames to generate per request (overrides server default)."
     )
+    parser.add_argument(
+        "--tempo",
+        type=float,
+        default=None,
+        help="BPM for musical timing analysis."
+    )
+    parser.add_argument(
+        "--assumed_network_latency_ms",
+        type=float,
+        default=None,
+        help="Additional network latency to include in analysis (ms)."
+    )
+    parser.add_argument(
+        "--inference_interval_ticks",
+        type=int,
+        default=None,
+        help="Specific tick interval to analyze."
+    )
     args = parser.parse_args()
 
-    run_benchmark(args.server_url, args.num_requests, args.output_file, args.generation_length_frames) 
+    run_benchmark(args.server_url, args.num_requests, args.output_file, args.generation_length_frames,
+                  args.tempo, args.assumed_network_latency_ms, args.inference_interval_ticks) 
