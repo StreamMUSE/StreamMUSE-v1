@@ -7,6 +7,7 @@ import argparse
 from typing import Literal
 import numpy as np
 import pdb
+import time
 
 def decode_output(outputs, save_path, tempo=120.0, prompt=True, single=False):
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
@@ -115,7 +116,6 @@ def continuation(model, midi_path, prompt_length=100, generation_length=400, tem
     with torch.no_grad():
         x = x.repeat(n_samples, 1, 1)
         x_mel_gt = x_mel_gt.repeat(n_samples, 1, 1)
-        import time
 
         start_time = time.time()
         if prompt_length == 0:
@@ -129,7 +129,7 @@ def continuation(model, midi_path, prompt_length=100, generation_length=400, tem
         output_i = [output[j][i : i + 1, :] for j in range(len(output))]
         with open(f"tensor_output_original_inference_wo_gt_{i}.txt", "w") as f:
             f.write(str(output_i))
-        decode_output(output_i, f"temp/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
+        decode_output(output_i, f"temp1/{model.save_name}/prompt{prompt_length}/{os.path.basename(midi_path)}_temp{temperature}_{i}.mid", tempo=90.0)
 
 
 if __name__ == "__main__":
@@ -137,10 +137,11 @@ if __name__ == "__main__":
     # np.random.seed(seed)
     # torch.manual_seed(seed)
     # torch.cuda.manual_seed_all(seed)
+    start_pre_time = time.time()
 
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
 
-    parser.add_argument("--model_path", type=str, default="results/Baseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt", help="path to model checkpoint")
+    parser.add_argument("--model_path", type=str, default="../shared_models/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt", help="path to model checkpoint")
     parser.add_argument("--prompt_len", type=int, default=75, help="length of prompt")
     parser.add_argument("--n_samples", type=int, default=1, help="number of samples")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature")
@@ -152,19 +153,26 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     model_path = args.model_path
-
+    model_path = "../shared_models/ModelAiraDeduped0.25/1.5.5/epoch=64-val_loss=0.73.ckpt"
+    
     model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, model_size=args.model_size, map_location=device)
+    # model = OldPtM2ATransformerWithAttention.load_from_checkpoint(checkpoint_path=model_path, map_location=device)
     model.save_name = os.path.basename(model_path)
     model.to(device)  # Move model to GPU
     model.eval()
 
     midi_file_path_set = ['inference_benchmark/inputs/aria_unique_skyline_top2_subset_5/mel', 'input/mel', 'inference_benchmark/inputs/test_set/mel']
 
-    # for midi_file_path in midi_file_path_set:
-    #     for midi in os.listdir(midi_file_path):
-    #         if midi.endswith('mid'):
-    #             midi = os.path.join(midi_file_path, midi)
-    #             continuation(model, midi, temperature=args.temperature, generation_length=400, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
+    end_pre_time = time.time()
+    print(f"Model loading time (before the inference): {end_pre_time - start_pre_time:.2f} seconds")
 
-    midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
-    continuation(model, midi, temperature=args.temperature, generation_length=150, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True)
+    for midi_file_path in midi_file_path_set:
+        for midi in os.listdir(midi_file_path):
+            if midi.endswith('mid'):
+                midi = os.path.join(midi_file_path, midi)
+                start_true_generation_time = time.time()
+                continuation(model, midi, temperature=args.temperature, generation_length=300, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
+                end_true_generation_time = time.time()
+                print(f"Total time for generating {midi}: {end_true_generation_time - start_true_generation_time:.2f} seconds")
+    # midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
+    # continuation(model, midi, temperature=args.temperature, generation_length=100, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=False)

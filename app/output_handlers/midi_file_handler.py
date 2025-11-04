@@ -64,16 +64,20 @@ class MidiFileHandler:
         )
         self.model_instrument.notes.append(midi_note)
 
-    def save_to_midi(self, session_log_dir: str, log_file_prefix="performance"):
+    def save_to_midi(self, session_log_dir: str, log_file_prefix="performance", midi_file_name=None):
         """
         Saves the collected notes to a timestamped MIDI file in the session directory.
         """
         if not self.user_instrument.notes and not self.model_instrument.notes:
             print("\nNo notes were played, MIDI file will not be saved.")
             return
-        
-        log_filename = f"{log_file_prefix}.mid"
-        log_filepath = os.path.join(session_log_dir, log_filename)
+
+        if midi_file_name is None:
+            midi_file_name = f"{log_file_prefix}.mid"
+            log_filepath = os.path.join(session_log_dir, midi_file_name)
+        else:
+            midi_file_name = f"{midi_file_name}.mid"
+            log_filepath = f"{session_log_dir}/{midi_file_name}"
 
         try:
             self.midi_data.write(log_filepath)

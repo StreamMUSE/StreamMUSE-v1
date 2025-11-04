@@ -9,7 +9,7 @@ from pydantic import BaseModel
 import uvicorn
 import time
 from contextlib import asynccontextmanager
-from app.inference_engines.transformer_engine import TransformerInferenceEngine
+# from app.inference_engines.transformer_engine import TransformerInferenceEngine
 from app.inference_engines.transformer_engine_stanley import InferenceEngineStanley
 
 class MelodyNoteEvent(BaseModel):
