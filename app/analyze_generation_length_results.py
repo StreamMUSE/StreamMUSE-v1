@@ -298,6 +298,7 @@ class GenerationLengthAnalyzer:
         
         if self.detailed_data is not None:
             self._plot_detailed_distributions()
+            self._plot_stacked_distributions()
             self._plot_correlation_analysis()
         
         print(f"✅ Visualizations saved to {self.plots_dir}")
@@ -706,9 +707,12 @@ class GenerationLengthAnalyzer:
             ax = axes[i]
             data = self.detailed_data[self.detailed_data['generation_length'] == gen_length]
             
-            # Plot histogram
-            ax.hist(data['round_trip_time'] * 1000, bins=20, alpha=0.7, 
-                   edgecolor='black', color=sns.color_palette("husl", n_lengths)[i])
+            # Plot histogram with fixed bin width (5ms)
+            rtt_data = data['round_trip_time'] * 1000  # Convert to ms
+            bin_width = 5  # 5ms bin width
+            bins = np.arange(rtt_data.min(), rtt_data.max() + bin_width, bin_width)
+            ax.hist(rtt_data, bins=bins, alpha=0.7, 
+                   edgecolor='black', linewidth=0.5, color=sns.color_palette("husl", n_lengths)[i])
             
             ax.set_title(f'Generation Length: {gen_length} frames', 
                         fontsize=12, fontweight='bold')
@@ -733,6 +737,44 @@ class GenerationLengthAnalyzer:
         
         plt.tight_layout()
         plt.savefig(self.plots_dir / "detailed_distributions.png", 
+                   dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_stacked_distributions(self):
+        """Plot all distributions as lines on a single plot."""
+        generation_lengths = sorted(self.detailed_data['generation_length'].unique())
+        
+        fig, ax = plt.subplots(figsize=(14, 8))
+        
+        colors = sns.color_palette("husl", len(generation_lengths))
+        
+        for i, gen_length in enumerate(generation_lengths):
+            data = self.detailed_data[self.detailed_data['generation_length'] == gen_length]
+            rtt_data = data['round_trip_time'] * 1000  # Convert to ms
+            
+            # Calculate histogram data with fixed bin width (5ms)
+            bin_width = 5  # 5ms bin width
+            bins = np.arange(rtt_data.min(), rtt_data.max() + bin_width, bin_width)
+            counts, bins = np.histogram(rtt_data, bins=bins, density=True)
+            bin_centers = (bins[:-1] + bins[1:]) / 2
+            
+            # Plot as line
+            ax.plot(bin_centers, counts, label=f'{gen_length} frames', 
+                   color=colors[i], linewidth=2.5, alpha=0.8)
+            
+            # Add vertical line for mean
+            mean_rtt = rtt_data.mean()
+            ax.axvline(mean_rtt, color=colors[i], linestyle='--', alpha=0.6, linewidth=1.5)
+        
+        ax.set_xlabel('Round Trip Time (ms)', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Density', fontsize=14, fontweight='bold')
+        ax.set_title('Round Trip Time Distributions by Generation Length\n(Solid lines: distributions, Dashed lines: means)', 
+                    fontsize=16, fontweight='bold')
+        ax.legend(fontsize=12, framealpha=0.9)
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(self.plots_dir / "stacked_distributions.png", 
                    dpi=300, bbox_inches='tight')
         plt.close()
     
