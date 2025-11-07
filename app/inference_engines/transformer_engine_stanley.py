@@ -277,6 +277,7 @@ class InferenceEngineStanley():
         # Use provided generation length or fall back to instance default
         effective_generation_length = generation_length_frames or self.generation_length_frames
         
+        torch.cuda.synchronize()
         preprocess_start_time = time.perf_counter()
 
         absolute_melody_notes = []
@@ -355,6 +356,7 @@ class InferenceEngineStanley():
         stacked = torch.stack([x_acc, x_mel], dim=2)
         x = stacked.view(batch_size, seq_len * 2, subseq_len)
 
+        torch.cuda.synchronize()
         inference_start_time = time.perf_counter()
 
         # pdb.set_trace()
@@ -365,7 +367,9 @@ class InferenceEngineStanley():
         with torch.no_grad():
             output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=effective_generation_length)
 
+        torch.cuda.synchronize()
         inference_end_time = time.perf_counter()
+        torch.cuda.synchronize()
         postprocess_start_time = time.perf_counter()
 
         # output_0 = [output_tensors[j][0 : 0 + 1, :] for j in range(len(output_tensors))]
