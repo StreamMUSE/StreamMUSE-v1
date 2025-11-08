@@ -19,7 +19,8 @@ def clear_server_history(server_url):
         return False
 
 def run_benchmark(server_url: str, num_requests: int, output_file: str, generation_length_frames: int = None, 
-                 tempo: float = None, assumed_network_latency_ms: float = None, inference_interval_ticks: int = None):
+                 tempo: float = None, assumed_network_latency_ms: float = None, inference_interval_ticks: int = None,
+                 prompt_length_ticks: int = None):
     """
     Runs the benchmark by sending a fixed set of notes to the server multiple times.
 
@@ -31,6 +32,7 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
         tempo (float): BPM for musical timing analysis.
         assumed_network_latency_ms (float): Additional network latency to include in analysis.
         inference_interval_ticks (int): Specific tick interval to analyze.
+        prompt_length_ticks (int): Optional context length in ticks for the model.
     """
     # A consistent set of notes to send for each request to ensure a fair test.
     # This simulates playing a C major scale.
@@ -90,6 +92,8 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
             request_data["assumed_network_latency_ms"] = assumed_network_latency_ms
         if inference_interval_ticks is not None:
             request_data["inference_interval_ticks"] = inference_interval_ticks
+        if prompt_length_ticks is not None:
+            request_data["prompt_length_ticks"] = prompt_length_ticks
 
         try:
             # --- Send Request and Measure Time ---
@@ -279,7 +283,13 @@ if __name__ == "__main__":
         default=None,
         help="Specific tick interval to analyze."
     )
+    parser.add_argument(
+        "--prompt_length_ticks",
+        type=int,
+        default=None,
+        help="Context length in ticks for the model (overrides server default)."
+    )
     args = parser.parse_args()
 
     run_benchmark(args.server_url, args.num_requests, args.output_file, args.generation_length_frames,
-                  args.tempo, args.assumed_network_latency_ms, args.inference_interval_ticks) 
+                  args.tempo, args.assumed_network_latency_ms, args.inference_interval_ticks, args.prompt_length_ticks) 

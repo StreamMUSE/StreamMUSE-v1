@@ -23,6 +23,7 @@ class InferenceRequest(BaseModel):
     generation_start_tick: int
     client_request_send_time: float
     generation_length_frames: Optional[int] = None
+    prompt_length_ticks: Optional[int] = None
     # Analysis parameters
     inference_interval_ticks: Optional[int] = None
     tempo: Optional[float] = None
@@ -307,7 +308,8 @@ async def generate_accompaniment(request: InferenceRequest):
     accompaniment_dicts, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time = inference_engine.generate_accompaniment(
         melody_notes_dicts,
         generation_start_tick=request.generation_start_tick,
-        generation_length_frames=generation_length
+        generation_length_frames=generation_length,
+        prompt_length_ticks=request.prompt_length_ticks
     )
     
     response_output_time = time.perf_counter()

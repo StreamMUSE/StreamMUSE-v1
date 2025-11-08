@@ -1,0 +1,32 @@
+# Quick Test Configuration for StreamMUSE Bulk Benchmark
+# A minimal configuration for testing the bulk benchmark system
+
+experiment:
+  name: "quick_test"
+  description: "Quick test of bulk benchmark system with minimal experiments"
+  output_dir: "experiments/quick_test_results"
+
+server:
+  url: "http://localhost:8000/generate_accompaniment"
+
+benchmark:
+  num_requests: 10  # Small number for quick testing
+  tempo: 120.0
+
+# Simple grid search - just 2x2 = 4 experiments
+parameters:
+  generation_length_frames: [1, 5]
+  prompt_length_ticks: [48, 96]
+
+execution:
+  parallel: false
+  retry_failed: true
+  max_retries: 1
+  delay_between_experiments: 2.0
+  clear_server_history: true
+
+analysis:
+  generate_plots: false  # Disable plotting for quick test
+  generate_summary: true
+  export_combined_csv: true
+  calculate_percentiles: []

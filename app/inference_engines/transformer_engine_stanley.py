@@ -265,7 +265,7 @@ class InferenceEngineStanley():
             notes_per_sample.append(sample_notes)
         return notes_per_sample
 
-    def generate_accompaniment(self, melody_notes, generation_start_tick, acc_notes=None, generation_length_frames=None):
+    def generate_accompaniment(self, melody_notes, generation_start_tick, acc_notes=None, generation_length_frames=None, prompt_length_ticks=None):
         """
         生成伴奏
         Args:
@@ -276,6 +276,9 @@ class InferenceEngineStanley():
         """
         # Use provided generation length or fall back to instance default
         effective_generation_length = generation_length_frames or self.generation_length_frames
+        
+        # Use provided prompt length or fall back to instance default
+        effective_prompt_length_ticks = prompt_length_ticks or self.prompt_length_ticks
         
         torch.cuda.synchronize()
         preprocess_start_time = time.perf_counter()
@@ -301,7 +304,7 @@ class InferenceEngineStanley():
 
         # Get the length of our actually prompt 
         prompt_end_tick = absolute_generation_start_tick
-        prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
+        prompt_start_tick = max(0, prompt_end_tick - effective_prompt_length_ticks)
         actual_prompt_length_ticks = prompt_end_tick - prompt_start_tick
         if actual_prompt_length_ticks <= 0: # check if prompt length is valid
             raise ValueError("Prompt length must be greater than zero.")
