@@ -15,7 +15,7 @@ benchmark:
 
 # Test different prompt lengths with injection
 parameters:
-  generation_length_frames: [1, 3, 5, 7, 9]  # Fixed generation length
+  generation_length_frames: [1, 3, 5, 7, 9]  # Different generation length
   prompt_length_ticks: [0, 64, 128, 192, 256, 320, 384]  # Different context lengths
 
 # Injection configuration - inject musical prompt matching the prompt_length_ticks parameter

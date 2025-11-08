@@ -2,33 +2,33 @@
 # Tests prompt length variations WITH musical injection
 
 experiment:
-  name: "injection_test"
-  description: "Test prompt length variations with musical injection"
-  output_dir: "experiments/injection_test_results"
+  name: "remote_gl_test"
+  description: "Test gl variations on remote server (Hyperstack - PC)"
+  output_dir: "experiments/remote_gl_test"
 
 server:
-  url: "http://localhost:8000/generate_accompaniment"
+  url: "http://localhost:8001/generate_accompaniment"
 
 benchmark:
-  num_requests: 50  # Moderate number for testing injection
+  num_requests: 1000  # Moderate number for testing injection
   tempo: 120.0
 
 # Test different prompt lengths with injection
 parameters:
-  generation_length_frames: [1, 3, 5, 7, 9]  # Fixed generation length
-  prompt_length_ticks: [0, 64, 128, 192, 256, 320, 384]  # Different context lengths
+  generation_length_frames: [1, 3, 5, 7, 9, 11, 13, 15]
+  prompt_length_ticks: [384]
 
 # Injection configuration - inject musical prompt matching the prompt_length_ticks parameter
 injection:
   enabled: true
-  file_path: "input/mel/001.mid"  # Update this to actual MIDI file path
+  file_path: "input/mel/001.mid"
   # injection_length_ticks will be automatically set to match prompt_length_ticks parameter
 
 execution:
   parallel: false
   retry_failed: false
   max_retries: 1
-  delay_between_experiments: 3.0  # Slightly longer delay for injection experiments
+  delay_between_experiments: 2.0
   clear_server_history: true
 
 analysis:
