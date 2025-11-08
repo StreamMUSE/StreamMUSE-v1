@@ -22,6 +22,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 import statistics
 from datetime import datetime
+from tqdm import tqdm
 
 # Import the existing benchmark function
 sys.path.append(str(Path(__file__).parent.parent))
@@ -79,11 +80,19 @@ class BulkBenchmarkRunner:
         else:
             base_name = self.config['experiment']['name']
         
-        # Add parameter values to name
+        # Add parameter values to name with shorter abbreviations
         param_strings = []
         for key, value in params.items():
-            if key in ['generation_length_frames', 'prompt_length_ticks', 'tempo']:
-                param_strings.append(f"{key}_{value}")
+            if key == 'generation_length_frames':
+                param_strings.append(f"GL{value}")
+            elif key == 'prompt_length_ticks':
+                param_strings.append(f"PL{value}")
+            elif key == 'tempo':
+                param_strings.append(f"T{value}")
+            elif key == 'assumed_network_latency_ms':
+                param_strings.append(f"NL{value}")
+            elif key == 'inference_interval_ticks':
+                param_strings.append(f"II{value}")
         
         if param_strings:
             return f"{base_name}_{'_'.join(param_strings)}"
@@ -94,12 +103,9 @@ class BulkBenchmarkRunner:
                               output_dir: Path, attempt: int = 1) -> bool:
         """Run a single benchmark experiment with the given parameters."""
         
-        print(f"\n{'='*60}")
-        print(f"🧪 Running Experiment: {experiment_name}")
-        print(f"📊 Parameters: {params}")
         if attempt > 1:
-            print(f"🔄 Attempt {attempt}")
-        print(f"{'='*60}")
+            print(f"\\n🔄 Retrying: {experiment_name} (Attempt {attempt})")
+            print(f"📊 Parameters: {params}")
         
         # Create output file path
         output_file = output_dir / f"{experiment_name}.csv"
@@ -120,6 +126,17 @@ class BulkBenchmarkRunner:
         for key, value in params.items():
             benchmark_args[key] = value
         
+        # Add injection parameters if enabled
+        injection_config = self.config.get('injection', {})
+        if injection_config.get('enabled', False):
+            injection_file_path = injection_config.get('file_path')
+            
+            # If prompt_length_ticks is in params, use it as injection_length_ticks
+            if 'prompt_length_ticks' in params and injection_file_path:
+                benchmark_args['injection_file_path'] = injection_file_path
+                benchmark_args['injection_length_ticks'] = params['prompt_length_ticks']
+                print(f"🎵 Will inject {params['prompt_length_ticks']} ticks from {injection_file_path}")
+        
         # Clear server history if requested
         if self.config.get('execution', {}).get('clear_server_history', True):
             clear_server_history(self.config['server']['url'])
@@ -135,8 +152,7 @@ class BulkBenchmarkRunner:
             if not output_file.exists():
                 raise FileNotFoundError(f"Benchmark output file not created: {output_file}")
             
-            print(f"✅ Experiment completed in {end_time - start_time:.1f} seconds")
-            print(f"📁 Results saved to: {output_file}")
+            # Store success silently - tqdm shows overall progress
             
             # Store experiment metadata
             experiment_info = {
@@ -223,7 +239,7 @@ class BulkBenchmarkRunner:
         
         combined_data = []
         
-        for experiment in self.results:
+        for experiment in tqdm(self.results, desc="Combining Results", unit="file"):
             csv_file = Path(experiment['output_file'])
             if csv_file.exists():
                 try:
@@ -339,14 +355,14 @@ class BulkBenchmarkRunner:
         # Run experiments
         delay = self.config.get('execution', {}).get('delay_between_experiments', 0)
         
-        for i, (params, name, base_name) in enumerate(all_experiments, 1):
-            print(f"\\n🔬 Progress: {i}/{len(all_experiments)}")
+        experiment_progress = tqdm(all_experiments, desc="Running Experiments", unit="exp")
+        for params, name, base_name in experiment_progress:
+            experiment_progress.set_description(f"Running: {name[:30]}...")
             
             self._run_single_experiment(params, name, output_dir)
             
             # Delay between experiments
-            if delay > 0 and i < len(all_experiments):
-                print(f"⏱️ Waiting {delay} seconds before next experiment...")
+            if delay > 0:
                 time.sleep(delay)
         
         # Retry failed experiments

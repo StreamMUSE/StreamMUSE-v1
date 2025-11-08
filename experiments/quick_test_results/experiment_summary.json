@@ -1,0 +1,58 @@
+{
+  "experiment_config": {
+    "name": "quick_test",
+    "description": "Quick test of bulk benchmark system with minimal experiments",
+    "output_dir": "experiments/quick_test_results"
+  },
+  "total_experiments": 4,
+  "successful_experiments": 4,
+  "failed_experiments": 0,
+  "results": [
+    {
+      "name": "quick_test_GL1_PL48",
+      "parameters": {
+        "generation_length_frames": 1,
+        "prompt_length_ticks": 48
+      },
+      "output_file": "experiments/quick_test_results/quick_test_GL1_PL48.csv",
+      "duration": 1.8765439987182617,
+      "timestamp": "2025-11-07T19:07:33.135179",
+      "attempt": 1
+    },
+    {
+      "name": "quick_test_GL1_PL96",
+      "parameters": {
+        "generation_length_frames": 1,
+        "prompt_length_ticks": 96
+      },
+      "output_file": "experiments/quick_test_results/quick_test_GL1_PL96.csv",
+      "duration": 1.9272892475128174,
+      "timestamp": "2025-11-07T19:07:38.125971",
+      "attempt": 1
+    },
+    {
+      "name": "quick_test_GL5_PL48",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 48
+      },
+      "output_file": "experiments/quick_test_results/quick_test_GL5_PL48.csv",
+      "duration": 2.824035167694092,
+      "timestamp": "2025-11-07T19:07:43.980597",
+      "attempt": 1
+    },
+    {
+      "name": "quick_test_GL5_PL96",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 96
+      },
+      "output_file": "experiments/quick_test_results/quick_test_GL5_PL96.csv",
+      "duration": 2.7695388793945312,
+      "timestamp": "2025-11-07T19:07:49.784949",
+      "attempt": 1
+    }
+  ],
+  "failed": [],
+  "generated_at": "2025-11-07T19:07:51.790521"
+}

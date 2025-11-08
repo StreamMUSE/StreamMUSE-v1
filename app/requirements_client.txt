@@ -5,3 +5,6 @@ pygame
 numpy
 pretty_midi
 pynput
+tqdm
+pandas
+pyyaml

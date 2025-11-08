@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import statistics
+from tqdm import tqdm
 
 def clear_server_history(server_url):
     """Calls the /clear_history endpoint to reset the server's state."""
@@ -18,9 +19,44 @@ def clear_server_history(server_url):
         print(f"Error clearing server history: {e}")
         return False
 
+def inject_music_to_server(server_url: str, injection_file_path: str, injection_length_ticks: int):
+    """
+    Inject music into the server's inference engine history.
+    
+    Args:
+        server_url: URL of the generate_accompaniment endpoint
+        injection_file_path: Path to MIDI file to inject
+        injection_length_ticks: Number of ticks to inject from the file
+    
+    Returns:
+        int: Number of ticks actually injected, 0 if failed
+    """
+    injection_url = server_url.replace('/generate_accompaniment', '/inject_music')
+    
+    try:
+        request_data = {
+            "injection_file_path": injection_file_path,
+            "injection_length_ticks": injection_length_ticks
+        }
+        
+        print(f"🎵 Injecting music: {injection_file_path} ({injection_length_ticks} ticks)")
+        response = requests.post(injection_url, json=request_data)
+        response.raise_for_status()
+        
+        result = response.json()
+        if result['success']:
+            print(f"✅ Injection successful: {result['melody_notes_injected']} melody notes, {result['accompaniment_notes_injected']} accompaniment notes")
+            return result['injection_length_ticks']
+        else:
+            print(f"❌ Injection failed: {result['message']}")
+            return 0
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error during injection: {e}")
+        return 0
+
 def run_benchmark(server_url: str, num_requests: int, output_file: str, generation_length_frames: int = None, 
                  tempo: float = None, assumed_network_latency_ms: float = None, inference_interval_ticks: int = None,
-                 prompt_length_ticks: int = None):
+                 prompt_length_ticks: int = None, injection_file_path: str = None, injection_length_ticks: int = None):
     """
     Runs the benchmark by sending a fixed set of notes to the server multiple times.
 
@@ -33,6 +69,8 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
         assumed_network_latency_ms (float): Additional network latency to include in analysis.
         inference_interval_ticks (int): Specific tick interval to analyze.
         prompt_length_ticks (int): Optional context length in ticks for the model.
+        injection_file_path (str): Path to MIDI file to inject as prompt.
+        injection_length_ticks (int): Number of ticks to inject from the file.
     """
     # A consistent set of notes to send for each request to ensure a fair test.
     # This simulates playing a C major scale.
@@ -59,7 +97,7 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
         }
     ]
     # We will always ask the model to generate notes starting from the next bar.
-    generation_start_tick = 16
+    base_generation_start_tick = 16
 
     # Prepare to collect data
     all_results = []
@@ -71,13 +109,24 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
     if not clear_server_history(server_url):
         print("Halting benchmark due to server connection issue.")
         return
+    
+    # Inject music if specified
+    injection_offset_ticks = 0
+    if injection_file_path and injection_length_ticks:
+        injection_offset_ticks = inject_music_to_server(server_url, injection_file_path, injection_length_ticks)
+        if injection_offset_ticks == 0:
+            print("Injection failed. Halting benchmark.")
+            return
+        print(f"🎯 Injection offset: {injection_offset_ticks} ticks. Adjusting generation_start_tick.")
 
-    for i in range(num_requests):
-        print(f"Sending request {i+1}/{num_requests}...")
+    for i in tqdm(range(num_requests), desc="Benchmarking", unit="req"):
+        
+        # Adjust generation start tick based on injection offset
+        adjusted_generation_start_tick = base_generation_start_tick + injection_offset_ticks
         
         request_data = {
             "melody_notes": melody_notes,
-            "generation_start_tick": generation_start_tick,
+            "generation_start_tick": adjusted_generation_start_tick,
             "client_request_send_time": time.perf_counter()
         }
         
@@ -289,7 +338,20 @@ if __name__ == "__main__":
         default=None,
         help="Context length in ticks for the model (overrides server default)."
     )
+    parser.add_argument(
+        "--injection_file_path",
+        type=str,
+        default=None,
+        help="Path to MIDI file to inject as prompt before benchmarking."
+    )
+    parser.add_argument(
+        "--injection_length_ticks",
+        type=int,
+        default=None,
+        help="Number of ticks to inject from the file."
+    )
     args = parser.parse_args()
 
     run_benchmark(args.server_url, args.num_requests, args.output_file, args.generation_length_frames,
-                  args.tempo, args.assumed_network_latency_ms, args.inference_interval_ticks, args.prompt_length_ticks) 
+                  args.tempo, args.assumed_network_latency_ms, args.inference_interval_ticks, args.prompt_length_ticks,
+                  args.injection_file_path, args.injection_length_ticks) 
