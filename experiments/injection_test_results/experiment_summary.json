@@ -1,0 +1,41 @@
+{
+  "experiment_config": {
+    "name": "injection_test",
+    "description": "Test prompt length variations with musical injection",
+    "output_dir": "experiments/injection_test_results"
+  },
+  "total_experiments": 3,
+  "successful_experiments": 0,
+  "failed_experiments": 3,
+  "results": [],
+  "failed": [
+    {
+      "name": "injection_test_GL5_PL48",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 48
+      },
+      "error": "Benchmark output file not created: experiments/injection_test_results/injection_test_GL5_PL48.csv",
+      "attempt": 1
+    },
+    {
+      "name": "injection_test_GL5_PL96",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 96
+      },
+      "error": "Benchmark output file not created: experiments/injection_test_results/injection_test_GL5_PL96.csv",
+      "attempt": 1
+    },
+    {
+      "name": "injection_test_GL5_PL144",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 144
+      },
+      "error": "Benchmark output file not created: experiments/injection_test_results/injection_test_GL5_PL144.csv",
+      "attempt": 1
+    }
+  ],
+  "generated_at": "2025-11-07T19:51:19.992109"
+}

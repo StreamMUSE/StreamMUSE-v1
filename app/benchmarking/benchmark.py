@@ -250,7 +250,7 @@ def run_benchmark(server_url: str, num_requests: int, output_file: str, generati
             'num_requests': num_requests,
             'total_successful_requests': len(all_results),
             'melody_notes_sent': melody_notes,
-            'generation_start_tick': generation_start_tick,
+            'generation_start_tick': adjusted_generation_start_tick,
             'generation_length_frames': generation_length_frames,
             'tempo': tempo,
             'assumed_network_latency_ms': assumed_network_latency_ms,
