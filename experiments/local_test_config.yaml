@@ -1,0 +1,37 @@
+# StreamMUSE Injection Test Configuration
+# Tests prompt length variations WITH musical injection
+
+experiment:
+  name: "local_gl_test"
+  description: "Test gl variations on pure local (PC - PC)"
+  output_dir: "experiments/local_gl_test"
+
+server:
+  url: "http://0.0.0.0:8988/generate_accompaniment"
+
+benchmark:
+  num_requests: 1000  # Moderate number for testing injection
+  tempo: 120.0
+
+# Test different prompt lengths with injection
+parameters:
+  generation_length_frames: [1, 3, 5, 7, 9, 11, 13, 15]
+  prompt_length_ticks: [384]
+
+# Injection configuration - inject musical prompt matching the prompt_length_ticks parameter
+injection:
+  enabled: true
+  file_path: "input/mel/001.mid"
+  # injection_length_ticks will be automatically set to match prompt_length_ticks parameter
+
+execution:
+  parallel: false
+  retry_failed: false
+  max_retries: 1
+  delay_between_experiments: 2.0
+  clear_server_history: true
+
+analysis:
+  generate_summary: true
+  export_combined_csv: true
+  calculate_percentiles: [50, 90, 95]

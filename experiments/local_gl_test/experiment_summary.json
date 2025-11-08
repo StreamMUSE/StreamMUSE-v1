@@ -1,0 +1,102 @@
+{
+  "experiment_config": {
+    "name": "local_gl_test",
+    "description": "Test gl variations on pure local (PC - PC)",
+    "output_dir": "experiments/local_gl_test"
+  },
+  "total_experiments": 8,
+  "successful_experiments": 8,
+  "failed_experiments": 0,
+  "results": [
+    {
+      "name": "local_gl_test_GL1_PL384",
+      "parameters": {
+        "generation_length_frames": 1,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL1_PL384.csv",
+      "duration": 156.57696413993835,
+      "timestamp": "2025-11-08T03:51:25.264667",
+      "attempt": 1
+    },
+    {
+      "name": "local_gl_test_GL3_PL384",
+      "parameters": {
+        "generation_length_frames": 3,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL3_PL384.csv",
+      "duration": 191.40121936798096,
+      "timestamp": "2025-11-08T03:54:39.671706",
+      "attempt": 1
+    },
+    {
+      "name": "local_gl_test_GL5_PL384",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL5_PL384.csv",
+      "duration": 235.29354596138,
+      "timestamp": "2025-11-08T03:58:37.971042",
+      "attempt": 1
+    },
+    {
+      "name": "local_gl_test_GL7_PL384",
+      "parameters": {
+        "generation_length_frames": 7,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL7_PL384.csv",
+      "duration": 283.3834054470062,
+      "timestamp": "2025-11-08T04:03:24.360226",
+      "attempt": 1
+    },
+    {
+      "name": "local_gl_test_GL9_PL384",
+      "parameters": {
+        "generation_length_frames": 9,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL9_PL384.csv",
+      "duration": 330.6781060695648,
+      "timestamp": "2025-11-08T04:08:58.044121",
+      "attempt": 1
+    },
+    {
+      "name": "local_gl_test_GL11_PL384",
+      "parameters": {
+        "generation_length_frames": 11,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL11_PL384.csv",
+      "duration": 378.5990631580353,
+      "timestamp": "2025-11-08T04:15:19.649019",
+      "attempt": 1
+    },
+    {
+      "name": "local_gl_test_GL13_PL384",
+      "parameters": {
+        "generation_length_frames": 13,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL13_PL384.csv",
+      "duration": 425.4943792819977,
+      "timestamp": "2025-11-08T04:22:28.149126",
+      "attempt": 1
+    },
+    {
+      "name": "local_gl_test_GL15_PL384",
+      "parameters": {
+        "generation_length_frames": 15,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_gl_test/local_gl_test_GL15_PL384.csv",
+      "duration": 471.07471895217896,
+      "timestamp": "2025-11-08T04:30:22.229529",
+      "attempt": 1
+    }
+  ],
+  "failed": [],
+  "generated_at": "2025-11-08T04:30:24.230889"
+}
