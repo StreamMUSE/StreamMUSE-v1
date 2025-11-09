@@ -1,0 +1,58 @@
+{
+  "experiment_config": {
+    "name": "andrew_latency_test",
+    "description": "Quick test of latency differences between andrew and bowen",
+    "output_dir": "experiments/andrew_test_results"
+  },
+  "total_experiments": 4,
+  "successful_experiments": 4,
+  "failed_experiments": 0,
+  "results": [
+    {
+      "name": "andrew_latency_test_GL1_PL384",
+      "parameters": {
+        "generation_length_frames": 1,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/andrew_test_results/andrew_latency_test_GL1_PL384.csv",
+      "duration": 58.461857080459595,
+      "timestamp": "2025-11-09T01:29:08.265916",
+      "attempt": 1
+    },
+    {
+      "name": "andrew_latency_test_GL5_PL384",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/andrew_test_results/andrew_latency_test_GL5_PL384.csv",
+      "duration": 73.16041088104248,
+      "timestamp": "2025-11-09T01:30:24.585150",
+      "attempt": 1
+    },
+    {
+      "name": "andrew_latency_test_GL9_PL384",
+      "parameters": {
+        "generation_length_frames": 9,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/andrew_test_results/andrew_latency_test_GL9_PL384.csv",
+      "duration": 88.44826745986938,
+      "timestamp": "2025-11-09T01:31:56.190121",
+      "attempt": 1
+    },
+    {
+      "name": "andrew_latency_test_GL15_PL384",
+      "parameters": {
+        "generation_length_frames": 15,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/andrew_test_results/andrew_latency_test_GL15_PL384.csv",
+      "duration": 110.51436185836792,
+      "timestamp": "2025-11-09T01:33:49.881524",
+      "attempt": 1
+    }
+  ],
+  "failed": [],
+  "generated_at": "2025-11-09T01:33:51.884025"
+}
