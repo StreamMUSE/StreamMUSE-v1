@@ -322,7 +322,8 @@ def tick_loop(
     tick_history: list,  # 每个 tick 的 hit/miss/backup 记录
     metronome_enabled: bool,
     generation_interval_ticks: int,
-    generation_length_ticks: int = None,
+    generation_length_ticks: int = None,  # total generation length, for experiments
+    generation_length_per_request: int = None,  # for each request, we want the server to generate how many frames
     current_tick_ref: dict = None,  # Optional shared tick reference for MIDI file input
 ):
     """
@@ -338,17 +339,6 @@ def tick_loop(
     notes_for_next_request = []
     last_inference_timings = {}  # To persist timing info for display
     ticks_per_bar = ticks_per_beat * beats_per_bar
-
-    # 读取期望每次生成的帧数（以 client tick 为单位），由环境变量控制
-    try:
-        GENERATION_FRAMES = (
-            int(os.environ.get("GENERATION_LENGTH_FRAMES"))
-            if os.environ.get("GENERATION_LENGTH_FRAMES") is not None
-            else 6
-        )
-        print(f"Using GENERATION_LENGTH_FRAMES = {GENERATION_FRAMES}")
-    except Exception:
-        GENERATION_FRAMES = None  # temperary for debugging
 
     # --- Main Loop ---
     while True:
@@ -439,12 +429,13 @@ def tick_loop(
                     gen_start = request_data.get("generation_start_tick")
 
                 # 如果知道期望帧数和 generation 起始 tick，补全缺失 ticks（占位 pitch=-1）
-                if GENERATION_FRAMES is not None and gen_start is not None:
+                if generation_length_per_request is not None and gen_start is not None:
                     # map existing ticks
                     existing_ticks = {n["tick"] for n in newly_generated_notes}
                     for t in range(
                         gen_start,
-                        gen_start + (GENERATION_FRAMES + 1) // 2,  # 向上取整
+                        gen_start
+                        + (generation_length_per_request + 1) // 2,  # 向上取整
                     ):
                         if t not in existing_ticks:
                             newly_generated_notes.append(
@@ -516,6 +507,14 @@ def tick_loop(
                 "melody_notes": notes_for_next_request,
                 "generation_start_tick": next_interval_start_tick,
             }
+            # 如果在 CLI/外部设置了每次请求的生成长度，传给服务器（frames）
+            if generation_length_per_request is not None:
+                request_data["generation_length_frames"] = generation_length_per_request
+            else:
+                print(
+                    "Warning: generation_length_per_request is not set, server may use default length 5."
+                )
+                request_data["generation_length_frames"] = 5  # 默认值
             inference_request_queue.put(
                 (request_data, request_data.copy())
             )  # Pass a copy for logging
@@ -671,6 +670,12 @@ def main():
         type=int,
         default=config.DEFAULT_GENERATION_LENGTH,
         help="Number of frames to generate in total (for experiments only)",
+    )
+    parser.add_argument(
+        "--generation_length_per_request",
+        type=int,
+        default=None,
+        help="Number of frames to generate per request (for experiments only)",
     )
 
     # Display arguments
@@ -847,9 +852,9 @@ def main():
     )
 
     if args.generation_length is not None:
-        generation_length_tcks = args.generation_length // 2
+        generation_length_ticks = args.generation_length // 2
     else:
-        generation_length_tcks = None
+        generation_length_ticks = None
     music_pacer_thread = threading.Thread(
         target=tick_loop,
         args=(
@@ -867,7 +872,8 @@ def main():
             tick_history,
             args.metronome,
             args.generation_interval_ticks,
-            generation_length_tcks,
+            generation_length_ticks,
+            args.generation_length_per_request,
             current_tick_ref,
         ),
         daemon=True,

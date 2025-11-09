@@ -10,6 +10,7 @@ from m2a_transformer import RoFormerSymbolicTransformer, EOS_TOKEN, PAD_TOKEN
 from m2a_transformer_inference import decode_output
 import pdb
 
+
 def midi_to_note(midi_path, min_pitch=0, max_pitch=127, beat_div=4, program=None):
     """
     用 XFMidi 读取 midi 文件，返回 notes 列表，每个元素是 {'pitch', 'tick', 'duration'} 字典。
@@ -27,71 +28,78 @@ def midi_to_note(midi_path, min_pitch=0, max_pitch=127, beat_div=4, program=None
                 start_tick = int(round(note.start))
                 end_tick = int(round(note.end))
                 if start_tick >= 0 and end_tick < max_tick:
-                    notes.append({
-                        'pitch': note.pitch,
-                        'tick': start_tick,
-                        'duration': end_tick - start_tick
-                    })
+                    notes.append(
+                        {
+                            "pitch": note.pitch,
+                            "tick": start_tick,
+                            "duration": end_tick - start_tick,
+                        }
+                    )
     # 按tick排序
-    notes.sort(key=lambda x: x['tick'])
-    
+    notes.sort(key=lambda x: x["tick"])
+
     return notes, midi.resolution, max_tick
+
 
 def note_list_to_pretty_midi(notes, tempo=90, program=0, name="track"):
     time_step_length = 60.0 / tempo / 4
-    
+
     inst = None
     if program == 0:
-        inst = pretty_midi.Instrument(program=24, name='Guitar')
+        inst = pretty_midi.Instrument(program=24, name="Guitar")
     else:  # program == 1
-        inst = pretty_midi.Instrument(program=0, name='Piano')
-        
+        inst = pretty_midi.Instrument(program=0, name="Piano")
+
     for note in notes:
-        start = note['tick'] * time_step_length
-        end = DURATION_TEMPLATES[note['duration']] * time_step_length + start
+        start = note["tick"] * time_step_length
+        end = DURATION_TEMPLATES[note["duration"]] * time_step_length + start
         midi_note = pretty_midi.Note(
-            velocity=100,
-            pitch=note['pitch'],
-            start=start,
-            end=end
+            velocity=100, pitch=note["pitch"], start=start, end=end
         )
         inst.notes.append(midi_note)
     return inst
 
-class InferenceEngineStanley():
-    def __init__(self, checkpoint_path: str, model_size: str, max_polyphony=4, generation_length_frames=2, model_max_seq_len_frames=384):
+
+class InferenceEngineStanley:
+    def __init__(
+        self,
+        checkpoint_path: str,
+        model_size: str,
+        max_polyphony=4,
+        model_max_seq_len_frames=384,
+    ):
         # Check if the checkpoint file exists
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
         print(f"Loading model from: {checkpoint_path}")
 
         # Determine model size from checkpoint path name
-        self.model = RoFormerSymbolicTransformer.load_from_checkpoint(checkpoint_path, 
-                                                                          model_size=model_size, 
-                                                                          map_location=lambda storage, loc: storage.cuda(0) if torch.cuda.is_available() else 'cpu'
-                                                                          )
-        
+        self.model = RoFormerSymbolicTransformer.load_from_checkpoint(
+            checkpoint_path,
+            model_size=model_size,
+            map_location=lambda storage, loc: storage.cuda(0)
+            if torch.cuda.is_available()
+            else "cpu",
+        )
+
         # Move model to GPU if available
         if torch.cuda.is_available():
-            self.model.to('cuda:0')
+            self.model.to("cuda:0")
         self.model.eval()
         print("Model loaded successfully.")
-        
+
         # The model's max sequence length (the total number of tokens it can process at once).
         # This is measured in "frames", where one tick of music contains two frames:
         # one for the melody and one for the accompaniment.
         self.model_max_seq_len_frames = model_max_seq_len_frames
-        
+
         # The effective history length, in musical ticks, that the model uses as a prompt.
         # This must be half the frame length because ticks are interleaved (mel, acc, mel, acc...).
         self.prompt_length_ticks = self.model_max_seq_len_frames // 2
-        
+
         # The maximum number of simultaneous notes allowed at a single tick.
         self.max_polyphony = max_polyphony
-        
-        # The number of frames (melody + accompaniment) to generate in one go.
-        self.generation_length_frames = generation_length_frames
-        
+
         # Stateful history of all notes played during the session.
         # These are stored with absolute ticks relative to the start of the performance.
         self.melody_history = []
@@ -102,7 +110,7 @@ class InferenceEngineStanley():
 
         # 添加注入偏移跟踪
         self.injection_offset_ticks = 0  # 注入的tick数量
-    
+
     def set_injection_offset(self, offset_ticks: int):
         """
         设置注入偏移量
@@ -142,52 +150,58 @@ class InferenceEngineStanley():
         # We find the midpoints between these templates to decide which template a
         # given note duration is closest to.
         duration_boundaries = (DURATION_TEMPLATES[1:] + DURATION_TEMPLATES[:-1]) / 2.0
-        
+
         # Initialize the piano roll tensor.
         # Shape: (time, polyphony, features)
         # Features are (instrument_program, pitch, duration_index).
         # We use 255 as a special padding value, which is later ignored by the model.
         rolls = np.full((max_tick, max_polyphony, 3), dtype=np.uint8, fill_value=255)
-        
+
         # Keep track of how many notes are at each tick to handle polyphony.
         polyphony_counts = np.zeros(max_tick, dtype=np.uint8)
 
         for note in notes:
             # TEEHEE CHECKPOINT | SHOULD BE OK
-            tick = note['tick']
+            tick = note["tick"]
             if tick >= max_tick:
                 continue
 
             # Drop notes that exceed the maximum polyphony for a given tick.
             if polyphony_counts[tick] >= max_polyphony:
-                print(f"Warning: Exceeded max polyphony at tick {tick}. Note with pitch {note['pitch']} dropped.")
+                print(
+                    f"Warning: Exceeded max polyphony at tick {tick}. Note with pitch {note['pitch']} dropped."
+                )
                 continue
-            
+
             # Find the index of the closest duration template.
-            duration_idx = np.searchsorted(duration_boundaries, note['duration'])
+            duration_idx = np.searchsorted(duration_boundaries, note["duration"])
 
             # Place the note's data into the correct slot in the tensor.
             slot = polyphony_counts[tick]
             rolls[tick, slot, 0] = program
-            rolls[tick, slot, 1] = note['pitch']
+            rolls[tick, slot, 1] = note["pitch"]
             rolls[tick, slot, 2] = duration_idx
-            
+
             polyphony_counts[tick] += 1
 
         # For polyphonic ticks, sort the notes by pitch. This creates a canonical
         # representation, which helps the model learn more effectively.
         for i in range(max_tick):
             if polyphony_counts[i] > 1:
-                sorted_indices = np.argsort(rolls[i, :polyphony_counts[i], 1])
-                rolls[i, :polyphony_counts[i]] = rolls[i, :polyphony_counts[i]][sorted_indices]
+                sorted_indices = np.argsort(rolls[i, : polyphony_counts[i], 1])
+                rolls[i, : polyphony_counts[i]] = rolls[i, : polyphony_counts[i]][
+                    sorted_indices
+                ]
             if polyphony_counts[i] < max_polyphony:
-                rolls[i, polyphony_counts[i], 0] = 254 
-                
+                rolls[i, polyphony_counts[i], 0] = 254
+
         # Reshape the tensor to the final format expected by the model's preprocess function.
         # Shape becomes (max_tick, max_polyphony * 3), e.g., (48, 12).
         return torch.tensor(rolls.reshape(max_tick, -1))
 
-    def _tensors_to_notes(self, output_tensors: list, generation_start_tick=0, single=False):
+    def _tensors_to_notes(
+        self, output_tensors: list, generation_start_tick=0, single=False
+    ):
         """
         Decodes the symbolic output from the model back into a list of note events.
 
@@ -207,7 +221,7 @@ class InferenceEngineStanley():
         num_timesteps = len(output_tensors)
         if num_timesteps == 0:
             return []
-        
+
         n_samples = output_tensors[0].shape[0]
 
         # The generation_start_tick is already relative to the prompt start tick
@@ -216,10 +230,10 @@ class InferenceEngineStanley():
         for i in range(n_samples):
             sample_notes = []
             # We only iterate from the start of the generated content.
-            for time_step in range(relative_start_tick*2, num_timesteps):
+            for time_step in range(relative_start_tick * 2, num_timesteps):
                 data = output_tensors[time_step][i]
                 content = data.flatten()
-                
+
                 # Calculate the tick relative to the start of the *generation*.
                 tick = time_step // 2
 
@@ -239,11 +253,13 @@ class InferenceEngineStanley():
 
                     if j + 1 >= len(content):
                         break
-                    
+
                     # This is the core decoding step.
                     # The model predicts a single number that combines pitch and duration.
                     # We reverse the formula: pitch_duration = (duration_idx * 128) + pitch
-                    pitch_duration = int(content[j+1].item()) - 2 # Subtract special token offset
+                    pitch_duration = (
+                        int(content[j + 1].item()) - 2
+                    )  # Subtract special token offset
                     if pitch_duration < 0:
                         continue
 
@@ -256,16 +272,24 @@ class InferenceEngineStanley():
 
                     duration = DURATION_TEMPLATES[duration_idx]
 
-                    sample_notes.append({
-                        'tick': tick,
-                        'pitch': pitch,
-                        'duration': int(duration),
-                        'program': program
-                    })
+                    sample_notes.append(
+                        {
+                            "tick": tick,
+                            "pitch": pitch,
+                            "duration": int(duration),
+                            "program": program,
+                        }
+                    )
             notes_per_sample.append(sample_notes)
         return notes_per_sample
 
-    def generate_accompaniment(self, melody_notes, generation_start_tick, acc_notes=None):
+    def generate_accompaniment(
+        self,
+        melody_notes,
+        generation_start_tick,
+        acc_notes=None,
+        generation_length_frames=None,
+    ):
         """
         生成伴奏
         Args:
@@ -278,11 +302,13 @@ class InferenceEngineStanley():
         absolute_melody_notes = []
         for note in melody_notes:
             absolute_note = note.copy()
-            absolute_note['tick'] = note['tick'] + self.injection_offset_ticks
+            absolute_note["tick"] = note["tick"] + self.injection_offset_ticks
             absolute_melody_notes.append(absolute_note)
         self.melody_history.extend(absolute_melody_notes)
 
-        absolute_generation_start_tick = generation_start_tick + self.injection_offset_ticks
+        absolute_generation_start_tick = (
+            generation_start_tick + self.injection_offset_ticks
+        )
 
         # update the melody and accompaniment history
         if len(self.accompaniment_history) == 0 and acc_notes is not None:
@@ -290,59 +316,79 @@ class InferenceEngineStanley():
             absolute_acc_notes = []
             for note in acc_notes:
                 absolute_note = note.copy()
-                absolute_note['tick'] = note['tick'] + self.injection_offset_ticks
+                absolute_note["tick"] = note["tick"] + self.injection_offset_ticks
                 absolute_acc_notes.append(absolute_note)
             self.accompaniment_history.extend(absolute_acc_notes)
 
-        # Get the length of our actually prompt 
+        # Get the length of our actually prompt
         prompt_end_tick = absolute_generation_start_tick
         prompt_start_tick = max(0, prompt_end_tick - self.prompt_length_ticks)
         actual_prompt_length_ticks = prompt_end_tick - prompt_start_tick
-        if actual_prompt_length_ticks <= 0: # check if prompt length is valid
+        if actual_prompt_length_ticks <= 0:  # check if prompt length is valid
             raise ValueError("Prompt length must be greater than zero.")
-        
+
         # Filter notes and make their ticks relative to the *padded* window.
         # This aligns the existing history to the END of the context window.
         # For example, if padding_duration is 10, the first note's tick will be 10, not 0.
         prompt_melody = [
-            n for n in self.melody_history if prompt_start_tick <= n['tick'] < prompt_end_tick
+            n
+            for n in self.melody_history
+            if prompt_start_tick <= n["tick"] < prompt_end_tick
         ]
         prompt_acc = [
-            n for n in self.accompaniment_history if prompt_start_tick <= n['tick'] < prompt_end_tick
+            n
+            for n in self.accompaniment_history
+            if prompt_start_tick <= n["tick"] < prompt_end_tick
         ]
 
         # 调整提示音符为相对时间（用于模型处理)
         relative_prompt_melody = []
         for note in prompt_melody:
             relative_note = note.copy()
-            relative_note['tick'] = note['tick'] - prompt_start_tick
+            relative_note["tick"] = note["tick"] - prompt_start_tick
             relative_prompt_melody.append(relative_note)
-            
+
         relative_prompt_acc = []
         for note in prompt_acc:
             relative_note = note.copy()
-            relative_note['tick'] = note['tick'] - prompt_start_tick
+            relative_note["tick"] = note["tick"] - prompt_start_tick
             relative_prompt_acc.append(relative_note)
 
         # record the prompt into a log file
         with open("prompt_log.txt", "a") as f:
             f.write(f"Number of inference: {self.counter}\n")
-            f.write(f"Prompt start tick: {prompt_start_tick}, end tick: {prompt_end_tick}\n")
+            f.write(
+                f"Prompt start tick: {prompt_start_tick}, end tick: {prompt_end_tick}\n"
+            )
             f.write(f"Melody notes: {json.dumps(prompt_melody, indent=2)}\n")
             f.write(f"Accompaniment notes: {json.dumps(prompt_acc, indent=2)}\n")
 
         # Convert note events into tensor 'rolls' using the fixed model context length.
         # The resulting tensors will have shape (48, 12).
-        x_mel_raw = self._notes_to_rolls(relative_prompt_melody, actual_prompt_length_ticks, self.max_polyphony, program=0)
-        x_acc_raw = self._notes_to_rolls(relative_prompt_acc, actual_prompt_length_ticks, self.max_polyphony, program=1)
+        x_mel_raw = self._notes_to_rolls(
+            relative_prompt_melody,
+            actual_prompt_length_ticks,
+            self.max_polyphony,
+            program=0,
+        )
+        x_acc_raw = self._notes_to_rolls(
+            relative_prompt_acc,
+            actual_prompt_length_ticks,
+            self.max_polyphony,
+            program=1,
+        )
 
         # Preprocess the rolls and prepare them for the model (e.g., move to GPU).
         # `preprocess` combines (program, pitch, duration) into the single combined token
         # that the model was trained on.
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         x_mel_raw = x_mel_raw.unsqueeze(0).to(device)
         x_acc_raw = x_acc_raw.unsqueeze(0).to(device)
-        x_mel, x_acc = self.model.preprocess(x_mel_raw.long(), pitch_shift=torch.zeros(1, dtype=torch.int8).to(device), y=x_acc_raw.long())
+        x_mel, x_acc = self.model.preprocess(
+            x_mel_raw.long(),
+            pitch_shift=torch.zeros(1, dtype=torch.int8).to(device),
+            y=x_acc_raw.long(),
+        )
 
         # The model expects an interleaved sequence of melody and accompaniment frames.
         # We stack them and reshape to create this interleaved format.
@@ -359,7 +405,12 @@ class InferenceEngineStanley():
         #     f.write(str(x.cpu().numpy()))
 
         with torch.no_grad():
-            output_tensors = self.model.global_sampling(x, x_mel_gt=None, temperature=1, max_seq_len=self.generation_length_frames)
+            output_tensors = self.model.global_sampling(
+                x,
+                x_mel_gt=None,
+                temperature=1,
+                max_seq_len=generation_length_frames,
+            )
 
         inference_end_time = time.perf_counter()
         postprocess_start_time = time.perf_counter()
@@ -375,7 +426,9 @@ class InferenceEngineStanley():
         # 解码时需要用相对时间
         # generation_start_tick 在这里应该是相对于prompt_start_tick的相对位置
         relative_generation_start = absolute_generation_start_tick - prompt_start_tick
-        notes_output = self._tensors_to_notes(output_tensors, generation_start_tick=relative_generation_start)
+        notes_output = self._tensors_to_notes(
+            output_tensors, generation_start_tick=relative_generation_start
+        )
         notes_output = notes_output[0] if notes_output else []
 
         # 将解码的音符转换回绝对时间，然后过滤**
@@ -385,41 +438,56 @@ class InferenceEngineStanley():
         absolute_generated_notes = []
         for note in notes_output:
             # note['tick'] 是相对于 prompt_start_tick 的
-            absolute_tick = note['tick'] + prompt_start_tick
-            if absolute_tick >= absolute_generation_start_tick and note['program'] == 1:
+            absolute_tick = note["tick"] + prompt_start_tick
+            if absolute_tick >= absolute_generation_start_tick and note["program"] == 1:
                 absolute_note = note.copy()
-                absolute_note['tick'] = absolute_tick
+                absolute_note["tick"] = absolute_tick
                 absolute_generated_notes.append(absolute_note)
 
         # Update the history with the newly generated accompaniment notes.
         # This ensures they become part of the context for the next turn.
         # 先收集新生成的所有 tick
-        new_ticks = set(note['tick'] for note in absolute_generated_notes)
+        new_ticks = set(note["tick"] for note in absolute_generated_notes)
         # print(f"final generated notes:{final_generated_notes}")
         # print(f"acc history 1:{self.accompaniment_history}")
 
         tem = self.accompaniment_history.copy()
         # 从历史中移除 tick 与新生成重复的 note
-        self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] not in new_ticks]
-        tem = set(json.dumps(n, sort_keys=True) for n in tem) - set(json.dumps(n, sort_keys=True) for n in self.accompaniment_history)
+        self.accompaniment_history = [
+            n for n in self.accompaniment_history if n["tick"] not in new_ticks
+        ]
+        tem = set(json.dumps(n, sort_keys=True) for n in tem) - set(
+            json.dumps(n, sort_keys=True) for n in self.accompaniment_history
+        )
         print(f"difference{tem}")
         self.accompaniment_history.extend(absolute_generated_notes)
 
         # Prune history to prevent memory leaks in long-running sessions.
         # We can safely remove any notes that are older than the prompt window we just used.
 
-        self.melody_history = [n for n in self.melody_history if n['tick'] >= prompt_start_tick]
-        self.accompaniment_history = [n for n in self.accompaniment_history if n['tick'] >= prompt_start_tick]
+        self.melody_history = [
+            n for n in self.melody_history if n["tick"] >= prompt_start_tick
+        ]
+        self.accompaniment_history = [
+            n for n in self.accompaniment_history if n["tick"] >= prompt_start_tick
+        ]
 
         # 返回相对时间的音符（减去注入偏移）.
         # 这样我们就把 injection 的部分隐藏起来了
         relative_generated_notes = []
         for note in absolute_generated_notes:
             relative_note = note.copy()
-            relative_note['tick'] = note['tick'] - self.injection_offset_ticks
+            relative_note["tick"] = note["tick"] - self.injection_offset_ticks
             relative_generated_notes.append(relative_note)
 
-        return (relative_generated_notes, preprocess_start_time, inference_start_time, inference_end_time, postprocess_start_time)
+        return (
+            relative_generated_notes,
+            preprocess_start_time,
+            inference_start_time,
+            inference_end_time,
+            postprocess_start_time,
+        )
+
 
 if __name__ == "__main__":
     # seed = 42
@@ -428,18 +496,25 @@ if __name__ == "__main__":
     # torch.cuda.manual_seed_all(seed)
 
     # 1. 初始化 engine
-    checkpoint_path = os.getenv('CHECKPOINT_PATH', "/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt")
+    checkpoint_path = os.getenv(
+        "CHECKPOINT_PATH",
+        "/home/ubuntu/ugrip/stanleyz/StreamMUSE/results/ModelBaseline/cp_transformer_909+ac+1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch=00.val_loss=0.90296.ckpt",
+    )
     if not checkpoint_path:
-        print('Fatal Error: CHECKPOINT_PATH environment variable is not set')
-        print("Please run the server like: CHECKPOINT_PATH=path/to/model.ckpt uvicorn ...")
+        print("Fatal Error: CHECKPOINT_PATH environment variable is not set")
+        print(
+            "Please run the server like: CHECKPOINT_PATH=path/to/model.ckpt uvicorn ..."
+        )
         exit()
 
     # Get model parameters from environment variables with defaults
     try:
-        model_max_seq_len_frames = int(os.getenv('MODEL_MAX_SEQ_LEN_FRAMES', 400))
-        generation_length_frames = int(os.getenv('GENERATION_LENGTH_FRAMES', 2))
+        model_max_seq_len_frames = int(os.getenv("MODEL_MAX_SEQ_LEN_FRAMES", 400))
+        generation_length_frames = int(os.getenv("GENERATION_LENGTH_FRAMES", 2))
     except ValueError:
-        print("Fatal Error: Invalid integer value for model parameters in environment variables.")
+        print(
+            "Fatal Error: Invalid integer value for model parameters in environment variables."
+        )
         exit()
 
     try:
@@ -454,17 +529,17 @@ if __name__ == "__main__":
         inference_engine = InferenceEngineStanley(
             checkpoint_path=checkpoint_path,
             model_max_seq_len_frames=model_max_seq_len_frames,
-            generation_length_frames=generation_length_frames
+            generation_length_frames=generation_length_frames,
         )
     except FileNotFoundError as e:
-            print(f"Fatal Error: {e}")
-            exit()
+        print(f"Fatal Error: {e}")
+        exit()
 
     # 2. 读取 melody midi，转为 note list
     melody_notes, resolution, max_tick = midi_to_note("input/mel/001.mid")
     acc_notes, _, _ = midi_to_note("input/acc/001.mid")
-    melody_notes = sorted(melody_notes, key=lambda n: n['tick'])
-    acc_notes = sorted(acc_notes, key=lambda n: n['tick'])
+    melody_notes = sorted(melody_notes, key=lambda n: n["tick"])
+    acc_notes = sorted(acc_notes, key=lambda n: n["tick"])
 
     # 3. 获取所有 tick 的范围
     min_tick = 0
@@ -475,24 +550,27 @@ if __name__ == "__main__":
     acc_history = []
 
     # initialize with prompt notes
-    generation_start_tick = 100 # 从第100个tick开始生成伴奏
-    current_mel = [n for n in melody_notes if n['tick'] < generation_start_tick]
-    current_acc = [n for n in acc_notes if n['tick'] < generation_start_tick]
+    generation_start_tick = 100  # 从第100个tick开始生成伴奏
+    current_mel = [n for n in melody_notes if n["tick"] < generation_start_tick]
+    current_acc = [n for n in acc_notes if n["tick"] < generation_start_tick]
     acc_history.extend(current_acc)
     # pdb.set_trace()
-    acc_notes, _, _, _, _ = inference_engine.generate_accompaniment(current_mel, generation_start_tick=generation_start_tick, acc_notes=current_acc)
+    acc_notes, _, _, _, _ = inference_engine.generate_accompaniment(
+        current_mel, generation_start_tick=generation_start_tick, acc_notes=current_acc
+    )
     acc_history.extend(acc_notes)
-    for i in range(generation_start_tick+1, max_tick):
+    for i in range(generation_start_tick + 1, max_tick):
         # if i > 175:
         #     pdb.set_trace()
         if i >= max_steps:
             break
         # 当前 tick 的所有 note
-        current_mel = [n for n in melody_notes if n['tick'] == i-1]
-
+        current_mel = [n for n in melody_notes if n["tick"] == i - 1]
 
         # 关键：传入完整的 melody_history
-        acc_notes, _, _, _, _ = inference_engine.generate_accompaniment(current_mel, generation_start_tick=i)
+        acc_notes, _, _, _, _ = inference_engine.generate_accompaniment(
+            current_mel, generation_start_tick=i
+        )
         acc_history.extend(acc_notes)
 
         print(f"Step {i}, tick={i}, melody={current_mel}, generated acc={acc_notes}")
@@ -500,8 +578,12 @@ if __name__ == "__main__":
 
     # 5. 输出为两个track的midi文件
     midi_out = pretty_midi.PrettyMIDI(initial_tempo=90.0)
-    melody_instr = note_list_to_pretty_midi(melody_notes, resolution, program=0, name="melody")
-    acc_instr = note_list_to_pretty_midi(acc_history, resolution, program=1, name="accompaniment")
+    melody_instr = note_list_to_pretty_midi(
+        melody_notes, resolution, program=0, name="melody"
+    )
+    acc_instr = note_list_to_pretty_midi(
+        acc_history, resolution, program=1, name="accompaniment"
+    )
     midi_out.instruments.append(melody_instr)
     midi_out.instruments.append(acc_instr)
     midi_out.write("temp/fake_client/fake_client_output1.mid")
