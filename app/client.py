@@ -342,6 +342,8 @@ def tick_loop(
 
     # --- Main Loop ---
     while True:
+        time.sleep(seconds_per_tick)
+
         tick_count += 1
 
         if (
@@ -608,9 +610,6 @@ def tick_loop(
             model_notes_for_display,
             pending_user_notes_display,
         )
-
-        # --- 7. Sleep ---
-        time.sleep(seconds_per_tick)
 
 
 def main():
@@ -918,7 +917,7 @@ def main():
             test_midi_file_name = os.path.splitext(
                 os.path.basename(args.midi_file_input)
             )[0]
-            base_log_dir = f"experiments/realtime/prompt_{args.injection_length}_gen_{args.generation_length}"
+            base_log_dir = f"experiments1/realtime/baseline/interval{args.generation_interval_ticks}_gen{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
             session_log_dir = os.path.join(
                 base_log_dir, "batch_run", test_midi_file_name
             )
