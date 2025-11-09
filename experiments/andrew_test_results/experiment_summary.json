@@ -15,8 +15,8 @@
         "prompt_length_ticks": 384
       },
       "output_file": "experiments/andrew_test_results/andrew_latency_test_GL1_PL384.csv",
-      "duration": 58.461857080459595,
-      "timestamp": "2025-11-09T01:29:08.265916",
+      "duration": 57.46229362487793,
+      "timestamp": "2025-11-09T06:57:11.920212",
       "attempt": 1
     },
     {
@@ -26,8 +26,8 @@
         "prompt_length_ticks": 384
       },
       "output_file": "experiments/andrew_test_results/andrew_latency_test_GL5_PL384.csv",
-      "duration": 73.16041088104248,
-      "timestamp": "2025-11-09T01:30:24.585150",
+      "duration": 71.9266881942749,
+      "timestamp": "2025-11-09T06:58:27.000823",
       "attempt": 1
     },
     {
@@ -37,8 +37,8 @@
         "prompt_length_ticks": 384
       },
       "output_file": "experiments/andrew_test_results/andrew_latency_test_GL9_PL384.csv",
-      "duration": 88.44826745986938,
-      "timestamp": "2025-11-09T01:31:56.190121",
+      "duration": 86.90442538261414,
+      "timestamp": "2025-11-09T06:59:57.058288",
       "attempt": 1
     },
     {
@@ -48,11 +48,11 @@
         "prompt_length_ticks": 384
       },
       "output_file": "experiments/andrew_test_results/andrew_latency_test_GL15_PL384.csv",
-      "duration": 110.51436185836792,
-      "timestamp": "2025-11-09T01:33:49.881524",
+      "duration": 109.39150905609131,
+      "timestamp": "2025-11-09T07:01:49.622947",
       "attempt": 1
     }
   ],
   "failed": [],
-  "generated_at": "2025-11-09T01:33:51.884025"
+  "generated_at": "2025-11-09T07:01:51.625446"
 }
