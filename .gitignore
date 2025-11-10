@@ -74,4 +74,5 @@ inference_benchmark/temp/
 inference_benchmark/inputs/
 inference_benchmark/outputs/
 
+*.png
 # Note: analysis_results_local_server, analysis_results_local, analysis_results_remote are tracked
