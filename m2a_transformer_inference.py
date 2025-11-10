@@ -153,7 +153,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     model_path = args.model_path
-    model_path = "../shared_models/ModelAiraDeduped0.25/1.5.5/epoch=64-val_loss=0.73.ckpt"
+    # model_path = "../shared_models/ModelAiraDeduped0.25/1.5.5/epoch=64-val_loss=0.73.ckpt"
     
     model = RoFormerSymbolicTransformer.load_from_checkpoint(model_path, model_size=args.model_size, map_location=device)
     # model = OldPtM2ATransformerWithAttention.load_from_checkpoint(checkpoint_path=model_path, map_location=device)
@@ -161,7 +161,8 @@ if __name__ == "__main__":
     model.to(device)  # Move model to GPU
     model.eval()
 
-    midi_file_path_set = ['inference_benchmark/inputs/aria_unique_skyline_top2_subset_5/mel', 'input/mel', 'inference_benchmark/inputs/test_set/mel']
+    # midi_file_path_set = ['inference_benchmark/inputs/aria_unique_skyline_top2_subset_5/mel', 'input/mel', 'inference_benchmark/inputs/test_set/mel']
+    midi_file_path_set = ['/home/ubuntu/ugrip/formatted_dataset/test108/mel']
 
     end_pre_time = time.time()
     print(f"Model loading time (before the inference): {end_pre_time - start_pre_time:.2f} seconds")
