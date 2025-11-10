@@ -1,0 +1,5 @@
+Generation Length,Requests,Mean RTT (ms),Std RTT (ms),95% Upper Bound RTT (ms),99% Upper Bound RTT (ms),Mean Inference (ms),Notes Generated
+1,200.0,185.0,26.7,195.7,210.6,32.0,0.1
+5,200.0,257.3,7.5,265.5,294.1,103.9,0.1
+9,200.0,332.1,7.0,346.0,354.7,178.7,0.3
+15,200.0,444.7,7.9,458.3,472.8,290.4,0.5

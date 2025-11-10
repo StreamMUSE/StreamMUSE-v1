@@ -28,7 +28,7 @@ class GenerationLengthAnalyzer:
     Analyzes benchmark results to understand generation length effects on latency.
     """
     
-    def __init__(self, data_source: str, output_dir: str = "analysis_results"):
+    def __init__(self, data_source: str, output_dir: str = "analysis_results", anomaly_filter_pct: float = 0.0):
         self.data_source = Path(data_source)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -38,6 +38,7 @@ class GenerationLengthAnalyzer:
         
         self.detailed_data = None
         self.summary_data = None
+        self.anomaly_filter_pct = anomaly_filter_pct
         
     def load_data(self) -> bool:
         """Load data from various possible sources."""
@@ -60,7 +61,8 @@ class GenerationLengthAnalyzer:
                 print("❌ CSV file must contain 'generation_length' column")
                 return False
             
-            self.detailed_data = df
+            # Apply anomaly filtering
+            self.detailed_data = self._apply_anomaly_filter(df)
             self._calculate_summary_from_detailed()
             print(f"✅ Loaded data from {self.data_source}")
             return True
@@ -87,7 +89,8 @@ class GenerationLengthAnalyzer:
         # Load detailed results
         detailed_file = analysis_dir / "detailed_results_all_generation_lengths.csv"
         if detailed_file.exists():
-            self.detailed_data = pd.read_csv(detailed_file)
+            raw_data = pd.read_csv(detailed_file)
+            self.detailed_data = self._apply_anomaly_filter(raw_data)
             
         # Load summary statistics  
         summary_file = analysis_dir / "summary_statistics.csv"
@@ -137,7 +140,10 @@ class GenerationLengthAnalyzer:
             print("❌ No valid data files found")
             return False
             
-        self.detailed_data = pd.concat(all_data, ignore_index=True)
+        combined_data = pd.concat(all_data, ignore_index=True)
+        
+        # Apply anomaly filtering
+        self.detailed_data = self._apply_anomaly_filter(combined_data)
         self._calculate_summary_from_detailed()
         
         print(f"✅ Loaded {len(all_data)} files with {len(self.detailed_data)} total requests")
@@ -160,6 +166,68 @@ class GenerationLengthAnalyzer:
                 return int(match.group(1))
         
         return None
+    
+    def _apply_anomaly_filter(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filter out anomalies based on round trip time percentiles per generation length.
+        
+        Args:
+            df: DataFrame with round_trip_time and generation_length columns
+            
+        Returns:
+            Filtered DataFrame with anomalies removed per generation length
+        """
+        if self.anomaly_filter_pct <= 0 or 'round_trip_time' not in df.columns:
+            return df
+        
+        if 'generation_length' not in df.columns:
+            print("⚠️ No generation_length column found, skipping anomaly filtering")
+            return df
+        
+        original_count = len(df)
+        filtered_data = []
+        
+        print(f"🔍 Anomaly filtering ({self.anomaly_filter_pct}% each tail per generation length):")
+        
+        for gen_length in sorted(df['generation_length'].unique()):
+            gl_data = df[df['generation_length'] == gen_length]
+            gl_original_count = len(gl_data)
+            
+            if gl_original_count < 10:  # Skip filtering if too few samples
+                print(f"   GL {gen_length}: {gl_original_count} samples (too few, no filtering)")
+                filtered_data.append(gl_data)
+                continue
+            
+            # Calculate percentile thresholds for this generation length
+            lower_threshold = gl_data['round_trip_time'].quantile(self.anomaly_filter_pct / 100)
+            upper_threshold = gl_data['round_trip_time'].quantile(1 - self.anomaly_filter_pct / 100)
+            
+            # Filter data for this generation length
+            gl_filtered = gl_data[
+                (gl_data['round_trip_time'] >= lower_threshold) &
+                (gl_data['round_trip_time'] <= upper_threshold)
+            ].copy()
+            
+            gl_filtered_count = len(gl_filtered)
+            gl_removed_count = gl_original_count - gl_filtered_count
+            
+            print(f"   GL {gen_length}: {gl_original_count} → {gl_filtered_count} samples "
+                  f"(removed {gl_removed_count}, {gl_removed_count/gl_original_count*100:.1f}%)")
+            print(f"      RTT range: {lower_threshold*1000:.1f}ms - {upper_threshold*1000:.1f}ms")
+            
+            filtered_data.append(gl_filtered)
+        
+        if not filtered_data:
+            return df
+        
+        filtered_df = pd.concat(filtered_data, ignore_index=True)
+        filtered_count = len(filtered_df)
+        removed_count = original_count - filtered_count
+        
+        print(f"   Total: {original_count} → {filtered_count} samples "
+              f"(removed {removed_count}, {removed_count/original_count*100:.1f}%)")
+        
+        return filtered_df
     
     def _calculate_summary_from_detailed(self):
         """Calculate summary statistics from detailed data."""
@@ -300,6 +368,7 @@ class GenerationLengthAnalyzer:
             self._plot_detailed_distributions()
             self._plot_stacked_distributions()
             self._plot_correlation_analysis()
+            self._plot_parameter_constraint_analysis()
         
         print(f"✅ Visualizations saved to {self.plots_dir}")
     
@@ -829,6 +898,267 @@ class GenerationLengthAnalyzer:
                    dpi=300, bbox_inches='tight')
         plt.close()
     
+    def _calculate_percentiles_by_generation_length(self, percentiles=[50, 60, 70, 80, 90, 99.5]):
+        """
+        Calculate round trip time percentiles for each generation length separately.
+        
+        Args:
+            percentiles: List of percentiles to calculate
+        
+        Returns:
+            Dictionary mapping (generation_length, percentile) to round trip time in milliseconds
+        """
+        if self.detailed_data is None:
+            return {}
+        
+        percentile_data = {}
+        
+        for gen_length in sorted(self.detailed_data['generation_length'].unique()):
+            gen_data = self.detailed_data[self.detailed_data['generation_length'] == gen_length]
+            rtt_ms = gen_data['round_trip_time'] * 1000  # Convert to milliseconds
+            
+            for p in percentiles:
+                if len(rtt_ms) > 0:
+                    percentile_value = np.percentile(rtt_ms, p)
+                    percentile_data[(gen_length, p)] = percentile_value
+                else:
+                    percentile_data[(gen_length, p)] = np.inf
+        
+        return percentile_data
+    
+    def _evaluate_constraints_detailed(self, inference_interval, generation_length, round_trip_time_ms):
+        """
+        Evaluate parameter constraints with detailed breakdown.
+        
+        Args:
+            inference_interval: Inference interval in ticks
+            generation_length: Generation length in ticks
+            round_trip_time_ms: Round trip time in milliseconds
+        
+        Returns:
+            tuple: (constraint1_satisfied, constraint2_satisfied, constraint_status)
+            constraint_status: 0=both satisfied, 1=only C1 violated, 2=only C2 violated, 3=both violated
+        """
+        TICK_DURATION_MS = 125  # 125ms per tick at 120 BPM
+        
+        # Constraint 1: Inference interval must be long enough to avoid overlap
+        # inference_interval_ticks * 125ms >= round_trip_time
+        constraint1_satisfied = inference_interval * TICK_DURATION_MS >= round_trip_time_ms
+        
+        # Constraint 2: Generated music must arrive before it's needed
+        # round_trip_time < (generation_length - inference_interval) * 125ms
+        musical_buffer_ms = (generation_length - inference_interval) * TICK_DURATION_MS
+        constraint2_satisfied = round_trip_time_ms < musical_buffer_ms
+        
+        # Determine constraint status for coloring
+        if constraint1_satisfied and constraint2_satisfied:
+            constraint_status = 0  # Both satisfied (green)
+        elif not constraint1_satisfied and constraint2_satisfied:
+            constraint_status = 1  # Only constraint 1 violated (orange)
+        elif constraint1_satisfied and not constraint2_satisfied:
+            constraint_status = 2  # Only constraint 2 violated (yellow)
+        else:
+            constraint_status = 3  # Both violated (red)
+        
+        return constraint1_satisfied, constraint2_satisfied, constraint_status
+    
+    def _create_constraint_matrix_detailed(self, percentile_data, percentile, inference_range, generation_range):
+        """
+        Create a matrix showing detailed constraint status for parameter combinations.
+        
+        Args:
+            percentile_data: Dictionary mapping (generation_length_frames, percentile) to RTT
+            percentile: Which percentile to use for this matrix
+            inference_range: Range of inference intervals to test (in ticks)
+            generation_range: Range of generation lengths to test (in ticks)
+        
+        Returns:
+            2D numpy array with constraint status codes:
+            0 = both satisfied (green), 1 = C1 violated (orange), 2 = C2 violated (yellow), 3 = both violated (red)
+            -1 = no data (gray)
+        """
+        matrix = np.full((len(inference_range), len(generation_range)), -1, dtype=int)
+        
+        for i, inference_interval in enumerate(inference_range):
+            for j, generation_length_ticks in enumerate(generation_range):
+                # Convert ticks back to frames to lookup in percentile_data
+                generation_length_frames = (generation_length_ticks * 2) - 1
+                
+                # Get the RTT for this specific generation length and percentile
+                if (generation_length_frames, percentile) in percentile_data:
+                    rtt_ms = percentile_data[(generation_length_frames, percentile)]
+                    _, _, constraint_status = self._evaluate_constraints_detailed(
+                        inference_interval, generation_length_ticks, rtt_ms
+                    )
+                    matrix[i, j] = constraint_status
+                else:
+                    # If we don't have data for this generation length, mark as no data
+                    matrix[i, j] = -1
+        
+        return matrix
+    
+    def _plot_parameter_constraint_analysis(self):
+        """Generate parameter constraint analysis plots (I vs GL validity)."""
+        if self.detailed_data is None:
+            return
+        
+        # Calculate percentiles by generation length (frames)
+        percentile_data = self._calculate_percentiles_by_generation_length()
+        if not percentile_data:
+            return
+        
+        # Define parameter ranges (remove 0s as they don't make sense)
+        # Use the same ranges as the original constraint analysis
+        inference_range = np.arange(1, 5)  # 1-4 ticks inclusive (0 inference interval doesn't make sense)
+        generation_range = np.arange(1, 9)  # 1-8 ticks inclusive (0 generation length doesn't make sense)
+        
+        percentiles = [50, 60, 70, 80, 90, 99.5]
+        
+        # Create figure with six subplots in 2x3 layout
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig.suptitle('Parameter Constraint Analysis: Inference Interval vs Generation Length\n' +
+                    'Green=Valid, Orange=C1 Violated, Yellow=C2 Violated, Red=Both Violated', 
+                    fontsize=20, fontweight='bold', y=0.95)
+        
+        # Flatten axes for easier indexing
+        axes_flat = axes.flatten()
+        
+        # Define colors for different constraint statuses
+        # Order must match: -1=no data (gray), 0=valid (green), 1=C1 violated (orange), 2=C2 violated (yellow), 3=both violated (red)
+        # Since vmin=-1 and vmax=3, the colormap needs 5 colors in order: -1, 0, 1, 2, 3
+        constraint_colors = ['#d3d3d3', '#90ee90', '#ffa500', '#ffff80', '#ff6b6b']  # Gray, Green, Orange, Yellow, Red
+        
+        for idx, percentile in enumerate(percentiles):
+            ax = axes_flat[idx]
+            
+            # Create detailed constraint matrix showing which constraints are violated
+            detailed_matrix = self._create_constraint_matrix_detailed(percentile_data, percentile, inference_range, generation_range)
+            
+            # Create custom colormap for constraint status
+            from matplotlib.colors import ListedColormap
+            constraint_cmap = ListedColormap(constraint_colors)
+            
+            # Create heatmap with square cells and constraint-specific colors
+            sns.heatmap(detailed_matrix, 
+                       ax=ax,
+                       xticklabels=generation_range,
+                       yticklabels=inference_range,
+                       cmap=constraint_cmap,
+                       vmin=-1,
+                       vmax=3,
+                       square=True,
+                       cbar=False,  # We'll add a shared colorbar later
+                       annot=False,  # We'll add custom annotations
+                       linewidths=1,
+                       linecolor='white')
+            
+            # Customize annotations to show constraint status
+            for i in range(len(inference_range)):
+                for j in range(len(generation_range)):
+                    status = detailed_matrix[i, j]
+                    if status == -1:
+                        text = 'N/A'
+                        color = 'black'
+                    elif status == 0:
+                        text = '✓'
+                        color = 'darkgreen'
+                    elif status == 1:
+                        text = 'C1'
+                        color = 'darkorange'
+                    elif status == 2:
+                        text = 'C2'
+                        color = 'goldenrod'
+                    elif status == 3:
+                        text = '✗'
+                        color = 'darkred'
+                    else:
+                        text = '?'
+                        color = 'black'
+                    
+                    # Add text annotation (note: seaborn heatmap has (0,0) at top-left)
+                    ax.text(j + 0.5, i + 0.5, text, ha='center', va='center',
+                           color=color, fontsize=12, fontweight='bold')
+            
+            # Labels and title
+            ax.set_xlabel('Generation Length (ticks)', fontsize=14, fontweight='bold')
+            if idx in [0, 3]:  # Label y-axis on leftmost plots of each row
+                ax.set_ylabel('Inference Interval (ticks)', fontsize=14, fontweight='bold')
+            ax.set_title(f'{percentile}th Percentile\n(Generation-Length-Specific RTT)', fontsize=16, fontweight='bold')
+            
+            # Increase tick label font sizes
+            ax.tick_params(axis='both', which='major', labelsize=12)
+            
+            # Invert y-axis so (1,1) is at bottom-left
+            ax.invert_yaxis()
+            
+            # Add grid for better readability
+            ax.grid(True, alpha=0.3)
+        
+        # Add a comprehensive legend for all constraint statuses
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=constraint_colors[1], label='Valid (Both Constraints Satisfied)'),  # Green
+            Patch(facecolor=constraint_colors[2], label='Constraint 1 Violated (Interval Too Short)'),  # Orange
+            Patch(facecolor=constraint_colors[3], label='Constraint 2 Violated (Buffer Too Small)'),  # Yellow
+            Patch(facecolor=constraint_colors[4], label='Both Constraints Violated'),  # Red
+            Patch(facecolor=constraint_colors[0], label='No Benchmark Data')  # Gray
+        ]
+        fig.legend(handles=legend_elements, loc='center', bbox_to_anchor=(0.5, 0.02), ncol=5, fontsize=12)
+        
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.82, bottom=0.18, hspace=0.3, wspace=0.3)
+        plt.savefig(self.plots_dir / "parameter_constraint_analysis.png", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Export constraint data to CSV
+        self._export_parameter_constraint_data(percentile_data, generation_range, inference_range)
+    
+    def _export_parameter_constraint_data(self, percentile_data, generation_range, inference_range):
+        """Export parameter constraint analysis data to CSV."""
+        percentiles = [50, 60, 70, 80, 90, 99.5]
+        constraint_data = []
+        
+        for percentile in percentiles:
+            matrix = self._create_constraint_matrix_detailed(
+                percentile_data, percentile, inference_range, generation_range
+            )
+            
+            for i, inference_interval in enumerate(inference_range):
+                for j, generation_ticks_val in enumerate(generation_range):
+                    status = matrix[i, j]
+                    
+                    # Convert status to labels
+                    status_labels = {
+                        -1: 'No Data',
+                        0: 'Valid',
+                        1: 'C1 Violated', 
+                        2: 'C2 Violated',
+                        3: 'Both Violated'
+                    }
+                    
+                    # Get RTT value (convert ticks to frames for lookup)
+                    gen_length_frames = (generation_ticks_val * 2) - 1
+                    rtt_value = percentile_data.get((gen_length_frames, percentile), None)
+                    
+                    constraint_data.append({
+                        'percentile': percentile,
+                        'inference_interval_ticks': inference_interval,
+                        'generation_length_ticks': generation_ticks_val,
+                        'generation_length_frames': gen_length_frames,
+                        'constraint_status_code': status,
+                        'constraint_status': status_labels.get(status, 'Unknown'),
+                        'rtt_percentile_ms': rtt_value,
+                        'constraint1_satisfied': status in [0, 2],
+                        'constraint2_satisfied': status in [0, 1],
+                        'both_constraints_satisfied': status == 0
+                    })
+        
+        if constraint_data:
+            constraint_df = pd.DataFrame(constraint_data)
+            constraint_file = self.output_dir / "parameter_constraint_analysis.csv"
+            constraint_df.to_csv(constraint_file, index=False)
+            print(f"📊 Parameter constraint analysis saved to: {constraint_file}")
+    
     def generate_summary_report(self) -> str:
         """Generate text summary of findings."""
         if self.summary_data is None:
@@ -988,13 +1318,20 @@ Examples:
                        help="Output directory for analysis results")
     parser.add_argument("--no_plots", action="store_true",
                        help="Skip plot generation")
+    parser.add_argument("--anomaly_filter", type=float, default=0.0,
+                       help="Filter out anomalies: percentage of data to remove from each tail (0-50)")
     
     args = parser.parse_args()
     
     print("📊 Generation Length Analysis Tool")
     print("=" * 40)
     
-    analyzer = GenerationLengthAnalyzer(args.data_source, args.output_dir)
+    # Validate anomaly filter parameter
+    if args.anomaly_filter < 0 or args.anomaly_filter > 50:
+        print("❌ Anomaly filter percentage must be between 0 and 50")
+        return 1
+    
+    analyzer = GenerationLengthAnalyzer(args.data_source, args.output_dir, args.anomaly_filter)
     
     if not analyzer.load_data():
         print("❌ Failed to load data")

@@ -1,0 +1,8 @@
+# Generation Length Analysis Summary
+
+**Generation Lengths Tested:** [1, 5, 9, 15]
+**Total Requests:** 800
+**Optimal Generation Length (Latency):** 1.0 frames (195.0ms)
+**Latency Range:** 195.0ms - 494.6ms
+**Latency Scaling:** 21.40ms per frame increase
+**Most Consistent Performance:** 1.0 frames (11.9ms std dev)

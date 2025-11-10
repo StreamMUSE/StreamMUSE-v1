@@ -1,0 +1,193 @@
+percentile,inference_interval_ticks,generation_length_ticks,generation_length_frames,constraint_status_code,constraint_status,rtt_percentile_ms,constraint1_satisfied,constraint2_satisfied,both_constraints_satisfied
+50.0,1,1,1,2,C2 Violated,106.1743329919409,True,False,False
+50.0,1,2,3,0,Valid,112.13647949625735,True,True,True
+50.0,1,3,5,1,C1 Violated,152.7311459940392,False,True,False
+50.0,1,4,7,1,C1 Violated,200.87875000899655,False,True,False
+50.0,1,5,9,1,C1 Violated,248.12629146617832,False,True,False
+50.0,1,6,11,1,C1 Violated,307.56685449159704,False,True,False
+50.0,1,7,13,1,C1 Violated,401.7069374967832,False,True,False
+50.0,1,8,15,1,C1 Violated,412.06654149573296,False,True,False
+50.0,2,1,1,2,C2 Violated,106.1743329919409,True,False,False
+50.0,2,2,3,2,C2 Violated,112.13647949625735,True,False,False
+50.0,2,3,5,2,C2 Violated,152.7311459940392,True,False,False
+50.0,2,4,7,0,Valid,200.87875000899655,True,True,True
+50.0,2,5,9,0,Valid,248.12629146617832,True,True,True
+50.0,2,6,11,1,C1 Violated,307.56685449159704,False,True,False
+50.0,2,7,13,1,C1 Violated,401.7069374967832,False,True,False
+50.0,2,8,15,1,C1 Violated,412.06654149573296,False,True,False
+50.0,3,1,1,2,C2 Violated,106.1743329919409,True,False,False
+50.0,3,2,3,2,C2 Violated,112.13647949625735,True,False,False
+50.0,3,3,5,2,C2 Violated,152.7311459940392,True,False,False
+50.0,3,4,7,2,C2 Violated,200.87875000899655,True,False,False
+50.0,3,5,9,0,Valid,248.12629146617832,True,True,True
+50.0,3,6,11,0,Valid,307.56685449159704,True,True,True
+50.0,3,7,13,1,C1 Violated,401.7069374967832,False,True,False
+50.0,3,8,15,1,C1 Violated,412.06654149573296,False,True,False
+50.0,4,1,1,2,C2 Violated,106.1743329919409,True,False,False
+50.0,4,2,3,2,C2 Violated,112.13647949625735,True,False,False
+50.0,4,3,5,2,C2 Violated,152.7311459940392,True,False,False
+50.0,4,4,7,2,C2 Violated,200.87875000899655,True,False,False
+50.0,4,5,9,2,C2 Violated,248.12629146617832,True,False,False
+50.0,4,6,11,2,C2 Violated,307.56685449159704,True,False,False
+50.0,4,7,13,2,C2 Violated,401.7069374967832,True,False,False
+50.0,4,8,15,0,Valid,412.06654149573296,True,True,True
+60.0,1,1,1,2,C2 Violated,107.1203915867954,True,False,False
+60.0,1,2,3,0,Valid,116.64205861743535,True,True,True
+60.0,1,3,5,1,C1 Violated,153.80214180331672,False,True,False
+60.0,1,4,7,1,C1 Violated,202.3132667993195,False,True,False
+60.0,1,5,9,1,C1 Violated,249.8075079987756,False,True,False
+60.0,1,6,11,1,C1 Violated,314.7729836055077,False,True,False
+60.0,1,7,13,1,C1 Violated,403.466674813535,False,True,False
+60.0,1,8,15,1,C1 Violated,434.3739164061844,False,True,False
+60.0,2,1,1,2,C2 Violated,107.1203915867954,True,False,False
+60.0,2,2,3,2,C2 Violated,116.64205861743535,True,False,False
+60.0,2,3,5,2,C2 Violated,153.80214180331672,True,False,False
+60.0,2,4,7,0,Valid,202.3132667993195,True,True,True
+60.0,2,5,9,0,Valid,249.8075079987756,True,True,True
+60.0,2,6,11,1,C1 Violated,314.7729836055077,False,True,False
+60.0,2,7,13,1,C1 Violated,403.466674813535,False,True,False
+60.0,2,8,15,1,C1 Violated,434.3739164061844,False,True,False
+60.0,3,1,1,2,C2 Violated,107.1203915867954,True,False,False
+60.0,3,2,3,2,C2 Violated,116.64205861743535,True,False,False
+60.0,3,3,5,2,C2 Violated,153.80214180331672,True,False,False
+60.0,3,4,7,2,C2 Violated,202.3132667993195,True,False,False
+60.0,3,5,9,0,Valid,249.8075079987756,True,True,True
+60.0,3,6,11,0,Valid,314.7729836055077,True,True,True
+60.0,3,7,13,1,C1 Violated,403.466674813535,False,True,False
+60.0,3,8,15,1,C1 Violated,434.3739164061844,False,True,False
+60.0,4,1,1,2,C2 Violated,107.1203915867954,True,False,False
+60.0,4,2,3,2,C2 Violated,116.64205861743535,True,False,False
+60.0,4,3,5,2,C2 Violated,153.80214180331672,True,False,False
+60.0,4,4,7,2,C2 Violated,202.3132667993195,True,False,False
+60.0,4,5,9,2,C2 Violated,249.8075079987756,True,False,False
+60.0,4,6,11,2,C2 Violated,314.7729836055077,True,False,False
+60.0,4,7,13,2,C2 Violated,403.466674813535,True,False,False
+60.0,4,8,15,0,Valid,434.3739164061844,True,True,True
+70.0,1,1,1,2,C2 Violated,108.36159571772436,True,False,False
+70.0,1,2,3,0,Valid,124.59183401078907,True,True,True
+70.0,1,3,5,1,C1 Violated,155.16472928575237,False,True,False
+70.0,1,4,7,1,C1 Violated,204.22574117546898,False,True,False
+70.0,1,5,9,1,C1 Violated,252.93380881776096,False,True,False
+70.0,1,6,11,1,C1 Violated,340.07596706505853,False,True,False
+70.0,1,7,13,1,C1 Violated,406.23328319052234,False,True,False
+70.0,1,8,15,1,C1 Violated,503.06331702740863,False,True,False
+70.0,2,1,1,2,C2 Violated,108.36159571772436,True,False,False
+70.0,2,2,3,2,C2 Violated,124.59183401078907,True,False,False
+70.0,2,3,5,2,C2 Violated,155.16472928575237,True,False,False
+70.0,2,4,7,0,Valid,204.22574117546898,True,True,True
+70.0,2,5,9,1,C1 Violated,252.93380881776096,False,True,False
+70.0,2,6,11,1,C1 Violated,340.07596706505853,False,True,False
+70.0,2,7,13,1,C1 Violated,406.23328319052234,False,True,False
+70.0,2,8,15,1,C1 Violated,503.06331702740863,False,True,False
+70.0,3,1,1,2,C2 Violated,108.36159571772436,True,False,False
+70.0,3,2,3,2,C2 Violated,124.59183401078907,True,False,False
+70.0,3,3,5,2,C2 Violated,155.16472928575237,True,False,False
+70.0,3,4,7,2,C2 Violated,204.22574117546898,True,False,False
+70.0,3,5,9,2,C2 Violated,252.93380881776096,True,False,False
+70.0,3,6,11,0,Valid,340.07596706505853,True,True,True
+70.0,3,7,13,1,C1 Violated,406.23328319052234,False,True,False
+70.0,3,8,15,1,C1 Violated,503.06331702740863,False,True,False
+70.0,4,1,1,2,C2 Violated,108.36159571772436,True,False,False
+70.0,4,2,3,2,C2 Violated,124.59183401078907,True,False,False
+70.0,4,3,5,2,C2 Violated,155.16472928575237,True,False,False
+70.0,4,4,7,2,C2 Violated,204.22574117546898,True,False,False
+70.0,4,5,9,2,C2 Violated,252.93380881776096,True,False,False
+70.0,4,6,11,2,C2 Violated,340.07596706505853,True,False,False
+70.0,4,7,13,2,C2 Violated,406.23328319052234,True,False,False
+70.0,4,8,15,3,Both Violated,503.06331702740863,False,False,False
+80.0,1,1,1,2,C2 Violated,109.67040059622376,True,False,False
+80.0,1,2,3,3,Both Violated,130.94417519168925,False,False,False
+80.0,1,3,5,1,C1 Violated,157.7167583862319,False,True,False
+80.0,1,4,7,1,C1 Violated,207.71738302428275,False,True,False
+80.0,1,5,9,1,C1 Violated,258.498333604075,False,True,False
+80.0,1,6,11,1,C1 Violated,400.2348580164835,False,True,False
+80.0,1,7,13,1,C1 Violated,409.587683621794,False,True,False
+80.0,1,8,15,1,C1 Violated,509.42806681850925,False,True,False
+80.0,2,1,1,2,C2 Violated,109.67040059622376,True,False,False
+80.0,2,2,3,2,C2 Violated,130.94417519168925,True,False,False
+80.0,2,3,5,2,C2 Violated,157.7167583862319,True,False,False
+80.0,2,4,7,0,Valid,207.71738302428275,True,True,True
+80.0,2,5,9,1,C1 Violated,258.498333604075,False,True,False
+80.0,2,6,11,1,C1 Violated,400.2348580164835,False,True,False
+80.0,2,7,13,1,C1 Violated,409.587683621794,False,True,False
+80.0,2,8,15,1,C1 Violated,509.42806681850925,False,True,False
+80.0,3,1,1,2,C2 Violated,109.67040059622376,True,False,False
+80.0,3,2,3,2,C2 Violated,130.94417519168925,True,False,False
+80.0,3,3,5,2,C2 Violated,157.7167583862319,True,False,False
+80.0,3,4,7,2,C2 Violated,207.71738302428275,True,False,False
+80.0,3,5,9,2,C2 Violated,258.498333604075,True,False,False
+80.0,3,6,11,3,Both Violated,400.2348580164835,False,False,False
+80.0,3,7,13,1,C1 Violated,409.587683621794,False,True,False
+80.0,3,8,15,1,C1 Violated,509.42806681850925,False,True,False
+80.0,4,1,1,2,C2 Violated,109.67040059622376,True,False,False
+80.0,4,2,3,2,C2 Violated,130.94417519168925,True,False,False
+80.0,4,3,5,2,C2 Violated,157.7167583862319,True,False,False
+80.0,4,4,7,2,C2 Violated,207.71738302428275,True,False,False
+80.0,4,5,9,2,C2 Violated,258.498333604075,True,False,False
+80.0,4,6,11,2,C2 Violated,400.2348580164835,True,False,False
+80.0,4,7,13,2,C2 Violated,409.587683621794,True,False,False
+80.0,4,8,15,3,Both Violated,509.42806681850925,False,False,False
+90.0,1,1,1,2,C2 Violated,113.10034551424903,True,False,False
+90.0,1,2,3,3,Both Violated,142.08411245490424,False,False,False
+90.0,1,3,5,1,C1 Violated,162.33979999669822,False,True,False
+90.0,1,4,7,1,C1 Violated,214.80947087402456,False,True,False
+90.0,1,5,9,1,C1 Violated,271.718641964253,False,True,False
+90.0,1,6,11,1,C1 Violated,404.7602954669855,False,True,False
+90.0,1,7,13,1,C1 Violated,414.41367027000524,False,True,False
+90.0,1,8,15,1,C1 Violated,606.3720996840857,False,True,False
+90.0,2,1,1,2,C2 Violated,113.10034551424903,True,False,False
+90.0,2,2,3,2,C2 Violated,142.08411245490424,True,False,False
+90.0,2,3,5,2,C2 Violated,162.33979999669822,True,False,False
+90.0,2,4,7,0,Valid,214.80947087402456,True,True,True
+90.0,2,5,9,1,C1 Violated,271.718641964253,False,True,False
+90.0,2,6,11,1,C1 Violated,404.7602954669855,False,True,False
+90.0,2,7,13,1,C1 Violated,414.41367027000524,False,True,False
+90.0,2,8,15,1,C1 Violated,606.3720996840857,False,True,False
+90.0,3,1,1,2,C2 Violated,113.10034551424903,True,False,False
+90.0,3,2,3,2,C2 Violated,142.08411245490424,True,False,False
+90.0,3,3,5,2,C2 Violated,162.33979999669822,True,False,False
+90.0,3,4,7,2,C2 Violated,214.80947087402456,True,False,False
+90.0,3,5,9,2,C2 Violated,271.718641964253,True,False,False
+90.0,3,6,11,3,Both Violated,404.7602954669855,False,False,False
+90.0,3,7,13,1,C1 Violated,414.41367027000524,False,True,False
+90.0,3,8,15,1,C1 Violated,606.3720996840857,False,True,False
+90.0,4,1,1,2,C2 Violated,113.10034551424903,True,False,False
+90.0,4,2,3,2,C2 Violated,142.08411245490424,True,False,False
+90.0,4,3,5,2,C2 Violated,162.33979999669822,True,False,False
+90.0,4,4,7,2,C2 Violated,214.80947087402456,True,False,False
+90.0,4,5,9,2,C2 Violated,271.718641964253,True,False,False
+90.0,4,6,11,2,C2 Violated,404.7602954669855,True,False,False
+90.0,4,7,13,2,C2 Violated,414.41367027000524,True,False,False
+90.0,4,8,15,3,Both Violated,606.3720996840857,False,False,False
+99.5,1,1,1,3,Both Violated,129.35663743410254,False,False,False
+99.5,1,2,3,3,Both Violated,195.44824047014112,False,False,False
+99.5,1,3,5,1,C1 Violated,177.72210406808878,False,True,False
+99.5,1,4,7,1,C1 Violated,229.99601548508505,False,True,False
+99.5,1,5,9,1,C1 Violated,295.4446763900341,False,True,False
+99.5,1,6,11,1,C1 Violated,410.97584712493693,False,True,False
+99.5,1,7,13,1,C1 Violated,502.79541900061304,False,True,False
+99.5,1,8,15,1,C1 Violated,815.1763524248963,False,True,False
+99.5,2,1,1,2,C2 Violated,129.35663743410254,True,False,False
+99.5,2,2,3,2,C2 Violated,195.44824047014112,True,False,False
+99.5,2,3,5,2,C2 Violated,177.72210406808878,True,False,False
+99.5,2,4,7,0,Valid,229.99601548508505,True,True,True
+99.5,2,5,9,1,C1 Violated,295.4446763900341,False,True,False
+99.5,2,6,11,1,C1 Violated,410.97584712493693,False,True,False
+99.5,2,7,13,1,C1 Violated,502.79541900061304,False,True,False
+99.5,2,8,15,3,Both Violated,815.1763524248963,False,False,False
+99.5,3,1,1,2,C2 Violated,129.35663743410254,True,False,False
+99.5,3,2,3,2,C2 Violated,195.44824047014112,True,False,False
+99.5,3,3,5,2,C2 Violated,177.72210406808878,True,False,False
+99.5,3,4,7,2,C2 Violated,229.99601548508505,True,False,False
+99.5,3,5,9,2,C2 Violated,295.4446763900341,True,False,False
+99.5,3,6,11,3,Both Violated,410.97584712493693,False,False,False
+99.5,3,7,13,3,Both Violated,502.79541900061304,False,False,False
+99.5,3,8,15,3,Both Violated,815.1763524248963,False,False,False
+99.5,4,1,1,2,C2 Violated,129.35663743410254,True,False,False
+99.5,4,2,3,2,C2 Violated,195.44824047014112,True,False,False
+99.5,4,3,5,2,C2 Violated,177.72210406808878,True,False,False
+99.5,4,4,7,2,C2 Violated,229.99601548508505,True,False,False
+99.5,4,5,9,2,C2 Violated,295.4446763900341,True,False,False
+99.5,4,6,11,2,C2 Violated,410.97584712493693,True,False,False
+99.5,4,7,13,3,Both Violated,502.79541900061304,False,False,False
+99.5,4,8,15,3,Both Violated,815.1763524248963,False,False,False
