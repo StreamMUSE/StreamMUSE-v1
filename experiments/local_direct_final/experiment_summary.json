@@ -1,0 +1,102 @@
+{
+  "experiment_config": {
+    "name": "local_direct_final_test",
+    "description": "Test gl variations on pure local (A6000 - A600), parallel with other 3 server on different GPUs",
+    "output_dir": "experiments/local_direct_final"
+  },
+  "total_experiments": 8,
+  "successful_experiments": 8,
+  "failed_experiments": 0,
+  "results": [
+    {
+      "name": "local_direct_final_test_GL1_PL384",
+      "parameters": {
+        "generation_length_frames": 1,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL1_PL384.csv",
+      "duration": 129.38588571548462,
+      "timestamp": "2025-11-11T20:21:43.861422",
+      "attempt": 1
+    },
+    {
+      "name": "local_direct_final_test_GL3_PL384",
+      "parameters": {
+        "generation_length_frames": 3,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL3_PL384.csv",
+      "duration": 169.11187362670898,
+      "timestamp": "2025-11-11T20:24:35.980554",
+      "attempt": 1
+    },
+    {
+      "name": "local_direct_final_test_GL5_PL384",
+      "parameters": {
+        "generation_length_frames": 5,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL5_PL384.csv",
+      "duration": 201.1197497844696,
+      "timestamp": "2025-11-11T20:28:00.107462",
+      "attempt": 1
+    },
+    {
+      "name": "local_direct_final_test_GL7_PL384",
+      "parameters": {
+        "generation_length_frames": 7,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL7_PL384.csv",
+      "duration": 237.82032179832458,
+      "timestamp": "2025-11-11T20:32:00.933921",
+      "attempt": 1
+    },
+    {
+      "name": "local_direct_final_test_GL9_PL384",
+      "parameters": {
+        "generation_length_frames": 9,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL9_PL384.csv",
+      "duration": 278.0477879047394,
+      "timestamp": "2025-11-11T20:36:41.988201",
+      "attempt": 1
+    },
+    {
+      "name": "local_direct_final_test_GL11_PL384",
+      "parameters": {
+        "generation_length_frames": 11,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL11_PL384.csv",
+      "duration": 311.0881209373474,
+      "timestamp": "2025-11-11T20:41:56.082575",
+      "attempt": 1
+    },
+    {
+      "name": "local_direct_final_test_GL13_PL384",
+      "parameters": {
+        "generation_length_frames": 13,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL13_PL384.csv",
+      "duration": 349.9240689277649,
+      "timestamp": "2025-11-11T20:47:49.014448",
+      "attempt": 1
+    },
+    {
+      "name": "local_direct_final_test_GL15_PL384",
+      "parameters": {
+        "generation_length_frames": 15,
+        "prompt_length_ticks": 384
+      },
+      "output_file": "experiments/local_direct_final/local_direct_final_test_GL15_PL384.csv",
+      "duration": 387.4618470668793,
+      "timestamp": "2025-11-11T20:54:19.482783",
+      "attempt": 1
+    }
+  ],
+  "failed": [],
+  "generated_at": "2025-11-11T20:54:21.485665"
+}
