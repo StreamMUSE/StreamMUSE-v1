@@ -75,4 +75,6 @@ inference_benchmark/inputs/
 inference_benchmark/outputs/
 
 *.png
+*.npz
+*.safetensors
 # Note: analysis_results_local_server, analysis_results_local, analysis_results_remote are tracked

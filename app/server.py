@@ -12,6 +12,7 @@ import time
 from contextlib import asynccontextmanager
 from app.inference_engines.transformer_engine import TransformerInferenceEngine
 from app.inference_engines.transformer_engine_stanley import InferenceEngineStanley
+from app.inference_engines.transformer_engine_lekai import InferenceEngineLekai
 
 class MelodyNoteEvent(BaseModel):
     pitch: int
@@ -83,22 +84,36 @@ async def lifespan(app: FastAPI):
         exit()
 
     # 验证 model_size 是否有效
-    valid_model_sizes = ['small', '0.12B', '0.25B', '0.5B']
+    valid_model_sizes = ['small', '0.12B', '0.25B', '0.5B', 'llama']
     if model_size not in valid_model_sizes:
         print(f"Fatal Error: Invalid MODEL_SIZE '{model_size}'. Valid options: {valid_model_sizes}")
         exit()
 
+    engine_type = os.getenv('ENGINE_TYPE', 'stanley')
+    inference_mode = os.getenv('INFERENCE_MODE', 'sliding_window')
+
     global inference_engine, injection_state
     try:
         print(f"Loading model from {checkpoint_path}...")
+        print(f"Using Engine Type: {engine_type}")
         print(f"Using Model Max Sequence Length (Frames): {model_max_seq_len_frames}")
         print(f"Using Generation Length (Frames): {generation_length_frames}")
-        inference_engine = InferenceEngineStanley(
-            checkpoint_path=checkpoint_path,
-            model_size=model_size,
-            model_max_seq_len_frames=model_max_seq_len_frames,
-            generation_length_frames=generation_length_frames
-        )
+        
+        if engine_type == 'lekai':
+            inference_engine = InferenceEngineLekai(
+                checkpoint_path=checkpoint_path,
+                model_size=model_size,
+                model_max_seq_len_frames=model_max_seq_len_frames,
+                generation_length_frames=generation_length_frames,
+                inference_mode=inference_mode
+            )
+        else:
+            inference_engine = InferenceEngineStanley(
+                checkpoint_path=checkpoint_path,
+                model_size=model_size,
+                model_max_seq_len_frames=model_max_seq_len_frames,
+                generation_length_frames=generation_length_frames
+            )
         print("Inference engine loaded successfully.")
 
         # 初始化注入状态
