@@ -45,13 +45,16 @@ class PianoLLaMA(PreTrainedModel):
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
+        past_key_values: Optional[list] = None,
+        use_cache: Optional[bool] = None,
     ):
         """前向传播"""
         return self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
-            use_cache=False if labels is not None else True,
+            past_key_values=past_key_values,
+            use_cache=use_cache if use_cache is not None else (False if labels is not None else True),
         )
 
     @torch.no_grad()

@@ -179,8 +179,8 @@ class InferenceEngineLekai:
                 )
         return notes
 
-    def _get_tokens_for_beat(self, notes, beat_idx):
-        """Helper to get tokens for a specific beat range"""
+    def _get_tokens_for_beat(self, notes, beat_idx, end_marker_id):
+        """Helper to get tokens for a specific beat range with specific end marker"""
         beat_start_tick = beat_idx * self.ticks_per_beat
         beat_end_tick = (beat_idx + 1) * self.ticks_per_beat
 
@@ -197,8 +197,13 @@ class InferenceEngineLekai:
                 beat_notes.append(new_n)
 
         pr = self._notes_to_pianoroll(beat_notes, self.ticks_per_beat)
-        # Tokenize
-        tokens = self.tokenizer.encode(pr, use_strict_mode=True)
+        
+        # Tokenize manually to specify end_marker
+        # 1. Image to Patch Tokens
+        patch_tokens = self.tokenizer.image_to_patch_tokens(pr, strict_mode=True)
+        # 2. Compress with specific end marker
+        tokens = self.tokenizer.compress_tokens(patch_tokens, end_marker=end_marker_id)
+        
         return torch.tensor(tokens, dtype=torch.long)
 
     def _generate_tokens(self, input_ids, past_key_values=None):
@@ -255,9 +260,39 @@ class InferenceEngineLekai:
     ):
         """
         Generate accompaniment using LLaMA model with beat-interleaving.
-        Supports 'sliding_window' (stateless) and 'stateful' modes.
+
+        CRITICAL USAGE NOTE:
+        This engine generates music **beat by beat**. The `generation_start_tick` determines
+        the current beat index (`tick // ticks_per_beat`).
+        The client **MUST** synchronize requests with the beat grid.
+        For example, if `ticks_per_beat=4`, the client should send a request every 4 ticks.
+        Sending requests more frequently (e.g., every tick) will cause the engine to generate
+        duplicate content for the same beat, corrupting the context history.
+
+        Args:
+            melody_notes (List[dict]): New melody notes from the client.
+                Format: [{'pitch': int, 'tick': int, 'duration': int}, ...]
+                'tick' is absolute relative to the client's session start.
+            generation_start_tick (int): The tick from which generation should start.
+                Used to calculate `current_beat = generation_start_tick // ticks_per_beat`.
+            acc_notes (List[dict], optional): Initial accompaniment notes (e.g. for injection).
+                Same format as melody_notes.
+            generation_length_frames (int, optional): Unused. This engine always generates 1 beat per call.
+            prompt_length_ticks (int, optional): Unused.
+
+        Returns:
+            tuple: (
+                generated_notes (List[dict]): The generated accompaniment notes for the current beat.
+                    Format: [{'pitch': int, 'tick': int, 'duration': int, 'program': 1}, ...]
+                    'tick' is absolute relative to the client's session start.
+                preprocess_start_time (float),
+                inference_start_time (float),
+                inference_end_time (float),
+                postprocess_start_time (float)
+            )
         """
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         preprocess_start_time = time.perf_counter()
 
         # 1. Update History
@@ -316,22 +351,22 @@ class InferenceEngineLekai:
             ]
 
             for b in range(start_beat, current_beat):
-                # Mel
-                mel_tokens = self._get_tokens_for_beat(context_melody, b)
+                # Mel (Part 0) -> End Marker 170
+                mel_tokens = self._get_tokens_for_beat(context_melody, b, end_marker_id=self.tokenizer.end_marker_part0)
                 seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
                 seq.append(mel_tokens)
-                # Acc
-                acc_tokens = self._get_tokens_for_beat(context_acc, b)
+                # Acc (Part 1) -> End Marker 171
+                acc_tokens = self._get_tokens_for_beat(context_acc, b, end_marker_id=self.tokenizer.end_marker_part1)
                 seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
                 seq.append(acc_tokens)
 
-            # Add Target Melody for current beat
+            # Add Target Melody for current beat (Part 0) -> End Marker 170
             target_melody = [
                 n
                 for n in self.melody_history
                 if absolute_generation_start_tick <= n["tick"] < (current_beat + 1) * self.ticks_per_beat
             ]
-            target_mel_tokens = self._get_tokens_for_beat(target_melody, current_beat)
+            target_mel_tokens = self._get_tokens_for_beat(target_melody, current_beat, end_marker_id=self.tokenizer.end_marker_part0)
             seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
             seq.append(target_mel_tokens)
 
@@ -346,36 +381,42 @@ class InferenceEngineLekai:
                 for n in self.melody_history
                 if absolute_generation_start_tick <= n["tick"] < (current_beat + 1) * self.ticks_per_beat
             ]
-            target_mel_tokens = self._get_tokens_for_beat(target_melody, current_beat)
+            target_mel_tokens = self._get_tokens_for_beat(target_melody, current_beat, end_marker_id=self.tokenizer.end_marker_part0)
 
             # [Bar] + [Mel]
             seq = [torch.tensor([self.config.bar_token_id], dtype=torch.long), target_mel_tokens]
             input_ids = torch.cat(seq).unsqueeze(0).to(device)
             past_key_values_to_use = self.past_key_values
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         inference_start_time = time.perf_counter()
 
         # 3. Generate
         generated_tokens, new_past_key_values = self._generate_tokens(input_ids, past_key_values_to_use)
+        print(f"DEBUG: Generated tokens: {generated_tokens}")
 
         # Update State if Stateful
         if self.inference_mode == "stateful":
             self.past_key_values = new_past_key_values
             self.last_generated_beat = current_beat
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         inference_end_time = time.perf_counter()
 
         # 4. Decode Generated Tokens
         # generated_tokens contains the compressed tokens for the Acc beat
         # We need to decode them back to piano roll
 
+        # Filter out PAD tokens (258) which might be generated by mistake
+        valid_tokens = [t for t in generated_tokens if t != self.config.pad_token_id]
+
         # Remove the end marker if present for decoding?
         # The tokenizer.decode handles it.
 
         try:
-            pr_generated = self.tokenizer.decode(generated_tokens, end_marker_id=self.config.end_marker_part1)
+            pr_generated = self.tokenizer.decode(valid_tokens, end_marker_id=self.config.end_marker_part1)
             # pr_generated shape: (2, 88, T) where T should be ticks_per_beat (4)
 
             # Convert to notes
@@ -394,7 +435,8 @@ class InferenceEngineLekai:
             print(f"Decoding error: {e}")
             absolute_generated_notes = []
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         postprocess_start_time = time.perf_counter()
 
         # 6. Update History & Return

@@ -22,7 +22,7 @@ PYTHONPATH="$(pwd)" uv run -- uvicorn app.server:app --host 0.0.0.0 --port 8988
 
 ```bash
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 # Update this path to your actual Lekai model checkpoint
 export CHECKPOINT_PATH=rt/RT_Accompaniment/checkpoints/epoch_4_1104_1204/model.safetensors
 export MODEL_SIZE=llama
@@ -43,13 +43,14 @@ uv run real_time_experiment_runner.py \
 --dataset-dir input/mel \
 --injection-length 128 \
 --generation-length 576 \
---out-root experiments1/realtime/lekai_test/interval_1_gen_frame_5 \
+--out-root experiments1/realtime/lekai_test/interval_4_gen_frame_5 \
 --server-url http://localhost:8988/generate_accompaniment \
---generation-interval-ticks 1 \
+--generation-interval-ticks 4 \
 --generation-length-per-request 5
 ```
 
 ### Notes
+- **Critical for Lekai Model**: You **MUST** set `--generation-interval-ticks 4` (matching the beat length). The Lekai engine generates music beat-by-beat. Setting this to 1 will cause duplicate generation and corrupt the context.
 - Ensure `real_time_experiment_runner.py` exists in your path.
 - Adjust `--out-root` to avoid overwriting previous results.
-- For Lekai model, `generation-length-per-request` might need tuning based on performance.
+- For Lekai model, `generation-length-per-request` is ignored by the server (it always generates 1 beat), but kept for client compatibility.
