@@ -20,16 +20,28 @@ PYTHONPATH="$(pwd)" uv run -- uvicorn app.server:app --host 0.0.0.0 --port 8988
 
 ### Option B: Run Lekai Server (LLaMA-based)
 
+#### Mode 1: Sliding Window (Default, Stable)
+Recomputes context every time. Slower but safer for long sessions.
 ```bash
-# Set environment variables
 export CUDA_VISIBLE_DEVICES=0
-# Update this path to your actual Lekai model checkpoint
 export CHECKPOINT_PATH=rt/RT_Accompaniment/checkpoints/epoch_4_1104_1204/model.safetensors
 export MODEL_SIZE=llama
 export ENGINE_TYPE=lekai
-export INFERENCE_MODE=sliding_window  # Options: sliding_window (default), stateful
+export INFERENCE_MODE=sliding_window
 
-# Run Server
+PYTHONPATH="$(pwd)" uv run -- uvicorn app.server:app --host 0.0.0.0 --port 8988
+```
+
+#### Mode 2: Stateful (KV Cache, Faster)
+Uses KV cache to speed up generation. History is cleared automatically when client restarts (switching songs).
+*Note: May hit context length limit (3500 tokens) if the song is extremely long.*
+```bash
+export CUDA_VISIBLE_DEVICES=0
+export CHECKPOINT_PATH=rt/RT_Accompaniment/checkpoints/epoch_4_1104_1204/model.safetensors
+export MODEL_SIZE=llama
+export ENGINE_TYPE=lekai
+export INFERENCE_MODE=stateful
+
 PYTHONPATH="$(pwd)" uv run -- uvicorn app.server:app --host 0.0.0.0 --port 8988
 ```
 
