@@ -172,7 +172,7 @@ if __name__ == "__main__":
             if midi.endswith('mid'):
                 midi = os.path.join(midi_file_path, midi)
                 start_true_generation_time = time.time()
-                continuation(model, midi, temperature=args.temperature, generation_length=300, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
+                continuation(model, midi, temperature=args.temperature, generation_length=10, n_samples=args.n_samples, prompt_length=args.prompt_len, gt_mel=True, device=device)
                 end_true_generation_time = time.time()
                 print(f"Total time for generating {midi}: {end_true_generation_time - start_true_generation_time:.2f} seconds")
     # midi = '/home/ubuntu/ugrip/stanleyz/StreamMUSE/input/mel/001.mid'
