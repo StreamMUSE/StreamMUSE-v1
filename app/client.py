@@ -39,12 +39,10 @@ class StreamMUSEConfig:
     """Configuration settings for StreamMUSE client"""
 
     # Network
-    DEFAULT_SERVER_URL = "http://localhost:8988/generate_accompaniment"
-    DEFAULT_INJECTION_URL = "http://localhost:8988/inject_music"
-    DEFAULT_INJECTION_STATUS_URL = "http://localhost:8988/injection_status"
+    DEFAULT_SERVER_URL = "http://localhost:8988/generate_accompaniment" 
 
     # Musical timing
-    DEFAULT_TEMPO = 90.0
+    DEFAULT_TEMPO = 120.0
     DEFAULT_TICKS_PER_BEAT = 4
     DEFAULT_BEATS_PER_BAR = 4
     DEFAULT_GENERATION_INTERVAL_TICKS = 1
@@ -917,7 +915,7 @@ def main():
             test_midi_file_name = os.path.splitext(
                 os.path.basename(args.midi_file_input)
             )[0]
-            base_log_dir = f"experiments1/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
+            base_log_dir = f"experiments2-remote/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
             session_log_dir = os.path.join(
                 base_log_dir, "batch_run", test_midi_file_name
             )
