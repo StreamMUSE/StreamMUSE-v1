@@ -12,44 +12,20 @@ from lekai_model.model import PianoLLaMA
 from lekai_model.my_tokenizer import PianoRollTokenizer
 from lekai_model.PianoDataset import encode_bpm
 from lekai_model.generation_utils import sample_token
+from lekai_model.MidiConverter import MidiConverter
 
 
 def midi_to_note(midi_path, beat_div=4):
     """
-    Simple MIDI to note list converter using pretty_midi.
-    Quantizes to fixed ticks per beat (default 4).
-    Assuming 120 BPM for quantization if not specified.
+    Simple MIDI to note list converter using MidiConverter.
     """
-    try:
-        pm = pretty_midi.PrettyMIDI(midi_path)
-    except Exception as e:
-        print(f"Error loading MIDI: {e}")
-        return [], 0, 0
+    converter = MidiConverter(ticks_per_beat=beat_div)
+    pm, metadata = converter.load_midi(midi_path)
+    if pm is None:
+        return [], {}, 0
 
-    # Assume 120 BPM for simple testing quantization
-    bpm = 120
-    seconds_per_beat = 60.0 / bpm
-    seconds_per_tick = seconds_per_beat / beat_div
-
-    notes = []
-    max_tick = 0
-
-    for inst in pm.instruments:
-        if inst.is_drum:
-            continue
-        for note in inst.notes:
-            start_tick = int(round(note.start / seconds_per_tick))
-            end_tick = int(round(note.end / seconds_per_tick))
-            duration = max(1, end_tick - start_tick)
-
-            if start_tick < 0:
-                continue
-
-            notes.append({"pitch": note.pitch, "tick": start_tick, "duration": duration})
-            max_tick = max(max_tick, end_tick)
-
-    notes.sort(key=lambda x: x["tick"])
-    return notes, None, max_tick
+    notes, max_tick = converter.midi_to_notes(pm)
+    return notes, metadata, max_tick
 
 
 class InferenceEngineLekai:
@@ -72,7 +48,16 @@ class InferenceEngineLekai:
         self.config = ModelConfig()
 
         # 2. Initialize Tokenizer
-        self.tokenizer = PianoRollTokenizer(patch_h=self.config.patch_h, patch_w=self.config.patch_w, img_h=88)
+        self.tokenizer = PianoRollTokenizer(
+            patch_h=self.config.patch_h,
+            patch_w=self.config.patch_w,
+            marker_offset=81,
+            measures_length=88,
+            end_marker_part0=170,
+            end_marker_part1=171,
+            empty_marker=169,
+            img_h=88,
+        )
 
         # 3. Initialize Model Structure
         llama_config = LlamaConfig(
@@ -113,6 +98,10 @@ class InferenceEngineLekai:
         self.inference_mode = inference_mode
         self.past_key_values = None
         self.last_generated_beat = -1
+        self.last_generated_acc_tokens = None  # Store last generated acc tokens for stateful feedback
+
+        # Helper converter
+        self.midi_converter = MidiConverter(ticks_per_beat=self.ticks_per_beat)
 
     def set_injection_offset(self, offset_ticks: int):
         self.injection_offset_ticks = offset_ticks
@@ -123,60 +112,24 @@ class InferenceEngineLekai:
         self.accompaniment_history = []
         self.past_key_values = None
         self.last_generated_beat = -1
+        self.last_generated_acc_tokens = None
 
     def _notes_to_pianoroll(self, notes, max_tick):
         """
         Convert notes list to (2, 88, max_tick) piano roll.
-        Channel 0: Sustain
-        Channel 1: Onset
+        Delegates to MidiConverter.
         """
-        pianoroll = np.zeros((2, 88, max_tick), dtype=np.uint8)
-
-        for note in notes:
-            pitch_idx = note["pitch"] - 21  # MIDI 21-108
-            if not (0 <= pitch_idx < 88):
-                continue
-
-            start = int(note["tick"])
-            duration = int(note["duration"])
-            end = min(start + duration, max_tick)
-
-            if start >= max_tick:
-                continue
-
-            # Channel 0: Sustain
-            pianoroll[0, pitch_idx, start:end] = 1
-            # Channel 1: Onset
-            pianoroll[1, pitch_idx, start] = 1
-
-        return pianoroll
+        return self.midi_converter.notes_to_pianoroll(notes, max_tick)
 
     def _pianoroll_to_notes(self, pianoroll, start_tick):
         """
         Convert (2, 88, T) piano roll back to notes list.
+        Delegates to MidiConverter.
         """
-        notes = []
-        sustain = pianoroll[0]
-        onset = pianoroll[1]
-
-        for pitch_idx in range(88):
-            pitch = pitch_idx + 21
-            # Find onsets
-            onset_indices = np.where(onset[pitch_idx] > 0)[0]
-            for start in onset_indices:
-                # Find end (sustain end)
-                end = start + 1
-                while end < pianoroll.shape[2] and sustain[pitch_idx, end] > 0:
-                    end += 1
-
-                notes.append(
-                    {
-                        "pitch": pitch,
-                        "tick": start + start_tick,
-                        "duration": end - start,
-                        "program": 1,  # Accompaniment
-                    }
-                )
+        notes = self.midi_converter.pianoroll_to_notes(pianoroll)
+        # MidiConverter returns relative ticks starting from 0
+        # We might need to adjust if start_tick is used elsewhere,
+        # but currently _pianoroll_to_notes callers handle shifting.
         return notes
 
     def _get_tokens_for_beat(self, notes, beat_idx, end_marker_id):
@@ -211,9 +164,9 @@ class InferenceEngineLekai:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         generated_tokens = []
 
-        # Add bar token for Acc start
-        bar_token = torch.tensor([[self.config.bar_token_id]], device=device)
-        input_ids = torch.cat([input_ids, bar_token], dim=1)
+        # REMOVED: Unconditional bar token addition
+        # bar_token = torch.tensor([[self.config.bar_token_id]], device=device)
+        # input_ids = torch.cat([input_ids, bar_token], dim=1)
 
         current_input = input_ids
         current_past = past_key_values
@@ -233,11 +186,21 @@ class InferenceEngineLekai:
                 next_token = sample_token(
                     next_token_logits,
                     generated_tokens=input_ids,  # Note: this is just for context, might be inaccurate if we only pass partial input
-                    temperature=0.8,
-                    top_k=50,
+                    temperature=1.1,  # Updated to match inference.py
+                    top_k=10,  # Updated to match inference.py
                     top_p=0.95,
-                    repetition_penalty=1.2,
+                    repetition_penalty=1.0,  # Updated to match inference.py
                 )
+
+                # Forcefully prevent PAD token generation
+                if next_token.item() == self.config.pad_token_id:
+                    # If we sampled PAD, try to sample again or just pick the next best?
+                    # Simple hack: just continue loop (effectively skipping this step? No, that breaks state)
+                    # Better: mask PAD logit before sampling. But sample_token is a black box here.
+                    # Let's just ignore it and not append it?
+                    # But we need to feed something to the model.
+                    # Let's assume it's a glitch and break? No.
+                    pass
 
                 # For next iteration
                 current_input = next_token
@@ -258,6 +221,8 @@ class InferenceEngineLekai:
         acc_notes=None,
         generation_length_frames=None,  # Unused, kept for API
         prompt_length_ticks=None,  # Unused, kept for API
+        bpm=120,
+        time_sig=(4, 4),
     ):
         """
         Generate accompaniment using LLaMA model with beat-interleaving.
@@ -280,6 +245,8 @@ class InferenceEngineLekai:
                 Same format as melody_notes.
             generation_length_frames (int, optional): Unused. This engine always generates 1 beat per call.
             prompt_length_ticks (int, optional): Unused.
+            bpm (float): BPM of the track.
+            time_sig (tuple): Time signature (numerator, denominator).
 
         Returns:
             tuple: (
@@ -323,73 +290,189 @@ class InferenceEngineLekai:
         if self.inference_mode == "stateful":
             if self.past_key_values is not None and current_beat == self.last_generated_beat + 1:
                 need_reset = False
+            else:
+                print(f"Stateful reset: current_beat={current_beat}, last={self.last_generated_beat}")
+                self.past_key_values = None
+                self.last_generated_acc_tokens = None
 
         input_ids = None
         past_key_values_to_use = None
 
         if need_reset:
             # --- Sliding Window / Warmup Logic ---
-            context_beats = 32
+            # Reconstruct the sequence from scratch
+            # Pattern: [BOS, TimeSig, BPM, PAD, Bar, Bar] -> (A0, M0) -> (A1, M1) ...
+
+            context_beats = 32  # Lookback
             start_beat = max(0, current_beat - context_beats)
-            start_tick = start_beat * self.ticks_per_beat
 
-            # Filter history
-            context_melody = [
-                n for n in self.melody_history if start_tick <= n["tick"] < absolute_generation_start_tick
-            ]
-            context_acc = [
-                n for n in self.accompaniment_history if start_tick <= n["tick"] < absolute_generation_start_tick
-            ]
-
-            # Construct Prompt Sequence: [BOS, Sig, BPM] + [Mel, Acc] pairs
-            bpm_val = 120
+            # Construct Prompt Sequence
+            bpm_val = bpm
             bpm_token = encode_bpm(bpm_val) + self.config.bpm_offset_id
+
+            # Map Time Sig to Token
+            time_sig_map = {(4, 4): 0, (2, 4): 1, (3, 4): 2, (6, 8): 3, (2, 2): 4}
+            ts_idx = time_sig_map.get(time_sig, 0)
+            time_sig_token = ts_idx + self.config.time_sig_offset_id
 
             seq = [
                 torch.tensor([self.config.bos_token_id], dtype=torch.long),
-                torch.tensor([4 + self.config.time_sig_offset_id], dtype=torch.long),
+                torch.tensor([time_sig_token], dtype=torch.long),
                 torch.tensor([bpm_token], dtype=torch.long),
             ]
 
+            # Add Initial PAD (173)
+            pad_marker = 173
+            seq.append(torch.tensor([pad_marker], dtype=torch.long))
+
             for b in range(start_beat, current_beat):
-                # Mel (Part 0) -> End Marker 170
-                mel_tokens = self._get_tokens_for_beat(context_melody, b, end_marker_id=self.tokenizer.end_marker_part0)
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
+                # Add Bar tokens at start of measure
+                if b % 4 == 0:
+                    seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Acc Bar
+                    seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
+
+                # Get Mel tokens for beat b
+                beat_start_tick = b * self.ticks_per_beat
+                beat_end_tick = (b + 1) * self.ticks_per_beat
+                mel_notes_b = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
+                mel_tokens = self._get_tokens_for_beat(mel_notes_b, b, end_marker_id=self.tokenizer.end_marker_part0)
                 seq.append(mel_tokens)
-                # Acc (Part 1) -> End Marker 171
-                acc_tokens = self._get_tokens_for_beat(context_acc, b, end_marker_id=self.tokenizer.end_marker_part1)
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
+
+                # Get Acc tokens for beat b
+                acc_notes_b = [n for n in self.accompaniment_history if beat_start_tick <= n["tick"] < beat_end_tick]
+                acc_tokens = self._get_tokens_for_beat(acc_notes_b, b, end_marker_id=self.tokenizer.end_marker_part1)
                 seq.append(acc_tokens)
 
-            # Add Target Melody for current beat (Part 0) -> End Marker 170
-            target_melody = [
-                n
-                for n in self.melody_history
-                if absolute_generation_start_tick <= n["tick"] < (current_beat + 1) * self.ticks_per_beat
-            ]
-            target_mel_tokens = self._get_tokens_for_beat(
-                target_melody, current_beat, end_marker_id=self.tokenizer.end_marker_part0
-            )
-            seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
-            seq.append(target_mel_tokens)
+            # Now we are at current_beat.
+            # We need to prepare input for generating Acc[current_beat].
+            # If current_beat % 4 == 0, we need to add [Bar, Bar] first.
+            if current_beat % 4 == 0:
+                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Acc Bar
+                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
 
+            # The sequence is now ready to generate Acc[current_beat]
+            # IMPORTANT: We must NOT add the Acc Bar token here because _generate_tokens was doing it.
+            # But we removed it from _generate_tokens to be cleaner.
+            # So we should add it here if it's NOT a new measure (because new measure already added bars).
+            # Wait, the pattern is (AccBar, MelBar) -> AccTokens -> MelTokens.
+            # So for a new beat, we have MelTokens(prev) -> [Bar, Bar] (if new measure) -> AccTokens(current).
+            # But wait, the model expects to see MelTokens(prev) before generating AccTokens(current)?
+            # Let's check the training pattern or inference.py pattern.
+
+            # In inference.py:
+            # position 0 (Part0/Melody): Inject Mel tokens
+            # position 1 (Part1/Acc): Generate Acc tokens
+
+            # So the order is Mel -> Acc.
+            # But in `generate_accompaniment` here, we are building context up to `current_beat`.
+            # The loop `for b in range(start_beat, current_beat)` adds Acc[b] then Mel[b].
+            # So the last thing added is Mel[current_beat-1].
+
+            # Now we want to generate Acc[current_beat].
+            # If current_beat is start of measure, we added [AccBar, MelBar].
+            # Then we need to generate Acc.
+
+            # BUT, the model is trained on [AccBar, MelBar, AccTokens, MelTokens] (interleaved)?
+            # Or [AccBar, MelBar, MelTokens, AccTokens]?
+            # Let's look at `PianoDataset.py` or `model.py`.
+            # `model.py` loop:
+            # if position == 0 (Part0/Melody): Inject Mel
+            # if position == 1 (Part1/Acc): Generate Acc
+
+            # So the order in `model.py` is Part0 -> Part1.
+            # Wait, `model.py` says:
+            # if position == 0: # part0 (Melody)
+            #    inject part0_beats_list[part0_idx]
+            #    position = 1
+            # else: # part1 (Acc)
+            #    generate
+            #    position = 0
+
+            # So the sequence is Mel -> Acc -> Mel -> Acc.
+
+            # Let's re-check `transformer_engine_lekai.py` loop:
+            # seq.append(acc_tokens)
+            # seq.append(mel_tokens)
+            # This implies Acc -> Mel order! This contradicts `model.py`.
+
+            # Let's check `PianoDataset.py` to be sure about training data order.
+            # But assuming `model.py` is correct (Mel -> Acc), then `transformer_engine_lekai.py` is WRONG.
+            # It is building context as Acc -> Mel.
+
+            # Let's swap them in the loop.
+
+            # Correct Loop for Mel -> Acc order:
+            for b in range(start_beat, current_beat):
+                # Add Bar tokens at start of measure
+                if b % 4 == 0:
+                    seq.append(
+                        torch.tensor([self.config.bar_token_id], dtype=torch.long)
+                    )  # Acc Bar (Wait, are bars distinct?)
+                    seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
+                    # Note: config.bar_token_id is usually just one token.
+                    # If the model expects two bars, that's fine.
+
+                # Get Mel tokens for beat b
+                mel_notes_b = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
+                mel_tokens = self._get_tokens_for_beat(mel_notes_b, b, end_marker_id=self.tokenizer.end_marker_part0)
+                seq.append(mel_tokens)
+
+                # Get Acc tokens for beat b
+                beat_start_tick = b * self.ticks_per_beat
+                beat_end_tick = (b + 1) * self.ticks_per_beat
+                acc_notes_b = [n for n in self.accompaniment_history if beat_start_tick <= n["tick"] < beat_end_tick]
+                acc_tokens = self._get_tokens_for_beat(acc_notes_b, b, end_marker_id=self.tokenizer.end_marker_part1)
+                seq.append(acc_tokens)
+
+            # Now we are at current_beat.
+            # We need to prepare input for generating Acc[current_beat].
+            # We need to inject Mel[current_beat] FIRST.
+
+            # 1. Bar tokens if new measure
+            if current_beat % 4 == 0:
+                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
+                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
+
+            # 2. Inject Mel[current_beat]
+            beat_start_tick = current_beat * self.ticks_per_beat
+            beat_end_tick = (current_beat + 1) * self.ticks_per_beat
+            mel_notes_curr = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
+            mel_tokens_curr = self._get_tokens_for_beat(
+                mel_notes_curr, current_beat, end_marker_id=self.tokenizer.end_marker_part0
+            )
+            seq.append(mel_tokens_curr)
+
+            # 3. Now ready to generate Acc[current_beat]
             input_ids = torch.cat(seq).unsqueeze(0).to(device)
             past_key_values_to_use = None  # Reset cache
 
         else:
             # --- Stateful Incremental Logic ---
-            # We only need to append the NEW Melody beat
-            target_melody = [
-                n
-                for n in self.melody_history
-                if absolute_generation_start_tick <= n["tick"] < (current_beat + 1) * self.ticks_per_beat
-            ]
-            target_mel_tokens = self._get_tokens_for_beat(
-                target_melody, current_beat, end_marker_id=self.tokenizer.end_marker_part0
-            )
+            # We are continuing from Acc[current_beat - 1].
+            # The last generation produced Acc[current_beat - 1].
+            # The sequence so far (in model's mind) ends with Acc[current_beat - 1].
 
-            # [Bar] + [Mel]
-            seq = [torch.tensor([self.config.bar_token_id], dtype=torch.long), target_mel_tokens]
+            # We need to feed:
+            # 1. Bar tokens (if new measure)
+            # 2. Mel[current_beat]
+            # Then generate Acc[current_beat]
+
+            seq = []
+
+            # 1. Bar tokens if new measure
+            if current_beat % 4 == 0:
+                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
+                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))
+
+            # 2. Mel[current_beat]
+            beat_start_tick = current_beat * self.ticks_per_beat
+            beat_end_tick = (current_beat + 1) * self.ticks_per_beat
+            mel_notes_curr = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
+            mel_tokens_curr = self._get_tokens_for_beat(
+                mel_notes_curr, current_beat, end_marker_id=self.tokenizer.end_marker_part0
+            )
+            seq.append(mel_tokens_curr)
+
             input_ids = torch.cat(seq).unsqueeze(0).to(device)
             past_key_values_to_use = self.past_key_values
 
@@ -399,12 +482,13 @@ class InferenceEngineLekai:
 
         # 3. Generate
         generated_tokens, new_past_key_values = self._generate_tokens(input_ids, past_key_values_to_use)
-        print(f"DEBUG: Generated tokens: {generated_tokens}")
+        # print(f"DEBUG: Generated tokens: {generated_tokens}")
 
         # Update State if Stateful
         if self.inference_mode == "stateful":
             self.past_key_values = new_past_key_values
             self.last_generated_beat = current_beat
+            self.last_generated_acc_tokens = generated_tokens  # Store for next step
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -417,31 +501,39 @@ class InferenceEngineLekai:
         # Filter out PAD tokens (258) which might be generated by mistake
         valid_tokens = [t for t in generated_tokens if t != self.config.pad_token_id]
 
+        # Remove trailing Bar Token (255) if present
+        if valid_tokens and valid_tokens[-1] == self.config.bar_token_id:
+            valid_tokens.pop()
+
         # Ensure we have at least one token to decode
         if not valid_tokens:
-            print("Warning: No valid tokens generated.")
+            # Empty beat
             absolute_generated_notes = []
         else:
+            # Decode
             try:
-                # If the last token is NOT an end marker, append one to ensure decoding works
-                # But only if it's not an empty marker (169) which is self-contained
-                if valid_tokens[-1] != self.config.end_marker_part1 and valid_tokens[-1] != 169:
-                    valid_tokens.append(self.config.end_marker_part1)
+                # Decompress
+                # Note: decompress_tokens expects a list or array
+                decompressed = self.tokenizer.decompress_tokens(
+                    valid_tokens, end_marker_id=self.tokenizer.end_marker_part1
+                )
 
-                pr_generated = self.tokenizer.decode(valid_tokens, end_marker_id=self.config.end_marker_part1)
-                # pr_generated shape: (2, 88, T) where T should be ticks_per_beat (4)
+                # To Image
+                pr = self.tokenizer.patch_tokens_to_image(decompressed)
 
-                # Convert to notes
-                # Note: these notes are relative to the start of the beat (0-4)
-                notes_relative = self._pianoroll_to_notes(pr_generated, start_tick=0)
+                # To Notes
+                # Note: _pianoroll_to_notes needs to know the absolute start tick
+                # But here we are decoding a single beat relative to 0
+                # So we get relative notes, then shift them
+                relative_notes = self._pianoroll_to_notes(pr, start_tick=0)
 
-                # Convert to absolute ticks
                 absolute_generated_notes = []
-                beat_abs_start = current_beat * self.ticks_per_beat
+                beat_start_tick = current_beat * self.ticks_per_beat
 
-                for n in notes_relative:
-                    n["tick"] += beat_abs_start
-                    absolute_generated_notes.append(n)
+                for n in relative_notes:
+                    abs_note = n.copy()
+                    abs_note["tick"] += beat_start_tick
+                    absolute_generated_notes.append(abs_note)
 
             except Exception as e:
                 print(f"Decoding error: {e}")

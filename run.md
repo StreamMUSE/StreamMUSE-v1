@@ -58,7 +58,7 @@ uv run real_time_experiment_runner.py \
 --out-root experiments1/realtime/lekai_test/interval_4_gen_frame_5 \
 --server-url http://localhost:8988/generate_accompaniment \
 --generation-interval-ticks 4 \
---generation-length-per-request 5
+--generation-length-per-request 6
 ```
 
 ### Notes
