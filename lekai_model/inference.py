@@ -4,14 +4,22 @@ import torch
 from transformers import LlamaConfig
 import safetensors.torch
 import os
-from .PianoDataset import PianoDataset
+import sys
+
+# Add project root to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from lekai_model.PianoDataset import PianoDataset
 from datetime import datetime
-from .config import ModelConfig, TrainingConfig
-from .model import PianoLLaMA
-from .Token2Midi import tokens_to_midi
+from lekai_model.config import ModelConfig, TrainingConfig
+from lekai_model.model import PianoLLaMA
+from lekai_model.Token2Midi import tokens_to_midi
 import numpy as np
-device='cuda' if torch.cuda.is_available() else 'cpu'
-def setup_model_configs_llama(model_config:ModelConfig):
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def setup_model_configs_llama(model_config: ModelConfig):
     """创建LLaMA配置"""
     token_config = LlamaConfig(
         vocab_size=model_config.vocab_size,
@@ -29,6 +37,8 @@ def setup_model_configs_llama(model_config:ModelConfig):
         initializer_range=0.02,
     )
     return token_config
+
+
 def save_gt_midi(save_path, gt_path, velocity=80, dual_track=True):
     """
     从GT npz文件加载pianoroll并保存为MIDI
@@ -41,17 +51,17 @@ def save_gt_midi(save_path, gt_path, velocity=80, dual_track=True):
     """
     # 加载npz文件
     save_dict = np.load(gt_path, allow_pickle=True)
-    metadata = save_dict['metadata'].item()
+    metadata = save_dict["metadata"].item()
 
     # 获取基本信息
-    num_measures = metadata['num_measures']
-    bpm = metadata['bpm']
+    num_measures = metadata["num_measures"]
+    bpm = metadata["bpm"]
     if bpm is None or bpm <= 0:
         bpm = 120  # 默认BPM
     # 收集所有measure的pianoroll
     all_measures = []
     for i in range(num_measures):
-        measure = save_dict[f'measure_{i}']  # shape: (4, 88, t)
+        measure = save_dict[f"measure_{i}"]  # shape: (4, 88, t)
         all_measures.append(measure)
 
     # 拼接所有measure成完整pianoroll
@@ -91,7 +101,7 @@ def pianoroll_to_midi(merged_pianoroll, save_path, tempo=120, velocity=80):
     if merged_pianoroll.shape[0] == 2:
         # 单track模式（向后兼容）
         sustain_roll = merged_pianoroll[0]  # shape: (88, t)
-        onset_roll = merged_pianoroll[1]    # shape: (88, t)
+        onset_roll = merged_pianoroll[1]  # shape: (88, t)
 
         # 创建钢琴轨道
         piano = pretty_midi.Instrument(program=0, name="Piano")
@@ -121,12 +131,7 @@ def pianoroll_to_midi(merged_pianoroll, save_path, tempo=120, velocity=80):
                     end_time = start_time + 0.01
 
                 # 创建MIDI音符
-                note = pretty_midi.Note(
-                    velocity=velocity,
-                    pitch=pitch,
-                    start=start_time,
-                    end=end_time
-                )
+                note = pretty_midi.Note(velocity=velocity, pitch=pitch, start=start_time, end=end_time)
                 piano.notes.append(note)
                 note_count += 1
 
@@ -157,12 +162,7 @@ def pianoroll_to_midi(merged_pianoroll, save_path, tempo=120, velocity=80):
                 if end_time - start_time < 0.01:
                     end_time = start_time + 0.01
 
-                note = pretty_midi.Note(
-                    velocity=velocity,
-                    pitch=pitch,
-                    start=start_time,
-                    end=end_time
-                )
+                note = pretty_midi.Note(velocity=velocity, pitch=pitch, start=start_time, end=end_time)
                 part0_instrument.notes.append(note)
                 note_count_part0 += 1
 
@@ -189,17 +189,14 @@ def pianoroll_to_midi(merged_pianoroll, save_path, tempo=120, velocity=80):
                 if end_time - start_time < 0.01:
                     end_time = start_time + 0.01
 
-                note = pretty_midi.Note(
-                    velocity=velocity,
-                    pitch=pitch,
-                    start=start_time,
-                    end=end_time
-                )
+                note = pretty_midi.Note(velocity=velocity, pitch=pitch, start=start_time, end=end_time)
                 part1_instrument.notes.append(note)
                 note_count_part1 += 1
 
         midi.instruments.append(part1_instrument)
-        print(f"  Created MIDI with Part0: {note_count_part0} notes, Part1: {note_count_part1} notes at {tempo} BPM (dual track)")
+        print(
+            f"  Created MIDI with Part0: {note_count_part0} notes, Part1: {note_count_part1} notes at {tempo} BPM (dual track)"
+        )
 
     else:
         raise ValueError(f"Unexpected pianoroll shape: {merged_pianoroll.shape}. Expected (2, 88, t) or (4, 88, t)")
@@ -211,7 +208,7 @@ def pianoroll_to_midi(merged_pianoroll, save_path, tempo=120, velocity=80):
     midi.write(save_path)
 
 
-def load_model(model_path: str, model_config, device: str = 'cuda', use_fp16: bool = False):
+def load_model(model_path: str, model_config, device: str = "cuda", use_fp16: bool = False):
     """推理示例代码
 
     Args:
@@ -249,9 +246,9 @@ def load_model(model_path: str, model_config, device: str = 'cuda', use_fp16: bo
     return model
 
 
-def batch_generate_50_samples(model, dataset,output_dir='generated_samples', min_length=600):
+def batch_generate_50_samples(model, dataset, output_dir="generated_samples", min_length=600):
     """批量生成50首音乐，长度少于500的舍弃
-    
+
     Args:
         model: 加载好的模型
         output_dir: 输出目录
@@ -260,59 +257,63 @@ def batch_generate_50_samples(model, dataset,output_dir='generated_samples', min
     # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
     saved_count = 0
     total_attempts = 0
-    
+
     print(f"开始生成50首音乐（最小长度: {min_length}）...")
-    
+
     while saved_count < 200:
         total_attempts += 1
-        
+
         condition_idx = torch.randint(0, len(dataset), (1,)).item()
         print(condition_idx)
         # 生成序列  4/4  346
-        #pre = torch.cat([pre, tensor_data]).unsqueeze(0)
+        # pre = torch.cat([pre, tensor_data]).unsqueeze(0)
         seq = model.generate_accompaniment(
             dataset,
             condition_idx=condition_idx,
             delay_beats=-1,  # part1提前1拍
-            gt_prefix_beats=12,  # 使用前12拍的GT
+            gt_prefix_beats=40,  # 使用前40拍的GT
             temperature=1.1,
             device=device,
             top_k=10,
             top_p=0.95,
-            repetition_penalty=1.0
+            repetition_penalty=1.0,
         )
-         # 去掉batch维度
-        gt_name = Path(seq['GT_path']).stem  # 只取文件名，不带路径和扩展名
+        # 去掉batch维度
+        gt_name = Path(seq["GT_path"]).stem  # 只取文件名，不带路径和扩展名
         save_path = f"{output_dir}/{timestamp}_{total_attempts}_{gt_name}_GT.mid"
-        save_gt_midi(save_path=save_path,gt_path=seq['GT_path'],velocity=80) 
+        save_gt_midi(save_path=save_path, gt_path=seq["GT_path"], velocity=80)
         tokens_to_midi(
-                result_dict=seq,
-                save_path=f'{output_dir}/{timestamp}_{total_attempts}_{gt_name}.mid',
-                velocity=80
-            )
-    
+            result_dict=seq, save_path=f"{output_dir}/{timestamp}_{total_attempts}_{gt_name}.mid", velocity=80
+        )
+
 
 # 使用示例
-if __name__ == '__main__':
+if __name__ == "__main__":
     model_config = ModelConfig()
 
     training_config = TrainingConfig()
+    # my_dataset = PianoDataset(
+    #     "rt/RT_Accompaniment/mini_dataset",
+    #     config=model_config,
+    #     cache_lengths=False,  # 启用长度缓存
+    # )
     my_dataset = PianoDataset(
-        'mini_dataset',
+        "output_npz_test",
         config=model_config,
-        cache_lengths=False  # 启用长度缓存
+        cache_lengths=False,  # 启用长度缓存
     )
     print(f"Using device: {device}")
 
     # 加载模型
     model = load_model(
-        model_path="checkpoints\epoch_4_1104_1204\model.safetensors",
+        model_path="rt/RT_Accompaniment/checkpoints/epoch_4_1104_1204/model.safetensors",
         model_config=model_config,
-        device = device
+        device=device,
     )
-    
+
     # 批量生成50首
-    batch_generate_50_samples(model,my_dataset, output_dir='generated_samples_1030', min_length=500)
+    # batch_generate_50_samples(model, my_dataset, output_dir="generated_samples_1030", min_length=500)
+    batch_generate_50_samples(model, my_dataset, output_dir="gen_input_5", min_length=200)
