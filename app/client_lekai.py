@@ -52,6 +52,9 @@ class StreamMUSEConfig:
     DEFAULT_GENERATION_LENGTH = None  # For experiments only
 
     # Note handling
+    # Deprecated: The protocol is now fully event-based (note_on/note_off) and
+    # the server should return explicit note_off events. This value is only kept
+    # for legacy playback paths / placeholder padding.
     DEFAULT_NOTE_DURATION_TICKS = 2
     LATENCY_OFFSET_TICKS = 2
     DEFAULT_ACCOMPANIMENT_VELOCITY = 50
@@ -463,7 +466,8 @@ def tick_loop(
                 if isinstance(request_data, dict):
                     gen_start = request_data.get("generation_start_tick")
 
-                # 如果知道期望帧数和 generation 起始 tick，补全缺失 ticks（占位 pitch=-1）
+                # 如果知道期望帧数和 generation 起始 tick，补全缺失 ticks（占位 pitch=-1）。
+                # 注意：现在 server 端是 event-stream (note_on/note_off)，不是 duration note。
                 if generation_length_per_request is not None and gen_start is not None:
                     # map existing ticks
                     existing_ticks = {n["tick"] for n in newly_generated_notes}
@@ -475,9 +479,9 @@ def tick_loop(
                         if t not in existing_ticks:
                             newly_generated_notes.append(
                                 {
+                                    "type": "note_on",
                                     "pitch": -1,
                                     "tick": t,
-                                    "duration": DEFAULT_NOTE_DURATION_TICKS,
                                     "is_placeholder": True,
                                 }
                             )
@@ -519,9 +523,15 @@ def tick_loop(
                     if note["tick"] >= tick_count:
                         if note["tick"] not in playback_schedule:
                             playback_schedule[note["tick"]] = []
+
+                        # Server now returns explicit event type. For safety (older
+                        # servers), default to note_on if absent.
+                        normalized_note = dict(note)
+                        normalized_note.setdefault("type", "note_on")
+
                         # Tag as a model-originated event
                         playback_schedule[note["tick"]].append(
-                            {**note, "source": "model"}
+                            {**normalized_note, "source": "model"}
                         )
 
                 # Store timings for display, making them persistent
@@ -571,7 +581,7 @@ def tick_loop(
                     continue  # Skip placeholder notes
             if event.get("type") == "note_off":
                 notes_to_stop_this_tick.append(event)
-            else:  # It's a note_on
+            else:  # It's a note_on (or other non-note_off event)
                 notes_to_play_this_tick.append(event)
         if is_hit:
             number_of_hit += 1
@@ -595,20 +605,21 @@ def tick_loop(
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
             # This loop only processes model-generated notes.
+            if event.get("type") != "note_on":
+                # Ignore non-note events (e.g. placeholders or future extensions)
+                continue
             audio_output_handler.on(
                 event["pitch"], audio_output_handler.accompaniment_velocity
             )
             midi_file_handler.add_model_note(event)
 
-            # If the model note contains an explicit duration (legacy mode), schedule its note_off.
-            # If not, we assume the server will provide explicit note_off events (event-based mode).
+            # Event-stream mode: note_off should arrive explicitly from server.
+            # We keep *optional* legacy compatibility: if duration exists, still schedule.
             dur = event.get("duration")
             if dur is not None:
                 note_off_tick = tick_count + int(dur)
                 if note_off_tick not in playback_schedule:
                     playback_schedule[note_off_tick] = []
-
-                # The source tag is preserved from the original event
                 playback_schedule[note_off_tick].append(
                     {**event, "type": "note_off", "source": "model"}
                 )

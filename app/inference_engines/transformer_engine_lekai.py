@@ -565,9 +565,13 @@ class InferenceEngineLekai:
             # 2. Mel[current_beat]
             beat_start_tick = current_beat * self.ticks_per_beat
             beat_end_tick = (current_beat + 1) * self.ticks_per_beat
-            mel_notes_curr = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
-            mel_tokens_curr = self._get_tokens_for_beat(
-                mel_notes_curr, current_beat, end_marker_id=self.tokenizer.end_marker_part0
+            mel_pr_curr = self._get_mel_pianoroll_for_beat(
+                beat_start_tick=beat_start_tick,
+                beat_end_tick=beat_end_tick,
+            )
+            mel_tokens_curr = self._get_tokens_for_beat_pianoroll(
+                mel_pr_curr,
+                end_marker_id=self.tokenizer.end_marker_part0,
             )
             seq.append(mel_tokens_curr)
 
@@ -604,55 +608,59 @@ class InferenceEngineLekai:
             valid_tokens.pop()
 
         # Ensure we have at least one token to decode
+        pr = None
         if not valid_tokens:
             # Empty beat
-            absolute_generated_notes = []
+            absolute_generated_events = []
         else:
             # Decode
             try:
-                # Decompress
-                # Note: decompress_tokens expects a list or array
                 decompressed = self.tokenizer.decompress_tokens(
                     valid_tokens, end_marker_id=self.tokenizer.end_marker_part1
                 )
-
-                # To Image
                 pr = self.tokenizer.patch_tokens_to_image(decompressed)
 
-                # To Notes
-                # Note: _pianoroll_to_notes needs to know the absolute start tick
-                # But here we are decoding a single beat relative to 0
-                # So we get relative notes, then shift them
-                relative_notes = self._pianoroll_to_notes(pr, start_tick=0)
-
-                absolute_generated_notes = []
                 beat_start_tick = current_beat * self.ticks_per_beat
-
-                for n in relative_notes:
-                    abs_note = n.copy()
-                    abs_note["tick"] += beat_start_tick
-                    absolute_generated_notes.append(abs_note)
-
+                # Convert pianoroll (beat-local) to absolute-tick events
+                absolute_generated_events = self.midi_converter.pianoroll_to_events(
+                    pr,
+                    start_tick=beat_start_tick,
+                )
             except Exception as e:
                 print(f"Decoding error: {e}")
-                absolute_generated_notes = []
+                absolute_generated_events = []
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         postprocess_start_time = time.perf_counter()
 
         # 6. Update History & Return
-        self.accompaniment_history.extend(absolute_generated_notes)
+        # NOTE: accompaniment_history is still note-based elsewhere in this engine.
+        # We keep updating it with decoded notes for internal context, but these are
+        # not returned to the client anymore.
+        try:
+            # Derive notes for history/context only
+            rel_notes_for_history = self._pianoroll_to_notes(pr, start_tick=0) if pr is not None else []
+            beat_start_tick = current_beat * self.ticks_per_beat
+            abs_notes_for_history = []
+            for n in rel_notes_for_history:
+                abs_n = n.copy()
+                abs_n["tick"] += beat_start_tick
+                abs_notes_for_history.append(abs_n)
+            self.accompaniment_history.extend(abs_notes_for_history)
+        except Exception:
+            # If decode-to-notes fails, we can still return events
+            pass
 
-        # Return relative notes (hiding injection offset)
-        relative_generated_notes = []
-        for note in absolute_generated_notes:
-            relative_note = note.copy()
-            relative_note["tick"] = note["tick"] - self.injection_offset_ticks
-            relative_generated_notes.append(relative_note)
+        # Return relative events (hiding injection offset)
+        relative_generated_events = []
+        for e in absolute_generated_events:
+            re = e.copy()
+            re["tick"] = int(e["tick"]) - self.injection_offset_ticks
+            relative_generated_events.append(re)
 
         return (
-            relative_generated_notes,
+            relative_generated_events,
             preprocess_start_time,
             inference_start_time,
             inference_end_time,

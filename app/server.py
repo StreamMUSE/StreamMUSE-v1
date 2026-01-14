@@ -17,9 +17,9 @@ from app.inference_engines.transformer_engine_lekai import InferenceEngineLekai
 
 
 class MelodyNoteEvent(BaseModel):
+    type: str
     pitch: int
     tick: int
-    duration: int
 
 
 class InferenceRequest(BaseModel):
@@ -35,10 +35,9 @@ class InferenceRequest(BaseModel):
 
 
 class AccompanimentNoteEvent(BaseModel):
+    type: str
     pitch: int
     tick: int
-    duration: int
-    program: int
 
 
 class Timings(BaseModel):
