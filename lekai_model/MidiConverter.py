@@ -181,3 +181,141 @@ class MidiConverter:
 
         notes.sort(key=lambda x: x["tick"])
         return notes
+
+    def events_to_pianoroll(self, events, start_tick, end_tick, active_pitches=None):
+        """Convert event stream into a pianoroll for a specific tick window.
+
+        Args:
+            events (List[dict]): Each event:
+                {"type": "note_on"|"note_off", "pitch": int, "tick": int}
+                Tick is absolute on the engine's tick grid.
+            start_tick (int): Inclusive window start (absolute tick).
+            end_tick (int): Exclusive window end (absolute tick). Output length is
+                `end_tick - start_tick`.
+            active_pitches (Iterable[int], optional): Pitches that are already
+                active strictly **before** start_tick (i.e., sustained into this
+                window). These will be sustained starting at window-relative tick 0
+                until ended by a note_off event inside the window.
+
+        Returns:
+            np.ndarray: pianoroll of shape (2, 88, end_tick-start_tick), dtype uint8.
+        """
+
+        start_tick = int(start_tick)
+        end_tick = int(end_tick)
+        if end_tick < start_tick:
+            raise ValueError(f"end_tick ({end_tick}) must be >= start_tick ({start_tick})")
+
+        T = end_tick - start_tick
+
+        if active_pitches is None:
+            active_pitches = set()
+        else:
+            active_pitches = set(active_pitches)
+
+        pianoroll = np.zeros((2, 88, T), dtype=np.uint8)
+        if T == 0:
+            return pianoroll
+
+        # Helper to map pitch to 0..87 index
+        def _pidx(pitch):
+            return int(pitch) - 21
+
+        # Sustain from window start for pitches that were already active before start_tick
+        for p in list(active_pitches):
+            idx = _pidx(p)
+            if 0 <= idx < 88:
+                pianoroll[0, idx, 0:T] = 1
+
+        # Filter to window then shift tick to window-relative
+        evt_sorted = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            if e.get("type") not in {"note_on", "note_off"}:
+                continue
+            if "pitch" not in e or "tick" not in e:
+                continue
+            t_abs = int(e["tick"])
+            if not (start_tick <= t_abs < end_tick):
+                continue
+            evt_sorted.append(
+                {
+                    "type": e.get("type"),
+                    "pitch": int(e["pitch"]),
+                    "tick": t_abs - start_tick,
+                }
+            )
+
+        # Sort events by time; process note_off before note_on if same tick
+        evt_sorted.sort(key=lambda e: (int(e.get("tick", 0)), 0 if e.get("type") == "note_off" else 1))
+
+        # Track active pitches within the window (initialized from carry-in)
+        active = set(active_pitches)
+
+        for e in evt_sorted:
+            et = e.get("type")
+            p = e.get("pitch")
+            t = int(e.get("tick", 0))
+            if t < 0 or t >= T:
+                continue
+            idx = _pidx(p)
+            if not (0 <= idx < 88):
+                continue
+
+            if et == "note_off":
+                if p in active:
+                    # Turn sustain off starting at tick t (relative)
+                    pianoroll[0, idx, t:T] = 0
+                    active.discard(p)
+
+            else:  # note_on
+                # Start (or retrigger) sustain from t and mark onset at t.
+                pianoroll[0, idx, t:T] = 1
+                pianoroll[1, idx, t] = 1
+                active.add(p)
+
+        return pianoroll
+
+    def pianoroll_to_events(self, pianoroll, start_tick=0):
+        """Convert (2, 88, T) piano roll back to note_on/note_off events.
+
+        We interpret:
+        - onset channel (1) as note_on.
+        - sustain channel (0) falling edge (1->0) as note_off.
+        - sustain length with no falling edge produces no note_off (caller may
+          treat as still active after the window).
+
+        Args:
+            pianoroll (np.ndarray): shape (2, 88, T)
+            start_tick (int): absolute tick offset to add to emitted events.
+
+        Returns:
+            List[dict]: events sorted by tick.
+        """
+
+        events = []
+        sustain = pianoroll[0]
+        onset = pianoroll[1]
+        T = pianoroll.shape[2]
+
+        for pitch_idx in range(88):
+            pitch = pitch_idx + 21
+
+            # note_on: any onset==1
+            on_ticks = np.where(onset[pitch_idx] > 0)[0]
+            for t in on_ticks:
+                events.append({"type": "note_on", "pitch": int(pitch), "tick": int(start_tick + t)})
+
+            # note_off: falling edges in sustain
+            if T <= 1:
+                continue
+            s = sustain[pitch_idx].astype(np.int8)
+            # falling edge at t means s[t-1]==1 and s[t]==0
+            fall = np.where((s[:-1] == 1) & (s[1:] == 0))[0]
+            for t0 in fall:
+                t = t0 + 1
+                events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
+
+        events.sort(key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
+        return events

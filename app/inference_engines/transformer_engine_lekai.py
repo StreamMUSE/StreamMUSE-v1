@@ -89,7 +89,10 @@ class InferenceEngineLekai:
 
         # Parameters
         self.ticks_per_beat = 4  # Assuming 4 ticks per beat for the tokenizer/model
-        self.melody_history = []
+        # Client melody is an event stream (note_on/note_off). We store raw events
+        # (absolute ticks, after injection offset) and derive per-beat duration notes
+        # only as an internal compatibility layer for the tokenizer.
+        self.melody_event_history = []
         self.accompaniment_history = []
         self.counter = 0
         self.injection_offset_ticks = 0
@@ -103,12 +106,86 @@ class InferenceEngineLekai:
         # Helper converter
         self.midi_converter = MidiConverter(ticks_per_beat=self.ticks_per_beat)
 
+        # Event-stream melody support (note_on/note_off)
+        # Tracks currently active pitches across requests so we can infer sustain
+        # when a pitch is held but no explicit event is sent in the next interval.
+        self._active_melody_pitches = set()
+
+    def _get_mel_pianoroll_for_beat(self, beat_start_tick: int, beat_end_tick: int):
+        """Build melody pianoroll for a single beat directly from event stream.
+
+        - Uses `MidiConverter.events_to_pianoroll`.
+        - Carries sustain across beats via `self._active_melody_pitches`.
+        - Updates `self._active_melody_pitches` by applying note_off events within the beat
+          (events_to_pianoroll doesn't return active set, so we update it here).
+        """
+
+        pr = self.midi_converter.events_to_pianoroll(
+            self.melody_event_history,
+            start_tick=beat_start_tick,
+            end_tick=beat_end_tick,
+            active_pitches=self._active_melody_pitches,
+        )
+
+        # Update active set for next beat (apply beat-local events in temporal order)
+        beat_events = [
+            e
+            for e in self.melody_event_history
+            if beat_start_tick <= e.get("tick", -1) < beat_end_tick
+        ]
+        beat_events.sort(
+            key=lambda e: (
+                int(e.get("tick", 0)),
+                0 if e.get("type") == "note_off" else 1,
+            )
+        )
+        for e in beat_events:
+            et = e.get("type")
+            p = e.get("pitch")
+            if p is None:
+                continue
+            p = int(p)
+            if et == "note_on":
+                self._active_melody_pitches.add(p)
+            elif et == "note_off":
+                self._active_melody_pitches.discard(p)
+
+        return pr
+
+    def _normalize_melody_input(self, melody_notes: list, generation_start_tick: int):
+        """Normalize client melody payload (event stream) into absolute-tick events.
+
+        Expected input items:
+          {"type": "note_on"|"note_off", "pitch": int, "tick": int}
+
+        Output items:
+          same dicts, but with "tick" shifted by injection offset (absolute tick).
+        """
+
+        if not melody_notes:
+            return []
+
+        abs_events = []
+        for e in melody_notes:
+            if not isinstance(e, dict):
+                continue
+            if e.get("type") not in {"note_on", "note_off"}:
+                continue
+            if "pitch" not in e or "tick" not in e:
+                continue
+            abs_e = e.copy()
+            abs_e["tick"] = int(e["tick"]) + self.injection_offset_ticks
+            abs_e["pitch"] = int(e["pitch"])
+            abs_events.append(abs_e)
+        return abs_events
+
     def set_injection_offset(self, offset_ticks: int):
         self.injection_offset_ticks = offset_ticks
         print(f"设置注入偏移: {offset_ticks} ticks")
 
     def clear_history(self):
-        self.melody_history = []
+        self.melody_event_history = []
+        self._active_melody_pitches = set()
         self.accompaniment_history = []
         self.past_key_values = None
         self.last_generated_beat = -1
@@ -157,6 +234,13 @@ class InferenceEngineLekai:
         # 2. Compress with specific end marker
         tokens = self.tokenizer.compress_tokens(patch_tokens, end_marker=end_marker_id)
 
+        return torch.tensor(tokens, dtype=torch.long)
+
+    def _get_tokens_for_beat_pianoroll(self, pianoroll, end_marker_id):
+        """Tokenize a beat-length pianoroll with a specific end marker."""
+
+        patch_tokens = self.tokenizer.image_to_patch_tokens(pianoroll, strict_mode=True)
+        tokens = self.tokenizer.compress_tokens(patch_tokens, end_marker=end_marker_id)
         return torch.tensor(tokens, dtype=torch.long)
 
     def _generate_tokens(self, input_ids, past_key_values=None):
@@ -263,15 +347,13 @@ class InferenceEngineLekai:
             torch.cuda.synchronize()
         preprocess_start_time = time.perf_counter()
 
-        # 1. Update History
-        absolute_melody_notes = []
-        for note in melody_notes:
-            absolute_note = note.copy()
-            absolute_note["tick"] = note["tick"] + self.injection_offset_ticks
-            absolute_melody_notes.append(absolute_note)
-        self.melody_history.extend(absolute_melody_notes)
+        # 1. Update History (event stream only)
+        abs_events = self._normalize_melody_input(melody_notes, generation_start_tick)
+        self.melody_event_history.extend(abs_events)
 
-        absolute_generation_start_tick = generation_start_tick + self.injection_offset_ticks
+        absolute_generation_start_tick = (
+            generation_start_tick + self.injection_offset_ticks
+        )
 
         if len(self.accompaniment_history) == 0 and acc_notes is not None:
             absolute_acc_notes = []
@@ -331,11 +413,17 @@ class InferenceEngineLekai:
                     seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Acc Bar
                     seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
 
-                # Get Mel tokens for beat b
+                # Get Mel tokens for beat b (event stream -> pianoroll)
                 beat_start_tick = b * self.ticks_per_beat
                 beat_end_tick = (b + 1) * self.ticks_per_beat
-                mel_notes_b = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
-                mel_tokens = self._get_tokens_for_beat(mel_notes_b, b, end_marker_id=self.tokenizer.end_marker_part0)
+                mel_pr_b = self._get_mel_pianoroll_for_beat(
+                    beat_start_tick=beat_start_tick,
+                    beat_end_tick=beat_end_tick,
+                )
+                mel_tokens = self._get_tokens_for_beat_pianoroll(
+                    mel_pr_b,
+                    end_marker_id=self.tokenizer.end_marker_part0,
+                )
                 seq.append(mel_tokens)
 
                 # Get Acc tokens for beat b
@@ -413,8 +501,14 @@ class InferenceEngineLekai:
                     # If the model expects two bars, that's fine.
 
                 # Get Mel tokens for beat b
-                mel_notes_b = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
-                mel_tokens = self._get_tokens_for_beat(mel_notes_b, b, end_marker_id=self.tokenizer.end_marker_part0)
+                mel_pr_b = self._get_mel_pianoroll_for_beat(
+                    beat_start_tick=beat_start_tick,
+                    beat_end_tick=beat_end_tick,
+                )
+                mel_tokens = self._get_tokens_for_beat_pianoroll(
+                    mel_pr_b,
+                    end_marker_id=self.tokenizer.end_marker_part0,
+                )
                 seq.append(mel_tokens)
 
                 # Get Acc tokens for beat b
@@ -436,9 +530,13 @@ class InferenceEngineLekai:
             # 2. Inject Mel[current_beat]
             beat_start_tick = current_beat * self.ticks_per_beat
             beat_end_tick = (current_beat + 1) * self.ticks_per_beat
-            mel_notes_curr = [n for n in self.melody_history if beat_start_tick <= n["tick"] < beat_end_tick]
-            mel_tokens_curr = self._get_tokens_for_beat(
-                mel_notes_curr, current_beat, end_marker_id=self.tokenizer.end_marker_part0
+            mel_pr_curr = self._get_mel_pianoroll_for_beat(
+                beat_start_tick=beat_start_tick,
+                beat_end_tick=beat_end_tick,
+            )
+            mel_tokens_curr = self._get_tokens_for_beat_pianoroll(
+                mel_pr_curr,
+                end_marker_id=self.tokenizer.end_marker_part0,
             )
             seq.append(mel_tokens_curr)
 

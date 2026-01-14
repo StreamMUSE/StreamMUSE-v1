@@ -401,3 +401,50 @@ class PianoRollTokenizer:
         )
 
 
+if __name__ == "__main__":
+    # Quick self-test / example for the tokenizer
+    import numpy as _np
+
+    print("Running PianoRollTokenizer self-test example...")
+
+    # 1) 构造一个非常简单的输入：(2, 88, 4) - 恰好一个 patch（1 时间片）
+    t = 4
+    image = _np.zeros((2, 88, t), dtype=_np.int64)
+
+    # 在 pitch index 0 上设置 sustain/onset
+    image[0, 0, :] = [1, 1, 1, 0]  # sustain
+    image[1, 0, :] = [1, 0, 0, 0]  # onset (only where sustain==1)
+    image[0, 8, :] = [1, 1, 1, 0]  # sustain
+    image[1, 8, :] = [1, 0, 0, 0]  # onset (only where sustain==1)
+
+    tok = PianoRollTokenizer(patch_h=1, patch_w=4, marker_offset=81, measures_length=88,
+                             end_marker_part0=170, end_marker_part1=171, empty_marker=169, img_h=88)
+
+    # encode: image -> tokens matrix -> compressed sequence
+    tokens_matrix = tok.image_to_patch_tokens(image)       # shape (num_time_patches, num_pitch_patches)
+    print("tokens_matrix.shape:", tokens_matrix.shape)
+    nonzeros = [(i, int(v)) for i, v in enumerate(tokens_matrix[0]) if v != 0]
+    print("nonzero tokens in first time-patch (index, value):", nonzeros[:10])
+
+    compressed = tok.compress_tokens(tokens_matrix, end_marker=170)
+    print("compressed sequence:", compressed)
+
+    # decode back
+    recovered_tokens = tok.decompress_tokens(compressed, end_marker_id=None)
+    print("recovered_tokens.shape:", recovered_tokens.shape)
+    reconstructed_image = tok.patch_tokens_to_image(recovered_tokens)
+    print("reconstructed image shape:", reconstructed_image.shape)
+
+    print("reconstructed sustain row 0:", reconstructed_image[0, 0, :].tolist())
+    print("reconstructed onset  row 0:", reconstructed_image[1, 0, :].tolist())
+
+    # Sanity check: equality with original for the tested pitch/time region
+    assert (reconstructed_image[0, 0, :] == image[0, 0, :]).all(), "sustain mismatch"
+    assert (reconstructed_image[1, 0, :] == image[1, 0, :]).all(), "onset mismatch"
+    print("Self-test passed.")
+
+    # random test
+    # image = np.random.randint(0, 2, (2, 88, 16))
+    # print("Random test image:", image)
+    # compressed = tok.encode(image)
+    # print("Random test compressed:", compressed)

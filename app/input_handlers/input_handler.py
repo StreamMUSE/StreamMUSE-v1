@@ -62,7 +62,15 @@ def _on_release(key, event_queue, keyboard):
     try:
         char_key = key.char
         if char_key in KEY_TO_PITCH and char_key in pressed_keys:
+            pitch = KEY_TO_PITCH[char_key]
             pressed_keys.remove(char_key)
+            event = {
+                "type": "note_off",
+                "pitch": pitch,
+                "velocity": 0,
+                "time": time.time(),
+            }
+            event_queue.put(event)
     except AttributeError:
         if key == keyboard.Key.esc:
             # Stop listener
@@ -99,22 +107,17 @@ def read_keyboard_input(event_queue: Queue):
 
 # --- MIDI File Input Handler ---
 def read_midi_file_input(
-    event_queue: Queue, 
-    midi_file_path: str, 
+    event_queue: Queue,
+    midi_file_path: str,
     current_tick_ref: dict,  # {'current_tick': value} - shared reference
     main_loop_tempo: float,
     main_loop_ticks_per_beat: int,
     delay_ticks: int = 0,
-    skip_ticks: int = 0, # Skip how many ticks, for injection
-    use_original_duration: bool = True,
-    default_duration_ticks: int = 2
+    skip_ticks: int = 0,  # Skip how many ticks, for injection
 ):
     """
-    Worker function for reading MIDI file input and simulating user input (separate thread).
-    
-    Uses the existing midi_to_note function to parse MIDI files and convert them to 
-    real-time note events that match the main loop's timing.
-    
+    MIDI file input → event stream (note_on / note_off), no duration in events.
+
     Args:
         event_queue: Queue to put note events into
         midi_file_path: Path to the MIDI file
@@ -123,122 +126,124 @@ def read_midi_file_input(
         main_loop_ticks_per_beat: Ticks per beat in main loop
         delay_ticks: Number of ticks to delay before starting playback
         skip_ticks: Number of ticks to skip from the beginning of the MIDI file, it's for injection
-        use_original_duration: If True, use original MIDI durations; if False, use fixed duration
-        default_duration_ticks: Fixed duration when use_original_duration is False
     """
     try:
         print(f"Loading MIDI file: {midi_file_path}")
-        
-        # Use existing midi_to_note function to parse the MIDI file
-        # The beat_div parameter controls the tempo conversion
-        # beat_div=4 means quarter note = 1 beat (standard)
+
         beat_div = main_loop_ticks_per_beat
-        
-        # Parse MIDI file - this handles tempo conversion automatically
+
         notes, midi_resolution, max_tick = midi_to_note(
-            midi_file_path, 
+            midi_file_path,
             beat_div=beat_div,
-            program=None  # Accept all instruments, we'll filter for melody later
+            program=None
         )
-        
+
         if not notes:
             print("No notes found in MIDI file")
             event_queue.put(None)
             return
-        
-        # Find melody track by selecting notes from the track with the most activity
-        # Group notes by their timing characteristics to identify the main melody line
+
         print(f"Loaded {len(notes)} notes from MIDI file")
 
-        # 过滤掉前 skip_ticks 的音符，并重新调整时间
+        # Filter out the first skip_ticks and rebase tick to start from 0
         filtered_notes = []
         for note in notes:
-            if note['tick'] >= skip_ticks:  # 只保留 skip_ticks 之后的音符
-                # 重新调整时间：减去 skip_ticks，从 0 开始
-                adjusted_note = note.copy()
-                adjusted_note['tick'] = note['tick'] - skip_ticks
-                filtered_notes.append(adjusted_note)
-        
+            note_start = note["tick"]
+            note_end = note["tick"] + note["duration"]
+
+            # fully before skip -> ignore
+            if note_end <= skip_ticks:
+                continue
+
+            adjusted = note.copy()
+
+            # If the note starts before skip but ends after, clamp start to 0 and shorten duration
+            if note_start < skip_ticks:
+                adjusted["tick"] = 0
+                adjusted["duration"] = note_end - skip_ticks
+            else:
+                adjusted["tick"] = note_start - skip_ticks
+
+            filtered_notes.append(adjusted)
+
         if not filtered_notes:
             print(f"No notes found after skipping first {skip_ticks} ticks")
             event_queue.put(None)
             return
-        
-        print(f"After skipping first {skip_ticks} ticks: {len(filtered_notes)} notes remaining")
-        
-        # Create tick-indexed schedule with delay offset
-        # No tempo conversion needed - the main loop's tempo will control playback speed
+
+        print(
+            f"After skipping first {skip_ticks} ticks: {len(filtered_notes)} notes remaining"
+        )
+
         tick_schedule = {}
         start_offset_tick = delay_ticks
-        
+
         if skip_ticks > 0:
             print(f"Skipped first {skip_ticks} ticks of MIDI file")
         if delay_ticks > 0:
             print(f"Delayed start by {delay_ticks} ticks")
 
+        # Schedule note_on and note_off events (no duration field)
         for note in filtered_notes:
-            # 现在 note['tick'] 已经是从 0 开始的了
-            # Use original tick timing + delay offset
-            scheduled_tick = note['tick'] + start_offset_tick
-            
-            # Handle duration
-            if use_original_duration:
-                duration = note['duration']
-            else:
-                duration = default_duration_ticks
-            
-            # Schedule note_on event
-            if scheduled_tick not in tick_schedule:
-                tick_schedule[scheduled_tick] = []
-            
-            # Create event in the same format as other input handlers
-            tick_schedule[scheduled_tick].append({
-                'type': 'note_on',
-                'pitch': note['pitch'],
-                'velocity': 64,  # Default velocity for MIDI file notes
-                'duration': duration,
-                'time': time.time()  # Will be updated when actually sent
-            })
-        
+            onset_tick = note["tick"] + start_offset_tick
+            offset_tick = onset_tick + int(note["duration"])
+
+            # note_on
+            tick_schedule.setdefault(onset_tick, []).append(
+                {
+                    "type": "note_on",
+                    "pitch": int(note["pitch"]),
+                    "velocity": int(note.get("velocity", 64)),
+                    "time": time.time(),  # overwritten when sent
+                }
+            )
+
+            # note_off
+            tick_schedule.setdefault(offset_tick, []).append(
+                {
+                    "type": "note_off",
+                    "pitch": int(note["pitch"]),
+                    "velocity": 0,
+                    "time": time.time(),  # overwritten when sent
+                }
+            )
+
         if tick_schedule:
             scheduled_ticks = sorted(tick_schedule.keys())
-            print(f"Scheduled {len(filtered_notes)} notes from tick {scheduled_ticks[0]} to {scheduled_ticks[-1]}")
-        
-        # Main playback loop - wait for the right tick and send events
+            print(
+                f"Scheduled events from tick {scheduled_ticks[0]} to {scheduled_ticks[-1]} "
+                f"(total events={sum(len(v) for v in tick_schedule.values())})"
+            )
+
         last_tick = -1
+        max_scheduled_tick = max(tick_schedule.keys()) if tick_schedule else 0
+
         while True:
-            current_tick = current_tick_ref.get('current_tick', 0)
-            
-            # Check if we have events for this tick
+            current_tick = current_tick_ref.get("current_tick", 0)
+
             if current_tick != last_tick and current_tick in tick_schedule:
                 events = tick_schedule[current_tick]
                 for event in events:
-                    # Update timestamp to current time
-                    event['time'] = time.time()
+                    event["time"] = time.time()
                     event_queue.put(event)
-                
-                # Clean up processed events
                 del tick_schedule[current_tick]
-            
+
             last_tick = current_tick
-            
-            # Check if we're done (no more events scheduled)
+
             if not tick_schedule:
                 print("MIDI file playback completed")
                 break
-            
-            # Check if we've passed all scheduled events by a safe margin
-            if tick_schedule and current_tick > max(tick_schedule.keys()) + 50:
+
+            if current_tick > max_scheduled_tick + 50:
                 print("MIDI file playback completed (main loop advanced past all events)")
                 break
-            
-            time.sleep(0.001)  # Small sleep to prevent busy waiting
-            
+
+            time.sleep(0.001)
+
     except Exception as e:
         print(f"Error loading MIDI file: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
-        # MIDI file playback finished, but don't signal end of input
-        # The main loop should continue running
         print("MIDI file input handler finished, main loop continues") 
