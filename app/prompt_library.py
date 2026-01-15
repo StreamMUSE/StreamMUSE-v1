@@ -7,7 +7,7 @@ Handles organization and selection of musical prompts by key.
 import os
 import json
 from typing import Optional, List, Dict
-from midi_input_script import midi_to_note
+from midi_utils import midi_to_note
 
 
 class PromptLibrary:

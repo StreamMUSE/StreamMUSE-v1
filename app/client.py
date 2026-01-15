@@ -34,7 +34,7 @@ from input_handlers.input_handler import (
 )
 from key_detection import detect_key_lightweight, detect_key_music21
 from prompt_library import PromptLibrary
-from midi_input_script import midi_to_note
+from midi_utils import midi_to_note
 
 
 # --- Configuration ---

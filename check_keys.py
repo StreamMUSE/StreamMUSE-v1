@@ -18,7 +18,7 @@ sys.path.insert(0, '/home/andrew/stanleyz/app')
 sys.path.insert(0, '/home/andrew/stanleyz')
 
 from key_detection import detect_key_lightweight, detect_key_music21
-from midi_input_script import midi_to_note
+from midi_utils import midi_to_note
 
 
 def analyze_midi_file(filepath: str, max_ticks: int = None):
