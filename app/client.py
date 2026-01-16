@@ -42,7 +42,9 @@ class StreamMUSEConfig:
     """Configuration settings for StreamMUSE client"""
 
     # Network
-    DEFAULT_SERVER_URL = "http://localhost:8988/generate_accompaniment" 
+    DEFAULT_SERVER_URL = "http://localhost:8000/generate_accompaniment"
+    DEFAULT_INJECTION_URL = "http://localhost:8000/inject_music"
+    DEFAULT_INJECTION_STATUS_URL = "http://localhost:8000/injection_status"
 
     # Musical timing
     DEFAULT_TEMPO = 120.0
@@ -52,7 +54,7 @@ class StreamMUSEConfig:
     DEFAULT_GENERATION_LENGTH = None  # For experiments only
 
     # Note handling
-    DEFAULT_NOTE_DURATION_TICKS = 2
+    DEFAULT_NOTE_DURATION_TICKS = 4
     LATENCY_OFFSET_TICKS = 2
     DEFAULT_ACCOMPANIMENT_VELOCITY = 50
 
@@ -614,7 +616,7 @@ def tick_loop(
                 # All user notes are given a fixed duration for the model.
                 quantized_note = {
                     "pitch": event["pitch"],
-                    "tick": tick_count,
+                    "tick": tick_count - 1,
                     "duration": DEFAULT_NOTE_DURATION_TICKS,
                 }
                 notes_for_next_request.append(quantized_note)
@@ -1309,7 +1311,7 @@ def main():
             test_midi_file_name = os.path.splitext(
                 os.path.basename(args.midi_file_input)
             )[0]
-            base_log_dir = f"experiments2-remote/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
+            base_log_dir = f"experiments_local_server/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
             session_log_dir = os.path.join(
                 base_log_dir, "batch_run", test_midi_file_name
             )
