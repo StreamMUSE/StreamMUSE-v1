@@ -818,8 +818,18 @@ def tick_loop(
                     pending_user_notes_display,
                 )
 
+                # Play metronome during listening mode (IMPORTANT: before continue)
+                if metronome_enabled:
+                    is_beat_tick = (tick_count % ticks_per_beat) == 0
+                    if is_beat_tick:
+                        beat_in_bar_metro = (tick_count % ticks_per_bar) // ticks_per_beat
+                        if beat_in_bar_metro == 0:
+                            audio_output_handler.metro_first()
+                        else:
+                            audio_output_handler.metro_other()
+
                 time.sleep(seconds_per_tick)
-                continue  # Skip rest of loop (metronome, note playback, inference)
+                continue  # Skip rest of loop (note playback, inference)
 
         # --- 4. Trigger New Inference (Latency-Aware) ---
         # Only trigger if listening mode is complete (or not active)
