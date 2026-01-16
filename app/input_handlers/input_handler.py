@@ -11,7 +11,7 @@ import os
 
 # Add the app directory to the path to allow imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from midi_input_script import midi_to_note
+from midi_utils import midi_to_note
 
 # --- MIDI Input Handler ---
 def read_midi_input(event_queue: Queue, device_name: str = None):
