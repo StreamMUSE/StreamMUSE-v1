@@ -57,6 +57,8 @@ class StreamMUSEConfig:
     DEFAULT_NOTE_DURATION_TICKS = 4
     LATENCY_OFFSET_TICKS = 2
     DEFAULT_ACCOMPANIMENT_VELOCITY = 50
+    DEFAULT_MELODY_CHANNEL = 0
+    DEFAULT_ACCOMPANIMENT_CHANNEL = 0
 
     # Display
     DEFAULT_LOG_LINES = 10
@@ -102,6 +104,8 @@ class StreamMUSEConfig:
 # --- Constants ---
 DEFAULT_NOTE_DURATION_TICKS = StreamMUSEConfig.DEFAULT_NOTE_DURATION_TICKS
 LATENCY_OFFSET_TICKS = StreamMUSEConfig.LATENCY_OFFSET_TICKS
+DEFAULT_MELODY_CHANNEL = StreamMUSEConfig.DEFAULT_MELODY_CHANNEL
+DEFAULT_ACCOMPANIMENT_CHANNEL = StreamMUSEConfig.DEFAULT_ACCOMPANIMENT_CHANNEL
 
 
 def save_prompt_midi(
@@ -624,7 +628,7 @@ def tick_loop(
                 midi_file_handler.add_user_note(quantized_note)
 
                 # 2. Play the note immediately for audio feedback.
-                audio_output_handler.on(event["pitch"], event["velocity"])
+                audio_output_handler.on(event["pitch"], event["velocity"], channel=DEFAULT_MELODY_CHANNEL)
 
             elif event["type"] == "note_off":
                 # Pass the note_off event directly to the audio handler
@@ -903,7 +907,7 @@ def tick_loop(
         for event in notes_to_play_this_tick:
             # This loop only processes model-generated notes.
             audio_output_handler.on(
-                event["pitch"], audio_output_handler.accompaniment_velocity
+                event["pitch"], audio_output_handler.accompaniment_velocity, channel=DEFAULT_ACCOMPANIMENT_CHANNEL
             )
             midi_file_handler.add_model_note(event)
 
