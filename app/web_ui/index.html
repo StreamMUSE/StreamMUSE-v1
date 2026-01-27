@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamMUSE - Real-Time Accompaniment</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>StreamMUSE</h1>
+            <span id="connection-status" class="status disconnected">Disconnected</span>
+        </header>
+        
+        <main>
+            <div id="piano-container">
+                <canvas id="piano-canvas"></canvas>
+            </div>
+            
+            <div id="sidebar">
+                <section id="controls">
+                    <h3>Controls</h3>
+                    <div class="button-group">
+                        <button id="btn-start" class="btn btn-primary">Start</button>
+                        <button id="btn-stop" class="btn btn-danger" disabled>Stop</button>
+                        <button id="btn-restart" class="btn btn-secondary" disabled>Restart</button>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="input-mode">Input Mode:</label>
+                        <select id="input-mode">
+                            <option value="keyboard">Computer Keyboard</option>
+                            <option value="midi">MIDI Device</option>
+                            <option value="file">MIDI File</option>
+                        </select>
+                    </div>
+                    
+                    <h4>Music Parameters</h4>
+                    
+                    <div class="control-group">
+                        <label for="tempo">Tempo: <span id="tempo-value">90</span> BPM</label>
+                        <input type="range" id="tempo" min="40" max="200" value="90">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="ticks-per-beat">Ticks per Beat:</label>
+                        <select id="ticks-per-beat">
+                            <option value="2">2</option>
+                            <option value="4" selected>4</option>
+                            <option value="8">8</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="beats-per-bar">Beats per Bar:</label>
+                        <select id="beats-per-bar">
+                            <option value="3">3</option>
+                            <option value="4" selected>4</option>
+                            <option value="6">6</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="gen-interval">Generation Interval: <span id="gen-interval-value">1</span> tick(s)</label>
+                        <input type="range" id="gen-interval" min="1" max="8" value="1">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="acc-velocity">Accompaniment Velocity: <span id="acc-velocity-value">50</span></label>
+                        <input type="range" id="acc-velocity" min="0" max="127" value="50">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label>
+                            <input type="checkbox" id="metronome" checked>
+                            Enable Metronome
+                        </label>
+                    </div>
+                    
+                    <h4>Visual Settings</h4>
+                    
+                    <div class="control-group">
+                        <label for="fall-speed">Fall Speed: <span id="fall-speed-value">50</span> px/tick</label>
+                        <input type="range" id="fall-speed" min="20" max="100" value="50">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="visible-ahead">Visible Ahead: <span id="visible-ahead-value">32</span> ticks</label>
+                        <input type="range" id="visible-ahead" min="8" max="64" value="32">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="visible-behind">Visible Behind: <span id="visible-behind-value">16</span> ticks</label>
+                        <input type="range" id="visible-behind" min="4" max="32" value="16">
+                    </div>
+                </section>
+                
+                <section id="stats">
+                    <h3>Statistics</h3>
+                    
+                    <div class="stat-row">
+                        <span class="stat-label">Position:</span>
+                        <span id="stat-position" class="stat-value">Bar 0, Beat 0</span>
+                    </div>
+                    
+                    <div class="stat-row">
+                        <span class="stat-label">Current Tick:</span>
+                        <span id="stat-tick" class="stat-value">0</span>
+                    </div>
+                    
+                    <div class="stat-row">
+                        <span class="stat-label">Hit Rate:</span>
+                        <span id="stat-hit-rate" class="stat-value">--%</span>
+                    </div>
+                    
+                    <div class="stat-row">
+                        <span class="stat-label">Avg Backup Level:</span>
+                        <span id="stat-backup-level" class="stat-value">--</span>
+                    </div>
+                    
+                    <h4>Latency</h4>
+                    
+                    <div class="stat-row">
+                        <span class="stat-label">Round Trip:</span>
+                        <span id="stat-round-trip" class="stat-value">-- ms</span>
+                    </div>
+                    
+                    <div class="stat-row">
+                        <span class="stat-label">Server Processing:</span>
+                        <span id="stat-server-time" class="stat-value">-- ms</span>
+                    </div>
+                    
+                    <div class="stat-row">
+                        <span class="stat-label">Network Latency:</span>
+                        <span id="stat-network" class="stat-value">-- ms</span>
+                    </div>
+                </section>
+                
+                <section id="legend">
+                    <h3>Legend</h3>
+                    <div class="legend-item">
+                        <span class="legend-color user"></span>
+                        <span>User Melody</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color model"></span>
+                        <span>Model Accompaniment</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color replaced"></span>
+                        <span>Replaced (Backed Up)</span>
+                    </div>
+                </section>
+            </div>
+        </main>
+        
+        <footer>
+            <p>Press keys Z-M and S-; to play notes when using keyboard input</p>
+        </footer>
+    </div>
+    
+    <script src="/js/piano.js"></script>
+    <script src="/js/controls.js"></script>
+    <script src="/js/stats.js"></script>
+    <script src="/js/main.js"></script>
+</body>
+</html>
