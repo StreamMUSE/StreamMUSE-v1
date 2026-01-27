@@ -89,7 +89,7 @@
                 
             case 'config':
                 console.log('Config received:', data.config);
-                Controls.setServerConfig(data.config);
+                Controls.populateFromConfig(data.config);
                 break;
                 
             case 'status':
@@ -168,7 +168,7 @@
             .then(status => {
                 Controls.setRunning(status.is_running);
                 if (status.config) {
-                    Controls.setServerConfig(status.config);
+                    Controls.populateFromConfig(status.config);
                     console.log('Initial config from server:', status.config);
                 }
             })

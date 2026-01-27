@@ -123,7 +123,9 @@ def read_midi_file_input(
     delay_ticks: int = 0,
     skip_ticks: int = 0, # Skip how many ticks, for injection
     use_original_duration: bool = True,
-    default_duration_ticks: int = 2
+    default_duration_ticks: int = 2,
+    audio_handler=None,
+    melody_channel: int = 0
 ):
     """
     Worker function for reading MIDI file input and simulating user input (separate thread).
@@ -232,6 +234,8 @@ def read_midi_file_input(
                     # Update timestamp to current time
                     event['time'] = time.time()
                     event_queue.put(event)
+                    if audio_handler:
+                        audio_handler.on(event['pitch'], event['velocity'], channel=melody_channel)
                 
                 # Clean up processed events
                 del tick_schedule[current_tick]

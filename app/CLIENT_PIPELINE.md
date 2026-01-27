@@ -45,6 +45,9 @@ while running:
     1. Wait for input event (note_on/note_off)
     2. Create event dict: {type, pitch, velocity}
     3. Put event into event_queue
+    4. IMMEDIATELY play audio via audio_handler (if provided)
+       - This ensures zero-latency audio feedback for user input
+       - No need to wait for tick loop to process the event
 ```
 
 ---
@@ -103,6 +106,8 @@ tick_count += 1
 # ═══════════════════════════════════════════════════════════════
 # STEP 1: Process User Input (from event_queue)
 # ═══════════════════════════════════════════════════════════════
+# NOTE: Audio playback for user notes now happens in the Input Thread
+# for zero-latency feedback. This step only handles quantization and logging.
 while event_queue not empty:
     event = event_queue.get()
     
@@ -117,14 +122,14 @@ while event_queue not empty:
         # Buffer for next server request
         notes_for_next_request.append(quantized_note)
         
-        # Play immediately for audio feedback
-        audio_output.on(pitch, velocity, channel=MELODY_CHANNEL)
-        
         # Log for MIDI file output
         midi_file_handler.add_user_note(quantized_note)
+        
+        # Audio already played in Input Thread
     
     elif event.type == "note_off":
-        audio_output.off(pitch)
+        # Audio already handled in Input Thread
+        pass
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 2: Process Inference Responses (from inference_response_queue)

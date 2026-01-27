@@ -42,6 +42,18 @@ from input_handlers.input_handler import (
     read_midi_file_input,
 )
 
+try:
+    from key_detection import detect_key_lightweight, detect_key_music21
+    from prompt_library import PromptLibrary
+    LISTENING_MODE_AVAILABLE = True
+    print("[INIT] Listening mode dependencies loaded successfully")
+except ImportError as e:
+    LISTENING_MODE_AVAILABLE = False
+    detect_key_lightweight = None
+    detect_key_music21 = None
+    PromptLibrary = None
+    print(f"[INIT] Listening mode dependencies NOT available: {e}")
+
 
 class ClientConfig(BaseModel):
     server_url: str = "http://localhost:8000/generate_accompaniment"
@@ -65,6 +77,9 @@ class ClientConfig(BaseModel):
     midi_input_name: Optional[str] = None
     midi_output_name: Optional[str] = None
     metronome: bool = True
+    
+    key_detection_method: str = "lightweight"
+    prompt_dir: Optional[str] = None
 
 
 class ConnectionManager:
@@ -92,11 +107,115 @@ class ConnectionManager:
             self.disconnect(conn)
 
 
+def inject_notes_to_server(
+    server_url: str,
+    melody_notes: list,
+    accompaniment_notes: list,
+    injection_length_ticks: int
+) -> bool:
+    import requests
+    injection_url = server_url.replace("/generate_accompaniment", "/inject_notes")
+    try:
+        request_data = {
+            "melody_notes": melody_notes,
+            "accompaniment_notes": accompaniment_notes,
+            "injection_length_ticks": injection_length_ticks
+        }
+        print(f"Injecting {len(melody_notes)} melody notes and {len(accompaniment_notes)} accompaniment notes...")
+        response = requests.post(injection_url, json=request_data, timeout=5.0)
+        response.raise_for_status()
+        result = response.json()
+        if result["success"]:
+            print(f"Injection successful: {result['message']}")
+            return True
+        else:
+            print(f"Injection failed: {result['message']}")
+            return False
+    except Exception as e:
+        print(f"Injection request failed: {e}")
+        return False
+
+
+def listening_mode_worker(
+    collected_melody_notes: list,
+    listening_duration_ticks: int,
+    prompt_library: PromptLibrary,
+    server_url: str,
+    key_detection_method: str,
+    result_queue: Queue
+):
+    try:
+        print(f"\n{'='*60}")
+        print(f"LISTENING MODE WORKER - Analyzing {len(collected_melody_notes)} notes")
+        print(f"{'='*60}")
+
+        start_time = time.perf_counter()
+        if key_detection_method == "music21":
+            detected_key = detect_key_music21(collected_melody_notes)
+        else:
+            detected_key = detect_key_lightweight(collected_melody_notes)
+        key_detection_time = time.perf_counter() - start_time
+
+        print(f"Detected key: {detected_key} (took {key_detection_time*1000:.1f}ms)")
+
+        selected_prompt = prompt_library.select_prompt(detected_key, strategy="random")
+
+        if not selected_prompt:
+            print("No prompt available, continuing without injection")
+            result_queue.put(False)
+            return
+
+        print(f"Selected prompt: {selected_prompt.get('name', 'unknown')}")
+
+        load_start_time = time.perf_counter()
+        _, accompaniment_notes = prompt_library.load_prompt_notes(
+            selected_prompt,
+            max_ticks=listening_duration_ticks,
+            load_melody=False,
+            load_accompaniment=True
+        )
+        load_time = time.perf_counter() - load_start_time
+
+        if not accompaniment_notes:
+            print("No accompaniment notes loaded from prompt")
+            result_queue.put(False)
+            return
+
+        print(f"Loaded {len(accompaniment_notes)} accompaniment notes (took {load_time*1000:.1f}ms)")
+
+        inject_start_time = time.perf_counter()
+        success = inject_notes_to_server(
+            server_url,
+            collected_melody_notes,
+            accompaniment_notes,
+            listening_duration_ticks
+        )
+        inject_time = time.perf_counter() - inject_start_time
+
+        total_time = time.perf_counter() - start_time
+
+        if success:
+            print(f"Injection complete (took {inject_time*1000:.1f}ms)")
+            print(f"TOTAL PROCESSING TIME: {total_time*1000:.1f}ms")
+            print(f"{'='*60}\n")
+            result_queue.put(True)
+        else:
+            print(f"Injection failed")
+            result_queue.put(False)
+
+    except Exception as e:
+        print(f"Listening mode worker error: {e}")
+        import traceback
+        traceback.print_exc()
+        result_queue.put(False)
+
+
 class ClientManager:
     """Manages the StreamMUSE client lifecycle."""
     
     DEFAULT_NOTE_DURATION_TICKS = 4
     LATENCY_OFFSET_TICKS = 2
+    GRACE_PERIOD_TICKS = 8
     
     def __init__(self, ws_handler: WebSocketOutputHandler):
         self.ws_handler = ws_handler
@@ -122,19 +241,9 @@ class ClientManager:
             return False
         
         if config:
-            self.config.tempo = config.tempo
-            self.config.ticks_per_beat = config.ticks_per_beat
-            self.config.beats_per_bar = config.beats_per_bar
-            self.config.generation_interval_ticks = config.generation_interval_ticks
-            self.config.accompaniment_velocity = config.accompaniment_velocity
-            self.config.input_mode = config.input_mode
-            self.config.metronome = config.metronome
-            if config.server_url:
-                self.config.server_url = config.server_url
-            if config.generation_length_per_request:
-                self.config.generation_length_per_request = config.generation_length_per_request
+            self.config = config
         
-        print(f"Starting with config: server_url={self.config.server_url}, generation_length_per_request={self.config.generation_length_per_request}")
+        print(f"Starting with config: server_url={self.config.server_url}, generation_length_per_request={self.config.generation_length_per_request}, listening_duration_ticks={self.config.listening_duration_ticks}, prompt_dir={self.config.prompt_dir}")
         
         self.stop_event.clear()
         self.event_queue = Queue()
@@ -167,6 +276,8 @@ class ClientManager:
                     0,
                     True,
                     self.DEFAULT_NOTE_DURATION_TICKS,
+                    self.audio_output_handler,
+                    self.config.melody_channel,
                 ),
                 daemon=True,
             )
@@ -287,6 +398,36 @@ class ClientManager:
         last_inference_timings = {}
         ticks_per_bar = self.config.ticks_per_beat * self.config.beats_per_bar
         
+        listening_mode_active = self.config.listening_duration_ticks > 0 and LISTENING_MODE_AVAILABLE
+        listening_mode_completed = False
+        listening_worker_thread = None
+        listening_worker_result_queue = Queue()
+        prompt_library = None
+        
+        print(f"[DEBUG] listening_duration_ticks={self.config.listening_duration_ticks}, LISTENING_MODE_AVAILABLE={LISTENING_MODE_AVAILABLE}, listening_mode_active={listening_mode_active}")
+        
+        if self.config.listening_duration_ticks > 0 and not LISTENING_MODE_AVAILABLE:
+            print("Warning: Listening mode requested but dependencies not available (key_detection, prompt_library)")
+            print("Install required dependencies or run from the proper environment")
+        
+        if listening_mode_active:
+            print(f"\n{'='*60}")
+            print(f"LISTENING MODE ACTIVE")
+            print(f"Will collect user input for {self.config.listening_duration_ticks} ticks")
+            print(f"Then process key detection for {self.GRACE_PERIOD_TICKS} ticks (grace period)")
+            print(f"Real-time generation starts at tick {self.config.listening_duration_ticks + self.GRACE_PERIOD_TICKS}")
+            print(f"{'='*60}\n")
+            
+            if self.config.prompt_dir:
+                try:
+                    prompt_library = PromptLibrary(self.config.prompt_dir)
+                except Exception as e:
+                    print(f"Warning: Could not initialize prompt library: {e}")
+                    listening_mode_active = False
+            else:
+                print("Warning: No prompt_dir specified, listening mode disabled")
+                listening_mode_active = False
+        
         self.ws_handler.send_status("running", "Tick loop started")
         
         while not self.stop_event.is_set():
@@ -361,6 +502,8 @@ class ClientManager:
                     newly_generated_notes = response_data.get("accompaniment", [])
                     gen_start = request_data.get("generation_start_tick") if isinstance(request_data, dict) else None
                     
+                    print(f"[DEBUG] Received {len(newly_generated_notes)} accompaniment notes at tick {tick_count}, gen_start={gen_start}")
+                    
                     for note in newly_generated_notes:
                         note["backup_level"] = int(note["tick"] - gen_start) if gen_start else 0
                     
@@ -392,9 +535,72 @@ class ClientManager:
                     
                     last_inference_timings = timings
             
+            if listening_mode_active and not listening_mode_completed:
+                if tick_count == self.config.listening_duration_ticks:
+                    print(f"\n{'='*60}")
+                    print(f"LISTENING PERIOD COMPLETE at tick {tick_count}")
+                    print(f"Collected {len(notes_for_next_request)} melody notes")
+                    print(f"Spawning background worker for key detection...")
+                    print(f"{'='*60}")
+
+                    if prompt_library and self.config.server_url:
+                        listening_worker_thread = threading.Thread(
+                            target=listening_mode_worker,
+                            args=(
+                                notes_for_next_request.copy(),
+                                self.config.listening_duration_ticks,
+                                prompt_library,
+                                self.config.server_url,
+                                self.config.key_detection_method,
+                                listening_worker_result_queue
+                            ),
+                            daemon=True
+                        )
+                        listening_worker_thread.start()
+                    else:
+                        print("Prompt library not initialized, skipping injection")
+                        listening_mode_completed = True
+                        notes_for_next_request = []
+
+                elif tick_count == self.config.listening_duration_ticks + self.GRACE_PERIOD_TICKS:
+                    print(f"\n{'='*60}")
+                    print(f"GRACE PERIOD COMPLETE at tick {tick_count}")
+                    print(f"Checking worker status...")
+                    print(f"{'='*60}")
+
+                    if not listening_worker_result_queue.empty():
+                        success = listening_worker_result_queue.get()
+                        if success:
+                            print("Listening mode injection successful!")
+                        else:
+                            print("Listening mode injection failed, continuing without prompt")
+                    else:
+                        print("Warning: Key detection took longer than grace period")
+                        if listening_worker_thread and listening_worker_thread.is_alive():
+                            listening_worker_thread.join(timeout=2.0)
+                        if not listening_worker_result_queue.empty():
+                            success = listening_worker_result_queue.get()
+                            print(f"Worker completed with result: {success}")
+                        else:
+                            print("Worker timed out, continuing without prompt")
+
+                    listening_mode_completed = True
+
+                if not listening_mode_completed:
+                    if self.config.metronome and self.audio_output_handler:
+                        is_beat_tick = (tick_count % self.config.ticks_per_beat) == 0
+                        if is_beat_tick:
+                            beat_in_bar_metro = (tick_count % ticks_per_bar) // self.config.ticks_per_beat
+                            if beat_in_bar_metro == 0:
+                                self.audio_output_handler.metro_first()
+                            else:
+                                self.audio_output_handler.metro_other()
+
+                    time.sleep(seconds_per_tick)
+                    continue
+            
             is_trigger_tick = (tick_count % self.config.generation_interval_ticks) == 0
             
-            # Always send request for testing falling notes
             if is_trigger_tick:
                 next_interval_start_tick = tick_count + 1
                 request_data = {
@@ -402,6 +608,7 @@ class ClientManager:
                     "generation_start_tick": next_interval_start_tick,
                     "generation_length_frames": self.config.generation_length_per_request,
                 }
+                print(f"[DEBUG] Tick {tick_count}: Sending inference request, gen_start={next_interval_start_tick}")
                 self.inference_request_queue.put((request_data, request_data.copy()))
                 notes_for_next_request = []
             
@@ -411,6 +618,8 @@ class ClientManager:
             this_backup_level = 0
             
             scheduled_events = playback_schedule.pop(tick_count, [])
+            if scheduled_events:
+                print(f"[DEBUG] Tick {tick_count}: Playing {len(scheduled_events)} scheduled events")
             for event in scheduled_events:
                 if event.get("source") == "model":
                     is_hit = True
@@ -612,6 +821,13 @@ if __name__ == "__main__":
                         help="Frames to generate per request")
     parser.add_argument("--accompaniment_velocity", type=int, default=50,
                         help="Velocity for accompaniment notes (0-127)")
+    parser.add_argument("--listening_duration_ticks", type=int, default=0,
+                        help="Duration for listening mode (0 = disabled)")
+    parser.add_argument("--prompt_dir", type=str, default=None,
+                        help="Directory containing prompt MIDI files")
+    parser.add_argument("--key_detection_method", type=str, default="lightweight",
+                        choices=["lightweight", "music21"],
+                        help="Method for key detection")
     parser.add_argument("--port", type=int, default=8080, help="Port for web UI server")
     
     args = parser.parse_args()
@@ -624,6 +840,9 @@ if __name__ == "__main__":
         generation_interval_ticks=args.generation_interval_ticks,
         generation_length_per_request=args.generation_length_per_request,
         accompaniment_velocity=args.accompaniment_velocity,
+        listening_duration_ticks=args.listening_duration_ticks,
+        prompt_dir=args.prompt_dir,
+        key_detection_method=args.key_detection_method,
     )
     
     print("Starting StreamMUSE Web Client Server...")

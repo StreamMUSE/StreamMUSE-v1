@@ -1212,6 +1212,8 @@ def main():
                 injection_offset_ticks,
                 args.midi_file_use_original_duration,
                 DEFAULT_NOTE_DURATION_TICKS,
+                audio_output_handler,
+                DEFAULT_MELODY_CHANNEL,
             ),
             daemon=True,
         )

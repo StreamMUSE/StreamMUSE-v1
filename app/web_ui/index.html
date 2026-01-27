@@ -28,6 +28,11 @@
                     </div>
                     
                     <div class="control-group">
+                        <label for="server-url">Server URL:</label>
+                        <input type="text" id="server-url" value="http://localhost:8000/generate_accompaniment" style="width:100%; padding:6px; border-radius:4px; border:1px solid #ccc;">
+                    </div>
+                    
+                    <div class="control-group">
                         <label for="input-mode">Input Mode:</label>
                         <select id="input-mode">
                             <option value="keyboard">Computer Keyboard</option>
@@ -67,6 +72,11 @@
                     </div>
                     
                     <div class="control-group">
+                        <label for="gen-length">Generation Length: <span id="gen-length-value">5</span> frames</label>
+                        <input type="range" id="gen-length" min="1" max="20" value="5">
+                    </div>
+                    
+                    <div class="control-group">
                         <label for="acc-velocity">Accompaniment Velocity: <span id="acc-velocity-value">50</span></label>
                         <input type="range" id="acc-velocity" min="0" max="127" value="50">
                     </div>
@@ -76,6 +86,26 @@
                             <input type="checkbox" id="metronome" checked>
                             Enable Metronome
                         </label>
+                    </div>
+                    
+                    <h4>Listening Mode</h4>
+                    
+                    <div class="control-group">
+                        <label for="listening-duration">Listening Duration: <span id="listening-duration-value">0</span> ticks (0 = off)</label>
+                        <input type="range" id="listening-duration" min="0" max="64" value="0">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="prompt-dir">Prompt Directory:</label>
+                        <input type="text" id="prompt-dir" value="" placeholder="path/to/prompts" style="width:100%; padding:6px; border-radius:4px; border:1px solid #ccc;">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="key-detection">Key Detection:</label>
+                        <select id="key-detection">
+                            <option value="lightweight">Lightweight</option>
+                            <option value="music21">Music21</option>
+                        </select>
                     </div>
                     
                     <h4>Visual Settings</h4>
