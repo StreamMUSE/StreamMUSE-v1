@@ -614,9 +614,9 @@ def tick_loop(
                 inference_request_queue.put(None)
                 return
 
-            # --- Note Quantization & Audio Playback ---
+            # --- Note Quantization (audio now played in input thread) ---
             if event["type"] == "note_on":
-                # 1. Quantize the note for the inference engine request.
+                # Quantize the note for the inference engine request.
                 # All user notes are given a fixed duration for the model.
                 quantized_note = {
                     "pitch": event["pitch"],
@@ -626,13 +626,11 @@ def tick_loop(
                 notes_for_next_request.append(quantized_note)
                 user_notes_this_tick.append(quantized_note)
                 midi_file_handler.add_user_note(quantized_note)
-
-                # 2. Play the note immediately for audio feedback.
-                audio_output_handler.on(event["pitch"], event["velocity"], channel=DEFAULT_MELODY_CHANNEL)
+                # Audio playback moved to input thread for lower latency
 
             elif event["type"] == "note_off":
-                # Pass the note_off event directly to the audio handler
-                audio_output_handler.off(event["pitch"])
+                # Audio note_off handled in input thread
+                pass
 
         # --- 2. Handle Inference Responses ---
         while not inference_response_queue.empty():
@@ -1219,7 +1217,7 @@ def main():
         )
     elif args.use_keyboard_input:
         input_thread = threading.Thread(
-            target=read_keyboard_input, args=(event_queue,), daemon=True
+            target=read_keyboard_input, args=(event_queue, audio_output_handler, DEFAULT_MELODY_CHANNEL), daemon=True
         )
     else:
         # A check to see if MIDI input is available.
@@ -1235,7 +1233,7 @@ def main():
             return
 
         input_thread = threading.Thread(
-            target=read_midi_input, args=(event_queue, midi_input_name), daemon=True
+            target=read_midi_input, args=(event_queue, midi_input_name, audio_output_handler, DEFAULT_MELODY_CHANNEL), daemon=True
         )
 
     inference_thread = threading.Thread(

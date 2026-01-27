@@ -88,7 +88,8 @@
                 break;
                 
             case 'config':
-                console.log('Config received:', data);
+                console.log('Config received:', data.config);
+                Controls.setServerConfig(data.config);
                 break;
                 
             case 'status':
@@ -166,6 +167,10 @@
             .then(r => r.json())
             .then(status => {
                 Controls.setRunning(status.is_running);
+                if (status.config) {
+                    Controls.setServerConfig(status.config);
+                    console.log('Initial config from server:', status.config);
+                }
             })
             .catch(e => console.error('Error fetching status:', e));
     });

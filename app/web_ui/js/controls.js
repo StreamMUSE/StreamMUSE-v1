@@ -10,8 +10,10 @@ const Controls = (function() {
     
     let isRunning = false;
     
+    let serverConfig = null;
+    
     function gatherConfig() {
-        return {
+        const config = {
             tempo: parseFloat(document.getElementById('tempo').value),
             ticks_per_beat: parseInt(document.getElementById('ticks-per-beat').value),
             beats_per_bar: parseInt(document.getElementById('beats-per-bar').value),
@@ -19,8 +21,12 @@ const Controls = (function() {
             accompaniment_velocity: parseInt(document.getElementById('acc-velocity').value),
             input_mode: document.getElementById('input-mode').value,
             metronome: document.getElementById('metronome').checked,
-            server_url: "http://localhost:8001/generate_accompaniment"
         };
+        if (serverConfig) {
+            if (serverConfig.server_url) config.server_url = serverConfig.server_url;
+            if (serverConfig.generation_length_per_request) config.generation_length_per_request = serverConfig.generation_length_per_request;
+        }
+        return config;
     }
     
     async function startClient() {
@@ -122,8 +128,13 @@ const Controls = (function() {
     
     setupSliderDisplays();
     
+    function setServerConfig(config) {
+        serverConfig = config;
+    }
+    
     return {
         setRunning,
-        gatherConfig
+        gatherConfig,
+        setServerConfig
     };
 })();

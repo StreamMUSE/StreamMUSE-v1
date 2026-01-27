@@ -17,6 +17,7 @@ import sys
 import asyncio
 import threading
 import time
+import argparse
 from queue import Queue
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -121,7 +122,19 @@ class ClientManager:
             return False
         
         if config:
-            self.config = config
+            self.config.tempo = config.tempo
+            self.config.ticks_per_beat = config.ticks_per_beat
+            self.config.beats_per_bar = config.beats_per_bar
+            self.config.generation_interval_ticks = config.generation_interval_ticks
+            self.config.accompaniment_velocity = config.accompaniment_velocity
+            self.config.input_mode = config.input_mode
+            self.config.metronome = config.metronome
+            if config.server_url:
+                self.config.server_url = config.server_url
+            if config.generation_length_per_request:
+                self.config.generation_length_per_request = config.generation_length_per_request
+        
+        print(f"Starting with config: server_url={self.config.server_url}, generation_length_per_request={self.config.generation_length_per_request}")
         
         self.stop_event.clear()
         self.event_queue = Queue()
@@ -160,13 +173,13 @@ class ClientManager:
         elif self.config.input_mode == "midi":
             self.input_thread = threading.Thread(
                 target=read_midi_input,
-                args=(self.event_queue, self.config.midi_input_name),
+                args=(self.event_queue, self.config.midi_input_name, self.audio_output_handler, self.config.melody_channel),
                 daemon=True,
             )
         else:
             self.input_thread = threading.Thread(
                 target=read_keyboard_input,
-                args=(self.event_queue,),
+                args=(self.event_queue, self.audio_output_handler, self.config.melody_channel),
                 daemon=True,
             )
         
@@ -312,9 +325,7 @@ class ClientManager:
                         duration=self.DEFAULT_NOTE_DURATION_TICKS,
                         source="user"
                     )
-                    
-                    if self.audio_output_handler:
-                        self.audio_output_handler.on(event["pitch"], event["velocity"])
+                    # Audio playback moved to input thread for lower latency
                 
                 elif event["type"] == "note_off":
                     self.ws_handler.send_note_off(
@@ -322,9 +333,7 @@ class ClientManager:
                         tick=tick_count,
                         source="user"
                     )
-                    
-                    if self.audio_output_handler:
-                        self.audio_output_handler.off(event["pitch"])
+                    # Audio note_off handled in input thread
             
             while not self.inference_response_queue.empty():
                 try:
@@ -511,17 +520,23 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 msg = json.loads(data)
                 if msg.get("type") == "keyboard_input" and client_manager.event_queue:
+                    pitch = msg["pitch"]
+                    velocity = msg.get("velocity", 100)
                     if msg.get("event") == "note_on":
                         client_manager.event_queue.put({
                             "type": "note_on",
-                            "pitch": msg["pitch"],
-                            "velocity": msg.get("velocity", 100)
+                            "pitch": pitch,
+                            "velocity": velocity
                         })
+                        if client_manager.audio_output_handler:
+                            client_manager.audio_output_handler.on(pitch, velocity, channel=client_manager.config.melody_channel)
                     elif msg.get("event") == "note_off":
                         client_manager.event_queue.put({
                             "type": "note_off",
-                            "pitch": msg["pitch"]
+                            "pitch": pitch
                         })
+                        if client_manager.audio_output_handler:
+                            client_manager.audio_output_handler.off(pitch, channel=client_manager.config.melody_channel)
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
@@ -585,7 +600,33 @@ if os.path.exists(os.path.join(web_ui_dir, "js")):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="StreamMUSE Web Client Server")
+    parser.add_argument("--server_url", type=str, default="http://localhost:8000/generate_accompaniment",
+                        help="URL of the StreamMUSE inference server")
+    parser.add_argument("--tempo", type=float, default=120.0, help="Tempo in BPM")
+    parser.add_argument("--ticks_per_beat", type=int, default=4, help="Ticks per beat")
+    parser.add_argument("--beats_per_bar", type=int, default=4, help="Beats per bar")
+    parser.add_argument("--generation_interval_ticks", type=int, default=1,
+                        help="Ticks between generation requests")
+    parser.add_argument("--generation_length_per_request", type=int, default=5,
+                        help="Frames to generate per request")
+    parser.add_argument("--accompaniment_velocity", type=int, default=50,
+                        help="Velocity for accompaniment notes (0-127)")
+    parser.add_argument("--port", type=int, default=8080, help="Port for web UI server")
+    
+    args = parser.parse_args()
+    
+    client_manager.config = ClientConfig(
+        server_url=args.server_url,
+        tempo=args.tempo,
+        ticks_per_beat=args.ticks_per_beat,
+        beats_per_bar=args.beats_per_bar,
+        generation_interval_ticks=args.generation_interval_ticks,
+        generation_length_per_request=args.generation_length_per_request,
+        accompaniment_velocity=args.accompaniment_velocity,
+    )
+    
     print("Starting StreamMUSE Web Client Server...")
-    print("Open http://localhost:8080 in your browser")
-    print("Make sure fake_server.py is running on port 8001")
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    print(f"Server URL: {args.server_url}")
+    print(f"Open http://localhost:{args.port} in your browser")
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
