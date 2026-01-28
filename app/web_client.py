@@ -794,6 +794,50 @@ async def update_config(config: ClientConfig):
     return {"success": True, "config": config.model_dump()}
 
 
+@app.get("/api/midi_devices")
+async def get_midi_devices():
+    """Get list of available MIDI input and output devices."""
+    try:
+        import mido
+        
+        # Don't reset backend if already set - it can cause issues
+        print(f"[DEBUG] MIDI backend: {mido.backend.name}")
+        
+        raw_input = mido.get_input_names()
+        raw_output = mido.get_output_names()
+        print(f"[DEBUG] Raw devices - Input: {raw_input}, Output: {raw_output}")
+        
+        input_devices = list(raw_input)
+        output_devices = list(raw_output)
+        print(f"[DEBUG] As lists - Input: {input_devices}, Output: {output_devices}")
+        
+        # Filter out any duplicate or system devices if needed
+        # But keep FluidSynth and other virtual ports
+        input_devices = [d for d in input_devices if not d.startswith('RtMidi')]
+        output_devices = [d for d in output_devices if not d.startswith('RtMidi')]
+        
+        print(f"[DEBUG] After filter - Input: {input_devices}, Output: {output_devices}")
+        
+        return {
+            "input_devices": input_devices,
+            "output_devices": output_devices,
+            "success": True
+        }
+    except Exception as e:
+        print(f"Error getting MIDI devices: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=200,  # Return 200 to avoid breaking UI
+            content={
+                "input_devices": [],
+                "output_devices": [],
+                "success": False,
+                "error": str(e)
+            }
+        )
+
+
 @app.get("/api/status")
 async def get_status():
     return {

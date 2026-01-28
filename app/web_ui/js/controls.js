@@ -20,6 +20,9 @@ const Controls = (function() {
             generation_length_per_request: parseInt(document.getElementById('gen-length').value),
             accompaniment_velocity: parseInt(document.getElementById('acc-velocity').value),
             input_mode: document.getElementById('input-mode').value,
+            midi_input_name: document.getElementById('midi-input-device').value || null,
+            midi_output_name: document.getElementById('midi-output-device').value || null,
+            midi_file_path: document.getElementById('midi-file-path').value || null,
             metronome: document.getElementById('metronome').checked,
             listening_duration_ticks: parseInt(document.getElementById('listening-duration').value),
             prompt_dir: document.getElementById('prompt-dir').value || null,
@@ -70,6 +73,15 @@ const Controls = (function() {
         }
         if (config.key_detection_method) {
             document.getElementById('key-detection').value = config.key_detection_method;
+        }
+        if (config.midi_input_name) {
+            document.getElementById('midi-input-device').value = config.midi_input_name;
+        }
+        if (config.midi_output_name) {
+            document.getElementById('midi-output-device').value = config.midi_output_name;
+        }
+        if (config.midi_file_path) {
+            document.getElementById('midi-file-path').value = config.midi_file_path;
         }
     }
     
@@ -169,15 +181,62 @@ const Controls = (function() {
         });
     }
     
+    async function loadMidiDevices() {
+        try {
+            const response = await fetch('/api/midi_devices');
+            const data = await response.json();
+            
+            // Populate input devices
+            const inputSelect = document.getElementById('midi-input-device');
+            inputSelect.innerHTML = '<option value="">None</option>';
+            data.input_devices.forEach(device => {
+                const option = document.createElement('option');
+                option.value = device;
+                option.textContent = device;
+                inputSelect.appendChild(option);
+            });
+            
+            // Populate output devices
+            const outputSelect = document.getElementById('midi-output-device');
+            outputSelect.innerHTML = '<option value="">None</option>';
+            data.output_devices.forEach(device => {
+                const option = document.createElement('option');
+                option.value = device;
+                option.textContent = device;
+                outputSelect.appendChild(option);
+            });
+        } catch (e) {
+            console.error('Error loading MIDI devices:', e);
+        }
+    }
+    
+    function setupInputModeHandling() {
+        const inputMode = document.getElementById('input-mode');
+        const midiInputGroup = document.getElementById('midi-input-group');
+        const midiFileGroup = document.getElementById('midi-file-group');
+        
+        inputMode.addEventListener('change', (e) => {
+            const mode = e.target.value;
+            midiInputGroup.style.display = mode === 'midi' ? 'block' : 'none';
+            midiFileGroup.style.display = mode === 'file' ? 'block' : 'none';
+        });
+        
+        // Trigger initial state
+        inputMode.dispatchEvent(new Event('change'));
+    }
+    
     btnStart.addEventListener('click', startClient);
     btnStop.addEventListener('click', stopClient);
     btnRestart.addEventListener('click', restartClient);
     
     setupSliderDisplays();
+    setupInputModeHandling();
+    loadMidiDevices();
     
     return {
         setRunning,
         gatherConfig,
-        populateFromConfig
+        populateFromConfig,
+        loadMidiDevices
     };
 })();

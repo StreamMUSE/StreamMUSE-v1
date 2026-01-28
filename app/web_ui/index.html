@@ -41,6 +41,28 @@
                         </select>
                     </div>
                     
+                    <div class="control-group" id="midi-input-group" style="display:none;">
+                        <label for="midi-input-device">MIDI Input Device:</label>
+                        <div style="display: flex; gap: 5px;">
+                            <select id="midi-input-device" style="flex: 1;">
+                                <option value="">None</option>
+                            </select>
+                            <button id="btn-refresh-midi" class="btn btn-secondary" onclick="Controls.loadMidiDevices()" style="padding: 5px 10px;">Refresh</button>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="midi-output-device">MIDI Output Device:</label>
+                        <select id="midi-output-device">
+                            <option value="">None</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group" id="midi-file-group" style="display:none;">
+                        <label for="midi-file-path">MIDI File Path:</label>
+                        <input type="text" id="midi-file-path" value="" placeholder="/path/to/file.mid" style="width:100%; padding:6px; border-radius:4px; border:1px solid #ccc;">
+                    </div>
+                    
                     <h4>Music Parameters</h4>
                     
                     <div class="control-group">
