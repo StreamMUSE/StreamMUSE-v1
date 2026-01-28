@@ -529,7 +529,7 @@ if __name__ == "__main__":
 
     # 加载模型
     model = load_model(
-        model_path="rt/RT_Accompaniment/checkpoints/epoch_4_1104_1204/model.safetensors",
+        model_path="/home/xiaosongma/M2A_checkpoints/ModelLekai/epoch_4_1104_1204/model.safetensors",
         model_config=model_config,
         device=device,
     )

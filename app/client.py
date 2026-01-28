@@ -818,8 +818,6 @@ def main():
                 args.ticks_per_beat,
                 args.midi_file_delay_ticks,
                 injection_offset_ticks,
-                args.midi_file_use_original_duration,
-                DEFAULT_NOTE_DURATION_TICKS,
             ),
             daemon=True,
         )

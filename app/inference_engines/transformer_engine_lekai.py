@@ -667,11 +667,139 @@ class InferenceEngineLekai:
             postprocess_start_time,
         )
 
+# ================================================================================
+# Fake real time
+# ================================================================================
+
+def notes_to_events(notes):
+    """
+    Convert note list (pitch, tick, duration) to event stream (note_on/note_off).
+    This is needed because generate_accompaniment expects event-stream format.
+    """
+    events = []
+    for n in notes:
+        pitch = n["pitch"]
+        tick = n["tick"]
+        duration = n.get("duration", 1)
+        events.append({"type": "note_on", "pitch": pitch, "tick": tick})
+        events.append({"type": "note_off", "pitch": pitch, "tick": tick + duration})
+    # Sort by tick, note_off before note_on if same tick
+    events.sort(key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
+    return events
+
+
+def events_to_notes(events):
+    """
+    Convert event stream (note_on/note_off) back to note list (pitch, tick, duration).
+    """
+    # Track active notes: pitch -> onset_tick
+    active = {}
+    notes = []
+
+    # Sort events by tick, note_off before note_on
+    sorted_events = sorted(events, key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
+
+    for e in sorted_events:
+        pitch = e["pitch"]
+        tick = e["tick"]
+        if e["type"] == "note_on":
+            active[pitch] = tick
+        elif e["type"] == "note_off":
+            if pitch in active:
+                onset = active.pop(pitch)
+                duration = max(1, tick - onset)
+                notes.append({"pitch": pitch, "tick": onset, "duration": duration, "velocity": 80})
+
+    # Close any remaining active notes at the last tick
+    if active and sorted_events:
+        last_tick = max(e["tick"] for e in sorted_events)
+        for pitch, onset in active.items():
+            duration = max(1, last_tick - onset)
+            notes.append({"pitch": pitch, "tick": onset, "duration": duration, "velocity": 80})
+
+    notes.sort(key=lambda n: n["tick"])
+    return notes
+
+
+def save_to_midi(melody_notes, acc_notes, output_path, bpm=120, ticks_per_beat=4):
+    """
+    Save melody and accompaniment notes to a MIDI file with two tracks.
+
+    Args:
+        melody_notes: List of {pitch, tick, duration, ...} for melody
+        acc_notes: List of {pitch, tick, duration, ...} for accompaniment
+        output_path: Path to save the MIDI file
+        bpm: Tempo in BPM
+        ticks_per_beat: Ticks per beat used in the engine (for time conversion)
+    """
+    midi = pretty_midi.PrettyMIDI(initial_tempo=bpm)
+
+    # Time conversion: 1 tick = 1/ticks_per_beat beat = 60/(bpm*ticks_per_beat) seconds
+    seconds_per_tick = 60.0 / (bpm * ticks_per_beat)
+
+    # Track 1: Melody
+    melody_inst = pretty_midi.Instrument(program=0, name="Melody")
+    for n in melody_notes:
+        start_time = n["tick"] * seconds_per_tick
+        end_time = (n["tick"] + n.get("duration", 1)) * seconds_per_tick
+        velocity = n.get("velocity", 80)
+        if end_time <= start_time:
+            end_time = start_time + 0.05
+        note = pretty_midi.Note(
+            velocity=velocity,
+            pitch=n["pitch"],
+            start=start_time,
+            end=end_time
+        )
+        melody_inst.notes.append(note)
+    midi.instruments.append(melody_inst)
+
+    # Track 2: Accompaniment
+    acc_inst = pretty_midi.Instrument(program=0, name="Accompaniment")
+    for n in acc_notes:
+        start_time = n["tick"] * seconds_per_tick
+        end_time = (n["tick"] + n.get("duration", 1)) * seconds_per_tick
+        velocity = n.get("velocity", 80)
+        if end_time <= start_time:
+            end_time = start_time + 0.05
+        note = pretty_midi.Note(
+            velocity=velocity,
+            pitch=n["pitch"],
+            start=start_time,
+            end=end_time
+        )
+        acc_inst.notes.append(note)
+    midi.instruments.append(acc_inst)
+
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+
+    midi.write(output_path)
+    print(f"✓ Saved MIDI to: {output_path}")
+    print(f"  - Melody: {len(melody_notes)} notes")
+    print(f"  - Accompaniment: {len(acc_notes)} notes")
+    print(f"  - BPM: {bpm}")
+
 
 if __name__ == "__main__":
-    # Test code
-    checkpoint_path = os.getenv(
-        "CHECKPOINT_PATH", "rt/RT_Accompaniment/checkpoints/epoch_4_1104_1204/model.safetensors"
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Test Lekai Inference Engine")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to model checkpoint (safetensors)")
+    parser.add_argument("--midi", type=str, default="input/mel/001.mid",
+                        help="Path to melody MIDI file")
+    parser.add_argument("--prompt-beats", type=int, default=0,
+                        help="Number of beats to use as prompt (from ground truth accompaniment)")
+    parser.add_argument("--max-beats", type=int, default=96,
+                        help="Maximum number of beats to generate")
+    parser.add_argument("--output", type=str, default="output/generated_accompaniment.mid",
+                        help="Output MIDI file path")
+    args = parser.parse_args()
+
+    # Checkpoint path
+    checkpoint_path = args.checkpoint or os.getenv(
+        "CHECKPOINT_PATH", "/home/xiaosongma/M2A_checkpoints/ModelLekai/epoch_4_1104_1204/model.safetensors"
     )
 
     try:
@@ -681,22 +809,138 @@ if __name__ == "__main__":
         )
     except Exception as e:
         print(f"Init failed: {e}")
-        exit()
+        import traceback
+        traceback.print_exc()
+        exit(1)
 
-    # Load test midi
-    # Assuming input/mel/001.mid exists
+    # Load melody MIDI
+    midi_path = args.midi
+    if not os.path.exists(midi_path):
+        print(f"Test MIDI file not found: {midi_path}")
+        print("Please provide a valid MIDI file path.")
+        exit(1)
+
     try:
-        melody_notes, resolution, max_tick = midi_to_note("input/mel/001.mid")
-        print(f"Loaded melody: {len(melody_notes)} notes")
+        # midi_to_note returns notes with {pitch, tick, duration, ...}
+        melody_notes, metadata, max_tick = midi_to_note(midi_path)
+        print(f"Loaded melody: {len(melody_notes)} notes, max_tick={max_tick}")
+        print(f"Metadata: {metadata}")
 
-        # Generate for a few beats
-        start_tick = 0
-        for i in range(0, 16, 4):  # 4 beats
-            print(f"Generating beat {i // 4}...")
-            current_mel = [n for n in melody_notes if n["tick"] < i + 4]  # Feed up to current beat end
+        if not melody_notes:
+            print("Warning: No notes found in MIDI file!")
+            exit(1)
 
-            notes, _, _, _, _ = inference_engine.generate_accompaniment(current_mel, generation_start_tick=i)
-            print(f"Generated {len(notes)} notes")
+        # Load accompaniment MIDI for prompt (if prompt_beats > 0)
+        prompt_beats = args.prompt_beats
+        acc_prompt_notes = []
+        acc_prompt_events = []
+
+        if prompt_beats > 0:
+            # Derive acc path from melody path (replace /mel/ with /acc/)
+            acc_path = midi_path.replace("/mel/", "/acc/")
+            if not os.path.exists(acc_path):
+                print(f"Warning: Accompaniment file not found for prompt: {acc_path}")
+                print("Proceeding without prompt.")
+                prompt_beats = 0
+            else:
+                acc_notes_full, _, _ = midi_to_note(acc_path)
+                prompt_end_tick = prompt_beats * 4  # ticks_per_beat = 4
+                # Filter notes within prompt range
+                acc_prompt_notes = [n for n in acc_notes_full if n["tick"] < prompt_end_tick]
+                acc_prompt_events = notes_to_events(acc_prompt_notes)
+                print(f"Loaded prompt: {len(acc_prompt_notes)} acc notes for first {prompt_beats} beats")
+
+        # Convert melody notes to event stream (note_on/note_off) for the engine
+        all_events = notes_to_events(melody_notes)
+        print(f"Converted to {len(all_events)} events (note_on/note_off)")
+
+        # Track which events we've already sent (incremental feeding)
+        last_sent_idx = 0
+        last_acc_prompt_idx = 0
+
+        # Generate beat by beat (engine expects ticks_per_beat=4)
+        ticks_per_beat = 4
+        num_beats = min((max_tick + ticks_per_beat - 1) // ticks_per_beat, args.max_beats)
+
+        print(f"\n--- Starting generation for {num_beats} beats (prompt: {prompt_beats} beats) ---\n")
+
+        # Collect all generated/prompt accompaniment events
+        all_acc_events = []
+
+        for beat_idx in range(num_beats):
+            generation_start_tick = beat_idx * ticks_per_beat
+            beat_end_tick = (beat_idx + 1) * ticks_per_beat
+
+            # Find new melody events to send
+            new_events = []
+            while last_sent_idx < len(all_events) and all_events[last_sent_idx]["tick"] < beat_end_tick:
+                new_events.append(all_events[last_sent_idx])
+                last_sent_idx += 1
+
+            if beat_idx < prompt_beats:
+                # Use ground truth accompaniment as prompt
+                # Find acc events for this beat
+                beat_acc_events = []
+                while (last_acc_prompt_idx < len(acc_prompt_events) and
+                       acc_prompt_events[last_acc_prompt_idx]["tick"] < beat_end_tick):
+                    beat_acc_events.append(acc_prompt_events[last_acc_prompt_idx])
+                    last_acc_prompt_idx += 1
+
+                # Inject melody events into engine history
+                abs_mel_events = inference_engine._normalize_melody_input(new_events, generation_start_tick)
+                inference_engine.melody_event_history.extend(abs_mel_events)
+
+                # Inject acc notes into engine history (convert events to notes first)
+                beat_acc_notes = events_to_notes(beat_acc_events)
+                inference_engine.accompaniment_history.extend(beat_acc_notes)
+
+                # Collect for output
+                all_acc_events.extend(beat_acc_events)
+
+                # Update engine state
+                inference_engine.last_generated_beat = beat_idx
+
+                print(f"Beat {beat_idx:3d} | gen_tick={generation_start_tick:4d} | "
+                      f"[PROMPT] mel={len(new_events):2d} | acc={len(beat_acc_events):2d}")
+            else:
+                # Generate accompaniment
+                acc_events, pre_t, inf_start, inf_end, post_t = inference_engine.generate_accompaniment(
+                    melody_notes=new_events,
+                    generation_start_tick=generation_start_tick,
+                )
+
+                # Collect generated events
+                all_acc_events.extend(acc_events)
+
+                inf_time_ms = (inf_end - inf_start) * 1000
+                print(f"Beat {beat_idx:3d} | gen_tick={generation_start_tick:4d} | "
+                      f"new_mel_events={len(new_events):2d} | "
+                      f"generated_acc={len(acc_events):2d} | "
+                      f"inf_time={inf_time_ms:.1f}ms")
+
+        print("\n--- Generation complete ---")
+
+        # Convert accompaniment events back to notes
+        acc_notes = events_to_notes(all_acc_events)
+        print(f"\nTotal accompaniment: {len(all_acc_events)} events -> {len(acc_notes)} notes")
+        print(f"  - Prompt beats: {prompt_beats}")
+        print(f"  - Generated beats: {num_beats - prompt_beats}")
+
+        # Save to MIDI
+        output_path = args.output
+        bpm = metadata.get("bpm", 120)
+        save_to_midi(
+            melody_notes=melody_notes,
+            acc_notes=acc_notes,
+            output_path=output_path,
+            bpm=bpm,
+            ticks_per_beat=ticks_per_beat
+        )
+
+        print(f"\n🎵 You can now listen to the generated MIDI at: {output_path}")
 
     except Exception as e:
         print(f"Test run failed: {e}")
+        import traceback
+        traceback.print_exc()
+        exit(1)
