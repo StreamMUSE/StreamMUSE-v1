@@ -48,7 +48,9 @@ class StreamMUSEConfig:
     DEFAULT_TEMPO = 120.0
     DEFAULT_TICKS_PER_BEAT = 4
     DEFAULT_BEATS_PER_BAR = 4
-    DEFAULT_GENERATION_INTERVAL_TICKS = 1
+    # NOTE: Engine generates per-beat, so interval should equal ticks_per_beat
+    # to avoid duplicate generation for the same beat
+    DEFAULT_GENERATION_INTERVAL_TICKS = 4
     DEFAULT_GENERATION_LENGTH = None  # For experiments only
 
     # Note handling

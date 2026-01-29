@@ -433,94 +433,8 @@ class InferenceEngineLekai:
 
             # Now we are at current_beat.
             # We need to prepare input for generating Acc[current_beat].
-            # If current_beat % 4 == 0, we need to add [Bar, Bar] first.
-            if current_beat % 4 == 0:
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Acc Bar
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
-
-            # The sequence is now ready to generate Acc[current_beat]
-            # IMPORTANT: We must NOT add the Acc Bar token here because _generate_tokens was doing it.
-            # But we removed it from _generate_tokens to be cleaner.
-            # So we should add it here if it's NOT a new measure (because new measure already added bars).
-            # Wait, the pattern is (AccBar, MelBar) -> AccTokens -> MelTokens.
-            # So for a new beat, we have MelTokens(prev) -> [Bar, Bar] (if new measure) -> AccTokens(current).
-            # But wait, the model expects to see MelTokens(prev) before generating AccTokens(current)?
-            # Let's check the training pattern or inference.py pattern.
-
-            # In inference.py:
-            # position 0 (Part0/Melody): Inject Mel tokens
-            # position 1 (Part1/Acc): Generate Acc tokens
-
-            # So the order is Mel -> Acc.
-            # But in `generate_accompaniment` here, we are building context up to `current_beat`.
-            # The loop `for b in range(start_beat, current_beat)` adds Acc[b] then Mel[b].
-            # So the last thing added is Mel[current_beat-1].
-
-            # Now we want to generate Acc[current_beat].
-            # If current_beat is start of measure, we added [AccBar, MelBar].
-            # Then we need to generate Acc.
-
-            # BUT, the model is trained on [AccBar, MelBar, AccTokens, MelTokens] (interleaved)?
-            # Or [AccBar, MelBar, MelTokens, AccTokens]?
-            # Let's look at `PianoDataset.py` or `model.py`.
-            # `model.py` loop:
-            # if position == 0 (Part0/Melody): Inject Mel
-            # if position == 1 (Part1/Acc): Generate Acc
-
-            # So the order in `model.py` is Part0 -> Part1.
-            # Wait, `model.py` says:
-            # if position == 0: # part0 (Melody)
-            #    inject part0_beats_list[part0_idx]
-            #    position = 1
-            # else: # part1 (Acc)
-            #    generate
-            #    position = 0
-
-            # So the sequence is Mel -> Acc -> Mel -> Acc.
-
-            # Let's re-check `transformer_engine_lekai.py` loop:
-            # seq.append(acc_tokens)
-            # seq.append(mel_tokens)
-            # This implies Acc -> Mel order! This contradicts `model.py`.
-
-            # Let's check `PianoDataset.py` to be sure about training data order.
-            # But assuming `model.py` is correct (Mel -> Acc), then `transformer_engine_lekai.py` is WRONG.
-            # It is building context as Acc -> Mel.
-
-            # Let's swap them in the loop.
-
-            # Correct Loop for Mel -> Acc order:
-            for b in range(start_beat, current_beat):
-                # Add Bar tokens at start of measure
-                if b % 4 == 0:
-                    seq.append(
-                        torch.tensor([self.config.bar_token_id], dtype=torch.long)
-                    )  # Acc Bar (Wait, are bars distinct?)
-                    seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
-                    # Note: config.bar_token_id is usually just one token.
-                    # If the model expects two bars, that's fine.
-
-                # Get Mel tokens for beat b
-                mel_pr_b = self._get_mel_pianoroll_for_beat(
-                    beat_start_tick=beat_start_tick,
-                    beat_end_tick=beat_end_tick,
-                )
-                mel_tokens = self._get_tokens_for_beat_pianoroll(
-                    mel_pr_b,
-                    end_marker_id=self.tokenizer.end_marker_part0,
-                )
-                seq.append(mel_tokens)
-
-                # Get Acc tokens for beat b
-                beat_start_tick = b * self.ticks_per_beat
-                beat_end_tick = (b + 1) * self.ticks_per_beat
-                acc_notes_b = [n for n in self.accompaniment_history if beat_start_tick <= n["tick"] < beat_end_tick]
-                acc_tokens = self._get_tokens_for_beat(acc_notes_b, b, end_marker_id=self.tokenizer.end_marker_part1)
-                seq.append(acc_tokens)
-
-            # Now we are at current_beat.
-            # We need to prepare input for generating Acc[current_beat].
-            # We need to inject Mel[current_beat] FIRST.
+            # Training data order from PianoDataset.py: Mel -> Acc (part0 -> part1)
+            # So we inject Mel[current_beat] FIRST, then generate Acc[current_beat].
 
             # 1. Bar tokens if new measure
             if current_beat % 4 == 0:
@@ -845,8 +759,15 @@ if __name__ == "__main__":
             else:
                 acc_notes_full, _, _ = midi_to_note(acc_path)
                 prompt_end_tick = prompt_beats * 4  # ticks_per_beat = 4
-                # Filter notes within prompt range
-                acc_prompt_notes = [n for n in acc_notes_full if n["tick"] < prompt_end_tick]
+                # Filter notes within prompt range, truncate duration if needed
+                for n in acc_notes_full:
+                    if n["tick"] < prompt_end_tick:
+                        note = n.copy()
+                        # Truncate duration if note extends beyond prompt range
+                        note_end_tick = n["tick"] + n.get("duration", 1)
+                        if note_end_tick > prompt_end_tick:
+                            note["duration"] = max(1, prompt_end_tick - n["tick"])
+                        acc_prompt_notes.append(note)
                 acc_prompt_events = notes_to_events(acc_prompt_notes)
                 print(f"Loaded prompt: {len(acc_prompt_notes)} acc notes for first {prompt_beats} beats")
 
@@ -866,6 +787,9 @@ if __name__ == "__main__":
 
         # Collect all generated/prompt accompaniment events
         all_acc_events = []
+        
+        # For prompt injection: track active acc notes across beats to get correct duration
+        acc_active_notes = {}  # pitch -> onset_tick
 
         for beat_idx in range(num_beats):
             generation_start_tick = beat_idx * ticks_per_beat
@@ -887,18 +811,53 @@ if __name__ == "__main__":
                     last_acc_prompt_idx += 1
 
                 # Inject melody events into engine history
+                # Note: In fake real time test, injection_offset_ticks = 0, so tick values stay the same
                 abs_mel_events = inference_engine._normalize_melody_input(new_events, generation_start_tick)
                 inference_engine.melody_event_history.extend(abs_mel_events)
 
-                # Inject acc notes into engine history (convert events to notes first)
-                beat_acc_notes = events_to_notes(beat_acc_events)
+                # Update _active_melody_pitches for proper sustain tracking
+                for e in abs_mel_events:
+                    et = e.get("type")
+                    p = e.get("pitch")
+                    if p is None:
+                        continue
+                    p = int(p)
+                    if et == "note_on":
+                        inference_engine._active_melody_pitches.add(p)
+                    elif et == "note_off":
+                        inference_engine._active_melody_pitches.discard(p)
+
+                # Process acc events and track active notes for proper duration calculation
+                beat_acc_notes = []
+                for e in beat_acc_events:
+                    pitch = e["pitch"]
+                    tick = e["tick"]
+                    if e["type"] == "note_on":
+                        acc_active_notes[pitch] = tick
+                    elif e["type"] == "note_off":
+                        if pitch in acc_active_notes:
+                            onset = acc_active_notes.pop(pitch)
+                            duration = max(1, tick - onset)
+                            beat_acc_notes.append({
+                                "pitch": pitch, 
+                                "tick": onset, 
+                                "duration": duration, 
+                                "velocity": 80
+                            })
+                
+                # Also close notes that started in previous beats but end in this beat
+                # (already handled above)
+                
+                # Inject acc notes into engine history
                 inference_engine.accompaniment_history.extend(beat_acc_notes)
 
                 # Collect for output
                 all_acc_events.extend(beat_acc_events)
 
-                # Update engine state
+                # Update engine state (important for stateful mode continuity)
                 inference_engine.last_generated_beat = beat_idx
+                # Reset past_key_values since we're manually injecting (will rebuild context on first generation)
+                inference_engine.past_key_values = None
 
                 print(f"Beat {beat_idx:3d} | gen_tick={generation_start_tick:4d} | "
                       f"[PROMPT] mel={len(new_events):2d} | acc={len(beat_acc_events):2d}")
