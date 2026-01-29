@@ -11,8 +11,10 @@ const PianoVisualizer = (function() {
     const WHITE_KEY_WIDTH = 80;
     const BLACK_KEY_WIDTH = 50;
     
-    let visibleMinPitch = 48;  // C3
-    let visibleMaxPitch = 84;  // C6
+    // Expanded visible pitch range to cover more octaves
+    // MIDI 36 = C2, 96 = C7  →  5-octave span
+    let visibleMinPitch = 36;  // C2
+    let visibleMaxPitch = 96;  // C7
     
     let pixelsPerTick = 40;
     let currentTick = 0;
