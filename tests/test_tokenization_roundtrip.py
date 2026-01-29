@@ -191,20 +191,40 @@ def main():
         beat_start = beat_idx * ticks_per_beat
         beat_end = (beat_idx + 1) * ticks_per_beat
         
-        # Filter notes for this beat
-        beat_notes = []
+        # Build pianoroll directly instead of using notes_to_pianoroll
+        # This correctly handles cross-beat notes (continuation = sustain only, no onset)
+        pr_orig = np.zeros((2, 88, ticks_per_beat), dtype=np.uint8)
+        
+        beat_notes_for_log = []
         for n in filtered_notes:
             note_start = n["tick"]
             note_end = n["tick"] + n.get("duration", 1)
+            pitch = n["pitch"]
+            
+            # Check if note overlaps with this beat
             if note_start < beat_end and note_end > beat_start:
-                new_n = n.copy()
-                new_n["tick"] = max(0, note_start - beat_start)
-                end_rel = min(ticks_per_beat, note_end - beat_start)
-                new_n["duration"] = max(1, end_rel - new_n["tick"])
-                beat_notes.append(new_n)
-        
-        # notes → pianoroll (using converter like engine)
-        pr_orig = converter.notes_to_pianoroll(beat_notes, ticks_per_beat)
+                pitch_idx = pitch - 21  # MIDI pitch to pianoroll index
+                if 0 <= pitch_idx < 88:
+                    # Calculate overlap within this beat
+                    overlap_start = max(0, note_start - beat_start)
+                    overlap_end = min(ticks_per_beat, note_end - beat_start)
+                    
+                    # Fill sustain channel for the overlap
+                    for t in range(overlap_start, overlap_end):
+                        pr_orig[0, pitch_idx, t] = 1  # sustain
+                    
+                    # Only set onset if note actually STARTS in this beat
+                    if note_start >= beat_start and note_start < beat_end:
+                        onset_tick = note_start - beat_start
+                        pr_orig[1, pitch_idx, onset_tick] = 1  # onset
+                    
+                    # For logging
+                    beat_notes_for_log.append({
+                        "pitch": pitch,
+                        "tick": max(0, note_start - beat_start),
+                        "duration": overlap_end - overlap_start,
+                        "is_continuation": note_start < beat_start
+                    })
         
         # pianoroll → tokens (using tokenizer like engine)
         patch_tokens = tokenizer.image_to_patch_tokens(pr_orig, strict_mode=True)
@@ -227,9 +247,10 @@ def main():
             log(f"BEAT {beat_idx} (ticks {beat_start}-{beat_end})")
             log(f"{'='*40}")
             
-            log(f"\n  Beat notes ({len(beat_notes)}):")
-            for n in beat_notes:
-                log(f"    pitch={n['pitch']}, tick={n['tick']}, duration={n['duration']}")
+            log(f"\n  Beat notes ({len(beat_notes_for_log)}):")
+            for n in beat_notes_for_log:
+                cont_str = " [CONTINUATION]" if n.get("is_continuation") else ""
+                log(f"    pitch={n['pitch']}, tick={n['tick']}, duration={n['duration']}{cont_str}")
             
             log(f"\n  Original pianoroll:")
             log(pianoroll_to_str(pr_orig, beat_idx))

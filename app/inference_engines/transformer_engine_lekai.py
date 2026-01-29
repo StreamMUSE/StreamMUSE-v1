@@ -210,23 +210,39 @@ class InferenceEngineLekai:
         return notes
 
     def _get_tokens_for_beat(self, notes, beat_idx, end_marker_id):
-        """Helper to get tokens for a specific beat range with specific end marker"""
+        """Helper to get tokens for a specific beat range with specific end marker.
+        
+        Correctly handles cross-beat notes:
+        - Notes starting in this beat: onset + sustain
+        - Notes continuing from previous beat: sustain only (no onset)
+        """
         beat_start_tick = beat_idx * self.ticks_per_beat
         beat_end_tick = (beat_idx + 1) * self.ticks_per_beat
 
-        # Filter notes overlapping this beat
-        beat_notes = []
+        # Build pianoroll directly to handle cross-beat notes correctly
+        pr = np.zeros((2, 88, self.ticks_per_beat), dtype=np.uint8)
+        
         for n in notes:
-            # Shift to relative to beat start
-            if n["tick"] < beat_end_tick and (n["tick"] + n["duration"]) > beat_start_tick:
-                new_n = n.copy()
-                new_n["tick"] = max(0, n["tick"] - beat_start_tick)
-                # Clamp duration
-                end_rel = min(self.ticks_per_beat, (n["tick"] + n["duration"]) - beat_start_tick)
-                new_n["duration"] = end_rel - new_n["tick"]
-                beat_notes.append(new_n)
-
-        pr = self._notes_to_pianoroll(beat_notes, self.ticks_per_beat)
+            note_start = n["tick"]
+            note_end = n["tick"] + n.get("duration", 1)
+            pitch = n["pitch"]
+            
+            # Check if note overlaps with this beat
+            if note_start < beat_end_tick and note_end > beat_start_tick:
+                pitch_idx = pitch - 21  # MIDI pitch to pianoroll index
+                if 0 <= pitch_idx < 88:
+                    # Calculate overlap within this beat
+                    overlap_start = max(0, note_start - beat_start_tick)
+                    overlap_end = min(self.ticks_per_beat, note_end - beat_start_tick)
+                    
+                    # Fill sustain channel for the overlap
+                    for t in range(overlap_start, overlap_end):
+                        pr[0, pitch_idx, t] = 1  # sustain
+                    
+                    # Only set onset if note actually STARTS in this beat
+                    if note_start >= beat_start_tick and note_start < beat_end_tick:
+                        onset_tick = note_start - beat_start_tick
+                        pr[1, pitch_idx, onset_tick] = 1  # onset
 
         # Tokenize manually to specify end_marker
         # 1. Image to Patch Tokens
