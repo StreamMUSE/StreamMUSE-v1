@@ -277,18 +277,20 @@ class MidiConverter:
 
         return pianoroll
 
-    def pianoroll_to_events(self, pianoroll, start_tick=0):
+    def pianoroll_to_events(self, pianoroll, start_tick=0, close_at_end=False):
         """Convert (2, 88, T) piano roll back to note_on/note_off events.
 
         We interpret:
         - onset channel (1) as note_on.
         - sustain channel (0) falling edge (1->0) as note_off.
-        - sustain length with no falling edge produces no note_off (caller may
-          treat as still active after the window).
+        - If close_at_end=True and sustain is still active at the last tick,
+          we emit a note_off at start_tick + T (the beat boundary).
 
         Args:
             pianoroll (np.ndarray): shape (2, 88, T)
             start_tick (int): absolute tick offset to add to emitted events.
+            close_at_end (bool): If True, close notes that are still active at 
+                                 the end of the window. Default False (legacy behavior).
 
         Returns:
             List[dict]: events sorted by tick.
@@ -309,13 +311,22 @@ class MidiConverter:
 
             # note_off: falling edges in sustain
             if T <= 1:
+                # If close_at_end and there was an onset, close it at T
+                if close_at_end and len(on_ticks) > 0 and sustain[pitch_idx, 0] > 0:
+                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
                 continue
+            
             s = sustain[pitch_idx].astype(np.int8)
             # falling edge at t means s[t-1]==1 and s[t]==0
             fall = np.where((s[:-1] == 1) & (s[1:] == 0))[0]
             for t0 in fall:
                 t = t0 + 1
                 events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
+            
+            # If sustain is still active at the last tick and close_at_end=True,
+            # emit note_off at the beat boundary (start_tick + T)
+            if close_at_end and s[-1] == 1:
+                events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
 
         events.sort(key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
         return events
