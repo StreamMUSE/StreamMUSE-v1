@@ -327,9 +327,23 @@ class MidiConverter:
             # note_on: any onset==1
             on_ticks = np.where(onset[pitch_idx] > 0)[0]
             for t in on_ticks:
+                # IMPORTANT: If there's an onset at t and sustain was active at t-1,
+                # this means a new note starts while the previous note was still held.
+                # We need to emit note_off at t BEFORE the note_on.
+                # Case 1: t > 0 and sustain[t-1] = 1 (previous note from this beat)
+                # Case 2: t = 0 and pitch in active_pitches and sustain[0] = 1 
+                #         (previous note from last beat, but also has new onset at 0)
+                if t > 0 and sustain[pitch_idx, t - 1] > 0:
+                    # Previous note ends at this tick, emit note_off before note_on
+                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
+                elif t == 0 and pitch in active_pitches and sustain[pitch_idx, 0] > 0:
+                    # Special case: note continues from previous beat AND has new onset at tick 0
+                    # This means retrigger - emit note_off at start_tick before note_on
+                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick)})
+                
                 events.append({"type": "note_on", "pitch": int(pitch), "tick": int(start_tick + t)})
 
-            # note_off: falling edges in sustain
+            # note_off: falling edges in sustain (sustain goes from 1 to 0)
             if T <= 1:
                 # Check if sustaining at the end
                 if T == 1 and sustain[pitch_idx, 0] > 0:
@@ -339,11 +353,16 @@ class MidiConverter:
                 continue
             
             s = sustain[pitch_idx].astype(np.int8)
+            o = onset[pitch_idx].astype(np.int8)
+            
             # falling edge at t means s[t-1]==1 and s[t]==0
+            # BUT: if there's an onset at t, we already handled the note_off above
             fall = np.where((s[:-1] == 1) & (s[1:] == 0))[0]
             for t0 in fall:
                 t = t0 + 1
-                events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
+                # Only emit note_off if there's no onset at t (otherwise we already emitted it)
+                if o[t] == 0:
+                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
             
             # Track if sustain is still active at the last tick
             if s[-1] == 1:
