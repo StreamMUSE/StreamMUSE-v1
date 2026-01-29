@@ -602,7 +602,7 @@ def notes_to_events(notes):
     return events
 
 
-def events_to_notes(events):
+def events_to_notes(events, debug=False):
     """
     Convert event stream (note_on/note_off) back to note list (pitch, tick, duration).
     """
@@ -627,8 +627,12 @@ def events_to_notes(events):
     # Close any remaining active notes at the last tick
     if active and sorted_events:
         last_tick = max(e["tick"] for e in sorted_events)
+        if debug:
+            print(f"\n[DEBUG events_to_notes] Closing {len(active)} unclosed notes at last_tick={last_tick}:")
         for pitch, onset in active.items():
             duration = max(1, last_tick - onset)
+            if debug:
+                print(f"  - pitch={pitch}, onset={onset}, duration={duration} (ticks)")
             notes.append({"pitch": pitch, "tick": onset, "duration": duration, "velocity": 80})
 
     notes.sort(key=lambda n: n["tick"])
@@ -871,19 +875,40 @@ if __name__ == "__main__":
                 # Collect generated events
                 all_acc_events.extend(acc_events)
 
+                # Per-beat event balance check
+                beat_on = sum(1 for e in acc_events if e["type"] == "note_on")
+                beat_off = sum(1 for e in acc_events if e["type"] == "note_off")
+                balance_info = f"on={beat_on},off={beat_off}" if beat_on != beat_off else ""
+
                 inf_time_ms = (inf_end - inf_start) * 1000
                 print(f"Beat {beat_idx:3d} | gen_tick={generation_start_tick:4d} | "
                       f"new_mel_events={len(new_events):2d} | "
                       f"generated_acc={len(acc_events):2d} | "
-                      f"inf_time={inf_time_ms:.1f}ms")
+                      f"inf_time={inf_time_ms:.1f}ms"
+                      + (f" | {balance_info}" if balance_info else ""))
 
         print("\n--- Generation complete ---")
 
-        # Convert accompaniment events back to notes
-        acc_notes = events_to_notes(all_acc_events)
+        # Analyze event balance before conversion
+        note_on_count = sum(1 for e in all_acc_events if e["type"] == "note_on")
+        note_off_count = sum(1 for e in all_acc_events if e["type"] == "note_off")
+        print(f"\n[DEBUG] Event balance: note_on={note_on_count}, note_off={note_off_count}, diff={note_on_count - note_off_count}")
+        
+        if note_on_count != note_off_count:
+            print("[DEBUG] WARNING: note_on/note_off count mismatch! Some notes may have missing note_off.")
+
+        # Convert accompaniment events back to notes (with debug=True)
+        acc_notes = events_to_notes(all_acc_events, debug=True)
         print(f"\nTotal accompaniment: {len(all_acc_events)} events -> {len(acc_notes)} notes")
         print(f"  - Prompt beats: {prompt_beats}")
         print(f"  - Generated beats: {num_beats - prompt_beats}")
+        
+        # Detect abnormally long notes
+        long_notes = [n for n in acc_notes if n["duration"] > 16]  # > 4 beats
+        if long_notes:
+            print(f"\n[DEBUG] Found {len(long_notes)} abnormally long notes (duration > 16 ticks = 4 beats):")
+            for n in long_notes[:10]:  # Show first 10
+                print(f"  - pitch={n['pitch']}, tick={n['tick']}, duration={n['duration']} ticks ({n['duration']/4:.1f} beats)")
 
         # Save to MIDI
         output_path = args.output
