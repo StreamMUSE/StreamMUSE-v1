@@ -110,6 +110,10 @@ class InferenceEngineLekai:
         # Tracks currently active pitches across requests so we can infer sustain
         # when a pitch is held but no explicit event is sent in the next interval.
         self._active_melody_pitches = set()
+        
+        # Track active accompaniment pitches across beats for proper note_off generation
+        # at beat boundaries (when a note ends exactly at the beat boundary)
+        self._active_acc_pitches = set()
 
     def _get_mel_pianoroll_for_beat(self, beat_start_tick: int, beat_end_tick: int):
         """Build melody pianoroll for a single beat directly from event stream.
@@ -540,8 +544,16 @@ class InferenceEngineLekai:
         # Ensure we have at least one token to decode
         pr = None
         if not valid_tokens:
-            # Empty beat
+            # Empty beat - but still need to check if any active pitches need note_off
+            # since this beat has no sustain, all active pitches should be closed
             absolute_generated_events = []
+            for pitch in self._active_acc_pitches:
+                absolute_generated_events.append({
+                    "type": "note_off",
+                    "pitch": int(pitch),
+                    "tick": int(beat_start_tick)
+                })
+            self._active_acc_pitches = set()
         else:
             # Decode
             try:
@@ -552,9 +564,11 @@ class InferenceEngineLekai:
 
                 beat_start_tick = current_beat * self.ticks_per_beat
                 # Convert pianoroll (beat-local) to absolute-tick events
-                absolute_generated_events = self.midi_converter.pianoroll_to_events(
+                # Pass active_acc_pitches to correctly detect notes that ended at beat boundary
+                absolute_generated_events, self._active_acc_pitches = self.midi_converter.pianoroll_to_events(
                     pr,
                     start_tick=beat_start_tick,
+                    active_pitches=self._active_acc_pitches,
                 )
                 
                 # DEBUG: Check sustain at beat end (helps diagnose cross-beat note issues)

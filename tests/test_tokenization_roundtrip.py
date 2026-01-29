@@ -187,6 +187,9 @@ def main():
     
     issues_found = []
     
+    # Track active pitches across beats (pitches that are sustaining at beat boundary)
+    active_pitches = set()
+    
     for beat_idx in range(num_beats):
         beat_start = beat_idx * ticks_per_beat
         beat_end = (beat_idx + 1) * ticks_per_beat
@@ -235,7 +238,11 @@ def main():
         pr_recon = tokenizer.patch_tokens_to_image(decompressed)
         
         # pianoroll → events (using converter like engine)
-        beat_events = converter.pianoroll_to_events(pr_recon, start_tick=beat_start)
+        # Pass active_pitches to correctly detect notes that ended at the beat boundary
+        # (pitch was active but not sustaining at tick 0 of this beat)
+        beat_events, active_pitches = converter.pianoroll_to_events(
+            pr_recon, start_tick=beat_start, close_at_end=False, active_pitches=active_pitches
+        )
         all_reconstructed_events.extend(beat_events)
         
         # Compare pianorolls

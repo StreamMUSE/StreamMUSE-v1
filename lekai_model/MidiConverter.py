@@ -277,7 +277,7 @@ class MidiConverter:
 
         return pianoroll
 
-    def pianoroll_to_events(self, pianoroll, start_tick=0, close_at_end=False):
+    def pianoroll_to_events(self, pianoroll, start_tick=0, close_at_end=False, active_pitches=None):
         """Convert (2, 88, T) piano roll back to note_on/note_off events.
 
         We interpret:
@@ -291,18 +291,38 @@ class MidiConverter:
             start_tick (int): absolute tick offset to add to emitted events.
             close_at_end (bool): If True, close notes that are still active at 
                                  the end of the window. Default False (legacy behavior).
+            active_pitches (set[int], optional): Pitches that were active at the END of
+                the previous beat. If a pitch is in active_pitches but NOT sustaining
+                at tick 0 of the current beat, we emit a note_off at start_tick.
 
         Returns:
-            List[dict]: events sorted by tick.
+            Tuple[List[dict], set[int]]: 
+                - events sorted by tick
+                - new_active_pitches: pitches that are still sustaining at the end of this beat
         """
 
         events = []
         sustain = pianoroll[0]
         onset = pianoroll[1]
         T = pianoroll.shape[2]
+        
+        if active_pitches is None:
+            active_pitches = set()
+        else:
+            active_pitches = set(active_pitches)
+        
+        # Track which pitches are active at the end of this beat
+        new_active_pitches = set()
 
         for pitch_idx in range(88):
             pitch = pitch_idx + 21
+            
+            # Check if this pitch was active from previous beat but NOT sustaining at tick 0
+            # This means the note ended exactly at the beat boundary
+            if pitch in active_pitches:
+                if T == 0 or sustain[pitch_idx, 0] == 0:
+                    # Note ended at beat boundary, emit note_off at start_tick
+                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick)})
 
             # note_on: any onset==1
             on_ticks = np.where(onset[pitch_idx] > 0)[0]
@@ -311,9 +331,11 @@ class MidiConverter:
 
             # note_off: falling edges in sustain
             if T <= 1:
-                # If close_at_end and there was an onset, close it at T
-                if close_at_end and len(on_ticks) > 0 and sustain[pitch_idx, 0] > 0:
-                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
+                # Check if sustaining at the end
+                if T == 1 and sustain[pitch_idx, 0] > 0:
+                    new_active_pitches.add(pitch)
+                    if close_at_end:
+                        events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
                 continue
             
             s = sustain[pitch_idx].astype(np.int8)
@@ -323,10 +345,12 @@ class MidiConverter:
                 t = t0 + 1
                 events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
             
-            # If sustain is still active at the last tick and close_at_end=True,
-            # emit note_off at the beat boundary (start_tick + T)
-            if close_at_end and s[-1] == 1:
-                events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
+            # Track if sustain is still active at the last tick
+            if s[-1] == 1:
+                new_active_pitches.add(pitch)
+                # If close_at_end=True, emit note_off at the beat boundary
+                if close_at_end:
+                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
 
         events.sort(key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
-        return events
+        return events, new_active_pitches
