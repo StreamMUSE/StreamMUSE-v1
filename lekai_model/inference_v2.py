@@ -475,6 +475,57 @@ def generate_accompaniment_v2(
     }
 
 
+def batch_generate_all_samples(
+    model,
+    dataset,
+    output_dir="generated_samples",
+    gt_prefix_beats=16,
+    delay_beats=-1,
+    temperature=1.1,
+    top_k=10,
+    top_p=0.95,
+    repetition_penalty=1.0,
+):
+    """遍历数据集中的所有歌曲并生成伴奏"""
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    total_songs = len(dataset)
+    print(f"开始生成所有 {total_songs} 首歌曲（gt_prefix_beats={gt_prefix_beats}）...")
+
+    for idx in range(total_songs):
+        print(f"\n[{idx + 1}/{total_songs}] 正在处理...")
+
+        seq = generate_accompaniment_v2(
+            model,
+            dataset,
+            condition_idx=idx,
+            delay_beats=delay_beats,
+            gt_prefix_beats=gt_prefix_beats,
+            temperature=temperature,
+            device=device,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+        )
+
+        # 获取文件名
+        gt_name = Path(seq["GT_path"]).stem
+        
+        # 保存 GT MIDI
+        gt_save_path = f"{output_dir}/{timestamp}_{idx}_{gt_name}_GT.mid"
+        save_gt_midi(save_path=gt_save_path, gt_path=seq["GT_path"], velocity=80)
+        
+        # 保存生成的 MIDI
+        gen_save_path = f"{output_dir}/{timestamp}_{idx}_{gt_name}_generated.mid"
+        tokens_to_midi(result_dict=seq, save_path=gen_save_path, velocity=80)
+
+        print(f"  ✓ 已保存: {gt_name}")
+
+    print(f"\n✅ 全部完成！共生成 {total_songs} 首歌曲到 {output_dir}/")
+
+
 def batch_generate_50_samples_v2(model, dataset, output_dir="generated_samples", min_length=600):
     """批量生成50首音乐，长度少于500的舍弃"""
     # 创建输出目录
@@ -517,22 +568,43 @@ def batch_generate_50_samples_v2(model, dataset, output_dir="generated_samples",
 
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate accompaniment from NPZ files")
+    parser.add_argument("--npz_dir", type=str, default="npz", help="Path to NPZ directory")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to model.safetensors")
+    parser.add_argument("--output_dir", type=str, default="generated_output", help="Output directory")
+    parser.add_argument("--gt_prefix_beats", type=int, default=16, help="Number of GT beats as prompt")
+    parser.add_argument("--delay_beats", type=int, default=-1, help="Delay beats (-1 means acc leads by 1)")
+    parser.add_argument("--temperature", type=float, default=1.1, help="Sampling temperature")
+    args = parser.parse_args()
+    
     model_config = ModelConfig()
-
-    training_config = TrainingConfig()
+    
     my_dataset = PianoDataset(
-        "output_npz_test",
+        args.npz_dir,
         config=model_config,
-        cache_lengths=False,  # 启用长度缓存
+        cache_lengths=False,
     )
     print(f"Using device: {device}")
+    print(f"Loaded {len(my_dataset)} songs from {args.npz_dir}")
 
     # 加载模型
     model = load_model(
-        model_path="/home/xiaosongma/M2A_checkpoints/ModelLekai/epoch_4_1104_1204/model.safetensors",
+        model_path=args.model_path,
         model_config=model_config,
         device=device,
     )
 
-    # 批量生成50首
-    batch_generate_50_samples_v2(model, my_dataset, output_dir="gen_input_5_v2-no-prompt", min_length=200)
+    # 遍历所有歌曲生成
+    batch_generate_all_samples(
+        model,
+        my_dataset,
+        output_dir=args.output_dir,
+        gt_prefix_beats=args.gt_prefix_beats,
+        delay_beats=args.delay_beats,
+        temperature=args.temperature,
+    )
+
+    # # 批量生成50首
+    # batch_generate_50_samples_v2(model, my_dataset, output_dir="gen_input_5_v2-no-prompt", min_length=200)
