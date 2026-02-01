@@ -352,7 +352,6 @@ def tick_loop(
     metronome_enabled: bool,
     generation_interval_ticks: int,
     generation_length_ticks: int = None,  # total generation length, for experiments
-    generation_length_per_request: int = None,  # for each request, we want the server to generate how many frames
     current_tick_ref: dict = None,  # Optional shared tick reference for MIDI file input
 ):
     """
@@ -461,38 +460,19 @@ def tick_loop(
 
                 all_timing_data.append(timings)
 
-                # --- Tick Consistency Filter ---
+                # --- Process Generated Events ---
+                # Engine now returns event-stream format (note_on/note_off)
                 newly_generated_notes = response_data["accompaniment"]
 
                 gen_start = None
                 if isinstance(request_data, dict):
                     gen_start = request_data.get("generation_start_tick")
 
-                # 如果知道期望帧数和 generation 起始 tick，补全缺失 ticks（占位 pitch=-1）。
-                # 注意：现在 server 端是 event-stream (note_on/note_off)，不是 duration note。
-                if generation_length_per_request is not None and gen_start is not None:
-                    # map existing ticks
-                    existing_ticks = {n["tick"] for n in newly_generated_notes}
-                    for t in range(
-                        gen_start,
-                        gen_start
-                        + (generation_length_per_request + 1) // 2,  # 向上取整
-                    ):
-                        if t not in existing_ticks:
-                            newly_generated_notes.append(
-                                {
-                                    "type": "note_on",
-                                    "pitch": -1,
-                                    "tick": t,
-                                    "is_placeholder": True,
-                                }
-                            )
-                    # 现在为所有生成的 note 按相对 tick 顺序简单赋 backup_level = tick - gen_start
-                    for n in newly_generated_notes:
-                        n["backup_level"] = int(n["tick"] - gen_start)
-                else:
-                    # 无法补全时给默认 backup_level=0
-                    for n in newly_generated_notes:
+                # Assign backup_level based on tick offset from generation start
+                for n in newly_generated_notes:
+                    if gen_start is not None:
+                        n["backup_level"] = max(0, int(n["tick"] - gen_start))
+                    else:
                         n["backup_level"] = 0
 
                 # --- Clear stale notes from the previous generation ---
@@ -539,33 +519,38 @@ def tick_loop(
                 # Store timings for display, making them persistent
                 last_inference_timings = timings
 
-        # --- 3. Trigger New Inference (Latency-Aware) ---
-        # 感觉这个所谓的 lantency aware 没意义，而且我们的建模不是这样的，改成固定间隔
-        # is_trigger_tick = (tick_count % generation_interval_ticks) == (generation_interval_ticks - LATENCY_OFFSET_TICKS)
+        # --- 3. Trigger New Inference ---
+        # Match fake offline logic:
+        # - Trigger at beat START (tick=0, 4, 8...)
+        # - Pass melody collected from the PREVIOUS beat
+        # - generation_start_tick = current tick (current beat's start)
+        #
+        # Engine internal behavior:
+        # - Passed melody is added to history first
+        # - Context is built from range(start_beat, current_beat), NOT including current_beat
+        # - So when generating acc[n], context sees mel[n-1] and acc[n-1]
+        #
+        # Timeline:
+        #   tick=0: trigger, gen_start=0, melody=[], generate acc[0] (context: [BOS,ts,bpm,PAD])
+        #   tick=4: trigger, gen_start=4, melody=mel[0], generate acc[1] (context: [...,acc[0],mel[0]])
+        #   tick=8: trigger, gen_start=8, melody=mel[1], generate acc[2] (context: [...,acc[1],mel[1]])
+        
         is_trigger_tick = (tick_count % generation_interval_ticks) == 0
 
-        if is_trigger_tick:  # and notes_for_next_request:
-            # The model should start generating from the beginning of the *next* generation interval.
-            # current_interval_start_tick = (tick_count // generation_interval_ticks) * generation_interval_ticks
-            # next_interval_start_tick = current_interval_start_tick + generation_interval_ticks
-            next_interval_start_tick = tick_count + 1
+        if is_trigger_tick:
+            # generation_start_tick is the current beat's start tick
+            # notes_for_next_request contains melody from the PREVIOUS beat
+            generation_start_tick = tick_count
 
             request_data = {
                 "melody_notes": notes_for_next_request,
-                "generation_start_tick": next_interval_start_tick,
+                "generation_start_tick": generation_start_tick,
             }
-            # 如果在 CLI/外部设置了每次请求的生成长度，传给服务器（frames）
-            if generation_length_per_request is not None:
-                request_data["generation_length_frames"] = generation_length_per_request
-            else:
-                print(
-                    "Warning: generation_length_per_request is not set, server may use default length 5."
-                )
-                request_data["generation_length_frames"] = 5  # 默认值
+            # Note: Engine always generates 1 beat per call
             inference_request_queue.put(
                 (request_data, request_data.copy())
             )  # Pass a copy for logging
-            notes_for_next_request = []  # Clear the buffer
+            notes_for_next_request = []  # Clear the buffer for the next beat
 
         # --- 4. Play Scheduled Notes ---
         notes_to_play_this_tick = []
@@ -603,6 +588,9 @@ def tick_loop(
         # Process note-offs first
         for event in notes_to_stop_this_tick:
             audio_output_handler.off(event["pitch"])
+            # Record model note_off events to MIDI file
+            if event.get("source") == "model":
+                midi_file_handler.add_model_note(event)
 
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
@@ -648,7 +636,7 @@ def tick_loop(
             "bar": bar_count,
             "beat": beat_in_bar,
             "ticks_per_beat": ticks_per_beat,
-            "inference_triggered": is_trigger_tick and bool(notes_for_next_request),
+            "inference_triggered": is_trigger_tick,  # Always trigger at beat start
             "all_timing_data": all_timing_data,
         }
         music_info.update(last_inference_timings)
@@ -922,14 +910,19 @@ def main():
             args.metronome,
             args.generation_interval_ticks,
             generation_length_ticks,
-            args.generation_length_per_request,
             current_tick_ref,
         ),
         daemon=True,
     )
 
-    print("Starting StreamMUSE Client")
-    print(f"Connecting to server at {args.server_url}")
+    print("Starting StreamMUSE Client (Lekai Engine)")
+    print(f"  Server URL: {args.server_url}")
+    print(f"  Tempo: {args.tempo} BPM")
+    print(f"  Ticks per beat: {args.ticks_per_beat}")
+    print(f"  Generation interval: {args.generation_interval_ticks} ticks (every {args.generation_interval_ticks / args.ticks_per_beat:.1f} beats)")
+    if args.generation_interval_ticks != args.ticks_per_beat:
+        print(f"  ⚠ Warning: generation_interval_ticks ({args.generation_interval_ticks}) != ticks_per_beat ({args.ticks_per_beat})")
+        print(f"    Engine generates beat-by-beat, so interval should equal ticks_per_beat for best results.")
 
     try:
         input_thread.start()
