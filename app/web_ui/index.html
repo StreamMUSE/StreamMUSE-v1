@@ -118,16 +118,34 @@
                     </div>
                     
                     <div class="control-group">
+                        <label for="listening-mode-type">Injection Mode:</label>
+                        <select id="listening-mode-type">
+                            <option value="auto">Auto (Key Detection)</option>
+                            <option value="manual">Manual (Select Prompt)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group" id="auto-mode-group">
                         <label for="prompt-dir">Prompt Directory:</label>
                         <input type="text" id="prompt-dir" value="" placeholder="path/to/prompts" style="width:100%; padding:6px; border-radius:4px; border:1px solid #ccc;">
                     </div>
                     
-                    <div class="control-group">
+                    <div class="control-group" id="auto-mode-group-2">
                         <label for="key-detection">Key Detection:</label>
                         <select id="key-detection">
                             <option value="lightweight">Lightweight</option>
                             <option value="music21">Music21</option>
                         </select>
+                    </div>
+                    
+                    <div class="control-group" id="manual-mode-group" style="display:none;">
+                        <label for="manual-prompt">Select Prompt:</label>
+                        <div style="display: flex; gap: 5px;">
+                            <select id="manual-prompt" style="flex: 1;">
+                                <option value="">None</option>
+                            </select>
+                            <button id="btn-refresh-prompts" class="btn btn-secondary" onclick="Controls.loadManualPrompts()" style="padding: 5px 10px;">Refresh</button>
+                        </div>
                     </div>
                     
                     <h4>Visual Settings</h4>

@@ -78,6 +78,8 @@ class ClientConfig(BaseModel):
     midi_output_name: Optional[str] = None
     metronome: bool = True
     
+    listening_mode: str = "auto"  # "auto" or "manual"
+    manual_prompt_path: Optional[str] = None
     key_detection_method: str = "lightweight"
     prompt_dir: Optional[str] = None
 
@@ -134,6 +136,78 @@ def inject_notes_to_server(
     except Exception as e:
         print(f"Injection request failed: {e}")
         return False
+
+
+def manual_injection_mode_worker(
+    collected_melody_notes: list,
+    listening_duration_ticks: int,
+    manual_prompt_path: str,
+    server_url: str,
+    result_queue: Queue
+):
+    """
+    Manual injection worker - loads a user-selected accompaniment file and injects it.
+    
+    Args:
+        collected_melody_notes: Notes collected during listening period
+        listening_duration_ticks: Duration of listening period
+        manual_prompt_path: Path to the accompaniment MIDI file
+        server_url: Server URL
+        result_queue: Queue to put result (True/False) when done
+    """
+    try:
+        print(f"\n{'='*60}")
+        print(f"MANUAL INJECTION MODE - Loading {manual_prompt_path}")
+        print(f"{'='*60}")
+
+        start_time = time.perf_counter()
+        
+        # Load accompaniment notes from the selected file
+        from midi_utils import midi_to_note
+        
+        load_start_time = time.perf_counter()
+        accompaniment_notes, _, _ = midi_to_note(manual_prompt_path, max_tick=listening_duration_ticks)
+        
+        # Filter to injection length and add program field
+        accompaniment_notes = [
+            {**n, 'program': 1} if 'program' not in n else n
+            for n in accompaniment_notes if n['tick'] < listening_duration_ticks
+        ]
+        load_time = time.perf_counter() - load_start_time
+
+        if not accompaniment_notes:
+            print("No accompaniment notes loaded from file")
+            result_queue.put(False)
+            return
+
+        print(f"Loaded {len(accompaniment_notes)} accompaniment notes (took {load_time*1000:.1f}ms)")
+
+        # Inject to server
+        inject_start_time = time.perf_counter()
+        success = inject_notes_to_server(
+            server_url,
+            collected_melody_notes,
+            accompaniment_notes,
+            listening_duration_ticks
+        )
+        inject_time = time.perf_counter() - inject_start_time
+
+        total_time = time.perf_counter() - start_time
+
+        if success:
+            print(f"Injection complete (took {inject_time*1000:.1f}ms)")
+            print(f"TOTAL PROCESSING TIME: {total_time*1000:.1f}ms")
+            print(f"{'='*60}\n")
+            result_queue.put(True)
+        else:
+            print(f"Injection failed")
+            result_queue.put(False)
+
+    except Exception as e:
+        print(f"Manual injection worker error: {e}")
+        import traceback
+        traceback.print_exc()
+        result_queue.put(False)
 
 
 def listening_mode_worker(
@@ -540,27 +614,51 @@ class ClientManager:
                     print(f"\n{'='*60}")
                     print(f"LISTENING PERIOD COMPLETE at tick {tick_count}")
                     print(f"Collected {len(notes_for_next_request)} melody notes")
-                    print(f"Spawning background worker for key detection...")
-                    print(f"{'='*60}")
-
-                    if prompt_library and self.config.server_url:
-                        listening_worker_thread = threading.Thread(
-                            target=listening_mode_worker,
-                            args=(
-                                notes_for_next_request.copy(),
-                                self.config.listening_duration_ticks,
-                                prompt_library,
-                                self.config.server_url,
-                                self.config.key_detection_method,
-                                listening_worker_result_queue
-                            ),
-                            daemon=True
-                        )
-                        listening_worker_thread.start()
+                    
+                    # Check if manual or auto mode
+                    if self.config.listening_mode == "manual":
+                        print(f"Manual injection mode - using selected prompt")
+                        print(f"{'='*60}")
+                        
+                        if self.config.manual_prompt_path and self.config.server_url:
+                            listening_worker_thread = threading.Thread(
+                                target=manual_injection_mode_worker,
+                                args=(
+                                    notes_for_next_request.copy(),
+                                    self.config.listening_duration_ticks,
+                                    self.config.manual_prompt_path,
+                                    self.config.server_url,
+                                    listening_worker_result_queue
+                                ),
+                                daemon=True
+                            )
+                            listening_worker_thread.start()
+                        else:
+                            print("No manual prompt selected or server URL missing, skipping injection")
+                            listening_mode_completed = True
+                            notes_for_next_request = []
                     else:
-                        print("Prompt library not initialized, skipping injection")
-                        listening_mode_completed = True
-                        notes_for_next_request = []
+                        print(f"Auto mode - spawning background worker for key detection...")
+                        print(f"{'='*60}")
+                        
+                        if prompt_library and self.config.server_url:
+                            listening_worker_thread = threading.Thread(
+                                target=listening_mode_worker,
+                                args=(
+                                    notes_for_next_request.copy(),
+                                    self.config.listening_duration_ticks,
+                                    prompt_library,
+                                    self.config.server_url,
+                                    self.config.key_detection_method,
+                                    listening_worker_result_queue
+                                ),
+                                daemon=True
+                            )
+                            listening_worker_thread.start()
+                        else:
+                            print("Prompt library not initialized, skipping injection")
+                            listening_mode_completed = True
+                            notes_for_next_request = []
 
                 elif tick_count == self.config.listening_duration_ticks + self.GRACE_PERIOD_TICKS:
                     print(f"\n{'='*60}")
@@ -792,6 +890,52 @@ async def update_config(config: ClientConfig):
     client_manager.config = config
     ws_handler.send_config(config.model_dump())
     return {"success": True, "config": config.model_dump()}
+
+
+@app.get("/api/manual_prompts")
+async def get_manual_prompts():
+    """Get list of available manual prompt files from prompts/manual/ directory."""
+    try:
+        manual_dir = os.path.join(os.path.dirname(__file__), "..", "prompts", "manual")
+        
+        if not os.path.exists(manual_dir):
+            return {
+                "prompts": [],
+                "success": True,
+                "message": f"Manual prompts directory not found: {manual_dir}"
+            }
+        
+        # Find all .mid files in the manual directory
+        prompt_files = []
+        for filename in os.listdir(manual_dir):
+            if filename.endswith('.mid'):
+                file_path = os.path.join(manual_dir, filename)
+                prompt_files.append({
+                    "name": filename,
+                    "path": file_path
+                })
+        
+        # Sort by name
+        prompt_files.sort(key=lambda x: x['name'])
+        
+        print(f"[DEBUG] Found {len(prompt_files)} manual prompts in {manual_dir}")
+        
+        return {
+            "prompts": prompt_files,
+            "success": True
+        }
+    except Exception as e:
+        print(f"Error getting manual prompts: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=200,
+            content={
+                "prompts": [],
+                "success": False,
+                "error": str(e)
+            }
+        )
 
 
 @app.get("/api/midi_devices")
