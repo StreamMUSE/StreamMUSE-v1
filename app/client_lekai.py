@@ -464,6 +464,12 @@ def tick_loop(
                 # Engine now returns event-stream format (note_on/note_off)
                 newly_generated_notes = response_data["accompaniment"]
 
+                # DEBUG: Log what server returned
+                note_on_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_on")
+                note_off_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_off")
+                if newly_generated_notes:
+                    print(f"  [DEBUG] Server returned {len(newly_generated_notes)} events: {note_on_count} note_on, {note_off_count} note_off")
+
                 gen_start = None
                 if isinstance(request_data, dict):
                     gen_start = request_data.get("generation_start_tick")
@@ -590,7 +596,10 @@ def tick_loop(
             audio_output_handler.off(event["pitch"])
             # Record model note_off events to MIDI file
             if event.get("source") == "model":
-                midi_file_handler.add_model_note(event)
+                # Ensure tick is set to current tick_count for accurate recording
+                event_for_midi = dict(event)
+                event_for_midi["tick"] = tick_count
+                midi_file_handler.add_model_note(event_for_midi)
 
         # Process note-ons and schedule their corresponding note-offs
         for event in notes_to_play_this_tick:
@@ -601,7 +610,10 @@ def tick_loop(
             audio_output_handler.on(
                 event["pitch"], audio_output_handler.accompaniment_velocity
             )
-            midi_file_handler.add_model_note(event)
+            # Record to MIDI with current tick for accurate timing
+            event_for_midi = dict(event)
+            event_for_midi["tick"] = tick_count
+            midi_file_handler.add_model_note(event_for_midi)
 
             # Event-stream mode: note_off should arrive explicitly from server.
             # We keep *optional* legacy compatibility: if duration exists, still schedule.

@@ -173,7 +173,20 @@ class MidiFileHandler:
         """
         Saves the collected notes to a timestamped MIDI file in the session directory.
         """
+        # DEBUG: Print statistics before finalize
+        print(f"  [DEBUG MIDI] Before finalize:")
+        print(f"    User notes recorded: {len(self.user_instrument.notes)}")
+        print(f"    Model notes recorded: {len(self.model_instrument.notes)}")
+        print(f"    Active user notes (missing note_off): {len(self._active_user_notes)}")
+        print(f"    Active model notes (missing note_off): {len(self._active_model_notes)}")
+        
         self.finalize()
+        
+        # DEBUG: Print statistics after finalize
+        print(f"  [DEBUG MIDI] After finalize:")
+        print(f"    User notes total: {len(self.user_instrument.notes)}")
+        print(f"    Model notes total: {len(self.model_instrument.notes)}")
+        
         if not self.user_instrument.notes and not self.model_instrument.notes:
             print("\nNo notes were played, MIDI file will not be saved.")
             return
