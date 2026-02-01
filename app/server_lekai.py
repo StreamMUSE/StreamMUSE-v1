@@ -20,11 +20,13 @@ from app.inference_engines.transformer_engine_lekai import InferenceEngineLekai
 # Pydantic Models - Event-Stream Protocol
 # ============================================================================
 
+
 class MelodyNoteEvent(BaseModel):
     """
     Event-stream format for melody notes.
     Uses type (note_on/note_off) instead of duration.
     """
+
     type: str  # "note_on" or "note_off"
     pitch: int
     tick: int
@@ -32,6 +34,7 @@ class MelodyNoteEvent(BaseModel):
 
 class InferenceRequest(BaseModel):
     """Request model for accompaniment generation."""
+
     melody_notes: list[MelodyNoteEvent]
     generation_start_tick: int
     client_request_send_time: Optional[float] = None
@@ -43,6 +46,7 @@ class AccompanimentNoteEvent(BaseModel):
     Event-stream format for accompaniment notes.
     Uses type (note_on/note_off) instead of duration.
     """
+
     type: str  # "note_on" or "note_off"
     pitch: int
     tick: int
@@ -50,6 +54,7 @@ class AccompanimentNoteEvent(BaseModel):
 
 class Timings(BaseModel):
     """Timing information for performance analysis."""
+
     request_arrival_time: float
     response_output_time: float
     preprocess_start_time: float
@@ -60,6 +65,7 @@ class Timings(BaseModel):
 
 class AccompanimentResponse(BaseModel):
     """Response model for accompaniment generation."""
+
     accompaniment: list[AccompanimentNoteEvent]
     timings: Timings
     generation_start_tick: int
@@ -68,12 +74,14 @@ class AccompanimentResponse(BaseModel):
 # For injection requests
 class InjectionRequest(BaseModel):
     """Request model for music injection."""
+
     injection_file_path: str
     injection_length_ticks: int
 
 
 class InjectionResponse(BaseModel):
     """Response model for music injection."""
+
     success: bool
     message: str
     injection_length_ticks: int
@@ -97,12 +105,13 @@ injection_state = {
 # Helper Functions
 # ============================================================================
 
+
 def notes_to_events(notes: list) -> list:
     """
     Convert duration-based notes to event-stream format.
-    
+
     Input: [{"pitch": 60, "tick": 0, "duration": 4}, ...]
-    Output: [{"type": "note_on", "pitch": 60, "tick": 0}, 
+    Output: [{"type": "note_on", "pitch": 60, "tick": 0},
              {"type": "note_off", "pitch": 60, "tick": 4}, ...]
     """
     events = []
@@ -121,6 +130,7 @@ def notes_to_events(notes: list) -> list:
 # Lifespan & App Initialization
 # ============================================================================
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -137,17 +147,19 @@ async def lifespan(app: FastAPI):
 
     try:
         print(f"Loading Lekai inference engine from: {checkpoint_path}")
-        
+
         inference_engine = InferenceEngineLekai(
             checkpoint_path=checkpoint_path,
             model_size="llama",
+            inference_mode="sliding_window",
         )
-        
+
         print("✓ Inference engine loaded successfully.")
 
     except Exception as e:
         print(f"✗ Failed to load inference engine: {e}")
         import traceback
+
         traceback.print_exc()
 
     yield
@@ -160,6 +172,7 @@ app = FastAPI(title="StreamMUSE Inference Server (Lekai)", lifespan=lifespan)
 # ============================================================================
 # Endpoints
 # ============================================================================
+
 
 @app.post("/inject_music", response_model=InjectionResponse)
 async def inject_music(request: InjectionRequest):
@@ -271,6 +284,7 @@ async def inject_music(request: InjectionRequest):
 
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         return InjectionResponse(
             success=False,

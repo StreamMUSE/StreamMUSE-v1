@@ -101,7 +101,9 @@ class InferenceEngineLekai:
         self.inference_mode = inference_mode
         self.past_key_values = None
         self.last_generated_beat = -1
-        self.last_generated_acc_tokens = None  # Store last generated acc tokens for stateful feedback
+        self.last_generated_acc_tokens = (
+            None  # Store last generated acc tokens for stateful feedback
+        )
 
         # Helper converter
         self.midi_converter = MidiConverter(ticks_per_beat=self.ticks_per_beat)
@@ -132,7 +134,11 @@ class InferenceEngineLekai:
         )
 
         # Update active set for next beat (apply beat-local events in temporal order)
-        beat_events = [e for e in self.melody_event_history if beat_start_tick <= e.get("tick", -1) < beat_end_tick]
+        beat_events = [
+            e
+            for e in self.melody_event_history
+            if beat_start_tick <= e.get("tick", -1) < beat_end_tick
+        ]
         beat_events.sort(
             key=lambda e: (
                 int(e.get("tick", 0)),
@@ -308,7 +314,10 @@ class InferenceEngineLekai:
                 token_val = next_token.item()
                 generated_tokens.append(token_val)
 
-                if token_val in [self.config.end_marker_part1, self.config.bar_token_id]:
+                if token_val in [
+                    self.config.end_marker_part1,
+                    self.config.bar_token_id,
+                ]:
                     # Keep the end marker in the generated tokens for decoding
                     break
 
@@ -367,7 +376,9 @@ class InferenceEngineLekai:
         abs_events = self._normalize_melody_input(melody_notes, generation_start_tick)
         self.melody_event_history.extend(abs_events)
 
-        absolute_generation_start_tick = generation_start_tick + self.injection_offset_ticks
+        absolute_generation_start_tick = (
+            generation_start_tick + self.injection_offset_ticks
+        )
 
         if len(self.accompaniment_history) == 0 and acc_notes is not None:
             absolute_acc_notes = []
@@ -384,10 +395,15 @@ class InferenceEngineLekai:
         # Determine if we need a full context rebuild (Reset)
         need_reset = True
         if self.inference_mode == "stateful":
-            if self.past_key_values is not None and current_beat == self.last_generated_beat + 1:
+            if (
+                self.past_key_values is not None
+                and current_beat == self.last_generated_beat + 1
+            ):
                 need_reset = False
             else:
-                print(f"Stateful reset: current_beat={current_beat}, last={self.last_generated_beat}")
+                print(
+                    f"Stateful reset: current_beat={current_beat}, last={self.last_generated_beat}"
+                )
                 self.past_key_values = None
                 self.last_generated_acc_tokens = None
 
@@ -429,16 +445,26 @@ class InferenceEngineLekai:
             for b in range(start_beat, current_beat):
                 # Add Bar tokens at start of measure (Acc bar first, then Mel bar)
                 if b % 4 == 0:
-                    seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Acc Bar
-                    seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
+                    seq.append(
+                        torch.tensor([self.config.bar_token_id], dtype=torch.long)
+                    )  # Acc Bar
+                    seq.append(
+                        torch.tensor([self.config.bar_token_id], dtype=torch.long)
+                    )  # Mel Bar
 
                 beat_start_tick = b * self.ticks_per_beat
                 beat_end_tick = (b + 1) * self.ticks_per_beat
 
                 # FIXED ORDER: Acc tokens FIRST, then Mel tokens
                 # Get Acc tokens for beat b
-                acc_notes_b = [n for n in self.accompaniment_history if beat_start_tick <= n["tick"] < beat_end_tick]
-                acc_tokens = self._get_tokens_for_beat(acc_notes_b, b, end_marker_id=self.tokenizer.end_marker_part1)
+                acc_notes_b = [
+                    n
+                    for n in self.accompaniment_history
+                    if beat_start_tick <= n["tick"] < beat_end_tick
+                ]
+                acc_tokens = self._get_tokens_for_beat(
+                    acc_notes_b, b, end_marker_id=self.tokenizer.end_marker_part1
+                )
                 seq.append(acc_tokens)
 
                 # Get Mel tokens for beat b (event stream -> pianoroll)
@@ -466,8 +492,12 @@ class InferenceEngineLekai:
 
             # 1. Bar tokens if new measure (these come BEFORE the acc we generate)
             if current_beat % 4 == 0:
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Acc Bar
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
+                seq.append(
+                    torch.tensor([self.config.bar_token_id], dtype=torch.long)
+                )  # Acc Bar
+                seq.append(
+                    torch.tensor([self.config.bar_token_id], dtype=torch.long)
+                )  # Mel Bar
 
             # 2. DO NOT inject mel[current_beat] - just generate acc directly
             # The context already ends with mel[current_beat-1], which is correct.
@@ -507,8 +537,12 @@ class InferenceEngineLekai:
 
             # 2. Bar tokens if new measure
             if current_beat % 4 == 0:
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Acc Bar
-                seq.append(torch.tensor([self.config.bar_token_id], dtype=torch.long))  # Mel Bar
+                seq.append(
+                    torch.tensor([self.config.bar_token_id], dtype=torch.long)
+                )  # Acc Bar
+                seq.append(
+                    torch.tensor([self.config.bar_token_id], dtype=torch.long)
+                )  # Mel Bar
 
             # 3. DO NOT add mel[current_beat] - we generate acc first
             # Context is now: [..., acc[b-1], mel[b-1], (bar, bar)?]
@@ -527,7 +561,9 @@ class InferenceEngineLekai:
         inference_start_time = time.perf_counter()
 
         # 3. Generate
-        generated_tokens, new_past_key_values = self._generate_tokens(input_ids, past_key_values_to_use)
+        generated_tokens, new_past_key_values = self._generate_tokens(
+            input_ids, past_key_values_to_use
+        )
         # print(f"DEBUG: Generated tokens: {generated_tokens}")
 
         # Update State if Stateful
@@ -553,7 +589,9 @@ class InferenceEngineLekai:
 
         # Ensure we have at least one token to decode
         pr = None
-        beat_start_tick = current_beat * self.ticks_per_beat  # Define early for use in both branches
+        beat_start_tick = (
+            current_beat * self.ticks_per_beat
+        )  # Define early for use in both branches
 
         if not valid_tokens:
             # Empty beat - but still need to check if any active pitches need note_off
@@ -561,7 +599,11 @@ class InferenceEngineLekai:
             absolute_generated_events = []
             for pitch in self._active_acc_pitches:
                 absolute_generated_events.append(
-                    {"type": "note_off", "pitch": int(pitch), "tick": int(beat_start_tick)}
+                    {
+                        "type": "note_off",
+                        "pitch": int(pitch),
+                        "tick": int(beat_start_tick),
+                    }
                 )
             self._active_acc_pitches = set()
         else:
@@ -573,16 +615,22 @@ class InferenceEngineLekai:
                 pr = self.tokenizer.patch_tokens_to_image(decompressed)
                 # Convert pianoroll (beat-local) to absolute-tick events
                 # Pass active_acc_pitches to correctly detect notes that ended at beat boundary
-                absolute_generated_events, self._active_acc_pitches = self.midi_converter.pianoroll_to_events(
-                    pr,
-                    start_tick=beat_start_tick,
-                    active_pitches=self._active_acc_pitches,
+                absolute_generated_events, self._active_acc_pitches = (
+                    self.midi_converter.pianoroll_to_events(
+                        pr,
+                        start_tick=beat_start_tick,
+                        active_pitches=self._active_acc_pitches,
+                    )
                 )
 
                 # DEBUG: Check sustain at beat end (helps diagnose cross-beat note issues)
                 if pr is not None and pr.shape[2] >= 1:
-                    sustain_at_end = pr[0, :, -1]  # sustain channel, all pitches, last tick
-                    active_pitches_at_end = np.where(sustain_at_end > 0)[0] + 21  # Convert to MIDI pitch
+                    sustain_at_end = pr[
+                        0, :, -1
+                    ]  # sustain channel, all pitches, last tick
+                    active_pitches_at_end = (
+                        np.where(sustain_at_end > 0)[0] + 21
+                    )  # Convert to MIDI pitch
                     if len(active_pitches_at_end) > 0:
                         print(
                             f"    [DEBUG] Beat {current_beat}: sustain active at beat end for pitches: {list(active_pitches_at_end)}"
@@ -596,7 +644,11 @@ class InferenceEngineLekai:
                 # Add note_off events for all active pitches
                 for pitch in self._active_acc_pitches:
                     absolute_generated_events.append(
-                        {"type": "note_off", "pitch": int(pitch), "tick": int(beat_start_tick)}
+                        {
+                            "type": "note_off",
+                            "pitch": int(pitch),
+                            "tick": int(beat_start_tick),
+                        }
                     )
                 self._active_acc_pitches = set()  # 清空状态
 
@@ -610,7 +662,9 @@ class InferenceEngineLekai:
         # not returned to the client anymore.
         try:
             # Derive notes for history/context only
-            rel_notes_for_history = self._pianoroll_to_notes(pr, start_tick=0) if pr is not None else []
+            rel_notes_for_history = (
+                self._pianoroll_to_notes(pr, start_tick=0) if pr is not None else []
+            )
             beat_start_tick = current_beat * self.ticks_per_beat
             abs_notes_for_history = []
             for n in rel_notes_for_history:
@@ -635,7 +689,6 @@ class InferenceEngineLekai:
             inference_start_time,
             inference_end_time,
             postprocess_start_time,
-            pr,  # Return the pianoroll for debugging
         )
 
 
@@ -644,7 +697,9 @@ class InferenceEngineLekai:
 # ================================================================================
 
 
-def visualize_pianoroll(full_pr, title="Generated Accompaniment Pianoroll", max_pitches=20):
+def visualize_pianoroll(
+    full_pr, title="Generated Accompaniment Pianoroll", max_pitches=20
+):
     """
     Visualize a pianoroll as ASCII art.
 
@@ -677,7 +732,9 @@ def visualize_pianoroll(full_pr, title="Generated Accompaniment Pianoroll", max_
 
     print(f"\n{title}")
     print(f"Shape: (2, 88, {T}) = {T // 4} beats")
-    print("Legend: '.' = empty, 'O' = onset+sustain, 'S' = sustain only, 'o' = onset only")
+    print(
+        "Legend: '.' = empty, 'O' = onset+sustain, 'S' = sustain only, 'o' = onset only"
+    )
     print("-" * (T + 15))
 
     # Print beat markers
@@ -744,7 +801,9 @@ def events_to_notes(events, debug=False):
     notes = []
 
     # Sort events by tick, note_off before note_on
-    sorted_events = sorted(events, key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
+    sorted_events = sorted(
+        events, key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1)
+    )
 
     for e in sorted_events:
         pitch = e["pitch"]
@@ -755,18 +814,29 @@ def events_to_notes(events, debug=False):
             if pitch in active:
                 onset = active.pop(pitch)
                 duration = max(1, tick - onset)
-                notes.append({"pitch": pitch, "tick": onset, "duration": duration, "velocity": 80})
+                notes.append(
+                    {
+                        "pitch": pitch,
+                        "tick": onset,
+                        "duration": duration,
+                        "velocity": 80,
+                    }
+                )
 
     # Close any remaining active notes at the last tick
     if active and sorted_events:
         last_tick = max(e["tick"] for e in sorted_events)
         if debug:
-            print(f"\n[DEBUG events_to_notes] Closing {len(active)} unclosed notes at last_tick={last_tick}:")
+            print(
+                f"\n[DEBUG events_to_notes] Closing {len(active)} unclosed notes at last_tick={last_tick}:"
+            )
         for pitch, onset in active.items():
             duration = max(1, last_tick - onset)
             if debug:
                 print(f"  - pitch={pitch}, onset={onset}, duration={duration} (ticks)")
-            notes.append({"pitch": pitch, "tick": onset, "duration": duration, "velocity": 80})
+            notes.append(
+                {"pitch": pitch, "tick": onset, "duration": duration, "velocity": 80}
+            )
 
     notes.sort(key=lambda n: n["tick"])
     return notes
@@ -796,7 +866,9 @@ def save_to_midi(melody_notes, acc_notes, output_path, bpm=120, ticks_per_beat=4
         velocity = n.get("velocity", 80)
         if end_time <= start_time:
             end_time = start_time + 0.05
-        note = pretty_midi.Note(velocity=velocity, pitch=n["pitch"], start=start_time, end=end_time)
+        note = pretty_midi.Note(
+            velocity=velocity, pitch=n["pitch"], start=start_time, end=end_time
+        )
         melody_inst.notes.append(note)
     midi.instruments.append(melody_inst)
 
@@ -808,12 +880,17 @@ def save_to_midi(melody_notes, acc_notes, output_path, bpm=120, ticks_per_beat=4
         velocity = n.get("velocity", 80)
         if end_time <= start_time:
             end_time = start_time + 0.05
-        note = pretty_midi.Note(velocity=velocity, pitch=n["pitch"], start=start_time, end=end_time)
+        note = pretty_midi.Note(
+            velocity=velocity, pitch=n["pitch"], start=start_time, end=end_time
+        )
         acc_inst.notes.append(note)
     midi.instruments.append(acc_inst)
 
     # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+    os.makedirs(
+        os.path.dirname(output_path) if os.path.dirname(output_path) else ".",
+        exist_ok=True,
+    )
 
     midi.write(output_path)
     print(f"✓ Saved MIDI to: {output_path}")
@@ -826,16 +903,36 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Test Lekai Inference Engine")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint (safetensors)")
-    parser.add_argument("--midi", type=str, default="input/mel/001.mid", help="Path to melody MIDI file")
     parser.add_argument(
-        "--prompt-beats", type=int, default=0, help="Number of beats to use as prompt (from ground truth accompaniment)"
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to model checkpoint (safetensors)",
     )
-    parser.add_argument("--max-beats", type=int, default=96, help="Maximum number of beats to generate")
     parser.add_argument(
-        "--output", type=str, default="output/generated_accompaniment.mid", help="Output MIDI file path"
+        "--midi", type=str, default="input/mel/001.mid", help="Path to melody MIDI file"
     )
-    parser.add_argument("--bpm", type=float, default=None, help="Override BPM (default: read from MIDI file)")
+    parser.add_argument(
+        "--prompt-beats",
+        type=int,
+        default=0,
+        help="Number of beats to use as prompt (from ground truth accompaniment)",
+    )
+    parser.add_argument(
+        "--max-beats", type=int, default=96, help="Maximum number of beats to generate"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="output/generated_accompaniment.mid",
+        help="Output MIDI file path",
+    )
+    parser.add_argument(
+        "--bpm",
+        type=float,
+        default=None,
+        help="Override BPM (default: read from MIDI file)",
+    )
     parser.add_argument(
         "--beats-per-gen",
         type=int,
@@ -853,7 +950,8 @@ if __name__ == "__main__":
 
     # Checkpoint path
     checkpoint_path = args.checkpoint or os.getenv(
-        "CHECKPOINT_PATH", "/home/xiaosongma/M2A_checkpoints/ModelLekai/epoch_4_1104_1204/model.safetensors"
+        "CHECKPOINT_PATH",
+        "/home/xiaosongma/M2A_checkpoints/ModelLekai/epoch_4_1104_1204/model.safetensors",
     )
 
     try:
@@ -911,7 +1009,9 @@ if __name__ == "__main__":
                             note["duration"] = max(1, prompt_end_tick - n["tick"])
                         acc_prompt_notes.append(note)
                 acc_prompt_events = notes_to_events(acc_prompt_notes)
-                print(f"Loaded prompt: {len(acc_prompt_notes)} acc notes for first {prompt_beats} beats")
+                print(
+                    f"Loaded prompt: {len(acc_prompt_notes)} acc notes for first {prompt_beats} beats"
+                )
 
         # Convert melody notes to event stream (note_on/note_off) for the engine
         all_events = notes_to_events(melody_notes)
@@ -923,16 +1023,23 @@ if __name__ == "__main__":
 
         # Generate beat by beat (engine expects ticks_per_beat=4)
         ticks_per_beat = 4
-        num_beats = min((max_tick + ticks_per_beat - 1) // ticks_per_beat, args.max_beats)
+        num_beats = min(
+            (max_tick + ticks_per_beat - 1) // ticks_per_beat, args.max_beats
+        )
 
         # Determine BPM to use (command line > MIDI file > default)
         bpm = args.bpm if args.bpm is not None else metadata.get("bpm", 120)
-        print(f"Using BPM: {bpm}" + (" (from command line)" if args.bpm else " (from MIDI file)"))
+        print(
+            f"Using BPM: {bpm}"
+            + (" (from command line)" if args.bpm else " (from MIDI file)")
+        )
 
         beats_per_gen = args.beats_per_gen
         print(f"Beats per generation: {beats_per_gen}")
 
-        print(f"\n--- Starting generation for {num_beats} beats (prompt: {prompt_beats} beats) ---\n")
+        print(
+            f"\n--- Starting generation for {num_beats} beats (prompt: {prompt_beats} beats) ---\n"
+        )
 
         # Collect all generated/prompt accompaniment events
         all_acc_events = []
@@ -953,7 +1060,10 @@ if __name__ == "__main__":
 
             # Find new melody events to send for this beat
             new_events = []
-            while last_sent_idx < len(all_events) and all_events[last_sent_idx]["tick"] < beat_end_tick:
+            while (
+                last_sent_idx < len(all_events)
+                and all_events[last_sent_idx]["tick"] < beat_end_tick
+            ):
                 new_events.append(all_events[last_sent_idx])
                 last_sent_idx += 1
 
@@ -970,7 +1080,9 @@ if __name__ == "__main__":
 
                 # Inject melody events into engine history
                 # Note: In fake real time test, injection_offset_ticks = 0, so tick values stay the same
-                abs_mel_events = inference_engine._normalize_melody_input(new_events, generation_start_tick)
+                abs_mel_events = inference_engine._normalize_melody_input(
+                    new_events, generation_start_tick
+                )
                 inference_engine.melody_event_history.extend(abs_mel_events)
 
                 # Update _active_melody_pitches for proper sustain tracking
@@ -996,7 +1108,14 @@ if __name__ == "__main__":
                         if pitch in acc_active_notes:
                             onset = acc_active_notes.pop(pitch)
                             duration = max(1, tick - onset)
-                            beat_acc_notes.append({"pitch": pitch, "tick": onset, "duration": duration, "velocity": 80})
+                            beat_acc_notes.append(
+                                {
+                                    "pitch": pitch,
+                                    "tick": onset,
+                                    "duration": duration,
+                                    "velocity": 80,
+                                }
+                            )
 
                 # Inject acc notes into engine history
                 inference_engine.accompaniment_history.extend(beat_acc_notes)
@@ -1032,7 +1151,10 @@ if __name__ == "__main__":
 
                     # Collect melody events for this beat
                     beat_mel_events = []
-                    while last_sent_idx < len(all_events) and all_events[last_sent_idx]["tick"] < gen_end_tick:
+                    while (
+                        last_sent_idx < len(all_events)
+                        and all_events[last_sent_idx]["tick"] < gen_end_tick
+                    ):
                         beat_mel_events.append(all_events[last_sent_idx])
                         last_sent_idx += 1
 
@@ -1041,10 +1163,12 @@ if __name__ == "__main__":
                         beat_mel_events = new_events
 
                     # Generate accompaniment for this beat
-                    acc_events, pre_t, inf_start, inf_end, post_t, beat_pr = inference_engine.generate_accompaniment(
-                        melody_notes=beat_mel_events,
-                        generation_start_tick=gen_start_tick,
-                        bpm=bpm,
+                    acc_events, pre_t, inf_start, inf_end, post_t, beat_pr = (
+                        inference_engine.generate_accompaniment(
+                            melody_notes=beat_mel_events,
+                            generation_start_tick=gen_start_tick,
+                            bpm=bpm,
+                        )
                     )
 
                     # Collect pianoroll
@@ -1065,7 +1189,9 @@ if __name__ == "__main__":
                             if pitch in gen_active_notes:
                                 onset = gen_active_notes.pop(pitch)
                                 # Emit note_off at current tick
-                                batch_acc_events.append({"type": "note_off", "pitch": pitch, "tick": tick})
+                                batch_acc_events.append(
+                                    {"type": "note_off", "pitch": pitch, "tick": tick}
+                                )
                             gen_active_notes[pitch] = tick
                             batch_acc_events.append(e)
                         elif e["type"] == "note_off":
@@ -1077,7 +1203,9 @@ if __name__ == "__main__":
                     if is_last_in_batch and gen_active_notes:
                         close_tick = gen_end_tick
                         for pitch in list(gen_active_notes.keys()):
-                            batch_acc_events.append({"type": "note_off", "pitch": pitch, "tick": close_tick})
+                            batch_acc_events.append(
+                                {"type": "note_off", "pitch": pitch, "tick": close_tick}
+                            )
                             gen_active_notes.pop(pitch)
 
                 # Collect batch events
@@ -1089,7 +1217,11 @@ if __name__ == "__main__":
                 # Stats
                 batch_on = sum(1 for e in batch_acc_events if e["type"] == "note_on")
                 batch_off = sum(1 for e in batch_acc_events if e["type"] == "note_off")
-                balance_info = f"on={batch_on},off={batch_off}" if batch_on != batch_off else f"balanced={batch_on}"
+                balance_info = (
+                    f"on={batch_on},off={batch_off}"
+                    if batch_on != batch_off
+                    else f"balanced={batch_on}"
+                )
 
                 inf_time_ms = batch_total_time * 1000
                 print(
@@ -1111,7 +1243,8 @@ if __name__ == "__main__":
             pr_list = [pr for _, pr in all_prs_sorted]
             full_pr = np.concatenate(pr_list, axis=2)  # (2, 88, total_ticks)
             visualize_pianoroll(
-                full_pr, title=f"Generated Accompaniment (Beats {all_prs_sorted[0][0]} - {all_prs_sorted[-1][0]})"
+                full_pr,
+                title=f"Generated Accompaniment (Beats {all_prs_sorted[0][0]} - {all_prs_sorted[-1][0]})",
             )
 
         # Analyze event balance before conversion
@@ -1122,18 +1255,24 @@ if __name__ == "__main__":
         )
 
         if note_on_count != note_off_count:
-            print("[DEBUG] WARNING: note_on/note_off count mismatch! Some notes may have missing note_off.")
+            print(
+                "[DEBUG] WARNING: note_on/note_off count mismatch! Some notes may have missing note_off."
+            )
 
         # Convert accompaniment events back to notes (with debug=True)
         acc_notes = events_to_notes(all_acc_events, debug=True)
-        print(f"\nTotal accompaniment: {len(all_acc_events)} events -> {len(acc_notes)} notes")
+        print(
+            f"\nTotal accompaniment: {len(all_acc_events)} events -> {len(acc_notes)} notes"
+        )
         print(f"  - Prompt beats: {prompt_beats}")
         print(f"  - Generated beats: {num_beats - prompt_beats}")
 
         # Detect abnormally long notes
         long_notes = [n for n in acc_notes if n["duration"] > 16]  # > 4 beats
         if long_notes:
-            print(f"\n[DEBUG] Found {len(long_notes)} abnormally long notes (duration > 16 ticks = 4 beats):")
+            print(
+                f"\n[DEBUG] Found {len(long_notes)} abnormally long notes (duration > 16 ticks = 4 beats):"
+            )
             for n in long_notes[:10]:  # Show first 10
                 print(
                     f"  - pitch={n['pitch']}, tick={n['tick']}, duration={n['duration']} ticks ({n['duration'] / 4:.1f} beats)"
