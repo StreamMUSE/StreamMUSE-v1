@@ -180,12 +180,28 @@ class MidiFileHandler:
         print(f"    Active user notes (missing note_off): {len(self._active_user_notes)}")
         print(f"    Active model notes (missing note_off): {len(self._active_model_notes)}")
         
+        # DEBUG: Print first 5 user notes with their time info
+        if self.user_instrument.notes:
+            print(f"  [DEBUG MIDI] First 5 user notes (before finalize):")
+            for i, n in enumerate(sorted(self.user_instrument.notes, key=lambda x: x.start)[:5]):
+                print(f"    [{i}] pitch={n.pitch}, start={n.start:.3f}s, end={n.end:.3f}s, dur={n.end-n.start:.3f}s")
+        
         self.finalize()
         
         # DEBUG: Print statistics after finalize
         print(f"  [DEBUG MIDI] After finalize:")
         print(f"    User notes total: {len(self.user_instrument.notes)}")
         print(f"    Model notes total: {len(self.model_instrument.notes)}")
+        
+        # DEBUG: Print time ranges
+        if self.user_instrument.notes:
+            user_min = min(n.start for n in self.user_instrument.notes)
+            user_max = max(n.end for n in self.user_instrument.notes)
+            print(f"    User notes time range: {user_min:.3f}s - {user_max:.3f}s")
+        if self.model_instrument.notes:
+            model_min = min(n.start for n in self.model_instrument.notes)
+            model_max = max(n.end for n in self.model_instrument.notes)
+            print(f"    Model notes time range: {model_min:.3f}s - {model_max:.3f}s")
         
         if not self.user_instrument.notes and not self.model_instrument.notes:
             print("\nNo notes were played, MIDI file will not be saved.")

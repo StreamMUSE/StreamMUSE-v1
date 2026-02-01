@@ -404,13 +404,16 @@ def tick_loop(
             _debug_log_user_event(event)
 
             # --- Note Quantization & Audio Playback ---
+            # Use the event's tick if available (from MIDI file input), otherwise use current tick_count
+            event_tick = event.get("tick", tick_count)
+            
             if event["type"] == "note_on":
                 # 1. Quantize the note for the inference engine request.
                 # All user notes are given a fixed duration for the model.
                 quantized_note = {
                     "type": "note_on",
                     "pitch": event["pitch"],
-                    "tick": tick_count, 
+                    "tick": event_tick, 
                 }
                 notes_for_next_request.append(quantized_note)
                 user_notes_this_tick.append(quantized_note)
@@ -423,7 +426,7 @@ def tick_loop(
                 quantized_note = {
                     "type": "note_off",
                     "pitch": event["pitch"],
-                    "tick": tick_count, 
+                    "tick": event_tick, 
                 }
                 notes_for_next_request.append(quantized_note)
                 user_notes_this_tick.append(quantized_note)

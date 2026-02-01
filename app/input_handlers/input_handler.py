@@ -194,6 +194,7 @@ def read_midi_file_input(
                     "type": "note_on",
                     "pitch": int(note["pitch"]),
                     "velocity": int(note.get("velocity", 64)),
+                    "tick": onset_tick,  # Include the scheduled tick for accurate recording
                     "time": time.time(),  # overwritten when sent
                 }
             )
@@ -204,6 +205,7 @@ def read_midi_file_input(
                     "type": "note_off",
                     "pitch": int(note["pitch"]),
                     "velocity": 0,
+                    "tick": offset_tick,  # Include the scheduled tick for accurate recording
                     "time": time.time(),  # overwritten when sent
                 }
             )
