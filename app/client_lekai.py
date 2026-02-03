@@ -539,26 +539,43 @@ def tick_loop(
                 last_inference_timings = timings
 
         # --- 3. Trigger New Inference ---
-        # Match fake offline logic:
-        # - Trigger at beat START (tick=0, 4, 8...)
-        # - Pass melody collected from the PREVIOUS beat
-        # - generation_start_tick = current tick (current beat's start)
+        # Understanding the engine's logic (delay_beats=-1 training):
         #
-        # Engine internal behavior:
-        # - Passed melody is added to history first
-        # - Context is built from range(start_beat, current_beat), NOT including current_beat
-        # - So when generating acc[n], context sees mel[n-1] and acc[n-1]
+        # Training data order: [..., acc[b-1], mel[b-1], acc[b], mel[b], ...]
+        # Model learns to predict acc[b] after seeing mel[b-1], NOT mel[b]!
         #
+<<<<<<< HEAD
         # Timeline:
         #   tick=0: trigger, gen_start=0, melody=[], generate acc[0] (context: [BOS,ts,bpm,PAD])
         #   tick=4: trigger, gen_start=4, melody=mel[0], generate acc[1] (context: [...,acc[0],mel[0]])
         #   tick=8: trigger, gen_start=8, melody=mel[1], generate acc[2] (context: [...,acc[1],mel[1]])
 
+=======
+        # Engine internal flow:
+        # 1. melody_notes passed in are stored in melody_event_history
+        # 2. Context is built from range(start_beat, current_beat), i.e., beats 0 to current_beat-1
+        # 3. So when generating acc[current_beat], context ends with mel[current_beat-1]
+        # 4. The melody_notes we pass in will be used in the NEXT call!
+        #
+        # Fake real time logic:
+        #   beat 0: melody[0], gen_start=0 → mel[0] stored, context=[BOS,ts,bpm,PAD], generate acc[0]
+        #   beat 1: melody[1], gen_start=4 → mel[1] stored, context=[...,acc[0],mel[0]], generate acc[1]
+        #
+        # Client real time logic:
+        #   tick=0: trigger, gen_start=0, melody=[] → stored, generate acc[0]
+        #   tick=4: trigger, gen_start=4, melody[0] → mel[0] stored, generate acc[1]
+        #   tick=8: trigger, gen_start=8, melody[1] → mel[1] stored, generate acc[2]
+        #
+        # So: generation_start_tick = tick_count (current beat's start)
+        # And: notes_for_next_request contains melody from PREVIOUS beat (or empty for tick=0)
+        
+>>>>>>> 2c3adc5182802c6e29fd79db20c94c499af46da1
         is_trigger_tick = (tick_count % generation_interval_ticks) == 0
 
         if is_trigger_tick:
-            # generation_start_tick is the current beat's start tick
-            # notes_for_next_request contains melody from the PREVIOUS beat
+            # generation_start_tick is the current beat's start
+            # notes_for_next_request contains melody from the previous beat
+            # (which will be stored and used when generating acc[next_beat])
             generation_start_tick = tick_count
 
             request_data = {
