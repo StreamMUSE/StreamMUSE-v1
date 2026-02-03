@@ -96,7 +96,10 @@ class StreamMUSEConfig:
 
         return True
 
-_USER_EVENT_DEBUG_PATH = os.path.join(tempfile.gettempdir(), "streammuse_user_events.jsonl")
+
+_USER_EVENT_DEBUG_PATH = os.path.join(
+    tempfile.gettempdir(), "streammuse_user_events.jsonl"
+)
 
 
 def _debug_log_user_event(event: dict):
@@ -119,6 +122,7 @@ def _debug_log_user_event(event: dict):
     except Exception:
         # Never let debug logging break realtime loop
         pass
+
 
 # --- Constants ---
 DEFAULT_NOTE_DURATION_TICKS = StreamMUSEConfig.DEFAULT_NOTE_DURATION_TICKS
@@ -406,14 +410,14 @@ def tick_loop(
             # --- Note Quantization & Audio Playback ---
             # Use the event's tick if available (from MIDI file input), otherwise use current tick_count
             event_tick = event.get("tick", tick_count)
-            
+
             if event["type"] == "note_on":
                 # 1. Quantize the note for the inference engine request.
                 # All user notes are given a fixed duration for the model.
                 quantized_note = {
                     "type": "note_on",
                     "pitch": event["pitch"],
-                    "tick": event_tick, 
+                    "tick": event_tick,
                 }
                 notes_for_next_request.append(quantized_note)
                 user_notes_this_tick.append(quantized_note)
@@ -426,7 +430,7 @@ def tick_loop(
                 quantized_note = {
                     "type": "note_off",
                     "pitch": event["pitch"],
-                    "tick": event_tick, 
+                    "tick": event_tick,
                 }
                 notes_for_next_request.append(quantized_note)
                 user_notes_this_tick.append(quantized_note)
@@ -468,10 +472,16 @@ def tick_loop(
                 newly_generated_notes = response_data["accompaniment"]
 
                 # DEBUG: Log what server returned
-                note_on_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_on")
-                note_off_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_off")
+                note_on_count = sum(
+                    1 for n in newly_generated_notes if n.get("type") == "note_on"
+                )
+                note_off_count = sum(
+                    1 for n in newly_generated_notes if n.get("type") == "note_off"
+                )
                 if newly_generated_notes:
-                    print(f"  [DEBUG] Server returned {len(newly_generated_notes)} events: {note_on_count} note_on, {note_off_count} note_off")
+                    print(
+                        f"  [DEBUG] Server returned {len(newly_generated_notes)} events: {note_on_count} note_on, {note_off_count} note_off"
+                    )
 
                 gen_start = None
                 if isinstance(request_data, dict):
@@ -543,7 +553,7 @@ def tick_loop(
         #   tick=0: trigger, gen_start=0, melody=[], generate acc[0] (context: [BOS,ts,bpm,PAD])
         #   tick=4: trigger, gen_start=4, melody=mel[0], generate acc[1] (context: [...,acc[0],mel[0]])
         #   tick=8: trigger, gen_start=8, melody=mel[1], generate acc[2] (context: [...,acc[1],mel[1]])
-        
+
         is_trigger_tick = (tick_count % generation_interval_ticks) == 0
 
         if is_trigger_tick:
@@ -934,10 +944,16 @@ def main():
     print(f"  Server URL: {args.server_url}")
     print(f"  Tempo: {args.tempo} BPM")
     print(f"  Ticks per beat: {args.ticks_per_beat}")
-    print(f"  Generation interval: {args.generation_interval_ticks} ticks (every {args.generation_interval_ticks / args.ticks_per_beat:.1f} beats)")
+    print(
+        f"  Generation interval: {args.generation_interval_ticks} ticks (every {args.generation_interval_ticks / args.ticks_per_beat:.1f} beats)"
+    )
     if args.generation_interval_ticks != args.ticks_per_beat:
-        print(f"  ⚠ Warning: generation_interval_ticks ({args.generation_interval_ticks}) != ticks_per_beat ({args.ticks_per_beat})")
-        print(f"    Engine generates beat-by-beat, so interval should equal ticks_per_beat for best results.")
+        print(
+            f"  ⚠ Warning: generation_interval_ticks ({args.generation_interval_ticks}) != ticks_per_beat ({args.ticks_per_beat})"
+        )
+        print(
+            f"    Engine generates beat-by-beat, so interval should equal ticks_per_beat for best results."
+        )
 
     try:
         input_thread.start()
@@ -975,7 +991,7 @@ def main():
             test_midi_file_name = os.path.splitext(
                 os.path.basename(args.midi_file_input)
             )[0]
-            base_log_dir = f"experiments1/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
+            base_log_dir = f"output/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
             session_log_dir = os.path.join(
                 base_log_dir, "batch_run", test_midi_file_name
             )
