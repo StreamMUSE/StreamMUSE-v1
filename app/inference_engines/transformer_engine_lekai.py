@@ -292,12 +292,12 @@ class InferenceEngineLekai:
                 next_token = sample_token(
                     next_token_logits,
                     generated_tokens=input_ids,  # Note: this is just for context, might be inaccurate if we only pass partial input
-                    # temperature=1.1,  # Updated to match inference.py
-                    # top_k=10,  # Updated to match inference.py
-                    # top_p=0.95,
-                    temperature=1.0,  # Set to 1.0 for deterministic with top_k=1
-                    top_k=1,  # Greedy decoding: always pick the highest probability token
-                    top_p=1.0,
+                    temperature=1.1,  # Updated to match inference.py
+                    top_k=10,  # Updated to match inference.py
+                    top_p=0.95,
+                    # temperature=1.0,  # Set to 1.0 for deterministic with top_k=1
+                    # top_k=1,  # Greedy decoding: always pick the highest probability token
+                    # top_p=1.0,
                     repetition_penalty=1.0,
                 )
 
@@ -993,6 +993,9 @@ def process_single_midi(
         # At beat n, we send pending_melody_events (mel[n-1]), then collect mel[n] for next time
         pending_melody_events = []
 
+        # Log each generate_accompaniment call (input melody events, output acc events)
+        call_logs = []
+
         beat_idx = 0
         while beat_idx < num_beats:
             generation_start_tick = beat_idx * ticks_per_beat
@@ -1105,6 +1108,17 @@ def process_single_midi(
                         )
                     )
 
+                    # Log this call
+                    call_logs.append(
+                        {
+                            "beat": curr_beat,
+                            "generation_start_tick": gen_start_tick,
+                            "input_melody_events": mel_to_send,
+                            "output_acc_events": acc_events,
+                            "inference_time_ms": (inf_end - inf_start) * 1000,
+                        }
+                    )
+
                     # Update pending with current beat's melody for next iteration
                     pending_melody_events = current_beat_mel_events
 
@@ -1198,6 +1212,26 @@ def process_single_midi(
             bpm=bpm,
             ticks_per_beat=ticks_per_beat,
         )
+
+        # Save call logs to JSON
+        log_path = output_path.rsplit(".", 1)[0] + "_call_log.json"
+        with open(log_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "midi_path": midi_path,
+                    "output_path": output_path,
+                    "bpm": bpm,
+                    "prompt_beats": prompt_beats,
+                    "num_beats": num_beats,
+                    "ticks_per_beat": ticks_per_beat,
+                    "calls": call_logs,
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
+        print(f"✓ Saved call log to: {log_path}")
+
         print(f"\n🎵 You can now listen to the generated MIDI at: {output_path}")
         return True
 

@@ -396,6 +396,24 @@ def tick_loop(
         if current_tick_ref is not None:
             current_tick_ref["current_tick"] = tick_count
 
+        # --- 0. Trigger Inference at tick=0 (at the very beginning) ---
+        # At tick=0, we need to trigger inference immediately before processing anything else
+        is_tick_zero = tick_count == 0
+        is_trigger_tick = False  # Will be set later for tick=3,7,11,...
+
+        if is_tick_zero:
+            # Trigger inference at the very start, gen_start_tick = 0
+            generation_start_tick = 0
+            request_data = {
+                "melody_notes": notes_for_next_request,
+                "generation_start_tick": generation_start_tick,
+            }
+            inference_request_queue.put((request_data, request_data.copy()))
+            notes_for_next_request = []
+            is_trigger_tick = True
+
+        time.sleep(seconds_per_tick * 0.1)
+
         # --- 1. Process User Input ---
         user_notes_this_tick = []
 
@@ -538,47 +556,9 @@ def tick_loop(
                 # Store timings for display, making them persistent
                 last_inference_timings = timings
 
-        # --- 3. Trigger New Inference ---
-        # Understanding the engine's logic (delay_beats=-1 training):
-        #
-        # Training data order: [..., acc[b-1], mel[b-1], acc[b], mel[b], ...]
-        # Model learns to predict acc[b] after seeing mel[b-1], NOT mel[b]!
-        #
-        # Engine internal flow:
-        # 1. melody_notes passed in are stored in melody_event_history
-        # 2. Context is built from range(start_beat, current_beat), i.e., beats 0 to current_beat-1
-        # 3. So when generating acc[current_beat], context ends with mel[current_beat-1]
-        # 4. The melody_notes we pass in will be used in the NEXT call!
-        #
-        # Fake real time logic:
-        #   beat 0: melody[0], gen_start=0 → mel[0] stored, context=[BOS,ts,bpm,PAD], generate acc[0]
-        #   beat 1: melody[1], gen_start=4 → mel[1] stored, context=[...,acc[0],mel[0]], generate acc[1]
-        #
-        # Client real time logic:
-        #   tick=0: trigger, gen_start=0, melody=[] → stored, generate acc[0]
-        #   tick=4: trigger, gen_start=4, melody[0] → mel[0] stored, generate acc[1]
-        #   tick=8: trigger, gen_start=8, melody[1] → mel[1] stored, generate acc[2]
-        #
-        # So: generation_start_tick = tick_count (current beat's start)
-        # And: notes_for_next_request contains melody from PREVIOUS beat (or empty for tick=0)
-
-        is_trigger_tick = (tick_count % generation_interval_ticks) == 0
-
-        if is_trigger_tick:
-            # generation_start_tick is the current beat's start
-            # notes_for_next_request contains melody from the previous beat
-            # (which will be stored and used when generating acc[next_beat])
-            generation_start_tick = tick_count
-
-            request_data = {
-                "melody_notes": notes_for_next_request,
-                "generation_start_tick": generation_start_tick,
-            }
-            # Note: Engine always generates 1 beat per call
-            inference_request_queue.put(
-                (request_data, request_data.copy())
-            )  # Pass a copy for logging
-            notes_for_next_request = []  # Clear the buffer for the next beat
+        # --- 3. (Moved to end of loop for tick=3,7,11,...) ---
+        # Inference triggering logic for tick=0 is handled at the beginning.
+        # For tick=3,7,11,... (4n-1), we trigger at the end of the loop.
 
         # --- 4. Play Scheduled Notes ---
         notes_to_play_this_tick = []
@@ -683,7 +663,23 @@ def tick_loop(
             pending_user_notes_display,
         )
 
-        time.sleep(seconds_per_tick)
+        # --- 7. Trigger Inference at tick=3,7,11,... (4n-1) at the end of loop ---
+        # This gives the server maximum time to process before the next beat starts.
+        # At tick=3, we trigger generation for beat 1 (gen_start_tick=4)
+        # At tick=7, we trigger generation for beat 2 (gen_start_tick=8)
+        # etc.
+        if not is_tick_zero and (tick_count % ticks_per_beat) == (ticks_per_beat - 1):
+            # Trigger at the last tick of each beat (except tick 0 which was handled at the start)
+            generation_start_tick = tick_count + 1  # Next beat's start tick
+            request_data = {
+                "melody_notes": notes_for_next_request,
+                "generation_start_tick": generation_start_tick,
+            }
+            inference_request_queue.put((request_data, request_data.copy()))
+            notes_for_next_request = []
+            is_trigger_tick = True
+
+        time.sleep(seconds_per_tick * 0.9)
 
 
 def main():
@@ -1000,7 +996,7 @@ def main():
             test_midi_file_name = os.path.splitext(
                 os.path.basename(args.midi_file_input)
             )[0]
-            base_log_dir = f"output_test/realtime/{args.tempo}/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
+            base_log_dir = f"output_test/realtime/{args.tempo}/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}2"
             session_log_dir = os.path.join(
                 base_log_dir, "batch_run", test_midi_file_name
             )
