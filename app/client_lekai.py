@@ -544,13 +544,6 @@ def tick_loop(
         # Training data order: [..., acc[b-1], mel[b-1], acc[b], mel[b], ...]
         # Model learns to predict acc[b] after seeing mel[b-1], NOT mel[b]!
         #
-<<<<<<< HEAD
-        # Timeline:
-        #   tick=0: trigger, gen_start=0, melody=[], generate acc[0] (context: [BOS,ts,bpm,PAD])
-        #   tick=4: trigger, gen_start=4, melody=mel[0], generate acc[1] (context: [...,acc[0],mel[0]])
-        #   tick=8: trigger, gen_start=8, melody=mel[1], generate acc[2] (context: [...,acc[1],mel[1]])
-
-=======
         # Engine internal flow:
         # 1. melody_notes passed in are stored in melody_event_history
         # 2. Context is built from range(start_beat, current_beat), i.e., beats 0 to current_beat-1
@@ -568,8 +561,7 @@ def tick_loop(
         #
         # So: generation_start_tick = tick_count (current beat's start)
         # And: notes_for_next_request contains melody from PREVIOUS beat (or empty for tick=0)
-        
->>>>>>> 2c3adc5182802c6e29fd79db20c94c499af46da1
+
         is_trigger_tick = (tick_count % generation_interval_ticks) == 0
 
         if is_trigger_tick:
@@ -1008,7 +1000,7 @@ def main():
             test_midi_file_name = os.path.splitext(
                 os.path.basename(args.midi_file_input)
             )[0]
-            base_log_dir = f"output/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
+            base_log_dir = f"output_test/realtime/{args.tempo}/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
             session_log_dir = os.path.join(
                 base_log_dir, "batch_run", test_midi_file_name
             )
