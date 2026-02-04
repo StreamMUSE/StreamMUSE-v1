@@ -338,6 +338,7 @@ class ClientManager:
         current_tick_ref = {"current_tick": 0}
         
         if self.config.input_mode == "file" and self.config.midi_file_path:
+            print(f"[DEBUG] Starting MIDI file input: {self.config.midi_file_path}")
             self.input_thread = threading.Thread(
                 target=read_midi_file_input,
                 args=(
@@ -356,12 +357,14 @@ class ClientManager:
                 daemon=True,
             )
         elif self.config.input_mode == "midi":
+            print(f"[DEBUG] Starting MIDI device input: device_name='{self.config.midi_input_name}'")
             self.input_thread = threading.Thread(
                 target=read_midi_input,
                 args=(self.event_queue, self.config.midi_input_name, self.audio_output_handler, self.config.melody_channel),
                 daemon=True,
             )
         else:
+            print(f"[DEBUG] Starting keyboard input")
             self.input_thread = threading.Thread(
                 target=read_keyboard_input,
                 args=(self.event_queue, self.audio_output_handler, self.config.melody_channel),
@@ -394,27 +397,45 @@ class ClientManager:
         if not self.is_running:
             return False
         
+        print("[DEBUG] Stopping client...")
         self.stop_event.set()
         
+        # Send stop signal to all queues
         if self.event_queue:
             self.event_queue.put(None)
         if self.inference_request_queue:
             self.inference_request_queue.put(None)
         
-        if self.tick_thread and self.tick_thread.is_alive():
-            self.tick_thread.join(timeout=2.0)
-        if self.inference_thread and self.inference_thread.is_alive():
-            self.inference_thread.join(timeout=2.0)
+        # Wait for threads to finish - input thread first to release MIDI port
         if self.input_thread and self.input_thread.is_alive():
-            self.input_thread.join(timeout=1.0)
+            print("[DEBUG] Waiting for input thread to stop...")
+            self.input_thread.join(timeout=2.0)
+            if self.input_thread.is_alive():
+                print("[WARNING] Input thread did not stop cleanly")
         
+        if self.inference_thread and self.inference_thread.is_alive():
+            print("[DEBUG] Waiting for inference thread to stop...")
+            self.inference_thread.join(timeout=2.0)
+        
+        if self.tick_thread and self.tick_thread.is_alive():
+            print("[DEBUG] Waiting for tick thread to stop...")
+            self.tick_thread.join(timeout=2.0)
+        
+        # Close audio output
         if self.audio_output_handler:
+            print("[DEBUG] Closing audio output handler...")
             self.audio_output_handler.close()
             self.audio_output_handler = None
+        
+        # Clear references
+        self.input_thread = None
+        self.inference_thread = None
+        self.tick_thread = None
         
         self.is_running = False
         self.ws_handler.send_status("stopped", "Client stopped")
         
+        print("[DEBUG] Client stopped successfully")
         return True
     
     def restart(self, config: Optional[ClientConfig] = None):

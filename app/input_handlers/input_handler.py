@@ -23,25 +23,60 @@ def read_midi_input(event_queue: Queue, device_name: str = None, audio_handler=N
     Worker function for reading MIDI input from a connected device (separate thread).
     If audio_handler is provided, plays notes immediately for low-latency feedback.
     """
+    port = None
     try:
-        with mido.open_input(device_name) as port:
-            print(f"Listening for MIDI input on '{port.name}'...")
-            for msg in port:
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    event = {"type": "note_on", "pitch": msg.note, "velocity": msg.velocity, "time": time.time()}
-                    event_queue.put(event)
-                    if audio_handler:
-                        audio_handler.on(msg.note, msg.velocity, channel=melody_channel)
-                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                    event = {"type": "note_off", "pitch": msg.note, "velocity": 0, "time": time.time()}
-                    event_queue.put(event)
-                    if audio_handler:
-                        audio_handler.off(msg.note, channel=melody_channel)
+        port = mido.open_input(device_name)
+        print(f"Listening for MIDI input on '{port.name}'...")
+        
+        # Use polling instead of blocking iteration
+        while True:
+            # Check for stop signal first
+            if not event_queue.empty():
+                try:
+                    peek = event_queue.get_nowait()
+                    if peek is None:
+                        print("[DEBUG] MIDI input received stop signal")
+                        break
+                    else:
+                        # Put it back if it's not None
+                        event_queue.put(peek)
+                except:
+                    pass
+            
+            # Poll for MIDI messages with timeout
+            msg = port.poll()
+            if msg is None:
+                # No message, sleep briefly and check stop signal again
+                time.sleep(0.001)  # 1ms sleep to prevent busy-waiting
+                continue
+            
+            if msg.type == 'note_on' and msg.velocity > 0:
+                event = {"type": "note_on", "pitch": msg.note, "velocity": msg.velocity, "time": time.time()}
+                event_queue.put(event)
+                if audio_handler:
+                    audio_handler.on(msg.note, msg.velocity, channel=melody_channel)
+            elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                event = {"type": "note_off", "pitch": msg.note, "velocity": 0, "time": time.time()}
+                event_queue.put(event)
+                if audio_handler:
+                    audio_handler.off(msg.note, channel=melody_channel)
+                    
     except (OSError, IOError, mido.MidoError) as e:
         print(f"\nError opening MIDI input port: {e}")
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        print(f"\nUnexpected error in MIDI input: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
+        if port:
+            print("[DEBUG] Closing MIDI input port...")
+            try:
+                port.close()
+            except:
+                pass
+        print("[DEBUG] MIDI input thread exiting")
         event_queue.put(None)
 
 
