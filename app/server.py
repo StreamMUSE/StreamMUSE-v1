@@ -55,7 +55,7 @@ class AccompanimentResponse(BaseModel):
     generation_start_tick: int
 
 
-# For injection requests
+# For injection requests (old file-based approach - deprecated)
 class InjectionRequest(BaseModel):
     injection_file_path: str
     injection_length_ticks: int
@@ -67,6 +67,21 @@ class InjectionResponse(BaseModel):
     injection_length_ticks: int
     melody_notes_injected: int
     accompaniment_notes_injected: int
+
+
+# For direct note injection (new client-side approach)
+class DirectInjectionRequest(BaseModel):
+    melody_notes: list[MelodyNoteEvent]
+    accompaniment_notes: list[AccompanimentNoteEvent]
+    injection_length_ticks: int
+
+
+class DirectInjectionResponse(BaseModel):
+    success: bool
+    message: str
+    melody_notes_injected: int
+    accompaniment_notes_injected: int
+    injection_length_ticks: int
 
 
 # app = FastAPI(title='StreamMUSE Inference Server')
@@ -147,6 +162,10 @@ app = FastAPI(title="StreamMUSE Inference Server", lifespan=lifespan)
 async def inject_music(request: InjectionRequest):
     """
     注入一段音乐到推理引擎的历史中
+
+    DEPRECATED: This endpoint requires MIDI files to be on the server.
+    Use /inject_notes instead for client-side prompting.
+    This endpoint is kept for backward compatibility.
     """
     global injection_state
 
@@ -235,6 +254,56 @@ async def inject_music(request: InjectionRequest):
             injection_length_ticks=0,
             melody_notes_injected=0,
             accompaniment_notes_injected=0,
+        )
+
+
+# 新的客户端侧注入端点
+@app.post("/inject_notes", response_model=DirectInjectionResponse)
+async def inject_notes(request: DirectInjectionRequest):
+    """
+    Inject notes directly into inference engine history.
+    Client-side handles all file I/O and prompt selection.
+    This is the new preferred method - server never touches disk.
+    """
+    if not inference_engine:
+        return JSONResponse(
+            status_code=503, content={"error": "Inference engine not loaded"}
+        )
+
+    try:
+        # Convert Pydantic models to dicts
+        melody_notes_dicts = [note.dict() for note in request.melody_notes]
+        accompaniment_notes_dicts = [note.dict() for note in request.accompaniment_notes]
+
+        # Clear existing history
+        inference_engine.clear_history()
+
+        # Direct injection
+        inference_engine.melody_history.extend(melody_notes_dicts)
+        inference_engine.accompaniment_history.extend(accompaniment_notes_dicts)
+
+        # Set offset
+        inference_engine.set_injection_offset(request.injection_length_ticks)
+
+        print(f"Injected {len(melody_notes_dicts)} melody notes and {len(accompaniment_notes_dicts)} accompaniment notes")
+
+        return DirectInjectionResponse(
+            success=True,
+            message="Notes injected successfully",
+            melody_notes_injected=len(melody_notes_dicts),
+            accompaniment_notes_injected=len(accompaniment_notes_dicts),
+            injection_length_ticks=request.injection_length_ticks
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return DirectInjectionResponse(
+            success=False,
+            message=f"Error injecting notes: {str(e)}",
+            melody_notes_injected=0,
+            accompaniment_notes_injected=0,
+            injection_length_ticks=0
         )
 
 

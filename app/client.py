@@ -32,6 +32,9 @@ from input_handlers.input_handler import (
     read_keyboard_input,
     read_midi_file_input,
 )
+from key_detection import detect_key_lightweight, detect_key_music21
+from prompt_library import PromptLibrary
+from midi_utils import midi_to_note
 
 
 # --- Configuration ---
@@ -39,9 +42,9 @@ class StreamMUSEConfig:
     """Configuration settings for StreamMUSE client"""
 
     # Network
-    DEFAULT_SERVER_URL = "http://localhost:8988/generate_accompaniment"
-    DEFAULT_INJECTION_URL = "http://localhost:8988/inject_music"
-    DEFAULT_INJECTION_STATUS_URL = "http://localhost:8988/injection_status"
+    DEFAULT_SERVER_URL = "http://localhost:8000/generate_accompaniment"
+    DEFAULT_INJECTION_URL = "http://localhost:8000/inject_music"
+    DEFAULT_INJECTION_STATUS_URL = "http://localhost:8000/injection_status"
 
     # Musical timing
     DEFAULT_TEMPO = 120.0
@@ -51,15 +54,22 @@ class StreamMUSEConfig:
     DEFAULT_GENERATION_LENGTH = None  # For experiments only
 
     # Note handling
-    DEFAULT_NOTE_DURATION_TICKS = 2
+    DEFAULT_NOTE_DURATION_TICKS = 4
     LATENCY_OFFSET_TICKS = 2
     DEFAULT_ACCOMPANIMENT_VELOCITY = 50
+    DEFAULT_MELODY_CHANNEL = 0
+    DEFAULT_ACCOMPANIMENT_CHANNEL = 0
 
     # Display
     DEFAULT_LOG_LINES = 10
 
     # MIDI File Input
     DEFAULT_MIDI_FILE_DELAY_TICKS = 0
+
+    # Listening mode for adaptive prompting
+    DEFAULT_LISTENING_DURATION_TICKS = 0  # 0 = disabled
+    DEFAULT_PROMPT_LIBRARY_PATH = "prompts"
+    DEFAULT_KEY_DETECTION_METHOD = "lightweight"  # or "music21"
 
     @staticmethod
     def validate_args(args):
@@ -94,6 +104,8 @@ class StreamMUSEConfig:
 # --- Constants ---
 DEFAULT_NOTE_DURATION_TICKS = StreamMUSEConfig.DEFAULT_NOTE_DURATION_TICKS
 LATENCY_OFFSET_TICKS = StreamMUSEConfig.LATENCY_OFFSET_TICKS
+DEFAULT_MELODY_CHANNEL = StreamMUSEConfig.DEFAULT_MELODY_CHANNEL
+DEFAULT_ACCOMPANIMENT_CHANNEL = StreamMUSEConfig.DEFAULT_ACCOMPANIMENT_CHANNEL
 
 
 def save_prompt_midi(
@@ -211,7 +223,216 @@ def save_prompt_midi(
         print(f"✗ 保存 prompt MIDI 文件失败: {e}")
 
 
-# 添加注入功能函数
+def inject_notes_to_server(
+    server_url: str,
+    melody_notes: list,
+    accompaniment_notes: list,
+    injection_length_ticks: int
+) -> bool:
+    """
+    Inject notes directly to server (new client-side prompting approach).
+
+    Args:
+        server_url: Base server URL
+        melody_notes: List of melody note dicts with 'pitch', 'tick', 'duration'
+        accompaniment_notes: List of accompaniment note dicts with 'pitch', 'tick', 'duration', 'program'
+        injection_length_ticks: Length in ticks
+
+    Returns:
+        True if successful, False otherwise
+    """
+    injection_url = server_url.replace("/generate_accompaniment", "/inject_notes")
+
+    try:
+        request_data = {
+            "melody_notes": melody_notes,
+            "accompaniment_notes": accompaniment_notes,
+            "injection_length_ticks": injection_length_ticks
+        }
+
+        print(f"Injecting {len(melody_notes)} melody notes and {len(accompaniment_notes)} accompaniment notes...")
+        response = requests.post(injection_url, json=request_data, timeout=5.0)
+        response.raise_for_status()
+
+        result = response.json()
+        if result["success"]:
+            print(f"✓ Injection successful: {result['message']}")
+            return True
+        else:
+            print(f"✗ Injection failed: {result['message']}")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        print(f"✗ Injection request failed: {e}")
+        return False
+
+
+def listening_mode_worker(
+    collected_melody_notes: list,
+    listening_duration_ticks: int,
+    prompt_library: PromptLibrary,
+    server_url: str,
+    key_detection_method: str,
+    result_queue: Queue
+):
+    """
+    Background worker thread for key detection and prompt injection.
+    Runs asynchronously to avoid blocking the tick loop.
+
+    Args:
+        collected_melody_notes: Notes collected during listening period
+        listening_duration_ticks: Duration of listening period
+        prompt_library: PromptLibrary instance
+        server_url: Server URL
+        key_detection_method: "lightweight" or "music21"
+        result_queue: Queue to put result (True/False) when done
+
+    Returns:
+        None (puts result in queue)
+    """
+    try:
+        print(f"\n{'='*60}")
+        print(f"LISTENING MODE WORKER - Analyzing {len(collected_melody_notes)} notes")
+        print(f"{'='*60}")
+
+        # 1. Detect key (might take 50-200ms)
+        start_time = time.perf_counter()
+        if key_detection_method == "music21":
+            detected_key = detect_key_music21(collected_melody_notes)
+        else:
+            detected_key = detect_key_lightweight(collected_melody_notes)
+        key_detection_time = time.perf_counter() - start_time
+
+        print(f"✓ Detected key: {detected_key} (took {key_detection_time*1000:.1f}ms)")
+
+        # 2. Select prompt from library (fast, <1ms)
+        selected_prompt = prompt_library.select_prompt(detected_key, strategy="random")
+
+        if not selected_prompt:
+            print("✗ No prompt available, continuing without injection")
+            result_queue.put(False)
+            return
+
+        print(f"✓ Selected prompt: {selected_prompt.get('name', 'unknown')}")
+
+        # 3. Load accompaniment from selected prompt (might take 100-300ms for file I/O)
+        load_start_time = time.perf_counter()
+        _, accompaniment_notes = prompt_library.load_prompt_notes(
+            selected_prompt,
+            max_ticks=listening_duration_ticks,
+            load_melody=False,  # Don't load prompt melody, use user's actual input
+            load_accompaniment=True
+        )
+        load_time = time.perf_counter() - load_start_time
+
+        if not accompaniment_notes:
+            print("✗ No accompaniment notes loaded from prompt")
+            result_queue.put(False)
+            return
+
+        print(f"✓ Loaded {len(accompaniment_notes)} accompaniment notes (took {load_time*1000:.1f}ms)")
+
+        # 4. Inject to server (network call, 10-50ms)
+        inject_start_time = time.perf_counter()
+        success = inject_notes_to_server(
+            server_url,
+            collected_melody_notes,
+            accompaniment_notes,
+            listening_duration_ticks
+        )
+        inject_time = time.perf_counter() - inject_start_time
+
+        total_time = time.perf_counter() - start_time
+
+        if success:
+            print(f"✓ Injection complete (took {inject_time*1000:.1f}ms)")
+            print(f"{'='*60}")
+            print(f"TOTAL PROCESSING TIME: {total_time*1000:.1f}ms")
+            print(f"READY FOR REAL-TIME GENERATION")
+            print(f"{'='*60}\n")
+            result_queue.put(True)
+        else:
+            print(f"✗ Injection failed")
+            result_queue.put(False)
+
+    except Exception as e:
+        print(f"✗ Listening mode worker error: {e}")
+        import traceback
+        traceback.print_exc()
+        result_queue.put(False)
+
+
+def perform_direct_injection(
+    injection_file_path: str,
+    injection_length_ticks: int,
+    server_url: str,
+    ticks_per_beat: int = 4
+) -> int:
+    """
+    Perform direct injection from user-specified MIDI file (MANUAL mode).
+    Client-side implementation of the old inject_music_to_server.
+
+    Args:
+        injection_file_path: Path to melody MIDI file (client-side)
+        injection_length_ticks: Number of ticks to inject
+        server_url: Server URL
+        ticks_per_beat: Ticks per beat for MIDI conversion
+
+    Returns:
+        injection_length_ticks if successful, 0 otherwise
+    """
+    try:
+        # Determine mel and acc file paths (same convention as before)
+        mel_file_path = injection_file_path
+        acc_file_path = injection_file_path.replace("mel", "acc")
+
+        if not os.path.exists(mel_file_path):
+            print(f"✗ Melody file not found: {mel_file_path}")
+            return 0
+
+        if not os.path.exists(acc_file_path):
+            print(f"✗ Accompaniment file not found: {acc_file_path}")
+            return 0
+
+        print(f"Reading melody from: {mel_file_path}")
+        print(f"Reading accompaniment from: {acc_file_path}")
+
+        # Read both files
+        melody_notes, _, _ = midi_to_note(mel_file_path, max_tick=injection_length_ticks)
+        accompaniment_notes, _, _ = midi_to_note(acc_file_path, max_tick=injection_length_ticks)
+
+        # Filter to injection length
+        melody_notes = [n for n in melody_notes if n['tick'] < injection_length_ticks]
+        accompaniment_notes = [n for n in accompaniment_notes if n['tick'] < injection_length_ticks]
+
+        # Add program field to accompaniment notes if missing
+        for note in accompaniment_notes:
+            if 'program' not in note:
+                note['program'] = 1
+
+        print(f"Loaded {len(melody_notes)} melody notes and {len(accompaniment_notes)} accompaniment notes")
+
+        # Inject to server using new endpoint
+        success = inject_notes_to_server(
+            server_url,
+            melody_notes,
+            accompaniment_notes,
+            injection_length_ticks
+        )
+
+        if success:
+            return injection_length_ticks
+        else:
+            return 0
+
+    except Exception as e:
+        print(f"✗ Direct injection failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
+
+
+# 添加注入功能函数 (DEPRECATED - use perform_direct_injection instead)
 def inject_music_to_server(
     server_base_url: str, injection_file_path: str, injection_length_ticks: int
 ):
@@ -325,9 +546,14 @@ def tick_loop(
     generation_length_ticks: int = None,  # total generation length, for experiments
     generation_length_per_request: int = None,  # for each request, we want the server to generate how many frames
     current_tick_ref: dict = None,  # Optional shared tick reference for MIDI file input
+    listening_duration_ticks: int = 0,  # NEW: listening mode duration (0 = disabled)
+    prompt_library: PromptLibrary = None,  # NEW: prompt library for listening mode
+    server_url: str = None,  # NEW: server URL for listening mode
+    key_detection_method: str = "lightweight",  # NEW: key detection method
 ):
     """
-    Main tick loop for the client. (main thread)
+    Main tick loop for the client (main thread).
+    Supports both direct generation and listening mode for adaptive prompting.
     """
     seconds_per_tick = (60.0 / tempo) / ticks_per_beat
     tick_count = -1
@@ -339,6 +565,21 @@ def tick_loop(
     notes_for_next_request = []
     last_inference_timings = {}  # To persist timing info for display
     ticks_per_bar = ticks_per_beat * beats_per_bar
+
+    # Listening mode state
+    listening_mode_active = listening_duration_ticks > 0
+    listening_mode_completed = False
+    listening_worker_thread = None
+    listening_worker_result_queue = Queue()
+    GRACE_PERIOD_TICKS = 8  # Half a bar (8 ticks) for key detection processing
+
+    if listening_mode_active:
+        print(f"\n{'='*60}")
+        print(f"LISTENING MODE ACTIVE")
+        print(f"Will collect user input for {listening_duration_ticks} ticks")
+        print(f"Then process key detection for {GRACE_PERIOD_TICKS} ticks (grace period)")
+        print(f"Real-time generation starts at tick {listening_duration_ticks + GRACE_PERIOD_TICKS}")
+        print(f"{'='*60}\n")
 
     # --- Main Loop ---
     while True:
@@ -373,25 +614,23 @@ def tick_loop(
                 inference_request_queue.put(None)
                 return
 
-            # --- Note Quantization & Audio Playback ---
+            # --- Note Quantization (audio now played in input thread) ---
             if event["type"] == "note_on":
-                # 1. Quantize the note for the inference engine request.
+                # Quantize the note for the inference engine request.
                 # All user notes are given a fixed duration for the model.
                 quantized_note = {
                     "pitch": event["pitch"],
-                    "tick": tick_count,
+                    "tick": tick_count - 1,
                     "duration": DEFAULT_NOTE_DURATION_TICKS,
                 }
                 notes_for_next_request.append(quantized_note)
                 user_notes_this_tick.append(quantized_note)
                 midi_file_handler.add_user_note(quantized_note)
-
-                # 2. Play the note immediately for audio feedback.
-                audio_output_handler.on(event["pitch"], event["velocity"])
+                # Audio playback moved to input thread for lower latency
 
             elif event["type"] == "note_off":
-                # Pass the note_off event directly to the audio handler
-                audio_output_handler.off(event["pitch"])
+                # Audio note_off handled in input thread
+                pass
 
         # --- 2. Handle Inference Responses ---
         while not inference_response_queue.empty():
@@ -492,7 +731,112 @@ def tick_loop(
                 # Store timings for display, making them persistent
                 last_inference_timings = timings
 
-        # --- 3. Trigger New Inference (Latency-Aware) ---
+        # --- 3. LISTENING MODE CHECK (NEW) ---
+        if listening_mode_active and not listening_mode_completed:
+            # PHASE 1: At end of listening period, spawn worker thread
+            if tick_count == listening_duration_ticks:
+                print(f"\n{'='*60}")
+                print(f"LISTENING PERIOD COMPLETE at tick {tick_count}")
+                print(f"Collected {len(notes_for_next_request)} melody notes")
+                print(f"Spawning background worker for key detection...")
+                print(f"{'='*60}")
+
+                # Spawn worker thread (non-blocking)
+                if prompt_library and server_url:
+                    listening_worker_thread = threading.Thread(
+                        target=listening_mode_worker,
+                        args=(
+                            notes_for_next_request.copy(),  # Copy to avoid race conditions
+                            listening_duration_ticks,
+                            prompt_library,
+                            server_url,
+                            key_detection_method,
+                            listening_worker_result_queue
+                        ),
+                        daemon=True
+                    )
+                    listening_worker_thread.start()
+                else:
+                    print("✗ Prompt library not initialized, skipping injection")
+                    listening_mode_completed = True
+                    notes_for_next_request = []
+
+            # PHASE 2: Check if worker completed at end of grace period
+            elif tick_count == listening_duration_ticks + GRACE_PERIOD_TICKS:
+                print(f"\n{'='*60}")
+                print(f"GRACE PERIOD COMPLETE at tick {tick_count}")
+                print(f"Checking worker status...")
+                print(f"{'='*60}")
+
+                # Check if worker has finished
+                if not listening_worker_result_queue.empty():
+                    success = listening_worker_result_queue.get()
+                    if success:
+                        print("✓ Listening mode injection successful!")
+                    else:
+                        print("✗ Listening mode injection failed, continuing without prompt")
+                else:
+                    # Worker still running (took longer than grace period)
+                    print("⚠ Warning: Key detection took longer than grace period")
+                    print("⚠ Will wait for completion before starting generation...")
+                    # Wait for worker to finish (blocking, but should be quick)
+                    if listening_worker_thread and listening_worker_thread.is_alive():
+                        listening_worker_thread.join(timeout=2.0)  # Max 2s wait
+                    if not listening_worker_result_queue.empty():
+                        success = listening_worker_result_queue.get()
+                        print(f"✓ Worker completed with result: {success}")
+                    else:
+                        print("✗ Worker timed out, continuing without prompt")
+
+                # Mark listening mode as complete
+                listening_mode_completed = True
+
+            # PHASE 3: During listening/grace period, display status and skip inference
+            if not listening_mode_completed:
+                # Calculate display info
+                bar_count = tick_count // ticks_per_bar
+                beat_in_bar = (tick_count % ticks_per_bar) // ticks_per_beat
+                user_notes_this_tick_display = [n["pitch"] for n in user_notes_this_tick]
+                pending_user_notes_display = [n["pitch"] for n in notes_for_next_request]
+
+                # Determine status message
+                if tick_count < listening_duration_ticks:
+                    status_msg = f"Listening... ({listening_duration_ticks - tick_count} ticks remaining)"
+                else:
+                    status_msg = f"Processing key detection... ({listening_duration_ticks + GRACE_PERIOD_TICKS - tick_count} ticks remaining)"
+
+                music_info = {
+                    "bar": bar_count,
+                    "beat": beat_in_bar,
+                    "ticks_per_beat": ticks_per_beat,
+                    "inference_triggered": False,
+                    "all_timing_data": all_timing_data,
+                }
+
+                # Update display with status
+                output_handler.update_and_display(
+                    tick_count,
+                    music_info,
+                    user_notes_this_tick_display,
+                    [],  # No model notes during listening/grace period
+                    pending_user_notes_display,
+                )
+
+                # Play metronome during listening mode (IMPORTANT: before continue)
+                if metronome_enabled:
+                    is_beat_tick = (tick_count % ticks_per_beat) == 0
+                    if is_beat_tick:
+                        beat_in_bar_metro = (tick_count % ticks_per_bar) // ticks_per_beat
+                        if beat_in_bar_metro == 0:
+                            audio_output_handler.metro_first()
+                        else:
+                            audio_output_handler.metro_other()
+
+                time.sleep(seconds_per_tick)
+                continue  # Skip rest of loop (note playback, inference)
+
+        # --- 4. Trigger New Inference (Latency-Aware) ---
+        # Only trigger if listening mode is complete (or not active)
         # 感觉这个所谓的 lantency aware 没意义，而且我们的建模不是这样的，改成固定间隔
         # is_trigger_tick = (tick_count % generation_interval_ticks) == (generation_interval_ticks - LATENCY_OFFSET_TICKS)
         is_trigger_tick = (tick_count % generation_interval_ticks) == 0
@@ -520,7 +864,7 @@ def tick_loop(
             )  # Pass a copy for logging
             notes_for_next_request = []  # Clear the buffer
 
-        # --- 4. Play Scheduled Notes ---
+        # --- 5. Play Scheduled Notes ---
         notes_to_play_this_tick = []
         notes_to_stop_this_tick = []
 
@@ -561,7 +905,7 @@ def tick_loop(
         for event in notes_to_play_this_tick:
             # This loop only processes model-generated notes.
             audio_output_handler.on(
-                event["pitch"], audio_output_handler.accompaniment_velocity
+                event["pitch"], audio_output_handler.accompaniment_velocity, channel=DEFAULT_ACCOMPANIMENT_CHANNEL
             )
             midi_file_handler.add_model_note(event)
 
@@ -574,7 +918,7 @@ def tick_loop(
                 {**event, "type": "note_off", "source": "model"}
             )
 
-        # --- 5. Metronome ---
+        # --- 6. Metronome ---
         if metronome_enabled:
             is_beat_tick = (tick_count % ticks_per_beat) == 0
             if is_beat_tick:
@@ -584,7 +928,7 @@ def tick_loop(
                 else:
                     audio_output_handler.metro_other()
 
-        # --- 6. Update Display ---
+        # --- 7. Update Display ---
         bar_count = tick_count // ticks_per_bar
         beat_in_bar = (tick_count % ticks_per_bar) // ticks_per_beat
 
@@ -729,12 +1073,12 @@ def main():
         help="Use original MIDI note durations instead of fixed duration",
     )
 
-    # 添加音乐注入参数
+    # 添加音乐注入参数 (Direct injection mode)
     parser.add_argument(
         "--injection-file",
         type=str,
         default=None,
-        help="Path to MIDI file to inject into inference engine history",
+        help="Path to MIDI file to inject into inference engine history (client-side)",
     )
     parser.add_argument(
         "--injection-length",
@@ -743,22 +1087,61 @@ def main():
         help="Number of ticks to inject from the injection file",
     )
 
+    # Listening mode arguments (Auto key detection and prompt selection)
+    parser.add_argument(
+        "--listening-duration-ticks",
+        type=int,
+        default=config.DEFAULT_LISTENING_DURATION_TICKS,
+        help="Number of ticks to listen before auto-injecting prompt based on detected key (0=disabled)",
+    )
+    parser.add_argument(
+        "--prompt-library-path",
+        type=str,
+        default=config.DEFAULT_PROMPT_LIBRARY_PATH,
+        help="Path to local prompt library directory (for listening mode)",
+    )
+    parser.add_argument(
+        "--key-detection-method",
+        type=str,
+        choices=["lightweight", "music21"],
+        default=config.DEFAULT_KEY_DETECTION_METHOD,
+        help="Key detection algorithm: 'lightweight' (fast) or 'music21' (requires music21 library)",
+    )
+
     args = parser.parse_args()
 
     # --- Validate Arguments ---
     if not StreamMUSEConfig.validate_args(args):
         return
 
-    # 验证注入参数
-    if args.injection_file and args.injection_length <= 0:
-        print(
-            "Error: injection-length must be positive when injection-file is specified"
-        )
+    # Validate injection modes (mutually exclusive)
+    has_direct_injection = args.injection_file is not None
+    has_listening_mode = args.listening_duration_ticks > 0
+
+    if has_direct_injection and has_listening_mode:
+        print("Error: Cannot use both --injection-file and --listening-duration-ticks")
+        print("Choose one injection mode:")
+        print("  Direct mode: --injection-file <path> --injection-length <ticks>")
+        print("  Listening mode: --listening-duration-ticks <ticks>")
         return
 
-    if args.injection_file and not os.path.exists(args.injection_file):
-        print(f"Error: injection file not found: {args.injection_file}")
-        return
+    # Validate direct injection parameters
+    if has_direct_injection:
+        if args.injection_length <= 0:
+            print("Error: --injection-length must be positive when --injection-file is specified")
+            return
+        if not os.path.exists(args.injection_file):
+            print(f"Error: injection file not found: {args.injection_file}")
+            return
+
+    # --- Initialize Prompt Library (for listening mode) ---
+    prompt_library = None
+    if has_listening_mode:
+        print(f"Initializing prompt library from: {args.prompt_library_path}")
+        prompt_library = PromptLibrary(args.prompt_library_path)
+        if not prompt_library.metadata:
+            print("Warning: Prompt library is empty")
+            print(f"Please create prompts in {args.prompt_library_path} with metadata.json")
 
     # --- Create Session Log Directory ---
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -769,17 +1152,22 @@ def main():
     if not clear_server_history(args.server_url):
         return
 
-    # --- 处理音乐注入 ---
+    # --- 处理音乐注入 (Direct Injection Mode) ---
     injection_offset_ticks = 0
-    if args.injection_file:
-        injection_offset_ticks = inject_music_to_server(
-            args.server_url, args.injection_file, args.injection_length
+    if has_direct_injection:
+        print("\n=== DIRECT INJECTION MODE ===")
+        injection_offset_ticks = perform_direct_injection(
+            args.injection_file,
+            args.injection_length,
+            args.server_url,
+            args.ticks_per_beat
         )
 
         if injection_offset_ticks == 0:
-            print("注入失败，程序退出")
+            print("✗ Direct injection failed, exiting")
             return
         else:
+            print(f"✓ Direct injection successful: {injection_offset_ticks} ticks")
             # 保存 prompt MIDI 文件
             save_prompt_midi(
                 args.injection_file,
@@ -787,6 +1175,10 @@ def main():
                 session_log_dir,
                 args.ticks_per_beat,
             )
+    elif has_listening_mode:
+        print("\n=== LISTENING MODE ===")
+        print(f"Will listen for {args.listening_duration_ticks} ticks before auto-injecting prompt")
+        print(f"Key detection method: {args.key_detection_method}")
 
     event_queue = Queue()
     inference_request_queue = Queue()
@@ -818,12 +1210,16 @@ def main():
                 args.ticks_per_beat,
                 args.midi_file_delay_ticks,
                 injection_offset_ticks,
+                args.midi_file_use_original_duration,
+                DEFAULT_NOTE_DURATION_TICKS,
+                audio_output_handler,
+                DEFAULT_MELODY_CHANNEL,
             ),
             daemon=True,
         )
     elif args.use_keyboard_input:
         input_thread = threading.Thread(
-            target=read_keyboard_input, args=(event_queue,), daemon=True
+            target=read_keyboard_input, args=(event_queue, audio_output_handler, DEFAULT_MELODY_CHANNEL), daemon=True
         )
     else:
         # A check to see if MIDI input is available.
@@ -839,7 +1235,7 @@ def main():
             return
 
         input_thread = threading.Thread(
-            target=read_midi_input, args=(event_queue, midi_input_name), daemon=True
+            target=read_midi_input, args=(event_queue, midi_input_name, audio_output_handler, DEFAULT_MELODY_CHANNEL), daemon=True
         )
 
     inference_thread = threading.Thread(
@@ -872,6 +1268,10 @@ def main():
             generation_length_ticks,
             args.generation_length_per_request,
             current_tick_ref,
+            args.listening_duration_ticks,  # NEW: listening mode duration
+            prompt_library,  # NEW: prompt library instance
+            args.server_url,  # NEW: server URL for listening mode
+            args.key_detection_method,  # NEW: key detection method
         ),
         daemon=True,
     )
@@ -915,7 +1315,7 @@ def main():
             test_midi_file_name = os.path.splitext(
                 os.path.basename(args.midi_file_input)
             )[0]
-            base_log_dir = f"experiments1/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
+            base_log_dir = f"experiments_local_server/realtime/baseline/interval_{args.generation_interval_ticks}_gen_frame_{args.generation_length_per_request}/prompt_{args.injection_length}_gen_{args.generation_length}"
             session_log_dir = os.path.join(
                 base_log_dir, "batch_run", test_midi_file_name
             )

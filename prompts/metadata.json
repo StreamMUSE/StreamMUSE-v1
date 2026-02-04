@@ -1,0 +1,290 @@
+{
+  "C_major": [
+    {
+      "name": "pop909_216",
+      "melody_path": "/home/andrew/stanleyz/prompts/C_major/pop909_216_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/C_major/pop909_216_acc.mid",
+      "duration_ticks": 1920,
+      "source": "POP909",
+      "song_number": "216",
+      "melody_notes_count": 511,
+      "accompaniment_notes_count": 1508
+    },
+    {
+      "name": "pop909_320",
+      "melody_path": "/home/andrew/stanleyz/prompts/C_major/pop909_320_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/C_major/pop909_320_acc.mid",
+      "duration_ticks": 1120,
+      "source": "POP909",
+      "song_number": "320",
+      "melody_notes_count": 243,
+      "accompaniment_notes_count": 852
+    },
+    {
+      "name": "pop909_905",
+      "melody_path": "/home/andrew/stanleyz/prompts/C_major/pop909_905_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/C_major/pop909_905_acc.mid",
+      "duration_ticks": 818,
+      "source": "POP909",
+      "song_number": "905",
+      "melody_notes_count": 134,
+      "accompaniment_notes_count": 857
+    }
+  ],
+  "G_major": [
+    {
+      "name": "pop909_005",
+      "melody_path": "/home/andrew/stanleyz/prompts/G_major/pop909_005_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/G_major/pop909_005_acc.mid",
+      "duration_ticks": 1176,
+      "source": "POP909",
+      "song_number": "005",
+      "melody_notes_count": 366,
+      "accompaniment_notes_count": 1157
+    },
+    {
+      "name": "pop909_071",
+      "melody_path": "/home/andrew/stanleyz/prompts/G_major/pop909_071_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/G_major/pop909_071_acc.mid",
+      "duration_ticks": 1095,
+      "source": "POP909",
+      "song_number": "071",
+      "melody_notes_count": 311,
+      "accompaniment_notes_count": 1373
+    },
+    {
+      "name": "pop909_449",
+      "melody_path": "/home/andrew/stanleyz/prompts/G_major/pop909_449_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/G_major/pop909_449_acc.mid",
+      "duration_ticks": 1485,
+      "source": "POP909",
+      "song_number": "449",
+      "melody_notes_count": 378,
+      "accompaniment_notes_count": 1769
+    },
+    {
+      "name": "pop909_737",
+      "melody_path": "/home/andrew/stanleyz/prompts/G_major/pop909_737_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/G_major/pop909_737_acc.mid",
+      "duration_ticks": 1799,
+      "source": "POP909",
+      "song_number": "737",
+      "melody_notes_count": 466,
+      "accompaniment_notes_count": 1237
+    },
+    {
+      "name": "pop909_752",
+      "melody_path": "/home/andrew/stanleyz/prompts/G_major/pop909_752_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/G_major/pop909_752_acc.mid",
+      "duration_ticks": 1546,
+      "source": "POP909",
+      "song_number": "752",
+      "melody_notes_count": 351,
+      "accompaniment_notes_count": 1495
+    }
+  ],
+  "D_major": [
+    {
+      "name": "pop909_282",
+      "melody_path": "/home/andrew/stanleyz/prompts/D_major/pop909_282_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/D_major/pop909_282_acc.mid",
+      "duration_ticks": 1136,
+      "source": "POP909",
+      "song_number": "282",
+      "melody_notes_count": 407,
+      "accompaniment_notes_count": 1344
+    },
+    {
+      "name": "pop909_360",
+      "melody_path": "/home/andrew/stanleyz/prompts/D_major/pop909_360_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/D_major/pop909_360_acc.mid",
+      "duration_ticks": 1108,
+      "source": "POP909",
+      "song_number": "360",
+      "melody_notes_count": 227,
+      "accompaniment_notes_count": 920
+    },
+    {
+      "name": "pop909_595",
+      "melody_path": "/home/andrew/stanleyz/prompts/D_major/pop909_595_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/D_major/pop909_595_acc.mid",
+      "duration_ticks": 1178,
+      "source": "POP909",
+      "song_number": "595",
+      "melody_notes_count": 274,
+      "accompaniment_notes_count": 1099
+    }
+  ],
+  "F_major": [
+    {
+      "name": "pop909_137",
+      "melody_path": "/home/andrew/stanleyz/prompts/F_major/pop909_137_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/F_major/pop909_137_acc.mid",
+      "duration_ticks": 988,
+      "source": "POP909",
+      "song_number": "137",
+      "melody_notes_count": 332,
+      "accompaniment_notes_count": 1646
+    },
+    {
+      "name": "pop909_248",
+      "melody_path": "/home/andrew/stanleyz/prompts/F_major/pop909_248_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/F_major/pop909_248_acc.mid",
+      "duration_ticks": 1409,
+      "source": "POP909",
+      "song_number": "248",
+      "melody_notes_count": 305,
+      "accompaniment_notes_count": 1455
+    },
+    {
+      "name": "pop909_498",
+      "melody_path": "/home/andrew/stanleyz/prompts/F_major/pop909_498_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/F_major/pop909_498_acc.mid",
+      "duration_ticks": 832,
+      "source": "POP909",
+      "song_number": "498",
+      "melody_notes_count": 396,
+      "accompaniment_notes_count": 1130
+    }
+  ],
+  "A_major": [
+    {
+      "name": "pop909_291",
+      "melody_path": "/home/andrew/stanleyz/prompts/A_major/pop909_291_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/A_major/pop909_291_acc.mid",
+      "duration_ticks": 1312,
+      "source": "POP909",
+      "song_number": "291",
+      "melody_notes_count": 333,
+      "accompaniment_notes_count": 1120
+    },
+    {
+      "name": "pop909_751",
+      "melody_path": "/home/andrew/stanleyz/prompts/A_major/pop909_751_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/A_major/pop909_751_acc.mid",
+      "duration_ticks": 1206,
+      "source": "POP909",
+      "song_number": "751",
+      "melody_notes_count": 285,
+      "accompaniment_notes_count": 1268
+    }
+  ],
+  "A_minor": [
+    {
+      "name": "pop909_013",
+      "melody_path": "/home/andrew/stanleyz/prompts/A_minor/pop909_013_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/A_minor/pop909_013_acc.mid",
+      "duration_ticks": 832,
+      "source": "POP909",
+      "song_number": "013",
+      "melody_notes_count": 352,
+      "accompaniment_notes_count": 1057
+    },
+    {
+      "name": "pop909_798",
+      "melody_path": "/home/andrew/stanleyz/prompts/A_minor/pop909_798_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/A_minor/pop909_798_acc.mid",
+      "duration_ticks": 984,
+      "source": "POP909",
+      "song_number": "798",
+      "melody_notes_count": 234,
+      "accompaniment_notes_count": 1715
+    },
+    {
+      "name": "pop909_828",
+      "melody_path": "/home/andrew/stanleyz/prompts/A_minor/pop909_828_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/A_minor/pop909_828_acc.mid",
+      "duration_ticks": 1010,
+      "source": "POP909",
+      "song_number": "828",
+      "melody_notes_count": 352,
+      "accompaniment_notes_count": 1432
+    }
+  ],
+  "E_minor": [
+    {
+      "name": "pop909_276",
+      "melody_path": "/home/andrew/stanleyz/prompts/E_minor/pop909_276_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/E_minor/pop909_276_acc.mid",
+      "duration_ticks": 1076,
+      "source": "POP909",
+      "song_number": "276",
+      "melody_notes_count": 379,
+      "accompaniment_notes_count": 1030
+    },
+    {
+      "name": "pop909_458",
+      "melody_path": "/home/andrew/stanleyz/prompts/E_minor/pop909_458_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/E_minor/pop909_458_acc.mid",
+      "duration_ticks": 1605,
+      "source": "POP909",
+      "song_number": "458",
+      "melody_notes_count": 411,
+      "accompaniment_notes_count": 3812
+    }
+  ],
+  "D_minor": [
+    {
+      "name": "pop909_073",
+      "melody_path": "/home/andrew/stanleyz/prompts/D_minor/pop909_073_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/D_minor/pop909_073_acc.mid",
+      "duration_ticks": 1373,
+      "source": "POP909",
+      "song_number": "073",
+      "melody_notes_count": 396,
+      "accompaniment_notes_count": 1588
+    }
+  ],
+  "B_minor": [
+    {
+      "name": "pop909_007",
+      "melody_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_007_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_007_acc.mid",
+      "duration_ticks": 1908,
+      "source": "POP909",
+      "song_number": "007",
+      "melody_notes_count": 349,
+      "accompaniment_notes_count": 1556
+    },
+    {
+      "name": "pop909_087",
+      "melody_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_087_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_087_acc.mid",
+      "duration_ticks": 1000,
+      "source": "POP909",
+      "song_number": "087",
+      "melody_notes_count": 264,
+      "accompaniment_notes_count": 1025
+    },
+    {
+      "name": "pop909_266",
+      "melody_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_266_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_266_acc.mid",
+      "duration_ticks": 1561,
+      "source": "POP909",
+      "song_number": "266",
+      "melody_notes_count": 218,
+      "accompaniment_notes_count": 1640
+    },
+    {
+      "name": "pop909_306",
+      "melody_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_306_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_306_acc.mid",
+      "duration_ticks": 1425,
+      "source": "POP909",
+      "song_number": "306",
+      "melody_notes_count": 227,
+      "accompaniment_notes_count": 1312
+    },
+    {
+      "name": "pop909_429",
+      "melody_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_429_mel.mid",
+      "accompaniment_path": "/home/andrew/stanleyz/prompts/B_minor/pop909_429_acc.mid",
+      "duration_ticks": 1615,
+      "source": "POP909",
+      "song_number": "429",
+      "melody_notes_count": 295,
+      "accompaniment_notes_count": 1323
+    }
+  ]
+}
