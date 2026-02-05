@@ -732,6 +732,9 @@ class ClientManager:
                         "pitch": event["pitch"],
                         "tick": event_tick,
                     }
+                    # Preserve velocity if present (for MIDI recording)
+                    if "velocity" in event:
+                        quantized_note["velocity"] = event["velocity"]
                     notes_for_next_request.append(quantized_note)
                     user_notes_this_tick.append(quantized_note)
 
@@ -1009,8 +1012,12 @@ class ClientManager:
                 # Record model note_off events to MIDI file
                 if event.get("source") == "model" and self.midi_file_handler:
                     # Ensure tick is set to current tick_count for accurate recording
+                    # Preserve all event fields (type, pitch, velocity, etc.)
                     event_for_midi = dict(event)
                     event_for_midi["tick"] = tick_count
+                    # Ensure type is set (should already be "note_off")
+                    if "type" not in event_for_midi:
+                        event_for_midi["type"] = "note_off"
                     self.midi_file_handler.add_model_note(event_for_midi)
                 # Send to websocket (UI-specific)
                 self.ws_handler.send_note_off(event["pitch"], tick_count, "model")
@@ -1025,8 +1032,15 @@ class ClientManager:
                     self.audio_output_handler.on(event["pitch"], self.config.accompaniment_velocity)
                 # Record to MIDI with current tick for accurate timing
                 if self.midi_file_handler:
+                    # Preserve all event fields (type, pitch, velocity, backup_level, etc.)
                     event_for_midi = dict(event)
                     event_for_midi["tick"] = tick_count
+                    # Ensure type is set (should already be "note_on")
+                    if "type" not in event_for_midi:
+                        event_for_midi["type"] = "note_on"
+                    # Ensure velocity is set (use accompaniment_velocity if not present)
+                    if "velocity" not in event_for_midi:
+                        event_for_midi["velocity"] = self.config.accompaniment_velocity
                     self.midi_file_handler.add_model_note(event_for_midi)
 
                 # Event-stream mode: note_off should arrive explicitly from server.
