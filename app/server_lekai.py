@@ -434,6 +434,12 @@ async def generate_accompaniment(request: InferenceRequest):
     # Convert Pydantic models to dicts (already in event-stream format)
     melody_notes_dicts = [note.model_dump() for note in request.melody_notes]
 
+    print(f"\n[SERVER DEBUG] /generate_accompaniment called")
+    print(f"  generation_start_tick: {request.generation_start_tick}")
+    print(f"  melody_notes count: {len(melody_notes_dicts)}")
+    if melody_notes_dicts:
+        print(f"  melody_notes sample: {melody_notes_dicts[:5]}")
+
     # Call inference engine
     (
         accompaniment_events,
@@ -445,6 +451,12 @@ async def generate_accompaniment(request: InferenceRequest):
         melody_notes_dicts,
         generation_start_tick=request.generation_start_tick,
     )
+
+    print(f"  accompaniment_events count: {len(accompaniment_events)}")
+    if accompaniment_events:
+        print(f"  accompaniment_events sample: {accompaniment_events[:5]}")
+    else:
+        print(f"  WARNING: No accompaniment events generated!")
 
     response_output_time = time.perf_counter()
 

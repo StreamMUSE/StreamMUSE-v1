@@ -375,9 +375,20 @@ class InferenceEngineLekai:
             torch.cuda.synchronize()
         preprocess_start_time = time.perf_counter()
 
+        print(f"\n[ENGINE DEBUG] generate_accompaniment called")
+        print(f"  generation_start_tick: {generation_start_tick}")
+        print(f"  melody_notes count: {len(melody_notes) if melody_notes else 0}")
+        if melody_notes:
+            print(f"  melody_notes sample: {melody_notes[:5]}")
+        print(f"  injection_offset_ticks: {self.injection_offset_ticks}")
+        print(f"  melody_event_history size before: {len(self.melody_event_history)}")
+
         # 1. Update History (event stream only)
         abs_events = self._normalize_melody_input(melody_notes, generation_start_tick)
         self.melody_event_history.extend(abs_events)
+
+        print(f"  Normalized {len(abs_events)} events")
+        print(f"  melody_event_history size after: {len(self.melody_event_history)}")
 
         absolute_generation_start_tick = (
             generation_start_tick + self.injection_offset_ticks
@@ -590,6 +601,12 @@ class InferenceEngineLekai:
         if valid_tokens and valid_tokens[-1] == self.config.bar_token_id:
             valid_tokens.pop()
 
+        print(f"[ENGINE DEBUG] Beat {current_beat}: generated {len(generated_tokens)} tokens, {len(valid_tokens)} valid tokens")
+        if len(generated_tokens) > 0:
+            print(f"  Generated tokens: {generated_tokens[:20]}")
+        if len(valid_tokens) > 0:
+            print(f"  Valid tokens: {valid_tokens[:20]}")
+
         # Ensure we have at least one token to decode
         pr = None
         beat_start_tick = (
@@ -685,6 +702,10 @@ class InferenceEngineLekai:
             re = e.copy()
             re["tick"] = int(e["tick"]) - self.injection_offset_ticks
             relative_generated_events.append(re)
+
+        print(f"[ENGINE DEBUG] Returning {len(relative_generated_events)} events (injection_offset={self.injection_offset_ticks})")
+        if relative_generated_events:
+            print(f"  Sample events: {relative_generated_events[:5]}")
 
         return (
             relative_generated_events,

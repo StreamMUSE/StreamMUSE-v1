@@ -606,14 +606,13 @@ class ClientManager:
 
             request_data, full_request_dict = queue_item
 
-            # Convert duration-based melody notes to event-stream format
+            # Melody notes are already in event-stream format (like client_lekai)
+            # No conversion needed
             if "melody_notes" in request_data and request_data["melody_notes"]:
-                print(f"[DEBUG] _inference_worker: Converting {len(request_data['melody_notes'])} melody notes to events")
-                print(f"[DEBUG]   Before conversion: {request_data['melody_notes']}")
-                request_data["melody_notes"] = notes_to_events(request_data["melody_notes"])
-                print(f"[DEBUG]   After conversion: {request_data['melody_notes']}")
+                print(f"[DEBUG] _inference_worker: Sending {len(request_data['melody_notes'])} melody events")
+                print(f"[DEBUG]   Melody events: {request_data['melody_notes']}")
             else:
-                print(f"[DEBUG] _inference_worker: No melody notes to convert")
+                print(f"[DEBUG] _inference_worker: No melody notes to send")
 
             client_send_time = time.perf_counter()
             request_data["client_request_send_time"] = client_send_time
@@ -680,72 +679,98 @@ class ClientManager:
                 listening_mode_active = False
         
         self.ws_handler.send_status("running", "Tick loop started")
-        
+
         while not self.stop_event.is_set():
             tick_count += 1
             current_tick_ref["current_tick"] = tick_count
-            
+
             bar_count = tick_count // ticks_per_bar
             beat_in_bar = (tick_count % ticks_per_bar) // self.config.ticks_per_beat
-            
+
             self.ws_handler.send_tick(tick_count, bar_count, beat_in_bar)
-            
+
+            # --- 0. Trigger Inference at tick=0 (FIRST, before anything else) ---
+            is_tick_zero = tick_count == 0
+            is_trigger_tick = False  # Will be set later for tick=3,7,11,...
+
+            if is_tick_zero:
+                # Trigger inference at the very start, gen_start_tick = 0
+                generation_start_tick = 0
+                request_data = {
+                    "melody_notes": notes_for_next_request,
+                    "generation_start_tick": generation_start_tick,
+                    "generation_length_frames": self.config.generation_length_per_request,
+                }
+                print(f"[DEBUG] Tick {tick_count}: Sending INITIAL inference request, gen_start={generation_start_tick}")
+                self.inference_request_queue.put((request_data, request_data.copy()))
+                notes_for_next_request = []
+                is_trigger_tick = True
+
+            time.sleep(seconds_per_tick * 0.1)
+
+            # --- 1. Process User Input ---
             user_notes_this_tick = []
+
             while not self.event_queue.empty():
                 try:
                     event = self.event_queue.get_nowait()
                 except Exception:
                     break
-                
+
                 if event is None:
                     self.stop_event.set()
                     break
-                
+
+                # --- Note Quantization & Audio Playback ---
+                # Use the event's tick if available (from MIDI file input), otherwise use current tick_count
+                event_tick = event.get("tick", tick_count)
+
                 if event["type"] == "note_on":
+                    # 1. Quantize the note for the inference engine request.
                     quantized_note = {
+                        "type": "note_on",
                         "pitch": event["pitch"],
-                        "tick": tick_count - 1,
-                        "duration": self.DEFAULT_NOTE_DURATION_TICKS,
+                        "tick": event_tick,
                     }
                     notes_for_next_request.append(quantized_note)
                     user_notes_this_tick.append(quantized_note)
 
-                    print(f"[DEBUG] Tick {tick_count}: Added note_on pitch={event['pitch']} to notes_for_next_request (total={len(notes_for_next_request)})")
-
                     # Log user note to MIDI file
                     if self.midi_file_handler:
-                        # Convert to event-stream for logging
-                        self.midi_file_handler.add_user_note({
-                            "type": "note_on",
-                            "pitch": event["pitch"],
-                            "tick": tick_count - 1,
-                        })
+                        self.midi_file_handler.add_user_note(quantized_note)
+
+                    print(f"[DEBUG] Tick {tick_count}: Added note_on pitch={event['pitch']} tick={event_tick} to notes_for_next_request (total={len(notes_for_next_request)})")
 
                     self.ws_handler.send_note_on(
                         pitch=event["pitch"],
                         velocity=event["velocity"],
-                        tick=tick_count - 1,
+                        tick=event_tick,
                         duration=self.DEFAULT_NOTE_DURATION_TICKS,
                         source="user"
                     )
-                    # Audio playback moved to input thread for lower latency
+                    # Audio playback moved to input thread for lower latency (already handled)
 
                 elif event["type"] == "note_off":
+                    quantized_note = {
+                        "type": "note_off",
+                        "pitch": event["pitch"],
+                        "tick": event_tick,
+                    }
+                    notes_for_next_request.append(quantized_note)
+                    user_notes_this_tick.append(quantized_note)
+
                     # Log user note_off to MIDI file
                     if self.midi_file_handler:
-                        self.midi_file_handler.add_user_note({
-                            "type": "note_off",
-                            "pitch": event["pitch"],
-                            "tick": tick_count,
-                        })
+                        self.midi_file_handler.add_user_note(quantized_note)
 
                     self.ws_handler.send_note_off(
                         pitch=event["pitch"],
-                        tick=tick_count,
+                        tick=event_tick,
                         source="user"
                     )
                     # Audio note_off handled in input thread
-            
+
+            # --- 2. Handle Inference Responses ---
             while not self.inference_response_queue.empty():
                 try:
                     response_data, round_trip_time, request_data = self.inference_response_queue.get_nowait()
@@ -753,60 +778,89 @@ class ClientManager:
                     break
                 
                 if response_data:
-                    timings = response_data.get("timings", {})
-                    timings["round_trip_time"] = round_trip_time
-                    
-                    if "request_arrival_time" in timings and "response_output_time" in timings:
-                        server_processing_duration = timings["response_output_time"] - timings["request_arrival_time"]
-                        timings["server_processing_duration"] = server_processing_duration
-                        timings["total_network_latency"] = round_trip_time - server_processing_duration
-                    
-                    self.all_timing_data.append(timings)
-
-                    # Log inference event to JSON
+                    # --- Log the complete inference event ---
                     if self.json_log_handler:
                         self.json_log_handler.log_inference_event(request_data, response_data)
-                    
+
+                    # --- Calculate and store all timing information ---
+                    timings = response_data["timings"]
+                    timings["round_trip_time"] = round_trip_time
+
+                    # Calculate server processing duration (this is accurate as it uses one clock)
+                    server_arrival_time = timings["request_arrival_time"]
+                    server_response_time = timings["response_output_time"]
+                    server_processing_duration = server_response_time - server_arrival_time
+                    timings["server_processing_duration"] = server_processing_duration
+
+                    # Calculate total network latency (accurate)
+                    # This is the time spent on the network for both the request and response.
+                    timings["total_network_latency"] = round_trip_time - server_processing_duration
+
+                    self.all_timing_data.append(timings)
+
+                    # Send stats to websocket (UI-specific)
                     self.ws_handler.send_stats(
                         round_trip_ms=round_trip_time * 1000,
-                        server_process_ms=timings.get("server_processing_duration", 0) * 1000,
-                        network_latency_ms=timings.get("total_network_latency", 0) * 1000
+                        server_process_ms=server_processing_duration * 1000,
+                        network_latency_ms=timings["total_network_latency"] * 1000
                     )
-                    
-                    # Server returns event-stream format (note_on/note_off)
-                    newly_generated_notes = response_data.get("accompaniment", [])
-                    gen_start = request_data.get("generation_start_tick") if isinstance(request_data, dict) else None
 
+                    # --- Process Generated Events ---
+                    # Engine now returns event-stream format (note_on/note_off)
+                    newly_generated_notes = response_data["accompaniment"]
+
+                    # DEBUG: Log what server returned
                     note_on_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_on")
                     note_off_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_off")
-                    print(f"[DEBUG] Received {len(newly_generated_notes)} events: {note_on_count} note_on, {note_off_count} note_off at tick {tick_count}, gen_start={gen_start}")
-
-                    for note in newly_generated_notes:
-                        note["backup_level"] = int(note["tick"] - gen_start) if gen_start else 0
-
                     if newly_generated_notes:
+                        print(f"  [DEBUG] Server returned {len(newly_generated_notes)} events: {note_on_count} note_on, {note_off_count} note_off")
+
+                    gen_start = None
+                    if isinstance(request_data, dict):
+                        gen_start = request_data.get("generation_start_tick")
+
+                    # Assign backup_level based on tick offset from generation start
+                    for n in newly_generated_notes:
+                        if gen_start is not None:
+                            n["backup_level"] = max(0, int(n["tick"] - gen_start))
+                        else:
+                            n["backup_level"] = 0
+
+                    # --- Clear stale notes from the previous generation ---
+                    # This ensures that if a new response arrives before the old one is
+                    # fully played out, we only replace future model-generated notes.
+                    # User-played note_offs are preserved.
+                    if newly_generated_notes:
+                        # Find the first tick where the new generation actually places a note.
+                        # This prevents clearing old notes if there's a gap before the new music starts.
                         first_new_note_tick = min(note["tick"] for note in newly_generated_notes)
+
                         ticks_to_clean = [t for t in playback_schedule if t >= first_new_note_tick]
                         for tick in ticks_to_clean:
+                            # Filter out events sourced from the model, keep user events
                             playback_schedule[tick] = [
                                 event for event in playback_schedule[tick]
                                 if event.get("source") != "model"
                             ]
+                            # If the tick is now empty, remove it from the schedule
                             if not playback_schedule[tick]:
                                 del playback_schedule[tick]
 
+                    # --- Schedule new notes ---
                     for note in newly_generated_notes:
                         if note["tick"] >= tick_count:
                             if note["tick"] not in playback_schedule:
                                 playback_schedule[note["tick"]] = []
 
-                            # Normalize: ensure type field exists (for safety)
+                            # Server now returns explicit event type. For safety (older
+                            # servers), default to note_on if absent.
                             normalized_note = dict(note)
                             normalized_note.setdefault("type", "note_on")
 
+                            # Tag as a model-originated event
                             playback_schedule[note["tick"]].append({**normalized_note, "source": "model"})
 
-                            # Send to websocket (only note_on events shown in UI)
+                            # Send to websocket (only note_on events shown in UI) - UI-specific
                             if normalized_note.get("type") == "note_on":
                                 self.ws_handler.send_note_on(
                                     pitch=note["pitch"],
@@ -816,7 +870,8 @@ class ClientManager:
                                     source="model",
                                     backup_level=note.get("backup_level", 0)
                                 )
-                    
+
+                    # Store timings for display, making them persistent
                     last_inference_timings = timings
             
             if listening_mode_active and not listening_mode_completed:
@@ -908,94 +963,92 @@ class ClientManager:
 
                     time.sleep(seconds_per_tick)
                     continue
-            
-            is_trigger_tick = (tick_count % self.config.generation_interval_ticks) == 0
-            
-            if is_trigger_tick:
-                next_interval_start_tick = tick_count + 1
-                request_data = {
-                    "melody_notes": notes_for_next_request,
-                    "generation_start_tick": next_interval_start_tick,
-                    "generation_length_frames": self.config.generation_length_per_request,
-                }
-                print(f"[DEBUG] Tick {tick_count}: Sending inference request, gen_start={next_interval_start_tick}, melody_notes_count={len(notes_for_next_request)}")
-                if notes_for_next_request:
-                    print(f"[DEBUG]   Melody notes: {notes_for_next_request}")
-                self.inference_request_queue.put((request_data, request_data.copy()))
-                notes_for_next_request = []
-            
+
+            # --- 3. (Moved to end of loop for tick=3,7,11,...) ---
+            # Inference triggering logic for tick=0 is handled at the beginning.
+            # For tick=3,7,11,... (ticks_per_beat - 1), we trigger at the end of the loop.
+
+            # --- 4. Play Scheduled Notes ---
             notes_to_play_this_tick = []
             notes_to_stop_this_tick = []
+
+            # Check the schedule for events supposed to happen on the current tick
+            scheduled_events = playback_schedule.pop(tick_count, [])
             is_hit = False
             this_backup_level = 0
-
-            scheduled_events = playback_schedule.pop(tick_count, [])
-            if scheduled_events:
-                print(f"[DEBUG] Tick {tick_count}: Playing {len(scheduled_events)} scheduled events")
             for event in scheduled_events:
                 if event.get("source") == "model":
                     is_hit = True
                     this_backup_level = event.get("backup_level", 0)
-
+                    if event.get("is_placeholder", False):
+                        continue  # Skip placeholder notes
                 if event.get("type") == "note_off":
                     notes_to_stop_this_tick.append(event)
-                else:  # note_on or legacy format
+                else:  # It's a note_on (or other non-note_off event)
                     notes_to_play_this_tick.append(event)
-
             if is_hit:
                 number_of_hit += 1
                 total_backup_level += this_backup_level
-
-            self.tick_history.append({
-                "tick": tick_count,
-                "is_hit": is_hit,
-                "backup_level": this_backup_level,
-                "num_model_notes": len(notes_to_play_this_tick),
-                "num_user_notes": len(user_notes_this_tick),
-            })
+            try:  # add recording of tick history
+                tick_record = {
+                    "tick": tick_count,
+                    "is_hit": bool(is_hit),
+                    "backup_level": int(this_backup_level),
+                    "num_model_notes": len(notes_to_play_this_tick),
+                    "num_user_notes": len(user_notes_this_tick),
+                }
+                self.tick_history.append(tick_record)
+            except Exception:
+                # Don't let recording failure affect main loop
+                pass
 
             # Process note-offs first
             for event in notes_to_stop_this_tick:
                 if self.audio_output_handler:
                     self.audio_output_handler.off(event["pitch"])
+                # Record model note_off events to MIDI file
+                if event.get("source") == "model" and self.midi_file_handler:
+                    # Ensure tick is set to current tick_count for accurate recording
+                    event_for_midi = dict(event)
+                    event_for_midi["tick"] = tick_count
+                    self.midi_file_handler.add_model_note(event_for_midi)
+                # Send to websocket (UI-specific)
                 self.ws_handler.send_note_off(event["pitch"], tick_count, "model")
 
-                # Log model note_off to MIDI file
-                if self.midi_file_handler and event.get("source") == "model":
+            # Process note-ons and schedule their corresponding note-offs
+            for event in notes_to_play_this_tick:
+                # This loop only processes model-generated notes.
+                if event.get("type") != "note_on":
+                    # Ignore non-note events (e.g. placeholders or future extensions)
+                    continue
+                if self.audio_output_handler:
+                    self.audio_output_handler.on(event["pitch"], self.config.accompaniment_velocity)
+                # Record to MIDI with current tick for accurate timing
+                if self.midi_file_handler:
                     event_for_midi = dict(event)
                     event_for_midi["tick"] = tick_count
                     self.midi_file_handler.add_model_note(event_for_midi)
 
-            # Process note-ons
-            for event in notes_to_play_this_tick:
-                if event.get("type") == "note_on" or "type" not in event:
-                    if self.audio_output_handler:
-                        self.audio_output_handler.on(event["pitch"], self.config.accompaniment_velocity)
+                # Event-stream mode: note_off should arrive explicitly from server.
+                # We keep *optional* legacy compatibility: if duration exists, still schedule.
+                dur = event.get("duration")
+                if dur is not None:
+                    note_off_tick = tick_count + int(dur)
+                    if note_off_tick not in playback_schedule:
+                        playback_schedule[note_off_tick] = []
+                    playback_schedule[note_off_tick].append({**event, "type": "note_off", "source": "model"})
 
-                    # Log model note_on to MIDI file
-                    if self.midi_file_handler and event.get("source") == "model":
-                        event_for_midi = dict(event)
-                        event_for_midi["tick"] = tick_count
-                        self.midi_file_handler.add_model_note(event_for_midi)
-
-                    # Optional legacy compatibility: if duration exists, schedule note_off
-                    # But primarily rely on explicit note_off events from server
-                    dur = event.get("duration")
-                    if dur and dur > 0:
-                        note_off_tick = tick_count + dur
-                        if note_off_tick not in playback_schedule:
-                            playback_schedule[note_off_tick] = []
-                        playback_schedule[note_off_tick].append({**event, "type": "note_off", "source": "model"})
-            
+            # --- 5. Metronome ---
             if self.config.metronome and self.audio_output_handler:
                 is_beat_tick = (tick_count % self.config.ticks_per_beat) == 0
                 if is_beat_tick:
-                    beat_in_bar_metro = (tick_count % ticks_per_bar) // self.config.ticks_per_beat
-                    if beat_in_bar_metro == 0:
+                    beat_in_bar = (tick_count % ticks_per_bar) // self.config.ticks_per_beat
+                    if beat_in_bar == 0:
                         self.audio_output_handler.metro_first()
                     else:
                         self.audio_output_handler.metro_other()
-            
+
+            # --- 6. Update Display (UI-specific - websocket stats) ---
             if tick_count > 0 and tick_count % 16 == 0:
                 hit_rate = number_of_hit / tick_count if tick_count > 0 else 0
                 avg_backup = total_backup_level / number_of_hit if number_of_hit > 0 else 0
@@ -1005,8 +1058,28 @@ class ClientManager:
                     total_hits=number_of_hit,
                     total_ticks=tick_count
                 )
-            
-            time.sleep(seconds_per_tick)
+
+            # --- 7. Trigger Inference at tick=3,7,11,... (ticks_per_beat - 1) at the end of loop ---
+            # This gives the server maximum time to process before the next beat starts.
+            # At tick=3, we trigger generation for beat 1 (gen_start_tick=4)
+            # At tick=7, we trigger generation for beat 2 (gen_start_tick=8)
+            # etc.
+            if not is_tick_zero and (tick_count % self.config.ticks_per_beat) == (self.config.ticks_per_beat - 1):
+                # Trigger at the last tick of each beat (except tick 0 which was handled at the start)
+                generation_start_tick = tick_count + 1  # Next beat's start tick
+                request_data = {
+                    "melody_notes": notes_for_next_request,
+                    "generation_start_tick": generation_start_tick,
+                    "generation_length_frames": self.config.generation_length_per_request,
+                }
+                print(f"[DEBUG] Tick {tick_count}: Sending inference request, gen_start={generation_start_tick}, melody_notes_count={len(notes_for_next_request)}")
+                if notes_for_next_request:
+                    print(f"[DEBUG]   Melody notes: {notes_for_next_request}")
+                self.inference_request_queue.put((request_data, request_data.copy()))
+                notes_for_next_request = []
+                is_trigger_tick = True
+
+            time.sleep(seconds_per_tick * 0.9)
         
         self.ws_handler.send_status("stopped", "Tick loop ended")
 
