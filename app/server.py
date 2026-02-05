@@ -258,7 +258,7 @@ async def inject_music(request: InjectionRequest):
 
 
 # 新的客户端侧注入端点
-@app.post("/inject_notes", response_model=DirectInjectionResponse)
+@app.post("/D", response_model=DirectInjectionResponse)
 async def inject_notes(request: DirectInjectionRequest):
     """
     Inject notes directly into inference engine history.

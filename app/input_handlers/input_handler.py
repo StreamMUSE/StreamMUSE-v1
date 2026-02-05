@@ -117,6 +117,8 @@ def _on_release(key, event_queue, keyboard, audio_handler=None, melody_channel=0
                 "time": time.time(),
             }
             event_queue.put(event)
+            if audio_handler:
+                audio_handler.off(pitch, channel=melody_channel)
     except AttributeError:
         if key == keyboard.Key.esc:
             # Stop listener

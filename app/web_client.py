@@ -55,33 +55,60 @@ except ImportError as e:
     print(f"[INIT] Listening mode dependencies NOT available: {e}")
 
 
+# Helper function to convert duration-based notes to event-stream format
+def notes_to_events(notes: list) -> list:
+    """
+    Convert duration-based notes to event-stream format.
+
+    Input: [{"pitch": 60, "tick": 0, "duration": 4}, ...]
+    Output: [{"type": "note_on", "pitch": 60, "tick": 0},
+             {"type": "note_off", "pitch": 60, "tick": 4}, ...]
+    """
+    events = []
+    for n in notes:
+        pitch = n["pitch"]
+        tick = n["tick"]
+        duration = n.get("duration", 1)
+        events.append({"type": "note_on", "pitch": pitch, "tick": tick})
+        events.append({"type": "note_off", "pitch": pitch, "tick": tick + duration})
+    # Sort by tick, note_off before note_on if same tick
+    events.sort(key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
+    return events
+
+
 class ClientConfig(BaseModel):
-    server_url: str = "http://localhost:8000/generate_accompaniment"
-    
+    server_url: str = "http://localhost:8988/generate_accompaniment"
+
     tempo: float = 120.0
     ticks_per_beat: int = 4
     beats_per_bar: int = 4
-    generation_interval_ticks: int = 1
+    # NOTE: Engine generates per-beat, so interval should equal ticks_per_beat
+    generation_interval_ticks: int = 4
     generation_length_per_request: int = 5
-    
-    note_duration_ticks: int = 4
+
+    # Deprecated: event-stream protocol, kept for legacy compatibility
+    note_duration_ticks: int = 2
     accompaniment_velocity: int = 50
     melody_channel: int = 0
     accompaniment_channel: int = 0
-    
+
     midi_file_delay_ticks: int = 0
     listening_duration_ticks: int = 0
-    
+
     input_mode: str = "keyboard"
     midi_file_path: Optional[str] = None
     midi_input_name: Optional[str] = None
     midi_output_name: Optional[str] = None
     metronome: bool = True
-    
+
     listening_mode: str = "auto"  # "auto" or "manual"
     manual_prompt_path: Optional[str] = None
     key_detection_method: str = "lightweight"
     prompt_dir: Optional[str] = None
+
+    # Recording options
+    record_session: bool = True
+    save_json_log: bool = True
 
 
 class ConnectionManager:
@@ -116,14 +143,19 @@ def inject_notes_to_server(
     injection_length_ticks: int
 ) -> bool:
     import requests
+
     injection_url = server_url.replace("/generate_accompaniment", "/inject_notes")
     try:
+        # Convert duration-based notes to event-stream format
+        melody_events = notes_to_events(melody_notes) if melody_notes else []
+        accompaniment_events = notes_to_events(accompaniment_notes) if accompaniment_notes else []
+
         request_data = {
-            "melody_notes": melody_notes,
-            "accompaniment_notes": accompaniment_notes,
+            "melody_notes": melody_events,
+            "accompaniment_notes": accompaniment_events,
             "injection_length_ticks": injection_length_ticks
         }
-        print(f"Injecting {len(melody_notes)} melody notes and {len(accompaniment_notes)} accompaniment notes...")
+        print(f"Injecting {len(melody_events)} melody events and {len(accompaniment_events)} accompaniment events...")
         response = requests.post(injection_url, json=request_data, timeout=5.0)
         response.raise_for_status()
         result = response.json()
@@ -286,28 +318,32 @@ def listening_mode_worker(
 
 class ClientManager:
     """Manages the StreamMUSE client lifecycle."""
-    
-    DEFAULT_NOTE_DURATION_TICKS = 4
+
+    # Match client_lekai.py defaults
+    DEFAULT_NOTE_DURATION_TICKS = 2
     LATENCY_OFFSET_TICKS = 2
     GRACE_PERIOD_TICKS = 8
-    
+
     def __init__(self, ws_handler: WebSocketOutputHandler):
         self.ws_handler = ws_handler
         self.config = ClientConfig()
         self.is_running = False
         self.stop_event = threading.Event()
-        
+
         self.event_queue: Optional[Queue] = None
         self.inference_request_queue: Optional[Queue] = None
         self.inference_response_queue: Optional[Queue] = None
-        
+
         self.input_thread: Optional[threading.Thread] = None
         self.inference_thread: Optional[threading.Thread] = None
         self.tick_thread: Optional[threading.Thread] = None
-        
+
         self.audio_output_handler: Optional[AudioOutputHandler] = None
+        self.midi_file_handler: Optional[MidiFileHandler] = None
+        self.json_log_handler: Optional[JsonLogHandler] = None
         self.all_timing_data = []
         self.tick_history = []
+        self.session_log_dir: Optional[str] = None
     
     def start(self, config: Optional[ClientConfig] = None):
         """Start the client with given config."""
@@ -325,7 +361,7 @@ class ClientManager:
         self.inference_response_queue = Queue()
         self.all_timing_data = []
         self.tick_history = []
-        
+
         try:
             self.audio_output_handler = AudioOutputHandler(
                 port_name=self.config.midi_output_name,
@@ -334,6 +370,26 @@ class ClientManager:
         except Exception as e:
             print(f"Warning: Could not initialize audio output: {e}")
             self.audio_output_handler = None
+
+        # Initialize MIDI and JSON logging
+        if self.config.record_session:
+            self.midi_file_handler = MidiFileHandler(self.config.tempo, self.config.ticks_per_beat)
+            print("[INIT] MIDI file recording enabled")
+        else:
+            self.midi_file_handler = None
+
+        if self.config.save_json_log:
+            self.json_log_handler = JsonLogHandler()
+            print("[INIT] JSON logging enabled")
+        else:
+            self.json_log_handler = None
+
+        # Create session log directory
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_log_dir = f"logs/web_session_{timestamp}"
+        os.makedirs(self.session_log_dir, exist_ok=True)
+        print(f"[INIT] Session logs will be saved to: {self.session_log_dir}")
         
         current_tick_ref = {"current_tick": 0}
         
@@ -426,7 +482,51 @@ class ClientManager:
             print("[DEBUG] Closing audio output handler...")
             self.audio_output_handler.close()
             self.audio_output_handler = None
-        
+
+        # Save session logs
+        if self.session_log_dir:
+            print(f"\n--- Saving session logs to {self.session_log_dir} ---")
+
+            # Save MIDI file
+            if self.midi_file_handler:
+                try:
+                    self.midi_file_handler.save_to_midi(self.session_log_dir)
+                    print(f"✓ MIDI file saved")
+                except Exception as e:
+                    print(f"✗ Failed to save MIDI file: {e}")
+
+            # Save JSON logs
+            if self.json_log_handler:
+                try:
+                    self.json_log_handler.save_logs(self.session_log_dir)
+                    print(f"✓ JSON logs saved")
+                except Exception as e:
+                    print(f"✗ Failed to save JSON logs: {e}")
+
+            # Save tick history
+            try:
+                import json
+                tick_history_path = os.path.join(self.session_log_dir, "tick_history.json")
+                with open(tick_history_path, "w") as f:
+                    json.dump(self.tick_history, f, indent=2)
+                print(f"✓ Tick history saved ({len(self.tick_history)} ticks)")
+            except Exception as e:
+                print(f"✗ Failed to save tick history: {e}")
+
+            # Save timing data summary
+            if self.all_timing_data:
+                try:
+                    import json
+                    timing_path = os.path.join(self.session_log_dir, "timing_summary.json")
+                    with open(timing_path, "w") as f:
+                        json.dump({
+                            "count": len(self.all_timing_data),
+                            "timings": self.all_timing_data
+                        }, f, indent=2)
+                    print(f"✓ Timing data saved ({len(self.all_timing_data)} requests)")
+                except Exception as e:
+                    print(f"✗ Failed to save timing data: {e}")
+
         # Clear references
         self.input_thread = None
         self.inference_thread = None
@@ -447,22 +547,26 @@ class ClientManager:
     def _inference_worker(self):
         """Worker thread for sending requests to server."""
         import requests
-        
+
         while not self.stop_event.is_set():
             try:
                 queue_item = self.inference_request_queue.get(timeout=0.1)
             except Exception:
                 continue
-            
+
             if queue_item is None:
                 break
-            
+
             request_data, full_request_dict = queue_item
-            
+
+            # Convert duration-based melody notes to event-stream format
+            if "melody_notes" in request_data and request_data["melody_notes"]:
+                request_data["melody_notes"] = notes_to_events(request_data["melody_notes"])
+
             client_send_time = time.perf_counter()
             request_data["client_request_send_time"] = client_send_time
             full_request_dict["client_request_send_time"] = client_send_time
-            
+
             start_time = client_send_time
             try:
                 response = requests.post(
@@ -475,10 +579,10 @@ class ClientManager:
             except Exception as e:
                 print(f"Error contacting server: {e}")
                 response_json = None
-            
+
             end_time = time.perf_counter()
             round_trip_time = end_time - start_time
-            
+
             self.inference_response_queue.put((response_json, round_trip_time, full_request_dict))
     
     def _tick_loop(self, current_tick_ref: dict):
@@ -553,7 +657,16 @@ class ClientManager:
                     }
                     notes_for_next_request.append(quantized_note)
                     user_notes_this_tick.append(quantized_note)
-                    
+
+                    # Log user note to MIDI file
+                    if self.midi_file_handler:
+                        # Convert to event-stream for logging
+                        self.midi_file_handler.add_user_note({
+                            "type": "note_on",
+                            "pitch": event["pitch"],
+                            "tick": tick_count - 1,
+                        })
+
                     self.ws_handler.send_note_on(
                         pitch=event["pitch"],
                         velocity=event["velocity"],
@@ -562,8 +675,16 @@ class ClientManager:
                         source="user"
                     )
                     # Audio playback moved to input thread for lower latency
-                
+
                 elif event["type"] == "note_off":
+                    # Log user note_off to MIDI file
+                    if self.midi_file_handler:
+                        self.midi_file_handler.add_user_note({
+                            "type": "note_off",
+                            "pitch": event["pitch"],
+                            "tick": tick_count,
+                        })
+
                     self.ws_handler.send_note_off(
                         pitch=event["pitch"],
                         tick=tick_count,
@@ -587,6 +708,10 @@ class ClientManager:
                         timings["total_network_latency"] = round_trip_time - server_processing_duration
                     
                     self.all_timing_data.append(timings)
+
+                    # Log inference event to JSON
+                    if self.json_log_handler:
+                        self.json_log_handler.log_inference_event(request_data, response_data)
                     
                     self.ws_handler.send_stats(
                         round_trip_ms=round_trip_time * 1000,
@@ -594,14 +719,17 @@ class ClientManager:
                         network_latency_ms=timings.get("total_network_latency", 0) * 1000
                     )
                     
+                    # Server returns event-stream format (note_on/note_off)
                     newly_generated_notes = response_data.get("accompaniment", [])
                     gen_start = request_data.get("generation_start_tick") if isinstance(request_data, dict) else None
-                    
-                    print(f"[DEBUG] Received {len(newly_generated_notes)} accompaniment notes at tick {tick_count}, gen_start={gen_start}")
-                    
+
+                    note_on_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_on")
+                    note_off_count = sum(1 for n in newly_generated_notes if n.get("type") == "note_off")
+                    print(f"[DEBUG] Received {len(newly_generated_notes)} events: {note_on_count} note_on, {note_off_count} note_off at tick {tick_count}, gen_start={gen_start}")
+
                     for note in newly_generated_notes:
                         note["backup_level"] = int(note["tick"] - gen_start) if gen_start else 0
-                    
+
                     if newly_generated_notes:
                         first_new_note_tick = min(note["tick"] for note in newly_generated_notes)
                         ticks_to_clean = [t for t in playback_schedule if t >= first_new_note_tick]
@@ -612,21 +740,28 @@ class ClientManager:
                             ]
                             if not playback_schedule[tick]:
                                 del playback_schedule[tick]
-                    
+
                     for note in newly_generated_notes:
                         if note["tick"] >= tick_count:
                             if note["tick"] not in playback_schedule:
                                 playback_schedule[note["tick"]] = []
-                            playback_schedule[note["tick"]].append({**note, "source": "model"})
-                            
-                            self.ws_handler.send_note_on(
-                                pitch=note["pitch"],
-                                velocity=self.config.accompaniment_velocity,
-                                tick=note["tick"],
-                                duration=note.get("duration", 4),
-                                source="model",
-                                backup_level=note.get("backup_level", 0)
-                            )
+
+                            # Normalize: ensure type field exists (for safety)
+                            normalized_note = dict(note)
+                            normalized_note.setdefault("type", "note_on")
+
+                            playback_schedule[note["tick"]].append({**normalized_note, "source": "model"})
+
+                            # Send to websocket (only note_on events shown in UI)
+                            if normalized_note.get("type") == "note_on":
+                                self.ws_handler.send_note_on(
+                                    pitch=note["pitch"],
+                                    velocity=self.config.accompaniment_velocity,
+                                    tick=note["tick"],
+                                    duration=note.get("duration", 4),
+                                    source="model",
+                                    backup_level=note.get("backup_level", 0)
+                                )
                     
                     last_inference_timings = timings
             
@@ -735,7 +870,7 @@ class ClientManager:
             notes_to_stop_this_tick = []
             is_hit = False
             this_backup_level = 0
-            
+
             scheduled_events = playback_schedule.pop(tick_count, [])
             if scheduled_events:
                 print(f"[DEBUG] Tick {tick_count}: Playing {len(scheduled_events)} scheduled events")
@@ -743,16 +878,16 @@ class ClientManager:
                 if event.get("source") == "model":
                     is_hit = True
                     this_backup_level = event.get("backup_level", 0)
-                
+
                 if event.get("type") == "note_off":
                     notes_to_stop_this_tick.append(event)
-                else:
+                else:  # note_on or legacy format
                     notes_to_play_this_tick.append(event)
-            
+
             if is_hit:
                 number_of_hit += 1
                 total_backup_level += this_backup_level
-            
+
             self.tick_history.append({
                 "tick": tick_count,
                 "is_hit": is_hit,
@@ -760,20 +895,39 @@ class ClientManager:
                 "num_model_notes": len(notes_to_play_this_tick),
                 "num_user_notes": len(user_notes_this_tick),
             })
-            
+
+            # Process note-offs first
             for event in notes_to_stop_this_tick:
                 if self.audio_output_handler:
                     self.audio_output_handler.off(event["pitch"])
                 self.ws_handler.send_note_off(event["pitch"], tick_count, "model")
-            
+
+                # Log model note_off to MIDI file
+                if self.midi_file_handler and event.get("source") == "model":
+                    event_for_midi = dict(event)
+                    event_for_midi["tick"] = tick_count
+                    self.midi_file_handler.add_model_note(event_for_midi)
+
+            # Process note-ons
             for event in notes_to_play_this_tick:
-                if self.audio_output_handler:
-                    self.audio_output_handler.on(event["pitch"], self.config.accompaniment_velocity)
-                
-                note_off_tick = tick_count + event.get("duration", 4)
-                if note_off_tick not in playback_schedule:
-                    playback_schedule[note_off_tick] = []
-                playback_schedule[note_off_tick].append({**event, "type": "note_off", "source": "model"})
+                if event.get("type") == "note_on" or "type" not in event:
+                    if self.audio_output_handler:
+                        self.audio_output_handler.on(event["pitch"], self.config.accompaniment_velocity)
+
+                    # Log model note_on to MIDI file
+                    if self.midi_file_handler and event.get("source") == "model":
+                        event_for_midi = dict(event)
+                        event_for_midi["tick"] = tick_count
+                        self.midi_file_handler.add_model_note(event_for_midi)
+
+                    # Optional legacy compatibility: if duration exists, schedule note_off
+                    # But primarily rely on explicit note_off events from server
+                    dur = event.get("duration")
+                    if dur and dur > 0:
+                        note_off_tick = tick_count + dur
+                        if note_off_tick not in playback_schedule:
+                            playback_schedule[note_off_tick] = []
+                        playback_schedule[note_off_tick].append({**event, "type": "note_off", "source": "model"})
             
             if self.config.metronome and self.audio_output_handler:
                 is_beat_tick = (tick_count % self.config.ticks_per_beat) == 0
@@ -1019,13 +1173,13 @@ if os.path.exists(os.path.join(web_ui_dir, "js")):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="StreamMUSE Web Client Server")
-    parser.add_argument("--server_url", type=str, default="http://localhost:8000/generate_accompaniment",
+    parser.add_argument("--server_url", type=str, default="http://localhost:8988/generate_accompaniment",
                         help="URL of the StreamMUSE inference server")
     parser.add_argument("--tempo", type=float, default=120.0, help="Tempo in BPM")
     parser.add_argument("--ticks_per_beat", type=int, default=4, help="Ticks per beat")
     parser.add_argument("--beats_per_bar", type=int, default=4, help="Beats per bar")
-    parser.add_argument("--generation_interval_ticks", type=int, default=1,
-                        help="Ticks between generation requests")
+    parser.add_argument("--generation_interval_ticks", type=int, default=4,
+                        help="Ticks between generation requests (should equal ticks_per_beat)")
     parser.add_argument("--generation_length_per_request", type=int, default=5,
                         help="Frames to generate per request")
     parser.add_argument("--accompaniment_velocity", type=int, default=50,
@@ -1038,9 +1192,9 @@ if __name__ == "__main__":
                         choices=["lightweight", "music21"],
                         help="Method for key detection")
     parser.add_argument("--port", type=int, default=8080, help="Port for web UI server")
-    
+
     args = parser.parse_args()
-    
+
     client_manager.config = ClientConfig(
         server_url=args.server_url,
         tempo=args.tempo,
@@ -1053,7 +1207,7 @@ if __name__ == "__main__":
         prompt_dir=args.prompt_dir,
         key_detection_method=args.key_detection_method,
     )
-    
+
     print("Starting StreamMUSE Web Client Server...")
     print(f"Server URL: {args.server_url}")
     print(f"Open http://localhost:{args.port} in your browser")
