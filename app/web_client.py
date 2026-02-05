@@ -140,11 +140,14 @@ def inject_notes_to_server(
     server_url: str,
     melody_notes: list,
     accompaniment_notes: list,
-    injection_length_ticks: int
+    injection_length_ticks: int,
+    midi_file_handler=None,
 ) -> bool:
     import requests
 
     injection_url = server_url.replace("/generate_accompaniment", "/inject_notes")
+    status_url = server_url.replace("/generate_accompaniment", "/injection_status")
+
     try:
         # Convert duration-based notes to event-stream format
         melody_events = notes_to_events(melody_notes) if melody_notes else []
@@ -159,8 +162,37 @@ def inject_notes_to_server(
         response = requests.post(injection_url, json=request_data, timeout=5.0)
         response.raise_for_status()
         result = response.json()
+
         if result["success"]:
             print(f"Injection successful: {result['message']}")
+
+            # Query injection status to get the actual injected notes
+            try:
+                status_response = requests.get(status_url, timeout=5.0)
+                status_response.raise_for_status()
+                injection_state = status_response.json()
+
+                if injection_state.get("is_injected") and midi_file_handler:
+                    print("Recording injected notes to MIDI file...")
+
+                    # Get melody and accompaniment notes from injection state
+                    injected_melody = injection_state.get("melody_notes", [])
+                    injected_acc = injection_state.get("accompaniment_notes", [])
+
+                    # Record melody events (already in event-stream format from server)
+                    for event in injected_melody:
+                        midi_file_handler.add_user_note(event)
+
+                    # Convert accompaniment notes (duration-based from server) to events
+                    acc_events = notes_to_events(injected_acc)
+                    for event in acc_events:
+                        midi_file_handler.add_model_note(event)
+
+                    print(f"✓ Recorded {len(injected_melody)} melody events and {len(acc_events)} acc events to MIDI")
+
+            except Exception as e:
+                print(f"Warning: Could not query injection status or record notes: {e}")
+
             return True
         else:
             print(f"Injection failed: {result['message']}")
@@ -175,17 +207,19 @@ def manual_injection_mode_worker(
     listening_duration_ticks: int,
     manual_prompt_path: str,
     server_url: str,
-    result_queue: Queue
+    result_queue: Queue,
+    midi_file_handler=None,
 ):
     """
     Manual injection worker - loads a user-selected accompaniment file and injects it.
-    
+
     Args:
         collected_melody_notes: Notes collected during listening period
         listening_duration_ticks: Duration of listening period
         manual_prompt_path: Path to the accompaniment MIDI file
         server_url: Server URL
         result_queue: Queue to put result (True/False) when done
+        midi_file_handler: Optional MIDI file handler for recording
     """
     try:
         print(f"\n{'='*60}")
@@ -193,13 +227,13 @@ def manual_injection_mode_worker(
         print(f"{'='*60}")
 
         start_time = time.perf_counter()
-        
+
         # Load accompaniment notes from the selected file
         from midi_utils import midi_to_note
-        
+
         load_start_time = time.perf_counter()
         accompaniment_notes, _, _ = midi_to_note(manual_prompt_path, max_tick=listening_duration_ticks)
-        
+
         # Filter to injection length and add program field
         accompaniment_notes = [
             {**n, 'program': 1} if 'program' not in n else n
@@ -220,7 +254,8 @@ def manual_injection_mode_worker(
             server_url,
             collected_melody_notes,
             accompaniment_notes,
-            listening_duration_ticks
+            listening_duration_ticks,
+            midi_file_handler=midi_file_handler,
         )
         inject_time = time.perf_counter() - inject_start_time
 
@@ -248,8 +283,21 @@ def listening_mode_worker(
     prompt_library: PromptLibrary,
     server_url: str,
     key_detection_method: str,
-    result_queue: Queue
+    result_queue: Queue,
+    midi_file_handler=None,
 ):
+    """
+    Listening mode worker - detects key and selects appropriate prompt.
+
+    Args:
+        collected_melody_notes: Notes collected during listening period
+        listening_duration_ticks: Duration of listening period
+        prompt_library: Prompt library instance
+        server_url: Server URL
+        key_detection_method: "lightweight" or "music21"
+        result_queue: Queue to put result (True/False) when done
+        midi_file_handler: Optional MIDI file handler for recording
+    """
     try:
         print(f"\n{'='*60}")
         print(f"LISTENING MODE WORKER - Analyzing {len(collected_melody_notes)} notes")
@@ -294,7 +342,8 @@ def listening_mode_worker(
             server_url,
             collected_melody_notes,
             accompaniment_notes,
-            listening_duration_ticks
+            listening_duration_ticks,
+            midi_file_handler=midi_file_handler,
         )
         inject_time = time.perf_counter() - inject_start_time
 
@@ -403,12 +452,8 @@ class ClientManager:
                     current_tick_ref,
                     self.config.tempo,
                     self.config.ticks_per_beat,
-                    0,
-                    0,
-                    True,
-                    self.DEFAULT_NOTE_DURATION_TICKS,
-                    self.audio_output_handler,
-                    self.config.melody_channel,
+                    self.config.midi_file_delay_ticks,
+                    0,  # skip_ticks (for injection offset)
                 ),
                 daemon=True,
             )
@@ -784,7 +829,8 @@ class ClientManager:
                                     self.config.listening_duration_ticks,
                                     self.config.manual_prompt_path,
                                     self.config.server_url,
-                                    listening_worker_result_queue
+                                    listening_worker_result_queue,
+                                    self.midi_file_handler,
                                 ),
                                 daemon=True
                             )
@@ -806,7 +852,8 @@ class ClientManager:
                                     prompt_library,
                                     self.config.server_url,
                                     self.config.key_detection_method,
-                                    listening_worker_result_queue
+                                    listening_worker_result_queue,
+                                    self.midi_file_handler,
                                 ),
                                 daemon=True
                             )
