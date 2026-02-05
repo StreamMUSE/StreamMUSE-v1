@@ -724,7 +724,10 @@ class ClientManager:
             is_tick_zero = tick_count == 0
             is_trigger_tick = False  # Will be set later for tick=3,7,11,...
 
-            if is_tick_zero:
+            # During listening mode (before completion), suppress inference triggers.
+            suppress_inference = listening_mode_active and not listening_mode_completed
+
+            if is_tick_zero and not suppress_inference:
                 # Trigger inference at the very start, gen_start_tick = 0
                 generation_start_tick = 0
                 request_data = {
@@ -1109,7 +1112,11 @@ class ClientManager:
             # At tick=3, we trigger generation for beat 1 (gen_start_tick=4)
             # At tick=7, we trigger generation for beat 2 (gen_start_tick=8)
             # etc.
-            if not is_tick_zero and (tick_count % self.config.ticks_per_beat) == (self.config.ticks_per_beat - 1):
+            if (
+                not suppress_inference
+                and not is_tick_zero
+                and (tick_count % self.config.ticks_per_beat) == (self.config.ticks_per_beat - 1)
+            ):
                 # Trigger at the last tick of each beat (except tick 0 which was handled at the start)
                 generation_start_tick = tick_count + 1  # Next beat's start tick
                 request_data = {
