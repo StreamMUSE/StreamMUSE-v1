@@ -162,6 +162,8 @@ def read_midi_file_input(
     main_loop_ticks_per_beat: int,
     delay_ticks: int = 0,
     skip_ticks: int = 0,  # Skip how many ticks, for injection
+    audio_handler=None,
+    melody_channel: int = 0,
 ):
     """
     MIDI file input → event stream (note_on / note_off), no duration in events.
@@ -174,6 +176,8 @@ def read_midi_file_input(
         main_loop_ticks_per_beat: Ticks per beat in main loop
         delay_ticks: Number of ticks to delay before starting playback
         skip_ticks: Number of ticks to skip from the beginning of the MIDI file, it's for injection
+        audio_handler: Optional audio handler for immediate playback
+        melody_channel: MIDI channel for melody playback
     """
     try:
         print(f"Loading MIDI file: {midi_file_path}")
@@ -276,6 +280,14 @@ def read_midi_file_input(
                 for event in events:
                     event["time"] = time.time()
                     event_queue.put(event)
+
+                    # Play audio immediately for low-latency feedback
+                    if audio_handler:
+                        if event["type"] == "note_on":
+                            audio_handler.on(event["pitch"], event["velocity"], channel=melody_channel)
+                        elif event["type"] == "note_off":
+                            audio_handler.off(event["pitch"], channel=melody_channel)
+
                 del tick_schedule[current_tick]
 
             last_tick = current_tick

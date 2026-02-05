@@ -454,6 +454,8 @@ class ClientManager:
                     self.config.ticks_per_beat,
                     self.config.midi_file_delay_ticks,
                     0,  # skip_ticks (for injection offset)
+                    self.audio_output_handler,  # audio_handler
+                    self.config.melody_channel,  # melody_channel
                 ),
                 daemon=True,
             )
@@ -606,7 +608,12 @@ class ClientManager:
 
             # Convert duration-based melody notes to event-stream format
             if "melody_notes" in request_data and request_data["melody_notes"]:
+                print(f"[DEBUG] _inference_worker: Converting {len(request_data['melody_notes'])} melody notes to events")
+                print(f"[DEBUG]   Before conversion: {request_data['melody_notes']}")
                 request_data["melody_notes"] = notes_to_events(request_data["melody_notes"])
+                print(f"[DEBUG]   After conversion: {request_data['melody_notes']}")
+            else:
+                print(f"[DEBUG] _inference_worker: No melody notes to convert")
 
             client_send_time = time.perf_counter()
             request_data["client_request_send_time"] = client_send_time
@@ -702,6 +709,8 @@ class ClientManager:
                     }
                     notes_for_next_request.append(quantized_note)
                     user_notes_this_tick.append(quantized_note)
+
+                    print(f"[DEBUG] Tick {tick_count}: Added note_on pitch={event['pitch']} to notes_for_next_request (total={len(notes_for_next_request)})")
 
                     # Log user note to MIDI file
                     if self.midi_file_handler:
@@ -909,7 +918,9 @@ class ClientManager:
                     "generation_start_tick": next_interval_start_tick,
                     "generation_length_frames": self.config.generation_length_per_request,
                 }
-                print(f"[DEBUG] Tick {tick_count}: Sending inference request, gen_start={next_interval_start_tick}")
+                print(f"[DEBUG] Tick {tick_count}: Sending inference request, gen_start={next_interval_start_tick}, melody_notes_count={len(notes_for_next_request)}")
+                if notes_for_next_request:
+                    print(f"[DEBUG]   Melody notes: {notes_for_next_request}")
                 self.inference_request_queue.put((request_data, request_data.copy()))
                 notes_for_next_request = []
             
