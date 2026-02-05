@@ -77,6 +77,7 @@ class InjectionRequest(BaseModel):
 
     injection_file_path: str
     injection_length_ticks: int
+    inject_mel_only: bool = False  # If True, only inject melody (no accompaniment)
 
 
 class InjectionResponse(BaseModel):
@@ -232,16 +233,10 @@ async def inject_music(request: InjectionRequest):
         melody_notes, _, _ = midi_to_note(
             melody_file_path, beat_div=inference_engine.ticks_per_beat
         )
-        accompaniment_notes, _, _ = midi_to_note(
-            accompaniment_file_path, beat_div=inference_engine.ticks_per_beat
-        )
 
-        # Filter notes within injection length
+        # Filter melody notes within injection length
         melody_notes = [
             n for n in melody_notes if n["tick"] < request.injection_length_ticks
-        ]
-        accompaniment_notes = [
-            n for n in accompaniment_notes if n["tick"] < request.injection_length_ticks
         ]
 
         # Convert duration-based notes to event-stream format for melody
@@ -250,8 +245,17 @@ async def inject_music(request: InjectionRequest):
         # Update engine history with events (for melody)
         inference_engine.melody_event_history.extend(melody_events)
 
-        # For accompaniment, engine still uses duration-based history internally
-        inference_engine.accompaniment_history.extend(accompaniment_notes)
+        # Accompaniment injection (only if inject_mel_only is False)
+        accompaniment_notes = []
+        if not request.inject_mel_only:
+            acc_notes_raw, _, _ = midi_to_note(
+                accompaniment_file_path, beat_div=inference_engine.ticks_per_beat
+            )
+            accompaniment_notes = [
+                n for n in acc_notes_raw if n["tick"] < request.injection_length_ticks
+            ]
+            # For accompaniment, engine still uses duration-based history internally
+            inference_engine.accompaniment_history.extend(accompaniment_notes)
 
         # Initialize active pitches based on injection events
         # Find pitches that are still "on" at injection_length_ticks
@@ -270,8 +274,9 @@ async def inject_music(request: InjectionRequest):
             "injection_file_path": request.injection_file_path,
         }
 
+        inject_mode = "melody only" if request.inject_mel_only else "melody + accompaniment"
         print(
-            f"✓ 注入完成: {len(melody_events)} 个旋律事件, {len(accompaniment_notes)} 个伴奏音符"
+            f"✓ 注入完成 ({inject_mode}): {len(melody_events)} 个旋律事件, {len(accompaniment_notes)} 个伴奏音符"
         )
 
         return InjectionResponse(
