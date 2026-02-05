@@ -246,7 +246,10 @@ def save_prompt_midi(
 
 # 添加注入功能函数
 def inject_music_to_server(
-    server_base_url: str, injection_file_path: str, injection_length_ticks: int
+    server_base_url: str,
+    injection_file_path: str,
+    injection_length_ticks: int,
+    inject_mel_only: bool = False,
 ):
     """
     向服务器注入音乐
@@ -257,9 +260,13 @@ def inject_music_to_server(
         request_data = {
             "injection_file_path": injection_file_path,
             "injection_length_ticks": injection_length_ticks,
+            "inject_mel_only": inject_mel_only,
         }
 
-        print(f"注入音乐: {injection_file_path} (前 {injection_length_ticks} ticks)")
+        mode_str = "(melody only)" if inject_mel_only else "(melody + acc)"
+        print(
+            f"注入音乐 {mode_str}: {injection_file_path} (前 {injection_length_ticks} ticks)"
+        )
         response = requests.post(injection_url, json=request_data)
         response.raise_for_status()
 
@@ -812,6 +819,11 @@ def main():
         default=0,
         help="Number of ticks to inject from the injection file",
     )
+    parser.add_argument(
+        "--inject-mel-only",
+        action="store_true",
+        help="Only inject melody (no accompaniment) when using injection",
+    )
 
     args = parser.parse_args()
 
@@ -843,7 +855,10 @@ def main():
     injection_offset_ticks = 0
     if args.injection_file:
         injection_offset_ticks = inject_music_to_server(
-            args.server_url, args.injection_file, args.injection_length
+            args.server_url,
+            args.injection_file,
+            args.injection_length,
+            inject_mel_only=args.inject_mel_only,
         )
 
         if injection_offset_ticks == 0:
