@@ -217,6 +217,19 @@ def inject_notes_to_server(
         return False
 
 
+def clear_history_on_server(server_url: str):
+    """Best-effort clearing of server-side history/injection state."""
+    import requests
+    clear_url = server_url.replace("/generate_accompaniment", "/clear_history")
+    try:
+        resp = requests.post(clear_url, timeout=3.0)
+        resp.raise_for_status()
+        print(f"[DEBUG] Server history cleared via {clear_url}")
+    except Exception as e:
+        # Don't block client start if server is unreachable
+        print(f"[WARN] Could not clear server history ({clear_url}): {e}")
+
+
 def manual_injection_mode_worker(
     collected_melody_notes: list,
     listening_duration_ticks: int,
@@ -419,6 +432,9 @@ class ClientManager:
         
         print(f"Starting with config: server_url={self.config.server_url}, generation_length_per_request={self.config.generation_length_per_request}, listening_duration_ticks={self.config.listening_duration_ticks}, prompt_dir={self.config.prompt_dir}")
         
+        # Clear server-side history/injection state so each session starts clean.
+        clear_history_on_server(self.config.server_url)
+
         self.stop_event.clear()
         self.event_queue = Queue()
         self.inference_request_queue = Queue()
