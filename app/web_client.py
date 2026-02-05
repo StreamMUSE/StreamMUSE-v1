@@ -149,9 +149,24 @@ def inject_notes_to_server(
     status_url = server_url.replace("/generate_accompaniment", "/injection_status")
 
     try:
-        # Convert duration-based notes to event-stream format
-        melody_events = notes_to_events(melody_notes) if melody_notes else []
-        accompaniment_events = notes_to_events(accompaniment_notes) if accompaniment_notes else []
+        # Convert duration-based notes to event-stream format *only if needed*.
+        #
+        # IMPORTANT: In this codebase, user melody collected during listening mode is
+        # already event-stream (`{"type": "note_on"|"note_off", ...}`), while prompts
+        # loaded from MIDI are usually duration-notes (`{"pitch","tick","duration"}`).
+        #
+        # If we re-convert event-stream melody with `notes_to_events`, we'd destroy
+        # real note lengths (everything becomes duration=1 tick).
+        def ensure_event_stream(items: list) -> list:
+            if not items:
+                return []
+            # Heuristic: event-stream entries carry a "type" field.
+            if isinstance(items[0], dict) and "type" in items[0]:
+                return items
+            return notes_to_events(items)
+
+        melody_events = ensure_event_stream(melody_notes)
+        accompaniment_events = ensure_event_stream(accompaniment_notes)
 
         request_data = {
             "melody_notes": melody_events,
@@ -1032,7 +1047,7 @@ class ClientManager:
                     self.audio_output_handler.on(event["pitch"], self.config.accompaniment_velocity)
                 # Record to MIDI with current tick for accurate timing
                 if self.midi_file_handler:
-                    # Preserve all event fields (type, pitch, velocity, backup_level, etc.)
+                    # Preserve all event fzields (type, pitch, velocity, backup_level, etc.)
                     event_for_midi = dict(event)
                     event_for_midi["tick"] = tick_count
                     # Ensure type is set (should already be "note_on")

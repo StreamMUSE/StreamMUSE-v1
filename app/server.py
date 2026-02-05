@@ -258,6 +258,9 @@ async def inject_music(request: InjectionRequest):
 
 
 # 新的客户端侧注入端点
+# NOTE: `/inject_notes` is the canonical path expected by `app/web_client.py`.
+# We keep `/D` as a backward-compatible alias.
+@app.post("/inject_notes", response_model=DirectInjectionResponse)
 @app.post("/D", response_model=DirectInjectionResponse)
 async def inject_notes(request: DirectInjectionRequest):
     """
@@ -265,34 +268,85 @@ async def inject_notes(request: DirectInjectionRequest):
     Client-side handles all file I/O and prompt selection.
     This is the new preferred method - server never touches disk.
     """
+    global injection_state
+
     if not inference_engine:
         return JSONResponse(
             status_code=503, content={"error": "Inference engine not loaded"}
         )
 
     try:
-        # Convert Pydantic models to dicts
-        melody_notes_dicts = [note.dict() for note in request.melody_notes]
-        accompaniment_notes_dicts = [note.dict() for note in request.accompaniment_notes]
+        # Convert Pydantic models to plain dicts (event-stream format)
+        melody_events = [note.dict() for note in request.melody_notes]
+        accompaniment_events = [note.dict() for note in request.accompaniment_notes]
 
         # Clear existing history
         inference_engine.clear_history()
 
-        # Direct injection
-        inference_engine.melody_history.extend(melody_notes_dicts)
-        inference_engine.accompaniment_history.extend(accompaniment_notes_dicts)
-
-        # Set offset
+        # Set injection offset before further generation
         inference_engine.set_injection_offset(request.injection_length_ticks)
 
-        print(f"Injected {len(melody_notes_dicts)} melody notes and {len(accompaniment_notes_dicts)} accompaniment notes")
+        # IMPORTANT: Internal history formats differ by engine.
+        #
+        # - Lekai engine expects:
+        #   - `melody_event_history`: event-stream list (note_on/note_off)
+        #   - `accompaniment_history`: duration-note list ({pitch,tick,duration,...})
+        #
+        # - Stanley engine expects:
+        #   - `melody_history`: duration-note list
+        #   - `accompaniment_history`: duration-note list
+        #
+        # So we must convert event-stream -> notes where needed.
+        from app.inference_engines.transformer_engine_lekai import events_to_notes
+
+        injected_melody_for_status = melody_events
+        injected_acc_for_status = None
+
+        if hasattr(inference_engine, "melody_event_history"):
+            # Lekai-style: keep melody as events, convert accompaniment to notes
+            inference_engine.melody_event_history.extend(melody_events)
+            accompaniment_notes = events_to_notes(accompaniment_events)
+            inference_engine.accompaniment_history.extend(accompaniment_notes)
+            injected_acc_for_status = accompaniment_notes
+
+            # Best-effort: initialize active pitches if engine tracks it
+            if hasattr(inference_engine, "_active_melody_pitches"):
+                active_at_end = set()
+                for e in melody_events:
+                    if e.get("type") == "note_on":
+                        active_at_end.add(e.get("pitch"))
+                    elif e.get("type") == "note_off":
+                        active_at_end.discard(e.get("pitch"))
+                inference_engine._active_melody_pitches = active_at_end
+        else:
+            # Stanley-style: convert BOTH melody and accompaniment to duration notes
+            melody_notes = events_to_notes(melody_events)
+            accompaniment_notes = events_to_notes(accompaniment_events)
+            inference_engine.melody_history.extend(melody_notes)
+            inference_engine.accompaniment_history.extend(accompaniment_notes)
+            injected_melody_for_status = melody_notes
+            injected_acc_for_status = accompaniment_notes
+
+        # Update injection status for clients/UI
+        injection_state = {
+            "is_injected": True,
+            "injection_length_ticks": request.injection_length_ticks,
+            "injection_file_path": None,
+            "melody_notes": injected_melody_for_status,
+            "accompaniment_notes": injected_acc_for_status,
+        }
+
+        print(
+            f"Injected {len(melody_events)} melody events and {len(accompaniment_events)} accompaniment events "
+            f"(offset={request.injection_length_ticks})"
+        )
 
         return DirectInjectionResponse(
             success=True,
             message="Notes injected successfully",
-            melody_notes_injected=len(melody_notes_dicts),
-            accompaniment_notes_injected=len(accompaniment_notes_dicts),
-            injection_length_ticks=request.injection_length_ticks
+            melody_notes_injected=len(melody_events),
+            accompaniment_notes_injected=len(accompaniment_events),
+            injection_length_ticks=request.injection_length_ticks,
         )
 
     except Exception as e:

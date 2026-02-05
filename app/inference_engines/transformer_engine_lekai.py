@@ -292,12 +292,12 @@ class InferenceEngineLekai:
                 next_token = sample_token(
                     next_token_logits,
                     generated_tokens=input_ids,  # Note: this is just for context, might be inaccurate if we only pass partial input
-                    # temperature=1.1,  # Updated to match inference.py
-                    # top_k=10,  # Updated to match inference.py
-                    # top_p=0.95,
-                    temperature=1.0,  # Set to 1.0 for deterministic with top_k=1
-                    top_k=1,  # Greedy decoding: always pick the highest probability token
-                    top_p=1.0,
+                    temperature=1.1,  # Updated to match inference.py
+                    top_k=10,  # Updated to match inference.py
+                    top_p=0.95,
+                    # temperature=1.0,  # Set to 1.0 for deterministic with top_k=1
+                    # top_k=1,  # Greedy decoding: always pick the highest probability token
+                    # top_p=1.0,
                     repetition_penalty=1.0,
                 )
 
