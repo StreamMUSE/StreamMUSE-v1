@@ -1,0 +1,151 @@
+"""Tests for CLI config parser."""
+
+from __future__ import annotations
+
+import argparse
+
+import pytest
+
+from streammuse.application.config import ApplicationConfig
+from streammuse.presentation.cli.config_parser import args_to_config, parse_args
+
+
+def test_parse_args_defaults() -> None:
+    """Test parsing with default arguments."""
+    # This is tricky to test without mocking sys.argv, so we'll test args_to_config directly
+    args = argparse.Namespace(
+        tempo=120.0,
+        ticks_per_beat=4,
+        beats_per_bar=4,
+        input_mode="midi_device",
+        midi_device_name=None,
+        midi_file_path=None,
+        midi_file_delay_ticks=0,
+        output_type="console",
+        midi_out_port=None,
+        midi_file_output_path=None,
+        inference_type="http",
+        server_url="http://localhost:8000/generate_accompaniment",
+        timeout_s=30.0,
+        checkpoint_path=None,
+        model_size="0.12B",
+        model_max_seq_len_frames=96,
+        generation_length_frames=20,
+        generation_interval_ticks=2,
+        max_ticks=None,
+    )
+
+    config = args_to_config(args)
+
+    assert config.tempo.bpm == 120.0
+    assert config.tempo.ticks_per_beat == 4
+    assert config.tempo.beats_per_bar == 4
+    assert config.input.type == "midi_device"
+    assert config.output.type == "console"
+    assert config.inference.type == "http"
+    assert config.inference.server_generate_url == "http://localhost:8000/generate_accompaniment"
+    assert config.inference.generation_interval_ticks == 2
+    assert config.inference.generation_length_frames == 20
+
+
+def test_args_to_config_keyboard_input() -> None:
+    """Test config with keyboard input."""
+    args = argparse.Namespace(
+        tempo=100.0,
+        ticks_per_beat=8,
+        beats_per_bar=3,
+        input_mode="keyboard",
+        midi_device_name=None,
+        midi_file_path=None,
+        midi_file_delay_ticks=0,
+        output_type="audio",
+        midi_out_port="Virtual MIDI Port",
+        midi_file_output_path=None,
+        inference_type="http",
+        server_url="http://example.com/generate",
+        timeout_s=60.0,
+        checkpoint_path=None,
+        model_size="0.12B",
+        model_max_seq_len_frames=96,
+        generation_length_frames=20,
+        generation_interval_ticks=2,
+        max_ticks=None,
+    )
+
+    config = args_to_config(args)
+
+    assert config.tempo.bpm == 100.0
+    assert config.tempo.ticks_per_beat == 8
+    assert config.tempo.beats_per_bar == 3
+    assert config.input.type == "keyboard"
+    assert config.output.type == "audio"
+    assert config.output.midi_out_port == "Virtual MIDI Port"
+    assert config.inference.server_generate_url == "http://example.com/generate"
+    assert config.inference.timeout_s == 60.0
+
+
+def test_args_to_config_stanley_engine() -> None:
+    """Test config with Stanley inference engine."""
+    args = argparse.Namespace(
+        tempo=120.0,
+        ticks_per_beat=4,
+        beats_per_bar=4,
+        input_mode="midi_device",
+        midi_device_name=None,
+        midi_file_path=None,
+        midi_file_delay_ticks=0,
+        output_type="console",
+        midi_out_port=None,
+        midi_file_output_path=None,
+        inference_type="stanley",
+        server_url="http://localhost:8000/generate_accompaniment",
+        timeout_s=30.0,
+        checkpoint_path="/path/to/checkpoint.ckpt",
+        model_size="0.25B",
+        model_max_seq_len_frames=128,
+        generation_length_frames=30,
+        generation_interval_ticks=4,
+        max_ticks=None,
+    )
+
+    config = args_to_config(args)
+
+    assert config.inference.type == "stanley"
+    assert config.inference.checkpoint_path == "/path/to/checkpoint.ckpt"
+    assert config.inference.model_size == "0.25B"
+    assert config.inference.model_max_seq_len_frames == 128
+    assert config.inference.generation_length_frames == 30
+    assert config.inference.generation_interval_ticks == 4
+
+
+def test_args_to_config_midi_file() -> None:
+    """Test config with MIDI file input."""
+    args = argparse.Namespace(
+        tempo=120.0,
+        ticks_per_beat=4,
+        beats_per_bar=4,
+        input_mode="midi_file",
+        midi_device_name=None,
+        midi_file_path="/path/to/song.mid",
+        midi_file_delay_ticks=8,
+        output_type="midi_file",
+        midi_out_port=None,
+        midi_file_output_path="/path/to/output.mid",
+        inference_type="http",
+        server_url="http://localhost:8000/generate_accompaniment",
+        timeout_s=30.0,
+        checkpoint_path=None,
+        model_size="0.12B",
+        model_max_seq_len_frames=96,
+        generation_length_frames=20,
+        generation_interval_ticks=2,
+        max_ticks=None,
+    )
+
+    config = args_to_config(args)
+
+    assert config.input.type == "midi_file"
+    assert config.input.midi_file_path == "/path/to/song.mid"
+    assert config.input.midi_file_delay_ticks == 8
+    assert config.output.type == "midi_file"
+    assert config.output.midi_file_output_path == "/path/to/output.mid"

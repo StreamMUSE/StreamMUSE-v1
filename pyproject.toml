@@ -1,3 +1,10 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [project]
 name = "streammuse"
 version = "0.1.0"
@@ -34,7 +41,8 @@ dependencies = [
   "wandb>=0.20.1",
 ]
 
-
+[project.scripts]
+streammuse-cli = "streammuse.presentation.cli.cli:main"
 
 [tool.uv.sources]
 torch = [

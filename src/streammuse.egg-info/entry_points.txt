@@ -1,0 +1,2 @@
+[console_scripts]
+streammuse-cli = streammuse.presentation.cli.cli:main
