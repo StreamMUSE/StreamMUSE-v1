@@ -4,31 +4,37 @@ This document compares the data structures and input formats used by the two inf
 
 ## 1. High-Level API Input (Identical)
 
-Both engines share the same signature for the main generation method `generate_accompaniment`. They are designed to be interchangeable at the application level.
+Both engines implement the same `InferenceEngine` **domain protocol**. They are designed to be interchangeable at the application level.
 
-**Method Signature:**
+**Protocol Signature (`domain/interfaces/inference.py`):**
 ```python
 def generate_accompaniment(
     self,
-    melody_notes: List[Dict],
+    melody_events: List[MusicalEvent],
     generation_start_tick: int,
-    acc_notes: List[Dict] = None,
-    ...
-)
+    generation_length_frames: int,
+    prompt_length_ticks: int | None = None,
+) -> tuple[List[MusicalEvent], TimingInfo]:
 ```
 
-**Input Data Format (`melody_notes` / `acc_notes`):**
-Both engines expect a list of dictionaries, where each dictionary represents a note:
+**Canonical Input Format:**
+Both engines receive and return `MusicalEvent` objects (the shared domain type):
 
-| Key | Type | Description |
+| Field | Type | Description |
 | :--- | :--- | :--- |
-| `pitch` | `int` | MIDI pitch (0-127). |
 | `tick` | `int` | Absolute start time in ticks. |
-| `duration` | `int` | Duration in ticks. |
+| `pitch` | `int` | MIDI pitch (0-127). |
+| `event_type` | `EventType` | `NOTE_ON` or `NOTE_OFF`. |
+| `velocity` | `int` | 0–127. |
+| `channel` | `int` | MIDI channel. |
+| `program` | `int` | MIDI program (instrument). |
+| `source` | `str` | `"user"` or `"model"`. |
+
+**Adapter Note:** The Stanley engine (`StanleyInferenceEngine`) wraps a legacy implementation that operates on `dict[pitch, tick, duration]` format. The adapter converts `MusicalEvent` → dict on input and dict → `MusicalEvent` on output. Callers always work with `MusicalEvent` only.
 
 **Time Resolution:**
 *   Both engines typically operate on a grid of **4 ticks per beat** (16th notes).
-*   The `tick` and `duration` values are integers based on this resolution.
+*   The `tick` values are integers based on this resolution.
 
 ---
 
@@ -64,7 +70,7 @@ The Lekai engine converts the note list into a **Piano Roll**, which is then tok
 
 | Feature | Stanley Engine (RoFormer) | Lekai Engine (LLaMA) |
 | :--- | :--- | :--- |
-| **Input Format** | List of Dicts `{'pitch', 'tick', 'duration'}` | List of Dicts `{'pitch', 'tick', 'duration'}` |
+| **Input Format** | `List[MusicalEvent]` (adapter converts to dicts internally) | `List[MusicalEvent]` (adapter converts to piano roll internally) |
 | **Polyphony Handling** | **Limited** (Max 4 notes/tick). Drops excess. | **Flexible** (Implicitly up to 88). |
 | **Duration Handling** | **Quantized to Templates** (Snaps to nearest standard duration). | **Grid-based** (Exact integer ticks on grid). |
 | **Model Input** | Dense Tensor `(T, P, 3)` | Sequence of Tokens (Integers) |

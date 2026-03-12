@@ -4,31 +4,37 @@
 
 ## 1. 高层 API 输入 (完全一致)
 
-两个引擎在主生成方法 `generate_accompaniment` 上共享相同的签名。它们在应用层面上设计为可互换的。
+两个引擎都实现了相同的 `InferenceEngine` **领域协议**。它们在应用层面上设计为可互换的。
 
-**方法签名:**
+**协议签名 (`domain/interfaces/inference.py`):**
 ```python
 def generate_accompaniment(
     self,
-    melody_notes: List[Dict],
+    melody_events: List[MusicalEvent],
     generation_start_tick: int,
-    acc_notes: List[Dict] = None,
-    ...
-)
+    generation_length_frames: int,
+    prompt_length_ticks: int | None = None,
+) -> tuple[List[MusicalEvent], TimingInfo]:
 ```
 
-**输入数据格式 (`melody_notes` / `acc_notes`):**
-两个引擎都期望一个字典列表，其中每个字典代表一个音符：
+**统一数据格式:**
+两个引擎的输入和输出均使用 `MusicalEvent` 对象（共享的领域类型）：
 
-| 键 (Key) | 类型 | 描述 |
+| 字段 | 类型 | 描述 |
 | :--- | :--- | :--- |
-| `pitch` | `int` | MIDI 音高 (0-127)。 |
 | `tick` | `int` | 绝对开始时间 (ticks)。 |
-| `duration` | `int` | 持续时间 (ticks)。 |
+| `pitch` | `int` | MIDI 音高 (0-127)。 |
+| `event_type` | `EventType` | `NOTE_ON` 或 `NOTE_OFF`。 |
+| `velocity` | `int` | 0–127。 |
+| `channel` | `int` | MIDI 通道。 |
+| `program` | `int` | MIDI 程序号（乐器）。 |
+| `source` | `str` | `"user"` 或 `"model"`。 |
+
+**适配器说明:** Stanley 引擎 (`StanleyInferenceEngine`) 包装了一个操作 `dict[pitch, tick, duration]` 格式的遗留实现。适配器在输入时将 `MusicalEvent` 转换为 dict，在输出时将 dict 转换回 `MusicalEvent`。调用方始终只使用 `MusicalEvent`。
 
 **时间分辨率:**
 *   两个引擎通常都在 **每拍 4 ticks** (16分音符) 的网格上运行。
-*   `tick` 和 `duration` 值是基于此分辨率的整数。
+*   `tick` 值是基于此分辨率的整数。
 
 ---
 
@@ -64,7 +70,7 @@ Lekai 引擎将音符列表转换为 **钢琴卷帘 (Piano Roll)**，然后进�
 
 | 特性 | Stanley 引擎 (RoFormer) | Lekai 引擎 (LLaMA) |
 | :--- | :--- | :--- |
-| **输入格式** | 字典列表 `{'pitch', 'tick', 'duration'}` | 字典列表 `{'pitch', 'tick', 'duration'}` |
+| **输入格式** | `List[MusicalEvent]`（适配器内部转换为字典） | `List[MusicalEvent]`（适配器内部转换为钢琴卷帘） |
 | **复调处理** | **受限** (每 tick 最多 4 个音符)。丢弃多余音符。 | **灵活** (隐式支持最多 88 个)。 |
 | **时值处理** | **量化到模板** (吸附到最近的标准时值)。 | **基于网格** (网格上的精确整数 ticks)。 |
 | **模型输入** | 稠密张量 `(T, P, 3)` | Token 序列 (整数) |

@@ -13,7 +13,7 @@
 |------|--------|------|
 | **Presentation** | 2 | CLI入口和参数解析 |
 | **Application** | 5 | 业务逻辑、工厂、服务 |
-| **Domain** | 12 | 接口、事件、音乐模型 |
+| **Domain** | 16 | 接口、事件、音乐模型、日志模型 |
 | **Infrastructure** | 43 | 具体实现（输入/输出/推理/存储） |
 
 ---
@@ -35,7 +35,7 @@
 |--------|--------|------------|----------|---------|
 | `application/config/models.py` | 定义所有配置dataclass模型，提供类型安全的参数容器 | `ApplicationConfig`, `TempoConfig`, `InputConfig`, `OutputConfig`, `InferenceConfig` | `config_parser.py`, 所有factory | 无（纯数据类） |
 | `application/factories/input_factory.py` | 根据配置类型创建对应的InputSource实现（工厂模式） | `InputConfig`, `InputSource` | `cli.py` | `MidiDeviceInput`, `KeyboardInput`, `MidiFileInput`, `ListInput` |
-| `application/factories/output_factory.py` | 根据配置类型创建对应的OutputSink实现（工厂模式） | `OutputConfig`, `OutputSink` | `cli.py` | `AudioOutputSink`, `MidiFileOutputSink`, `ConsoleOutputSink`, `WebSocketOutputSink`, `CompositeOutputSink` |
+| `application/factories/output_factory.py` | 根据配置类型创建对应的OutputSink实现（工厂模式） | `OutputConfig`, `OutputSink`, `SessionManager` | `cli.py` | `AudioOutputSink`, `MidiFileOutputSink`, `ConsoleOutputSink`, `WebSocketOutputSink`, `CompositeOutputSink`, `JsonLoggerOutputSink`, `SessionLoggerOutputSink` |
 | `application/factories/inference_factory.py` | 根据配置类型创建对应的InferenceEngine实现（工厂模式） | `InferenceConfig`, `InferenceEngine` | `cli.py` | `HttpInferenceClient`, `StanleyInferenceEngine` |
 | `application/factories/__init__.py` | 导出所有factory类 | 无 | `cli.py` | 三个factory模块 |
 
@@ -112,8 +112,10 @@
 | `infrastructure/output/audio.py` | 通过MIDI接口实时播放生成的伴奏音频 | `AudioOutputSink`, `AudioOutputConfig`, `MusicalEvent` | `output_factory.py` | `domain/musical/events.py`, `mido` |
 | `infrastructure/output/midi_file.py` | 将MusicalEvent序列写入.mid文件（录制） | `MidiFileOutputSink`, `MidiFileOutputConfig`, `MusicalEvent` | `output_factory.py` | `domain/musical/events.py`, `pretty_midi`, `mido` |
 | `infrastructure/output/websocket.py` | 通过WebSocket推送实时事件到客户端（可视化） | `WebSocketOutputSink`, `WebSocketOutputConfig`, `MusicalEvent` | `output_factory.py` | `domain/musical/events.py`, `websockets` |
-| `infrastructure/output/composite.py` | 组合多个OutputSink，单个事件同时广播到多个目标 | `CompositeOutputSink`, `OutputSink` (List) | `output_factory.py` | `domain/interfaces/output.py`, `domain/musical/events.py` |
-| `infrastructure/output/__init__.py` | 导出所有输出实现 | 输出类集合 | `output_factory.py` | 五个输出模块 |
+| `infrastructure/output/composite.py` | 组合多个OutputSink，单个事件同时广播到多个目标；也代理 `log_inference()` 调用 | `CompositeOutputSink`, `OutputSink` (List) | `output_factory.py` | `domain/interfaces/output.py`, `domain/musical/events.py` |
+| `infrastructure/output/json_logger.py` | 将事件写入 events.jsonl，将推理请求/响应写入 inferences.json | `JsonLoggerOutputSink`, `LogEvent`, `InferenceEvent`, `MetricsCalculator` | `output_factory.py`, `session_logger.py` | `domain/logging/`, `domain/musical/events.py` |
+| `infrastructure/output/session_logger.py` | 组合 MIDI 文件录制和 JSON 日志，输出到统一的 session 目录 | `SessionLoggerOutputSink` | `output_factory.py` | `json_logger.py`, `midi_file.py` |
+| `infrastructure/output/__init__.py` | 导出所有输出实现 | 输出类集合 | `output_factory.py` | 七个输出模块 |
 
 ---
 

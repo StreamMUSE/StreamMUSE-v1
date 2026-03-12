@@ -30,7 +30,7 @@
 StreamMUSE 是一个实时音乐生成系统，其核心功能是根据用户演奏的旋律（melody）实时生成音乐伴奏（accompaniment）。这是一个融合了深度学习、实时音频处理和交互式用户界面的复杂系统。
 
 ### 项目成熟度
-该项目处于**初期架构优化阶段**。虽然核心功能已经实现，但团队正在进行大规模的架构重构，以提高代码质量、可维护性和扩展性。
+该项目处于**稳定运行阶段**。Clean Architecture 重构已完成，核心功能全部实现并通过测试（98 个测试用例），包括完整的日志系统。
 
 ---
 
@@ -395,13 +395,15 @@ create(app_config) -> InputSource:
 
 **输出处理工厂** (`OutputSinkFactory`)
 ```python
-create(app_config) -> OutputSink:
+create(app_config, session_manager=None) -> OutputSink:
     主要输出类型:
     - AudioOutputSink: 实时音频播放
     - MidiFileOutputSink: MIDI文件记录
     - ConsoleOutputSink: 控制台调试
     - WebSocketOutputSink: WebSocket推送
-    - CompositeOutputSink: 组合多个输出
+    - CompositeOutputSink: 组合多个输出（含 log_inference() fan-out）
+    - JsonLoggerOutputSink: events.jsonl + inferences.json 日志
+    - SessionLoggerOutputSink: MIDI + JSON 组合日志
 ```
 
 **推理引擎工厂** (`InferenceEngineFactory`)
@@ -840,10 +842,10 @@ CompositeOutputSink:
 
 | 问题 | 现状 | 优先级 |
 |------|------|--------|
-| 测试覆盖不完整 | 单元和集成测试初步完成 | 高 |
-| 文档不全 | CLAUDE.md和设计文档存在，但运行指南缺乏 | 中 |
+| 测试覆盖不完整 | 98 个测试全部通过 ✅ | - |
+| 文档不全 | CLAUDE.md 和 README.md 已更新 ✅ | - |
 | 错误处理不完善 | 缺乏异常处理和recovery机制 | 中 |
-| 日志系统缺失 | 没有结构化日志 | 中 |
+| 日志系统缺失 | 完整的 Session 日志系统已实现 ✅ |  - |
 
 #### 2. 性能相关问题
 
@@ -970,10 +972,10 @@ docs/                 ~2000行
 ### 支持的配置组合
 ```
 输入源 × 4种
-输出处理 × 5种
+输出处理 × 7种
 推理引擎 × 2种
 ────────────────
-可能的配置组合: 4 × 5 × 2 = 40种
+可能的配置组合: 4 × 7 × 2 = 56种
 
 项目通过工厂模式支持所有组合，
 无需添加新的client实现！

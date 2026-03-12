@@ -1,8 +1,11 @@
-# StreamMUSE Logging Plan
+# StreamMUSE Session Logging — 功能参考
+
+> **状态**: ✅ 完整实现（所有 3 个 Phase 已完成）  
+> 本文档已从规划文档更新为**当前实现的参考文档**。
 
 ## 概述
 
-本文档计划为StreamMUSE-new-sys项目添加完整的日志功能。参考自同级项目StreamMUSE中的实现，为新系统设计现代化、模块化的logging架构。
+日志功能已完整实现并集成到 StreamMUSE-new-sys 中。以下记录实际实现的架构和用法。
 
 ---
 
@@ -16,9 +19,8 @@
 ✅ audio          - 实时MIDI播放
 ✅ websocket      - WebSocket消息
 ✅ composite      - 组合输出
-❌ json_log       - JSON日志（缺失）
-❌ csv_log        - CSV日志（缺失）
-❌ session        - 会话日志（缺失）
+✅ json_log       - JSON日志（events.jsonl + inferences.json）
+✅ session        - 会话日志（MIDI + JSON）
 ```
 
 ### 旧项目（StreamMUSE）的logging特性
@@ -784,8 +786,15 @@ uv run streammuse-cli --input-mode keyboard --output-type composite --log-dir lo
 
 ---
 
-**文档版本**: 1.0  
+**文档版本**: 2.0  
 **最后更新**: 2026年3月11日  
 **状态**: ✅ 所有Phases实现完成  
-**负责人**: StreamMUSE Development Team
+**实现文件**:
+- `domain/logging/`: EventType, LogEvent, InferenceEvent, SessionManager, MetricsCalculator
+- `infrastructure/output/json_logger.py`: JsonLoggerOutputSink
+- `infrastructure/output/session_logger.py`: SessionLoggerOutputSink
+- `infrastructure/output/composite.py`: 新增 `log_inference()` fan-out
+- `application/services/real_time_music_service.py`: `_inference_worker` 调用 `log_inference()`
+- `application/factories/output_factory.py`: 支持 `json_log`、`session`、`composite` 输出类型
+- `presentation/cli/`: 新增 `--log-dir`、SessionManager 集成和 atexit cleanup
 

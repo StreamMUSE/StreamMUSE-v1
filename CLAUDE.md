@@ -4,151 +4,178 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-StreamMUSE is a real-time AI music generation system that creates accompaniment for user-played melodies. The system uses a transformer-based model (RoFormer) and consists of a client-server architecture where the client handles user input and audio output, while the server performs model inference.
+StreamMUSE is a real-time AI music generation system that creates accompaniment for user-played melodies. The system follows **Clean Architecture** (4 layers: Presentation → Application → Domain → Infrastructure) and uses a transformer-based model (RoFormer/Stanley engine). The real-time application runs as a single CLI process that communicates with an inference server over HTTP.
 
 ## Development Commands
 
 ### Environment Setup
 ```bash
-# Set up environment and install dependencies
-uv run
+# Install dependencies and activate venv
+uv sync
 
-# Install the adapted transformers package (required for special positional encoding)
+# Install the adapted transformers package (required for RoFormer positional encoding)
 cd transformers
 pip install -e .
+cd ..
 ```
 
-### Training
+### Running Tests
 ```bash
-# Configure model parameters in schema/yaml/ files first
-uv run training_runner.py
+uv run pytest tests/
+uv run pytest tests/ -q --tb=no   # concise
 ```
 
 ### Real-time Application
 
-#### Server (Model Inference)
+#### Inference Server
 ```bash
-# Start inference server
-CHECKPOINT_PATH=path/to/model.ckpt uvicorn app.server:app --host 0.0.0.0 --port 8000
+# Start fake server for development/testing (no model required)
+uv run python scripts/fake_inference_server.py
 
-# Optional environment variables:
-# MODEL_MAX_SEQ_LEN_FRAMES=96 (default)
-# GENERATION_LENGTH_FRAMES=20 (default) 
-# MODEL_SIZE=0.12B (default, valid: small, 0.12B, 0.25B, 0.5B)
+# Start real inference server
+CHECKPOINT_PATH=path/to/model.ckpt uvicorn src.streammuse.infrastructure.inference.server:app --host 0.0.0.0 --port 8000
+# Optional env vars: MODEL_MAX_SEQ_LEN_FRAMES=96, GENERATION_LENGTH_FRAMES=20, MODEL_SIZE=0.12B
 ```
 
-#### Client (User Interface)
+#### CLI Client
 ```bash
-# MIDI device input (default)
-python app/client.py --server_url http://localhost:8000/generate_accompaniment
+# Keyboard input + console output (default server: http://localhost:8000)
+uv run streammuse-cli --input-mode keyboard
 
-# Computer keyboard input
-python app/client.py --use-keyboard-input --tempo 120
+# MIDI device input
+uv run streammuse-cli --input-mode midi
 
 # MIDI file simulation
-python app/client.py --midi-file-input song.mid --midi-file-delay-ticks 8
+uv run streammuse-cli --input-mode midi_file --midi-file path/to/song.mid
 
-# With music injection (prefill model history)
-python app/client.py --injection-file prelude.mid --injection-length 50 --use-keyboard-input
+# Audio output
+uv run streammuse-cli --input-mode keyboard --output-type audio
+
+# Session logging (console + MIDI + JSON logs)
+uv run streammuse-cli --input-mode keyboard --output-type composite --log-dir logs
+
+# With music injection (pre-populate model history)
+uv run streammuse-cli --input-mode keyboard --injection-file prompts/C_major/pop909_216_mel.mid --injection-length 50
 ```
+
+#### Output Types
+| `--output-type` | Description |
+|---|---|
+| `console` | Print events/stats to terminal (default) |
+| `audio` | Real-time MIDI audio playback |
+| `midi_file` | Record to MIDI file |
+| `websocket` | Push events via WebSocket |
+| `json_log` | Write `events.jsonl` + `inferences.json` to session dir |
+| `session` | MIDI file + JSON logs combined |
+| `composite` | Console + session logging (use with `--log-dir`) |
 
 ### Benchmarking
 ```bash
-# Performance testing
-python app/benchmark.py --output_file results/benchmark_test.csv --num_requests 100
-```
-
-### Data Preprocessing
-```bash
-# Extract melody/accompaniment from datasets
-python exact/aria_skyline.py --input_dir <dataset_path> --output_dir <output_path> --workers <num_cores>
-python exact/pop909_extract.py  # For POP909 dataset
-
-# Convert MIDI to tensor format
-python preprocess/preprocess_midi2pt_dataset.py --folders /path/to/folder1 --name dataset_name --polyphony 4
-```
-
-### Inference Testing
-```bash
-# Offline inference testing
-python m2a_transformer_inference.py --model_path /path/to/ckpt --prompt_len 75 --n_samples 2 --temperature 1.0
+uv run python app/benchmark.py --output_file results/benchmark_test.csv --num_requests 100
 ```
 
 ## Architecture Overview
 
-### Client-Server Communication
-- **FastAPI Server** (`app/server.py`): Hosts transformer model, provides `/generate_accompaniment` endpoint
-- **Client** (`app/client.py`): Manages user input, timing, audio output, communicates with server
-- **Communication Protocol**: JSON over HTTP with detailed timing information
+### Clean Architecture Layers
 
-### Key Data Models
-- **MelodyNoteEvent**: `{pitch: int, tick: int, duration: int}`
-- **AccompanimentNoteEvent**: `{pitch: int, tick: int, duration: int, program: int}`
-- **Timings**: Detailed server-side performance metrics using `time.perf_counter()`
+```
+src/streammuse/
+├── presentation/cli/       # Entry point: cli.py, config_parser.py
+├── application/
+│   ├── config/             # ApplicationConfig, TempoConfig, InputConfig, OutputConfig, InferenceConfig
+│   ├── factories/          # InputSourceFactory, OutputSinkFactory, InferenceEngineFactory
+│   └── services/           # RealTimeMusicService (3-thread orchestrator)
+├── domain/
+│   ├── interfaces/         # Protocols: InputSource, OutputSink, InferenceEngine, TimingInfo
+│   ├── musical/            # MusicalEvent, EventType, Note, converters
+│   ├── timing/             # Tempo, PlaybackScheduler, MusicalTime
+│   └── logging/            # SessionManager, MetricsCalculator, LogEvent, InferenceEvent
+└── infrastructure/
+    ├── input/              # MidiDeviceInput, KeyboardInput, MidiFileInput, ListInput
+    ├── output/             # AudioOutputSink, ConsoleOutputSink, MidiFileOutputSink,
+    │                       # WebSocketOutputSink, CompositeOutputSink,
+    │                       # JsonLoggerOutputSink, SessionLoggerOutputSink
+    └── inference/          # HttpInferenceClient, StanleyInferenceEngine, LegacyInferenceEngineStanley
+```
 
-### Real-time System Components
+### Core Data Model
 
-#### Input Handlers (`app/input_handlers/`)
-- MIDI device input
-- Computer keyboard input 
-- MIDI file simulation
+```python
+@dataclass(frozen=True)
+class MusicalEvent:
+    tick: int           # absolute musical time (ticks)
+    pitch: int          # MIDI pitch 0-127, or -1 for non-note events
+    event_type: EventType   # NOTE_ON or NOTE_OFF
+    velocity: int       # 0-127
+    channel: int        # MIDI channel
+    program: int        # MIDI program (instrument)
+    source: str         # "user" or "model"
+    is_placeholder: bool
+```
 
-#### Output Handlers (`app/output_handlers/`)
-- Real-time audio playback
-- MIDI file recording
-- JSON logging with timing data
-- CLI display
+### Key Protocols (domain/interfaces/)
 
-#### Inference Engine (`app/inference_engines/`)
-- **TransformerInferenceEngine**: Standard implementation
-- **InferenceEngineStanley**: Enhanced version with injection support
-- Manages model history, note quantization, tensor conversion
+```python
+class InputSource(Protocol):
+    def read_events(self) -> Iterator[MusicalEvent]: ...
+    def close(self) -> None: ...
 
-### Timing and Synchronization
-- **Tick-based timing**: Musical time quantized to ticks (1 tick = 1/4 beat by default)
-- **Generation intervals**: Model generates accompaniment every N ticks (default: 2)
-- **Latency compensation**: Requests sent early to account for processing delay
-- **History management**: Maintains sliding window of melody/accompaniment history
+class OutputSink(Protocol):
+    def output_event(self, event: MusicalEvent, source: str) -> None: ...
+    def output_tick(self, tick: int, bar: int, beat: int) -> None: ...
+    def output_stats(self, round_trip_ms=None, server_process_ms=None, ...) -> None: ...
+    def output_status(self, state: str, message: str = "") -> None: ...
+    def output_config(self, config: dict) -> None: ...
+    def close(self) -> None: ...
 
-### Model Integration
-- **RoFormer-based transformer**: Uses interleaved melody/accompaniment frames
-- **Sequence length**: 96 frames (48 ticks) default context window
-- **Generation length**: 20 frames (10 ticks) per inference call
-- **Note representation**: Piano roll tensors converted to symbolic tokens
+class InferenceEngine(Protocol):
+    def generate_accompaniment(
+        self, melody_events: List[MusicalEvent],
+        generation_start_tick: int, generation_length_frames: int,
+    ) -> tuple[List[MusicalEvent], TimingInfo]: ...
+    def inject_history(...) -> None: ...
+    def clear_history(self) -> None: ...
+```
 
-## Benchmarking System
+### RealTimeMusicService — 3 Threads
 
-The benchmark system (`app/benchmark.py`) measures:
-- **Round-trip latency**: Client request to response time
-- **Server processing**: Total server-side processing duration
-- **Inference time**: Pure model inference duration
-- **Network latency**: Time spent on network communication
-- **Preprocessing/Postprocessing**: Data conversion overhead
+- **`_input_worker`**: reads from `InputSource`, puts events into queues
+- **`_tick_loop`**: advances musical time, schedules playback, triggers inference every `generation_interval_ticks` (default 2) ticks
+- **`_inference_worker`**: calls `InferenceEngine.generate_accompaniment()`, puts results back into playback queue, calls `output_stats()` and `log_inference()` on the output sink
 
-Results saved as CSV (timing summary) and JSON (complete response data).
+### Timing
 
-## Music Injection Feature
+- 1 tick = 1/4 beat (default `ticks_per_beat=4`)
+- `generation_interval_ticks=2` → inference triggered every half-beat
+- `generation_length_frames=20` → each inference generates 20 frames = 10 ticks ahead
 
-The system supports "music injection" to pre-populate model history:
-- Load existing MIDI files into model context
-- Useful for continuing compositions or style transfer
-- Injection endpoints: `/inject_music`, `/injection_status`
-- Client support: `--injection-file` and `--injection-length` parameters
+### Session Logging
 
-## Data Pipeline
+When `--output-type composite --log-dir logs` is used, a `logs/session_YYYYMMDD-HHMMSS/` directory is created containing:
+- `events.jsonl` — one JSON line per musical event
+- `inferences.json` — all inference request/response pairs with latency
+- `performance.json` — latency percentiles (p95/p99), event counts, music analysis
+- `statistics.csv` — summary metrics
+- `session_config.json` — session configuration
+- `combined.mid` — recorded MIDI (user + model)
 
-1. **Raw datasets**: POP909, ARIA MIDI collections
-2. **Extraction**: Separate melody/accompaniment tracks using skyline algorithm
-3. **Preprocessing**: Convert MIDI to tensor format with quantized durations
-4. **Training**: RoFormer model on melody→accompaniment pairs
-5. **Inference**: Real-time generation with sliding context window
+## Stanley Inference Engine
 
-## File Structure Focus
+The Stanley engine uses a two-layer adapter pattern:
+- **`StanleyInferenceEngine`** (infrastructure): implements `InferenceEngine` protocol, converts `MusicalEvent` ↔ duration-note dicts
+- **`LegacyInferenceEngineStanley`** (legacy): the actual RoFormer model wrapper; operates on `dict[pitch, tick, duration]` and piano-roll tensors
 
-- `app/`: Real-time application (client/server)
-- `models/`: PyTorch Lightning model definitions
-- `preprocess/`: Data preprocessing pipeline
-- `exact/`: Dataset extraction utilities
-- `inference_engines/`: Model inference implementations
-- `schema/yaml/`: Model configuration files
-- `transformers/`: Modified transformers library for RoFormer
+Model defaults: 96-frame context window, 4 ticks/beat, max polyphony 4.
+
+## File Structure
+
+```
+src/streammuse/         # Main package (Clean Architecture)
+scripts/                # fake_inference_server.py, utilities
+tests/
+  unit/                 # Fast, no I/O: domain, infrastructure, application layers
+  integration/          # CLI entry point tests
+prompts/                # Sample MIDI files for injection (organized by key)
+transformers/           # Modified HuggingFace transformers (RoFormer positional encoding)
+pyproject.toml          # uv project config, entry point: streammuse-cli → cli:main
+```

@@ -14,16 +14,71 @@ The model uses Roformer as its encoders and decoder. Check its documentation [he
 
 Install required packages before you start: 
 
-    uv run
+    uv sync
 
-This will create a virtual environment in your directory, under folder .venv.
+This will create a virtual environment in your directory, under folder `.venv`.
 
 We adapted the transformers package for it to take care of the special positional encoding:
     
     cd transformers
     pip install -e .
+    cd ..
 
-## Data Preparation
+## Real-time Application
+
+The real-time system is a CLI client that sends melody events to an inference server and plays back the generated accompaniment. It uses a Clean Architecture design (`src/streammuse/`).
+
+### Quick Start
+
+```bash
+# 1. Start the fake inference server (no model required, for development)
+uv run python scripts/fake_inference_server.py
+
+# 2. In another terminal, run the CLI
+uv run streammuse-cli --input-mode keyboard
+```
+
+### CLI Options
+
+```bash
+# Input modes
+uv run streammuse-cli --input-mode keyboard          # computer keyboard
+uv run streammuse-cli --input-mode midi              # MIDI device
+uv run streammuse-cli --input-mode midi_file --midi-file path/to/song.mid
+
+# Output types
+uv run streammuse-cli --output-type console          # default: print events
+uv run streammuse-cli --output-type audio            # real-time MIDI playback
+uv run streammuse-cli --output-type composite --log-dir logs  # console + session logs
+
+# Music injection (pre-populate model history)
+uv run streammuse-cli --input-mode keyboard \
+    --injection-file prompts/C_major/pop909_216_mel.mid \
+    --injection-length 50
+```
+
+### Real Inference Server
+
+```bash
+CHECKPOINT_PATH=path/to/model.ckpt \
+    uvicorn src.streammuse.infrastructure.inference.server:app \
+    --host 0.0.0.0 --port 8000
+```
+
+### Session Logging
+
+Using `--output-type composite --log-dir logs` creates a timestamped session directory:
+
+```
+logs/session_YYYYMMDD-HHMMSS/
+├── events.jsonl        # one JSON per musical event
+├── inferences.json     # all inference request/response pairs + latency
+├── performance.json    # latency percentiles (p95/p99), music analysis
+├── statistics.csv      # summary metrics
+├── session_config.json
+└── combined.mid        # recorded MIDI (user + model)
+```
+
 
 The whole data preparation workflow is like the figure here:
 
