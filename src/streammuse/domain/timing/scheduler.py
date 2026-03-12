@@ -42,9 +42,8 @@ class PlaybackScheduler:
         """
         Remove events from from_tick onward.
 
-        If source is provided, only remove events that have a matching
-        'source' attribute (e.g. "model"); events without a source attribute
-        are kept. If source is None, clear all events in the range.
+        If source is provided, only remove events with matching source
+        (e.g. "model"). If source is None, clear all events in the range.
         """
         with self._lock:
             ticks_to_consider = [t for t in self._schedule.keys() if t >= from_tick]
@@ -54,7 +53,7 @@ class PlaybackScheduler:
                 else:
                     self._schedule[tick] = [
                         e for e in self._schedule[tick]
-                        if getattr(e, "source", None) != source
+                        if e.source != source
                     ]
                     if not self._schedule[tick]:
                         del self._schedule[tick]

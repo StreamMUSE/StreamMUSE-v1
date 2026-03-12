@@ -49,6 +49,17 @@ class CompositeOutputSink:
         for s in self.sinks:
             s.output_config(config)
 
+    def log_inference(
+        self,
+        request: Dict[str, Any],
+        response: Dict[str, Any],
+        latency_ms: float,
+        server_process_ms: float,
+    ) -> None:
+        for s in self.sinks:
+            if hasattr(s, "log_inference"):
+                s.log_inference(request, response, latency_ms, server_process_ms)
+
     def close(self) -> None:
         for s in self.sinks:
             s.close()

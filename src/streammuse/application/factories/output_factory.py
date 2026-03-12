@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Optional
+
 from streammuse.application.config import ApplicationConfig
 from streammuse.domain.interfaces import OutputSink
+from streammuse.domain.logging import SessionManager
 from streammuse.infrastructure.output import (
     AudioOutputConfig,
     AudioOutputSink,
     CompositeOutputSink,
     ConsoleOutputConfig,
     ConsoleOutputSink,
+    JsonLoggerOutputSink,
     MidiFileOutputConfig,
     MidiFileOutputSink,
+    SessionLoggerOutputSink,
     WebSocketOutputSink,
 )
 
 
 class OutputSinkFactory:
     @staticmethod
-    def create(app_config: ApplicationConfig) -> OutputSink:
+    def create(
+        app_config: ApplicationConfig,
+        session_manager: Optional[SessionManager] = None,
+    ) -> OutputSink:
         cfg = app_config.output
         tempo = app_config.tempo
 
@@ -42,9 +51,32 @@ class OutputSinkFactory:
         if cfg.type == "websocket":
             return WebSocketOutputSink()
 
+        if cfg.type == "json_log":
+            if not session_manager:
+                raise ValueError("session_manager is required for json_log output")
+            return JsonLoggerOutputSink(session_manager.get_session_dir())
+
+        if cfg.type == "session":
+            if not session_manager:
+                raise ValueError("session_manager is required for session output")
+            return SessionLoggerOutputSink(
+                session_dir=session_manager.get_session_dir(),
+                include_midi=True,
+                include_json=True,
+            )
+
         if cfg.type == "composite":
-            # Default composite: console + websocket.
-            return CompositeOutputSink([ConsoleOutputSink(ConsoleOutputConfig()), WebSocketOutputSink()])
+            if session_manager:
+                return CompositeOutputSink(
+                    [
+                        ConsoleOutputSink(ConsoleOutputConfig()),
+                        SessionLoggerOutputSink(session_manager.get_session_dir()),
+                    ]
+                )
+            return CompositeOutputSink(
+                [ConsoleOutputSink(ConsoleOutputConfig()), WebSocketOutputSink()]
+            )
 
         raise ValueError(f"Unknown output type: {cfg.type}")
+
 

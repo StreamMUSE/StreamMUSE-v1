@@ -43,12 +43,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-type",
         type=str,
-        choices=["audio", "console", "midi_file", "websocket", "composite"],
+        choices=["audio", "console", "midi_file", "websocket", "composite", "json_log", "session"],
         default="console",
         help="Output sink type",
     )
     parser.add_argument("--midi-out-port", type=str, default=None, help="MIDI output port name (for audio output)")
     parser.add_argument("--midi-file-output-path", type=str, default=None, help="Path to save MIDI file output")
+
+    # Logging configuration
+    parser.add_argument("--log-dir", type=str, default="logs", help="Base directory for session logs")
+    parser.add_argument("--enable-performance-tracking", action="store_true", help="Enable detailed performance metrics calculation")
 
     # Inference configuration
     parser.add_argument(

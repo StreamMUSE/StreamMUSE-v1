@@ -85,6 +85,7 @@ class RealTimeMusicService:
                 channel=ev.channel,
                 program=ev.program,
                 is_placeholder=ev.is_placeholder,
+                source="user",  # Mark as user-generated event
             )
             self._event_q.put(stamped)
             # Add to melody history (only note_on/note_off events)
@@ -140,7 +141,7 @@ class RealTimeMusicService:
 
                 # Schedule new accompaniment events.
                 for ev in acc_events:
-                    # Set source attribute for filtering
+                    # Create new event with source="model"
                     ev_with_source = MusicalEvent(
                         tick=ev.tick,
                         pitch=ev.pitch,
@@ -149,16 +150,14 @@ class RealTimeMusicService:
                         channel=ev.channel,
                         program=ev.program,
                         is_placeholder=ev.is_placeholder,
+                        source="model",  # Mark as model-generated event
                     )
-                    # Store source in a way that clear_future_events can check
-                    setattr(ev_with_source, "source", "model")
                     if ev.tick >= tick:  # Only schedule future events
                         self._scheduler.schedule(ev_with_source, ev.tick)
 
             # Play scheduled events (if any).
             for ev in self._scheduler.get_events_at_tick(tick):
-                source = getattr(ev, "source", "model")
-                self._output.output_event(ev, source=source)
+                self._output.output_event(ev, source=ev.source)
 
             tick += 1
 
@@ -205,6 +204,23 @@ class RealTimeMusicService:
                     round_trip_ms=round_trip_time * 1000,
                     server_process_ms=server_process_ms,
                 )
+
+                # Log inference details if the output sink supports it
+                if hasattr(self._output, "log_inference"):
+                    request_data = {
+                        "generation_start_tick": generation_start_tick,
+                        "melody_notes_count": len(melody_events),
+                        "generation_length_frames": self._generation_length_frames,
+                    }
+                    response_data = {
+                        "accompaniment_notes_count": len(acc_events),
+                    }
+                    self._output.log_inference(  # type: ignore[union-attr]
+                        request=request_data,
+                        response=response_data,
+                        latency_ms=round_trip_time * 1000,
+                        server_process_ms=server_process_ms or 0.0,
+                    )
             except Exception as e:
                 # Log error but continue running
                 self._output.output_status("error", f"Inference error: {e}")

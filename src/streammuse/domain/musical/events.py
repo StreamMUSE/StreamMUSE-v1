@@ -35,6 +35,7 @@ class MusicalEvent:
     channel: int = 0
     program: int = 0  # MIDI program/instrument
     is_placeholder: bool = False
+    source: str = "unknown"  # Event source: "user" or "model"
 
     def __post_init__(self) -> None:
         """Validate event data."""
