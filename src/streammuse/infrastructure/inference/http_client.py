@@ -17,6 +17,9 @@ from streammuse.infrastructure.inference.serialization import event_from_dict, e
 class HttpInferenceClientConfig:
     generate_url: str
     timeout_s: float = 30.0
+    model_name: str = "stanley"
+    inference_mode: str = "sliding_window"
+    generation_interval_ticks: int = 2
 
 
 class HttpInferenceClient(InferenceEngine):
@@ -47,6 +50,9 @@ class HttpInferenceClient(InferenceEngine):
             "generation_start_tick": int(generation_start_tick),
             "client_request_send_time": time.time(),
             "generation_length_frames": int(generation_length_frames),
+            "generation_interval_ticks": int(self._config.generation_interval_ticks),
+            "model_name": str(self._config.model_name),
+            "inference_mode": str(self._config.inference_mode),
             "prompt_length_ticks": (int(prompt_length_ticks) if prompt_length_ticks is not None else None),
         }
         # Drop nulls for cleaner wire format.

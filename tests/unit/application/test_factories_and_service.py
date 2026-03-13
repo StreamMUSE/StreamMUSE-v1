@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from streammuse.application.config import ApplicationConfig, InferenceConfig, InputConfig, OutputConfig, TempoConfig
 from streammuse.application.factories import InferenceEngineFactory, InputSourceFactory, OutputSinkFactory
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
@@ -86,4 +88,46 @@ def test_real_time_music_service_emits_ticks_and_user_events():
     assert any(s[0] == "running" for s in out.status)
     assert len(out.ticks) >= 1
     assert any(e[0] == "user" and e[1].pitch == 60 for e in out.events)
+
+
+def test_http_lekai_requires_interval_multiple_of_4():
+    cfg = ApplicationConfig(
+        inference=InferenceConfig(
+            type="http",
+            server_generate_url="http://x/generate_accompaniment",
+            model_name="lekai",
+            generation_interval_ticks=2,
+            generation_length_frames=20,
+        )
+    )
+    with pytest.raises(ValueError, match="multiple of 4"):
+        InferenceEngineFactory.create(cfg)
+
+
+def test_http_lekai_requires_length_multiple_of_4():
+    cfg = ApplicationConfig(
+        inference=InferenceConfig(
+            type="http",
+            server_generate_url="http://x/generate_accompaniment",
+            model_name="lekai",
+            generation_interval_ticks=4,
+            generation_length_frames=10,
+        )
+    )
+    with pytest.raises(ValueError, match="multiple of 4"):
+        InferenceEngineFactory.create(cfg)
+
+
+def test_http_non_lekai_skips_multiple_of_4_checks():
+    cfg = ApplicationConfig(
+        inference=InferenceConfig(
+            type="http",
+            server_generate_url="http://x/generate_accompaniment",
+            model_name="stanley",
+            generation_interval_ticks=2,
+            generation_length_frames=10,
+        )
+    )
+    eng = InferenceEngineFactory.create(cfg)
+    assert hasattr(eng, "generate_accompaniment")
 

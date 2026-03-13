@@ -52,8 +52,10 @@ uv run streammuse-cli [参数...]
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `--server-url` | `str` | `"http://localhost:8000/generate_accompaniment"` | HTTP 推理服务器 URL |
-| `--inference-timeout` | `float` | `30.0` | HTTP 请求超时（秒） |
-| `--inference-type` | `str` | `"http"` | 推理类型：`http`（远端服务器）、`stanley`（本地模型） |
+| `--timeout-s` | `float` | `30.0` | HTTP 请求超时（秒） |
+| `--inference-type` | `str` | `"http"` | 推理类型：`http`（远端服务器，主路径）、`stanley`（本地模型） |
+| `--model-name` | `str` | `"stanley"` | HTTP server 端模型选择：`stanley` 或 `lekai` |
+| `--inference-mode` | `str` | `"sliding_window"` | 透传给 HTTP server 的推理模式提示 |
 | `--checkpoint-path` | `str` | `None` | 模型 checkpoint 路径（`stanley` 模式必填） |
 | `--model-size` | `str` | `"0.12B"` | 模型规模（`stanley` 模式） |
 | `--model-max-seq-len-frames` | `int` | `96` | 模型 context window 帧数 |
@@ -95,7 +97,17 @@ uv run streammuse-cli \
     --output-type composite \
     --log-dir logs/test
 
-# 本地模型（不需要服务器）
+# HTTP 模式 + Lekai server
+uv run streammuse-cli \
+    --input-mode keyboard \
+    --inference-type http \
+    --model-name lekai \
+    --inference-mode sliding_window \
+    --generation-interval-ticks 4 \
+    --generation-length-frames 20 \
+    --server-url http://localhost:8000/generate_accompaniment
+
+# 本地 Stanley 模型（不需要服务器）
 uv run streammuse-cli \
     --input-mode keyboard \
     --inference-type stanley \

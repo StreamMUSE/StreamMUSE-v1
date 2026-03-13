@@ -16,6 +16,7 @@ class TempoConfig:
 InputType = Literal["midi_device", "keyboard", "midi_file", "list"]
 OutputType = Literal["audio", "midi_file", "console", "websocket", "composite"]
 InferenceType = Literal["http", "stanley"]
+ModelName = Literal["stanley", "lekai"]
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,8 @@ class InferenceConfig:
     type: InferenceType = "http"
     server_generate_url: str = "http://localhost:8000/generate_accompaniment"
     timeout_s: float = 30.0
+    model_name: ModelName = "stanley"
+    inference_mode: str = "sliding_window"
     checkpoint_path: Optional[str] = None
     model_size: str = "0.12B"
     model_max_seq_len_frames: int = 96

@@ -39,7 +39,15 @@ def test_http_inference_client_generate_posts_and_parses(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
 
-    client = HttpInferenceClient(HttpInferenceClientConfig(generate_url="http://x/generate_accompaniment", timeout_s=3))
+    client = HttpInferenceClient(
+        HttpInferenceClientConfig(
+            generate_url="http://x/generate_accompaniment",
+            timeout_s=3,
+            model_name="lekai",
+            inference_mode="sliding_window",
+            generation_interval_ticks=4,
+        )
+    )
     acc, timing = client.generate_accompaniment(
         melody_events=[MusicalEvent(tick=0, pitch=60, event_type=EventType.NOTE_ON, velocity=100)],
         generation_start_tick=10,
@@ -48,6 +56,9 @@ def test_http_inference_client_generate_posts_and_parses(monkeypatch):
     )
     assert posted["url"].endswith("/generate_accompaniment")
     assert posted["json"]["generation_start_tick"] == 10
+    assert posted["json"]["generation_interval_ticks"] == 4
+    assert posted["json"]["model_name"] == "lekai"
+    assert posted["json"]["inference_mode"] == "sliding_window"
     assert acc[0].pitch == 64
     assert timing.inference_end_time == 1.3
 

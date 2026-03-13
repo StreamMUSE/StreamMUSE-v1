@@ -66,7 +66,21 @@ def parse_args() -> argparse.Namespace:
         "--server-url",
         type=str,
         default="http://localhost:8000/generate_accompaniment",
-        help="HTTP inference server URL",
+        help="HTTP inference server URL (recommended production path)",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        choices=["stanley", "lekai"],
+        default="stanley",
+        help="Model backend selected on HTTP server",
+    )
+    parser.add_argument(
+        "--inference-mode",
+        type=str,
+        choices=["sliding_window", "stateful"],
+        default="sliding_window",
+        help="Inference mode hint passed to server",
     )
     parser.add_argument("--timeout-s", type=float, default=30.0, help="HTTP request timeout (seconds)")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Path to model checkpoint (for Stanley engine)")
@@ -110,6 +124,8 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         type=args.inference_type,  # type: ignore
         server_generate_url=args.server_url,
         timeout_s=float(args.timeout_s),
+        model_name=getattr(args, "model_name", "stanley"),  # type: ignore
+        inference_mode=getattr(args, "inference_mode", "sliding_window"),
         checkpoint_path=args.checkpoint_path,
         model_size=args.model_size,
         model_max_seq_len_frames=int(args.model_max_seq_len_frames),
