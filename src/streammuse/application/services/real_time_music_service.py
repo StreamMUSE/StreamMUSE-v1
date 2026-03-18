@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
+from streammuse.domain.interfaces.timing_info import TimingInfo
 from streammuse.domain.musical import MusicalEvent
 from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
 
@@ -66,6 +67,85 @@ class RealTimeMusicService:
     @property
     def running(self) -> bool:
         return self._running
+
+    def _event_to_log_dict(self, event: MusicalEvent) -> dict:
+        return {
+            "type": event.event_type.value,
+            "pitch": int(event.pitch),
+            "tick": int(event.tick),
+            "velocity": int(event.velocity),
+            "channel": int(event.channel),
+            "program": int(event.program),
+            "source": str(event.source),
+            "is_placeholder": bool(event.is_placeholder),
+        }
+
+    def _timing_to_log_dict(self, timing: TimingInfo) -> dict:
+        return {
+            "request_arrival_time": float(timing.request_arrival_time),
+            "response_output_time": float(timing.response_output_time),
+            "preprocess_start_time": float(timing.preprocess_start_time),
+            "inference_start_time": float(timing.inference_start_time),
+            "inference_end_time": float(timing.inference_end_time),
+            "postprocess_start_time": float(timing.postprocess_start_time),
+            "round_trip_time": (float(timing.round_trip_time) if timing.round_trip_time is not None else None),
+            "server_processing_duration": (
+                float(timing.server_processing_duration)
+                if timing.server_processing_duration is not None
+                else None
+            ),
+            "total_network_latency": (
+                float(timing.total_network_latency)
+                if timing.total_network_latency is not None
+                else None
+            ),
+        }
+
+    def _build_inference_log_payload(
+        self,
+        *,
+        generation_start_tick: int,
+        melody_events: List[MusicalEvent],
+        acc_events: List[MusicalEvent],
+        timing_info: TimingInfo,
+        request_timestamp: float,
+        response_timestamp: float,
+    ) -> tuple[dict, dict]:
+        engine_config = getattr(self._engine, "_config", None)
+        detail = getattr(self._output, "inference_log_detail", "summary")
+
+        request_full = {
+            "timestamp": request_timestamp,
+            "generation_start_tick": int(generation_start_tick),
+            "generation_length_frames": int(self._generation_length_frames),
+            "generation_interval_ticks": int(self._generation_interval_ticks),
+            "prompt_length_ticks": None,
+            "model_name": getattr(engine_config, "model_name", None),
+            "inference_mode": getattr(engine_config, "inference_mode", None),
+            "melody_notes_count": len(melody_events),
+            "melody_notes": [self._event_to_log_dict(event) for event in melody_events],
+        }
+        response_full = {
+            "timestamp": response_timestamp,
+            "accompaniment_notes_count": len(acc_events),
+            "accompaniment": [self._event_to_log_dict(event) for event in acc_events],
+            "timings": self._timing_to_log_dict(timing_info),
+        }
+
+        if detail == "full":
+            return request_full, response_full
+
+        request_summary = {
+            "timestamp": request_timestamp,
+            "generation_start_tick": int(generation_start_tick),
+            "melody_notes_count": len(melody_events),
+            "generation_length_frames": int(self._generation_length_frames),
+        }
+        response_summary = {
+            "timestamp": response_timestamp,
+            "accompaniment_notes_count": len(acc_events),
+        }
+        return request_summary, response_summary
 
     def _input_worker(self) -> None:
         """Read events from input source and add to queues."""
@@ -207,14 +287,14 @@ class RealTimeMusicService:
 
                 # Log inference details if the output sink supports it
                 if hasattr(self._output, "log_inference"):
-                    request_data = {
-                        "generation_start_tick": generation_start_tick,
-                        "melody_notes_count": len(melody_events),
-                        "generation_length_frames": self._generation_length_frames,
-                    }
-                    response_data = {
-                        "accompaniment_notes_count": len(acc_events),
-                    }
+                    request_data, response_data = self._build_inference_log_payload(
+                        generation_start_tick=generation_start_tick,
+                        melody_events=melody_events,
+                        acc_events=acc_events,
+                        timing_info=timing_info,
+                        request_timestamp=request_send_time,
+                        response_timestamp=response_receive_time,
+                    )
                     self._output.log_inference(  # type: ignore[union-attr]
                         request=request_data,
                         response=response_data,

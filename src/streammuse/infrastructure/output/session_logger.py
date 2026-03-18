@@ -16,10 +16,12 @@ class SessionLoggerOutputSink:
         session_dir: Path,
         include_midi: bool = True,
         include_json: bool = True,
+        inference_log_detail: str = "summary",
     ) -> None:
         self.session_dir = Path(session_dir)
         self.include_midi = include_midi
         self.include_json = include_json
+        self.inference_log_detail = inference_log_detail
 
         self.midi_sink: Optional[MidiFileOutputSink] = None
         self.json_sink: Optional[JsonLoggerOutputSink] = None
@@ -33,7 +35,10 @@ class SessionLoggerOutputSink:
             self.midi_sink = MidiFileOutputSink(midi_config)
 
         if self.include_json:
-            self.json_sink = JsonLoggerOutputSink(self.session_dir)
+            self.json_sink = JsonLoggerOutputSink(
+                self.session_dir,
+                inference_log_detail=self.inference_log_detail,
+            )
 
     def output_event(self, event: MusicalEvent, source: str) -> None:
         if self.midi_sink:

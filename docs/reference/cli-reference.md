@@ -31,7 +31,7 @@ uv run streammuse-cli [参数...]
 |---|---|---|---|
 | `--input-mode` | `str` | `"keyboard"` | 输入模式：`keyboard`、`midi`、`midi_file`、`list` |
 | `--midi-device-name` | `str` | `None` | MIDI 输入设备名称（`midi` 模式） |
-| `--midi-file` | `str` | `None` | MIDI 文件路径（`midi_file` 模式必填） |
+| `--midi-file-path` | `str` | `None` | MIDI 文件路径（`midi_file` 模式必填） |
 | `--midi-file-delay-ticks` | `int` | `0` | MIDI 文件开始前的延迟 ticks |
 
 ---
@@ -42,8 +42,9 @@ uv run streammuse-cli [参数...]
 |---|---|---|---|
 | `--output-type` | `str` | `"console"` | 输出类型：`console`、`audio`、`midi_file`、`websocket`、`json_log`、`session`、`composite` |
 | `--midi-out-port` | `str` | `None` | MIDI 输出端口名称（`audio` 模式） |
-| `--midi-file-output` | `str` | `None` | MIDI 录制输出路径（`midi_file` 模式） |
+| `--midi-file-output-path` | `str` | `None` | MIDI 录制输出路径（`midi_file` 模式） |
 | `--log-dir` | `str` | `None` | 日志目录（`json_log`/`session`/`composite` 使用） |
+| `--inference-log-detail` | `str` | `"summary"` | 推理日志粒度：`summary`（摘要）或 `full`（完整 request/response，体积更大） |
 
 ---
 
@@ -93,9 +94,10 @@ uv run streammuse-cli --input-mode midi --output-type audio
 # MIDI 文件 + 完整日志
 uv run streammuse-cli \
     --input-mode midi_file \
-    --midi-file prompts/C_major/pop909_216_mel.mid \
+    --midi-file-path prompts/C_major/pop909_216_mel.mid \
     --output-type composite \
-    --log-dir logs/test
+    --log-dir logs/test \
+    --inference-log-detail full
 
 # HTTP 模式 + Lekai server
 uv run streammuse-cli \

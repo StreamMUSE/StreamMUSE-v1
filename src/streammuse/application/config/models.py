@@ -14,7 +14,8 @@ class TempoConfig:
 
 
 InputType = Literal["midi_device", "keyboard", "midi_file", "list"]
-OutputType = Literal["audio", "midi_file", "console", "websocket", "composite"]
+OutputType = Literal["audio", "midi_file", "console", "websocket", "composite", "json_log", "session"]
+InferenceLogDetail = Literal["summary", "full"]
 InferenceType = Literal["http", "stanley"]
 ModelName = Literal["stanley", "lekai"]
 
@@ -32,6 +33,7 @@ class OutputConfig:
     type: OutputType = "console"
     midi_out_port: Optional[str] = None
     midi_file_output_path: Optional[str] = None
+    inference_log_detail: InferenceLogDetail = "summary"
 
 
 @dataclass(frozen=True)

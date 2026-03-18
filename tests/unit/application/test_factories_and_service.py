@@ -5,6 +5,7 @@ import pytest
 from streammuse.application.config import ApplicationConfig, InferenceConfig, InputConfig, OutputConfig, TempoConfig
 from streammuse.application.factories import InferenceEngineFactory, InputSourceFactory, OutputSinkFactory
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
+from streammuse.domain.logging import SessionManager
 from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import PlaybackScheduler, Tempo
 
@@ -130,4 +131,30 @@ def test_http_non_lekai_skips_multiple_of_4_checks():
     )
     eng = InferenceEngineFactory.create(cfg)
     assert hasattr(eng, "generate_accompaniment")
+
+
+def test_output_factory_propagates_inference_log_detail_for_json_log(tmp_path):
+    session_manager = SessionManager(base_log_dir=str(tmp_path))
+    session_manager.create_session_directory()
+
+    cfg = ApplicationConfig(
+        output=OutputConfig(type="json_log", inference_log_detail="full"),
+        inference=InferenceConfig(type="http", server_generate_url="http://x/generate_accompaniment"),
+    )
+
+    sink = OutputSinkFactory.create(cfg, session_manager=session_manager)
+    assert getattr(sink, "inference_log_detail", "summary") == "full"
+
+
+def test_output_factory_propagates_inference_log_detail_for_composite_session(tmp_path):
+    session_manager = SessionManager(base_log_dir=str(tmp_path))
+    session_manager.create_session_directory()
+
+    cfg = ApplicationConfig(
+        output=OutputConfig(type="composite", inference_log_detail="full"),
+        inference=InferenceConfig(type="http", server_generate_url="http://x/generate_accompaniment"),
+    )
+
+    sink = OutputSinkFactory.create(cfg, session_manager=session_manager)
+    assert getattr(sink, "inference_log_detail", "summary") == "full"
 

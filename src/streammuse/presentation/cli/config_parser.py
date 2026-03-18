@@ -52,6 +52,13 @@ def parse_args() -> argparse.Namespace:
 
     # Logging configuration
     parser.add_argument("--log-dir", type=str, default="logs", help="Base directory for session logs")
+    parser.add_argument(
+        "--inference-log-detail",
+        type=str,
+        choices=["summary", "full"],
+        default="summary",
+        help="Inference logging detail level (full can significantly increase log size)",
+    )
     parser.add_argument("--enable-performance-tracking", action="store_true", help="Enable detailed performance metrics calculation")
 
     # Inference configuration
@@ -117,6 +124,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         type=args.output_type,  # type: ignore
         midi_out_port=args.midi_out_port,
         midi_file_output_path=args.midi_file_output_path,
+        inference_log_detail=getattr(args, "inference_log_detail", "summary"),  # type: ignore
     )
 
     # Inference config

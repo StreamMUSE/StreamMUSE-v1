@@ -24,6 +24,7 @@ def test_parse_args_defaults() -> None:
         output_type="console",
         midi_out_port=None,
         midi_file_output_path=None,
+        inference_log_detail="summary",
         inference_type="http",
         server_url="http://localhost:8000/generate_accompaniment",
         timeout_s=30.0,
@@ -42,6 +43,7 @@ def test_parse_args_defaults() -> None:
     assert config.tempo.beats_per_bar == 4
     assert config.input.type == "midi_device"
     assert config.output.type == "console"
+    assert config.output.inference_log_detail == "summary"
     assert config.inference.type == "http"
     assert config.inference.server_generate_url == "http://localhost:8000/generate_accompaniment"
     assert config.inference.generation_interval_ticks == 2
@@ -61,6 +63,7 @@ def test_args_to_config_keyboard_input() -> None:
         output_type="audio",
         midi_out_port="Virtual MIDI Port",
         midi_file_output_path=None,
+        inference_log_detail="full",
         inference_type="http",
         server_url="http://example.com/generate",
         timeout_s=60.0,
@@ -80,6 +83,7 @@ def test_args_to_config_keyboard_input() -> None:
     assert config.input.type == "keyboard"
     assert config.output.type == "audio"
     assert config.output.midi_out_port == "Virtual MIDI Port"
+    assert config.output.inference_log_detail == "full"
     assert config.inference.server_generate_url == "http://example.com/generate"
     assert config.inference.timeout_s == 60.0
 
@@ -97,6 +101,7 @@ def test_args_to_config_stanley_engine() -> None:
         output_type="console",
         midi_out_port=None,
         midi_file_output_path=None,
+        inference_log_detail="summary",
         inference_type="stanley",
         server_url="http://localhost:8000/generate_accompaniment",
         timeout_s=30.0,
@@ -131,6 +136,7 @@ def test_args_to_config_midi_file() -> None:
         output_type="midi_file",
         midi_out_port=None,
         midi_file_output_path="/path/to/output.mid",
+        inference_log_detail="full",
         inference_type="http",
         server_url="http://localhost:8000/generate_accompaniment",
         timeout_s=30.0,
@@ -149,3 +155,4 @@ def test_args_to_config_midi_file() -> None:
     assert config.input.midi_file_delay_ticks == 8
     assert config.output.type == "midi_file"
     assert config.output.midi_file_output_path == "/path/to/output.mid"
+    assert config.output.inference_log_detail == "full"

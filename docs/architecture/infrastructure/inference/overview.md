@@ -9,6 +9,10 @@ description: 两种 InferenceEngine 实现的架构与选择指南
 
 所有推理引擎适配器均实现 `InferenceEngine` 协议（见 [domain/interfaces](../../domain/interfaces.md)）。
 
+推理日志支持两种粒度：
+- `summary`（默认）：仅记录请求/响应摘要字段
+- `full`：记录完整 request/response 事件内容（`inferences.json` 体积会显著增大）
+
 ---
 
 ## 三种实现对比

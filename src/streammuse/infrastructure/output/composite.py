@@ -12,6 +12,14 @@ from streammuse.domain.musical import MusicalEvent
 class CompositeOutputSink:
     sinks: List[Any]
 
+    @property
+    def inference_log_detail(self) -> str:
+        for sink in self.sinks:
+            detail = getattr(sink, "inference_log_detail", None)
+            if isinstance(detail, str):
+                return detail
+        return "summary"
+
     def output_event(self, event: MusicalEvent, source: str) -> None:
         for s in self.sinks:
             s.output_event(event, source)

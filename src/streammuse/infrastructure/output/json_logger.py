@@ -12,13 +12,14 @@ from streammuse.domain.musical import MusicalEvent
 
 
 class JsonLoggerOutputSink:
-    def __init__(self, session_dir: Path) -> None:
+    def __init__(self, session_dir: Path, inference_log_detail: str = "summary") -> None:
         self.session_dir = Path(session_dir)
         self.events_file = self.session_dir / "events.jsonl"
         self.inferences_file = self.session_dir / "inferences.json"
         self.inferences: list[InferenceEvent] = []
         self.metrics_calculator = MetricsCalculator()
         self.inference_counter = 0
+        self.inference_log_detail = inference_log_detail
 
     def output_event(self, event: MusicalEvent, source: str) -> None:
         log_event = LogEvent(
@@ -51,12 +52,16 @@ class JsonLoggerOutputSink:
         server_process_ms: float,
     ) -> None:
         self.inference_counter += 1
+        request_data = dict(request)
+        request_data["log_detail"] = self.inference_log_detail
+        response_data = dict(response)
+
         inference = InferenceEvent(
             inference_id=f"inf_{self.inference_counter:03d}",
-            timestamp_request=request.get("timestamp", time.time()),
-            timestamp_response=response.get("timestamp", time.time()),
-            request_data=request,
-            response_data=response,
+            timestamp_request=request_data.get("timestamp", time.time()),
+            timestamp_response=response_data.get("timestamp", time.time()),
+            request_data=request_data,
+            response_data=response_data,
             latency_ms=latency_ms,
             server_process_ms=server_process_ms,
         )

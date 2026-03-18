@@ -54,7 +54,10 @@ class OutputSinkFactory:
         if cfg.type == "json_log":
             if not session_manager:
                 raise ValueError("session_manager is required for json_log output")
-            return JsonLoggerOutputSink(session_manager.get_session_dir())
+            return JsonLoggerOutputSink(
+                session_manager.get_session_dir(),
+                inference_log_detail=cfg.inference_log_detail,
+            )
 
         if cfg.type == "session":
             if not session_manager:
@@ -63,6 +66,7 @@ class OutputSinkFactory:
                 session_dir=session_manager.get_session_dir(),
                 include_midi=True,
                 include_json=True,
+                inference_log_detail=cfg.inference_log_detail,
             )
 
         if cfg.type == "composite":
@@ -70,7 +74,10 @@ class OutputSinkFactory:
                 return CompositeOutputSink(
                     [
                         ConsoleOutputSink(ConsoleOutputConfig()),
-                        SessionLoggerOutputSink(session_manager.get_session_dir()),
+                        SessionLoggerOutputSink(
+                            session_manager.get_session_dir(),
+                            inference_log_detail=cfg.inference_log_detail,
+                        ),
                     ]
                 )
             return CompositeOutputSink(
