@@ -63,6 +63,17 @@ uv run streammuse-cli [参数...]
 | `--generation-length-frames` | `int` | `20` | 每次推理生成的帧数 |
 | `--generation-interval-ticks` | `int` | `2` | 推理触发间隔（ticks） |
 
+### Lekai 模型参数约束
+
+使用 `--model-name lekai` 时，`--generation-length-frames` 必须是 **4 的倍数**（lekai 模型以 4 个 timestep 为一拍进行 tokenization）。
+`--generation-interval-ticks` 仅控制客户端触发频率，不要求是 4 的倍数。
+
+| 参数 | 约束 | 推荐值 |
+|---|---|---|
+| `--generation-length-frames` | 必须是 4 的倍数 | `20` |
+
+不满足约束时 CLI 会报错并提示推荐值。
+
 ---
 
 ## 音乐注入参数

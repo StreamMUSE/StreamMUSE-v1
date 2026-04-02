@@ -61,6 +61,7 @@ class RealTimeMusicService:
         self._event_q: queue.Queue[MusicalEvent] = queue.Queue()
         self._melody_history: List[MusicalEvent] = []
         self._melody_history_lock = threading.Lock()
+        self._last_sent_index: int = 0  # Bug #4: 追踪上次发送到哪个位置
         self._inference_request_queue: queue.Queue[tuple[int, List[MusicalEvent]]] = queue.Queue()
         self._inference_response_queue: queue.Queue[tuple[List[MusicalEvent], int]] = queue.Queue()
 
@@ -204,9 +205,11 @@ class RealTimeMusicService:
             # Trigger inference at generation intervals.
             if tick - last_generation_tick >= self._generation_interval_ticks:
                 with self._melody_history_lock:
-                    melody_snapshot = self._melody_history.copy()
-                if melody_snapshot:
-                    self._inference_request_queue.put((tick, melody_snapshot))
+                    # Bug #4 fix: 只发送上次请求之后新增的事件
+                    new_events = self._melody_history[self._last_sent_index:]
+                    self._last_sent_index = len(self._melody_history)
+                if new_events:
+                    self._inference_request_queue.put((tick, new_events))
                     last_generation_tick = tick
 
             # Process inference responses.

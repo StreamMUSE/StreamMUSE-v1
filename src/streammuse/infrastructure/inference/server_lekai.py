@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -74,24 +75,28 @@ class InjectionStatusResponse(BaseModel):
     runtime_inference_mode: str
 
 
-def _validate_lekai_constraints(model_name: str, generation_interval_ticks: int, generation_length_frames: int) -> None:
+def _validate_lekai_constraints(model_name: str, generation_length_frames: int) -> None:
     if model_name != "lekai":
         return
-    if generation_interval_ticks % 4 != 0:
-        raise HTTPException(status_code=422, detail="lekai requires generation_interval_ticks to be a multiple of 4")
     if generation_length_frames % 4 != 0:
-        raise HTTPException(status_code=422, detail="lekai requires generation_length_frames to be a multiple of 4")
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "generation_length_frames must be a multiple of 4 "
+                f"(model uses fixed 4-timesteps-per-beat tokenization, got {generation_length_frames})"
+            ),
+        )
 
 
 app = FastAPI(title="StreamMUSE Lekai Inference Server")
-backend = LekaiHttpBackend()
+_ENV_CHECKPOINT_PATH = os.environ.get("LEKAI_CHECKPOINT_PATH")
+backend = LekaiHttpBackend(checkpoint_path=_ENV_CHECKPOINT_PATH)
 
 
 @app.post("/generate_accompaniment", response_model=AccompanimentResponse)
 async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResponse:
     _validate_lekai_constraints(
         model_name=request.model_name,
-        generation_interval_ticks=request.generation_interval_ticks,
         generation_length_frames=request.generation_length_frames,
     )
 
@@ -179,3 +184,28 @@ async def injection_status() -> InjectionStatusResponse:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# Bug #7 fix: 添加启动入口
+def main() -> None:
+    import uvicorn
+
+    host = os.environ.get("LEKAI_SERVER_HOST", "0.0.0.0")
+    port = int(os.environ.get("LEKAI_SERVER_PORT", "8000"))
+
+    if _ENV_CHECKPOINT_PATH:
+        print(f"[LekaiServer] LEKAI_CHECKPOINT_PATH={_ENV_CHECKPOINT_PATH}")
+    else:
+        print("[LekaiServer] LEKAI_CHECKPOINT_PATH not set")
+
+    if backend._has_real_model():
+        print("[LekaiServer] Inference mode: real PianoLLaMA model")
+    else:
+        print("[LekaiServer] Inference mode: rule-based stub")
+
+    print(f"Listening on http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

@@ -57,6 +57,8 @@ description: StreamMUSE CLI 所有参数说明
 | `--generation-length-frames` | `int` | `20` | — | 每次推理生成的帧数 |
 | `--generation-interval-ticks` | `int` | `2` | — | 两次推理之间的间隔 tick 数 |
 
+> **注意**：使用 `--model-name lekai` 时，`--generation-length-frames` 必须是 4 的倍数；`--generation-interval-ticks` 不受该约束。详见 [CLI 参考](../reference/cli-reference.md#lekai-模型参数约束)。
+
 ---
 
 ## 运行时选项

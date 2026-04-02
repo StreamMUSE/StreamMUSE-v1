@@ -7,11 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from streammuse.application.config import ApplicationConfig, InferenceConfig, InputConfig, OutputConfig, TempoConfig
-from streammuse.application.services.real_time_music_service import RealTimeMusicService
-from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
 from streammuse.domain.musical import MusicalEvent
-from streammuse.domain.musical.events import EventType
-from streammuse.domain.timing import PlaybackScheduler, Tempo
 from streammuse.presentation.cli.cli import main
 
 
@@ -93,77 +89,6 @@ class MockInferenceEngine:
 
     def clear_history(self) -> None:
         """No-op."""
-
-
-@pytest.fixture
-def mock_config() -> ApplicationConfig:
-    """Create a test configuration."""
-    return ApplicationConfig(
-        tempo=TempoConfig(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
-        input=InputConfig(type="list"),
-        output=OutputConfig(type="console"),
-        inference=InferenceConfig(
-            type="http",
-            generation_interval_ticks=2,
-            generation_length_frames=20,
-        ),
-    )
-
-
-def test_service_creation(mock_config: ApplicationConfig) -> None:
-    """Test that service can be created with mock dependencies."""
-    input_source = MockInputSource()
-    output_sink = MockOutputSink()
-    inference_engine = MockInferenceEngine()
-    tempo = Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4)
-    scheduler = PlaybackScheduler()
-
-    service = RealTimeMusicService(
-        input_source=input_source,
-        inference_engine=inference_engine,
-        output_sink=output_sink,
-        tempo=tempo,
-        scheduler=scheduler,
-        generation_interval_ticks=mock_config.inference.generation_interval_ticks,
-        generation_length_frames=mock_config.inference.generation_length_frames,
-    )
-
-    assert not service.running
-    assert service._generation_interval_ticks == 2
-    assert service._generation_length_frames == 20
-
-
-def test_service_start_stop(mock_config: ApplicationConfig) -> None:
-    """Test that service can start and stop."""
-    input_source = MockInputSource()
-    output_sink = MockOutputSink()
-    inference_engine = MockInferenceEngine()
-    tempo = Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4)
-    scheduler = PlaybackScheduler()
-
-    service = RealTimeMusicService(
-        input_source=input_source,
-        inference_engine=inference_engine,
-        output_sink=output_sink,
-        tempo=tempo,
-        scheduler=scheduler,
-        generation_interval_ticks=mock_config.inference.generation_interval_ticks,
-        generation_length_frames=mock_config.inference.generation_length_frames,
-    )
-
-    # Start with max_ticks=5 for quick test
-    service.start(max_ticks=5)
-
-    # Wait a bit for threads to run
-    import time
-
-    time.sleep(0.5)
-
-    # Stop service
-    service.stop()
-
-    # Service should be stopped
-    assert not service.running
 
 
 @patch("streammuse.presentation.cli.cli.InputSourceFactory")

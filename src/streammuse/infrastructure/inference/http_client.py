@@ -20,6 +20,7 @@ class HttpInferenceClientConfig:
     model_name: str = "stanley"
     inference_mode: str = "sliding_window"
     generation_interval_ticks: int = 2
+    checkpoint_path: Optional[str] = None
 
 
 class HttpInferenceClient(InferenceEngine):
@@ -53,6 +54,7 @@ class HttpInferenceClient(InferenceEngine):
             "generation_interval_ticks": int(self._config.generation_interval_ticks),
             "model_name": str(self._config.model_name),
             "inference_mode": str(self._config.inference_mode),
+            "checkpoint_path": self._config.checkpoint_path,
             "prompt_length_ticks": (int(prompt_length_ticks) if prompt_length_ticks is not None else None),
         }
         # Drop nulls for cleaner wire format.

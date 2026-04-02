@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from streammuse.infrastructure.inference.server_lekai import app
 
@@ -40,20 +41,26 @@ def test_generate_accompaniment_success():
         assert key in data["timings"]
 
 
-def test_lekai_interval_must_be_multiple_of_4():
+@pytest.mark.parametrize(
+    ("generation_interval_ticks", "generation_length_frames", "expected_status"),
+    [
+        (3, 20, 200),
+        (2, 17, 422),
+    ],
+)
+def test_lekai_validates_generation_length_only(
+    generation_interval_ticks,
+    generation_length_frames,
+    expected_status,
+):
     payload = _base_generate_payload()
-    payload["generation_interval_ticks"] = 2
+    payload["generation_interval_ticks"] = generation_interval_ticks
+    payload["generation_length_frames"] = generation_length_frames
     resp = client.post("/generate_accompaniment", json=payload)
-    assert resp.status_code == 422
-    assert "multiple of 4" in resp.text
-
-
-def test_lekai_length_must_be_multiple_of_4():
-    payload = _base_generate_payload()
-    payload["generation_length_frames"] = 10
-    resp = client.post("/generate_accompaniment", json=payload)
-    assert resp.status_code == 422
-    assert "multiple of 4" in resp.text
+    assert resp.status_code == expected_status
+    if expected_status == 422:
+        assert "generation_length_frames" in resp.text
+        assert "multiple of 4" in resp.text
 
 
 def test_non_lekai_skips_multiple_of_4_validation():

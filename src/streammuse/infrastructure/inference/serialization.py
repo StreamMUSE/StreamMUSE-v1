@@ -28,13 +28,18 @@ def event_to_dict(event: MusicalEvent) -> Dict[str, Any]:
 
 
 def event_from_dict(d: Dict[str, Any]) -> MusicalEvent:
+    # Bug #1 fix: Handle null values from server (velocity/channel/program may be null)
+    raw_velocity = d.get("velocity")
+    raw_channel = d.get("channel")
+    raw_program = d.get("program")
+
     return MusicalEvent(
         tick=int(d.get("tick", 0)),
         pitch=int(d.get("pitch", -1)),
         event_type=EventType(str(d.get("type"))),
-        velocity=int(d.get("velocity", 100)),
-        channel=int(d.get("channel", 0)),
-        program=int(d.get("program", 0)),
+        velocity=int(raw_velocity) if raw_velocity is not None else 100,
+        channel=int(raw_channel) if raw_channel is not None else 0,
+        program=int(raw_program) if raw_program is not None else 0,
         is_placeholder=bool(d.get("is_placeholder", False)),
     )
 

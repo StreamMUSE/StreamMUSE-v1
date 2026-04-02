@@ -19,10 +19,12 @@ class InferenceEngineFactory:
 
         if cfg.type == "http":
             if cfg.model_name == "lekai":
-                if int(cfg.generation_interval_ticks) % 4 != 0:
-                    raise ValueError("lekai requires generation_interval_ticks to be a multiple of 4")
                 if int(cfg.generation_length_frames) % 4 != 0:
-                    raise ValueError("lekai requires generation_length_frames to be a multiple of 4")
+                    raise ValueError(
+                        f"lekai model requires --generation-length-frames to be a multiple of 4 "
+                        f"(got {cfg.generation_length_frames}). "
+                        f"Recommended: --generation-length-frames 20"
+                    )
             return HttpInferenceClient(
                 HttpInferenceClientConfig(
                     generate_url=cfg.server_generate_url,
@@ -30,6 +32,7 @@ class InferenceEngineFactory:
                     model_name=cfg.model_name,
                     inference_mode=cfg.inference_mode,
                     generation_interval_ticks=int(cfg.generation_interval_ticks),
+                    checkpoint_path=cfg.checkpoint_path,
                 )
             )
 

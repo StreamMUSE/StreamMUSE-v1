@@ -59,8 +59,51 @@ def test_http_inference_client_generate_posts_and_parses(monkeypatch):
     assert posted["json"]["generation_interval_ticks"] == 4
     assert posted["json"]["model_name"] == "lekai"
     assert posted["json"]["inference_mode"] == "sliding_window"
+    assert "checkpoint_path" not in posted["json"]
     assert acc[0].pitch == 64
     assert timing.inference_end_time == 1.3
+
+
+def test_http_inference_client_generate_includes_checkpoint_path(monkeypatch):
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["json"] = json
+        return _FakeResponse(
+            {
+                "accompaniment": [],
+                "timings": {
+                    "request_arrival_time": 1.0,
+                    "response_output_time": 2.0,
+                    "preprocess_start_time": 1.1,
+                    "inference_start_time": 1.2,
+                    "inference_end_time": 1.3,
+                    "postprocess_start_time": 1.4,
+                },
+                "generation_start_tick": 10,
+            }
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = HttpInferenceClient(
+        HttpInferenceClientConfig(
+            generate_url="http://x/generate_accompaniment",
+            model_name="lekai",
+            inference_mode="sliding_window",
+            generation_interval_ticks=4,
+            checkpoint_path="/tmp/lekai.ckpt",
+        )
+    )
+
+    client.generate_accompaniment(
+        melody_events=[MusicalEvent(tick=0, pitch=60, event_type=EventType.NOTE_ON, velocity=100)],
+        generation_start_tick=10,
+        generation_length_frames=20,
+        prompt_length_ticks=None,
+    )
+
+    assert posted["json"]["checkpoint_path"] == "/tmp/lekai.ckpt"
 
 
 def test_http_inference_client_inject_and_clear(monkeypatch):

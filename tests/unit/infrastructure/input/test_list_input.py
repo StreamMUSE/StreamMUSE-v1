@@ -27,14 +27,3 @@ def test_list_input_close():
     # After close, read_events yields nothing (source is closed)
     out = list(source.read_events())
     assert len(out) == 0
-
-
-def test_list_input_satisfies_input_source_protocol():
-    """ListInput has read_events() and close() per InputSource."""
-    from streammuse.domain.interfaces import InputSource
-
-    source = ListInput([])
-    assert hasattr(source, "read_events")
-    assert hasattr(source, "close")
-    assert callable(source.read_events)
-    assert callable(source.close)

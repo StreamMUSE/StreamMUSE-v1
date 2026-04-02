@@ -74,6 +74,39 @@ uv run streammuse-cli \
 
 ---
 
+## 使用 Lekai 模型
+
+Lekai 是另一种基于 LLaMA 架构的伴奏生成模型。使用 Lekai 需要启动专门的推理服务器：
+
+```bash
+# 终端 1：启动 Lekai 推理服务器
+# 注意：需要设置 checkpoint 路径（可选，未设置则使用规则 stub）
+LEKAI_CHECKPOINT_PATH=path/to/lekai_checkpoint.pt \
+    uvicorn src.streammuse.infrastructure.inference.server_lekai:app \
+    --host 0.0.0.0 --port 8000
+
+# 或使用直接启动方式
+python -m src.streammuse.infrastructure.inference.server_lekai
+
+# 终端 2：启动 CLI 客户端
+# 注意：lekai 要求 generation-length-frames 为 4 的倍数（generation-interval-ticks 无此约束）
+uv run streammuse-cli \
+    --input-mode keyboard \
+    --model-name lekai \
+    --generation-interval-ticks 4 \
+    --generation-length-frames 20
+```
+
+### Lekai 服务器环境变量
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `LEKAI_CHECKPOINT_PATH` | `None` | 模型 checkpoint 路径（可选） |
+| `LEKAI_SERVER_HOST` | `0.0.0.0` | 服务器监听地址 |
+| `LEKAI_SERVER_PORT` | `8000` | 服务器监听端口 |
+
+---
+
 ## 本机端到端运行（stanley 引擎）
 
 若想在单进程中运行（无 HTTP 服务器），使用 `--inference-type stanley`：

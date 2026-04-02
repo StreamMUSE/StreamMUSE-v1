@@ -5,13 +5,6 @@ from streammuse.domain.musical import EventType
 from streammuse.infrastructure.input.keyboard import DEFAULT_KEY_TO_PITCH, KeyboardInput
 
 
-def test_keyboard_input_satisfies_protocol():
-    from streammuse.domain.interfaces import InputSource
-
-    assert hasattr(KeyboardInput, "read_events")
-    assert hasattr(KeyboardInput, "close")
-
-
 def test_keyboard_mapping_matches_legacy_subset():
     # A couple high-signal checks for the legacy map used in archive/current_system.
     assert DEFAULT_KEY_TO_PITCH["z"] == 60

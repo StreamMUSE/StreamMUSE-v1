@@ -91,32 +91,34 @@ def test_real_time_music_service_emits_ticks_and_user_events():
     assert any(e[0] == "user" and e[1].pitch == 60 for e in out.events)
 
 
-def test_http_lekai_requires_interval_multiple_of_4():
+@pytest.mark.parametrize(
+    ("generation_interval_ticks", "generation_length_frames", "should_raise"),
+    [
+        (3, 16, False),
+        (2, 20, False),
+        (2, 17, True),
+    ],
+)
+def test_http_lekai_validates_generation_length_only(
+    generation_interval_ticks,
+    generation_length_frames,
+    should_raise,
+):
     cfg = ApplicationConfig(
         inference=InferenceConfig(
             type="http",
             server_generate_url="http://x/generate_accompaniment",
             model_name="lekai",
-            generation_interval_ticks=2,
-            generation_length_frames=20,
+            generation_interval_ticks=generation_interval_ticks,
+            generation_length_frames=generation_length_frames,
         )
     )
-    with pytest.raises(ValueError, match="multiple of 4"):
-        InferenceEngineFactory.create(cfg)
-
-
-def test_http_lekai_requires_length_multiple_of_4():
-    cfg = ApplicationConfig(
-        inference=InferenceConfig(
-            type="http",
-            server_generate_url="http://x/generate_accompaniment",
-            model_name="lekai",
-            generation_interval_ticks=4,
-            generation_length_frames=10,
-        )
-    )
-    with pytest.raises(ValueError, match="multiple of 4"):
-        InferenceEngineFactory.create(cfg)
+    if should_raise:
+        with pytest.raises(ValueError, match="generation-length-frames.*multiple of 4"):
+            InferenceEngineFactory.create(cfg)
+    else:
+        eng = InferenceEngineFactory.create(cfg)
+        assert hasattr(eng, "generate_accompaniment")
 
 
 def test_http_non_lekai_skips_multiple_of_4_checks():
@@ -133,25 +135,29 @@ def test_http_non_lekai_skips_multiple_of_4_checks():
     assert hasattr(eng, "generate_accompaniment")
 
 
-def test_output_factory_propagates_inference_log_detail_for_json_log(tmp_path):
-    session_manager = SessionManager(base_log_dir=str(tmp_path))
-    session_manager.create_session_directory()
-
+def test_http_factory_propagates_checkpoint_path_for_http_client():
     cfg = ApplicationConfig(
-        output=OutputConfig(type="json_log", inference_log_detail="full"),
-        inference=InferenceConfig(type="http", server_generate_url="http://x/generate_accompaniment"),
+        inference=InferenceConfig(
+            type="http",
+            server_generate_url="http://x/generate_accompaniment",
+            model_name="lekai",
+            generation_interval_ticks=4,
+            generation_length_frames=20,
+            checkpoint_path="/tmp/lekai.ckpt",
+        )
     )
 
-    sink = OutputSinkFactory.create(cfg, session_manager=session_manager)
-    assert getattr(sink, "inference_log_detail", "summary") == "full"
+    eng = InferenceEngineFactory.create(cfg)
+    assert getattr(eng, "_config").checkpoint_path == "/tmp/lekai.ckpt"
 
 
-def test_output_factory_propagates_inference_log_detail_for_composite_session(tmp_path):
+@pytest.mark.parametrize("output_type", ["json_log", "composite"])
+def test_output_factory_propagates_inference_log_detail(tmp_path, output_type):
     session_manager = SessionManager(base_log_dir=str(tmp_path))
     session_manager.create_session_directory()
 
     cfg = ApplicationConfig(
-        output=OutputConfig(type="composite", inference_log_detail="full"),
+        output=OutputConfig(type=output_type, inference_log_detail="full"),
         inference=InferenceConfig(type="http", server_generate_url="http://x/generate_accompaniment"),
     )
 
