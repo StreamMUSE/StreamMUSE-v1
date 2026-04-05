@@ -1,0 +1,152 @@
+{
+  "timestamp": 1775171697.244786,
+  "url": "http://127.0.0.1:8016/generate_accompaniment",
+  "num_requests": 2,
+  "warmup_requests": 1,
+  "results": [
+    {
+      "generation_length_frames": 8,
+      "generation_interval_ticks": 2,
+      "count": 2,
+      "min_ms": 185.13979110866785,
+      "max_ms": 405.15654208138585,
+      "mean_ms": 295.14816659502685,
+      "p50_ms": 295.14816659502685,
+      "p95_ms": 394.15570453274995,
+      "p99_ms": 402.95637457165867,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 8,
+      "generation_interval_ticks": 4,
+      "count": 2,
+      "min_ms": 286.00204177200794,
+      "max_ms": 287.56466694176197,
+      "mean_ms": 286.78335435688496,
+      "p50_ms": 286.78335435688496,
+      "p95_ms": 287.48653568327427,
+      "p99_ms": 287.54904069006443,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 8,
+      "generation_interval_ticks": 8,
+      "count": 2,
+      "min_ms": 206.18520816788077,
+      "max_ms": 297.4337083287537,
+      "mean_ms": 251.80945824831724,
+      "p50_ms": 251.80945824831724,
+      "p95_ms": 292.87128332071006,
+      "p99_ms": 296.521223327145,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 12,
+      "generation_interval_ticks": 2,
+      "count": 2,
+      "min_ms": 435.9765420667827,
+      "max_ms": 629.1043749079108,
+      "mean_ms": 532.5404584873468,
+      "p50_ms": 532.5404584873468,
+      "p95_ms": 619.4479832658544,
+      "p99_ms": 627.1730965794995,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 12,
+      "generation_interval_ticks": 4,
+      "count": 2,
+      "min_ms": 344.15333392098546,
+      "max_ms": 500.1195832155645,
+      "mean_ms": 422.136458568275,
+      "p50_ms": 422.136458568275,
+      "p95_ms": 492.32127075083554,
+      "p99_ms": 498.5599207226187,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 12,
+      "generation_interval_ticks": 8,
+      "count": 2,
+      "min_ms": 301.3532077893615,
+      "max_ms": 506.98758428916335,
+      "mean_ms": 404.1703960392624,
+      "p50_ms": 404.1703960392624,
+      "p95_ms": 496.70586546417326,
+      "p99_ms": 504.93124052416533,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 16,
+      "generation_interval_ticks": 2,
+      "count": 2,
+      "min_ms": 368.8560831360519,
+      "max_ms": 1024.9330829828978,
+      "mean_ms": 696.8945830594748,
+      "p50_ms": 696.8945830594748,
+      "p95_ms": 992.1292329905555,
+      "p99_ms": 1018.3723129844293,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 16,
+      "generation_interval_ticks": 4,
+      "count": 2,
+      "min_ms": 509.80866700410843,
+      "max_ms": 683.0624998547137,
+      "mean_ms": 596.435583429411,
+      "p50_ms": 596.435583429411,
+      "p95_ms": 674.3998082121834,
+      "p99_ms": 681.3299615262076,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 16,
+      "generation_interval_ticks": 8,
+      "count": 2,
+      "min_ms": 495.63350016251206,
+      "max_ms": 662.3231251724064,
+      "mean_ms": 578.9783126674592,
+      "p50_ms": 578.9783126674592,
+      "p95_ms": 653.9886439219117,
+      "p99_ms": 660.6562289223075,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 20,
+      "generation_interval_ticks": 2,
+      "count": 2,
+      "min_ms": 451.63691602647305,
+      "max_ms": 730.5819159373641,
+      "mean_ms": 591.1094159819186,
+      "p50_ms": 591.1094159819186,
+      "p95_ms": 716.6346659418195,
+      "p99_ms": 727.7924659382552,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 20,
+      "generation_interval_ticks": 4,
+      "count": 2,
+      "min_ms": 1383.4939170628786,
+      "max_ms": 28526.230459101498,
+      "mean_ms": 14954.862188082188,
+      "p50_ms": 14954.862188082188,
+      "p95_ms": 27169.093631999567,
+      "p99_ms": 28254.803093681112,
+      "status_code": 200
+    },
+    {
+      "generation_length_frames": 20,
+      "generation_interval_ticks": 8,
+      "count": 2,
+      "min_ms": 954.6742923557758,
+      "max_ms": 959.2814999632537,
+      "mean_ms": 956.9778961595148,
+      "p50_ms": 956.9778961595148,
+      "p95_ms": 959.0511395828798,
+      "p99_ms": 959.235427887179,
+      "status_code": 200
+    }
+  ]
+}
