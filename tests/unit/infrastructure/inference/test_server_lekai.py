@@ -91,3 +91,24 @@ def test_inject_clear_and_status():
     status_resp2 = client.get("/injection_status")
     assert status_resp2.status_code == 200
     assert status_resp2.json()["is_injected"] is False
+
+
+def test_runtime_info_contract():
+    resp = client.get("/runtime_info")
+    assert resp.status_code == 200
+    data = resp.json()
+    for key in [
+        "mode",
+        "has_real_model",
+        "resolved_device",
+        "resolved_dtype",
+        "checkpoint_path",
+        "checkpoint_format",
+        "fallback_reason",
+        "load_time_ms",
+        "warmup_time_ms",
+        "use_cache",
+        "runtime_model_name",
+        "runtime_inference_mode",
+    ]:
+        assert key in data

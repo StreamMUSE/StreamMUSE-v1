@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -32,10 +32,12 @@ class PianoLLaMAAdapter:
         model: PianoLLaMA,
         tokenizer: PianoRollTokenizer,
         device: str = "cpu",
+        use_cache: bool = True,
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.use_cache = use_cache
         self.model.eval()
         
     @classmethod
@@ -43,6 +45,8 @@ class PianoLLaMAAdapter:
         cls,
         checkpoint_path: str,
         device: str = "cpu",
+        dtype: Optional[torch.dtype] = None,
+        use_cache: bool = True,
     ) -> "PianoLLaMAAdapter":
         """Load model from checkpoint and create adapter."""
         from .config import ModelConfig
@@ -56,11 +60,13 @@ class PianoLLaMAAdapter:
             model_path=checkpoint_path,
             model_config=model_config,
             device=device,
+            dtype=dtype,
+            use_cache=use_cache,
         )
         
         tokenizer = PianoRollTokenizer(patch_h=1, patch_w=4)
         
-        return cls(model=model, tokenizer=tokenizer, device=device)
+        return cls(model=model, tokenizer=tokenizer, device=device, use_cache=use_cache)
     
     def generate_from_beats(
         self,
@@ -140,7 +146,7 @@ class PianoLLaMAAdapter:
                     outputs = self.model(
                         input_ids=generated[:, -1:] if past_key_values else generated,
                         past_key_values=past_key_values,
-                        use_cache=True,
+                          use_cache=self.use_cache,
                     )
                     
                     logits = outputs.logits[:, -1, :]

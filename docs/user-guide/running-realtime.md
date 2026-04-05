@@ -80,13 +80,14 @@ Lekai 是另一种基于 LLaMA 架构的伴奏生成模型。使用 Lekai 需要
 
 ```bash
 # 终端 1：启动 Lekai 推理服务器
-# 注意：需要设置 checkpoint 路径（可选，未设置则使用规则 stub）
-LEKAI_CHECKPOINT_PATH=path/to/lekai_checkpoint.pt \
-    uvicorn src.streammuse.infrastructure.inference.server_lekai:app \
-    --host 0.0.0.0 --port 8000
+# 注意：设置 checkpoint 路径后会进入 real model；未设置时使用 rule stub
+LEKAI_CHECKPOINT_PATH=path/to/lekai_checkpoint.safetensors \
+LEKAI_DEVICE=auto \
+LEKAI_DTYPE=auto \
+python -m streammuse.infrastructure.inference.server_lekai
 
 # 或使用直接启动方式
-python -m src.streammuse.infrastructure.inference.server_lekai
+uv run python -m streammuse.infrastructure.inference.server_lekai
 
 # 终端 2：启动 CLI 客户端
 # 注意：lekai 要求 generation-length-frames 为 4 的倍数（generation-interval-ticks 无此约束）
@@ -94,7 +95,21 @@ uv run streammuse-cli \
     --input-mode keyboard \
     --model-name lekai \
     --generation-interval-ticks 4 \
-    --generation-length-frames 20
+    --generation-length-frames 16
+```
+
+### macOS Apple Silicon 建议
+
+在 Apple Silicon（M1/M2/M3）上建议先使用以下默认值：
+
+1. `LEKAI_DEVICE=auto`（优先 `mps`，失败可回退）。
+2. `LEKAI_DTYPE=auto`（当前策略下 `mps` 默认 `float16`）。
+3. `generation-length-frames` 从 `8~16` 起步，再根据延迟逐步调高。
+
+可通过以下命令确认 server 运行模式和设备：
+
+```bash
+curl -s http://127.0.0.1:8000/runtime_info
 ```
 
 ### Lekai 服务器环境变量
@@ -102,6 +117,13 @@ uv run streammuse-cli \
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `LEKAI_CHECKPOINT_PATH` | `None` | 模型 checkpoint 路径（可选） |
+| `LEKAI_DEVICE` | `auto` | 设备选择：`auto` / `mps` / `cpu` / `cuda` |
+| `LEKAI_DTYPE` | `auto` | 精度选择：`auto` / `float32` / `float16` |
+| `LEKAI_ENABLE_MPS_FALLBACK` | `true` | `mps` 加载失败时是否自动回退到 CPU |
+| `LEKAI_USE_CACHE` | `true` | 生成时是否使用 KV cache |
+| `LEKAI_WARMUP_STEPS` | `1` | 启动后 warmup 的最小生成步数 |
+| `LEKAI_MAX_GENERATION_LENGTH_FRAMES` | `None` | 可选上限，限制每次生成长度 |
+| `LEKAI_MAX_PROMPT_TICKS` | `None` | 可选上限，限制 prompt 长度 |
 | `LEKAI_SERVER_HOST` | `0.0.0.0` | 服务器监听地址 |
 | `LEKAI_SERVER_PORT` | `8000` | 服务器监听端口 |
 

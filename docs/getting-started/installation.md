@@ -61,6 +61,26 @@ sudo apt-get install fluidsynth
 
 本地模式需要 CUDA 12.8+ 及对应版本的 PyTorch。若仅使用 HTTP 模式（对接推理服务器），则不需要 GPU。
 
+### macOS Apple Silicon（Lekai 本地推理）
+
+在 M1/M2/M3 上运行 Lekai 本地服务时，建议：
+
+1. 使用项目虚拟环境中的 PyTorch（`uv sync` 后自动安装）。
+2. 启动前确认 MPS 可用：
+
+```bash
+uv run python -c "import torch; print(torch.backends.mps.is_built(), torch.backends.mps.is_available())"
+```
+
+3. 如果遇到 MPS 不支持的算子，可设置 `LEKAI_ENABLE_MPS_FALLBACK=true`，让服务自动回退到 CPU。
+4. 首次验证建议用较短生成长度（如 `generation-length-frames=8~16`），降低内存压力。
+
+常见问题：
+
+1. `ModuleNotFoundError`：请确保从仓库根目录执行命令，或使用 `uv run ...`。
+2. `state_dict` key mismatch：确认 checkpoint 与当前模型结构匹配，优先使用 `.safetensors`。
+3. 推理延迟过高：先降低 `generation-length-frames`，再提高 `generation-interval-ticks`。
+
 ---
 
 ## 下一步

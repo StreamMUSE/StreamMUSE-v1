@@ -124,3 +124,79 @@ def test_trim_histories_keeps_recent_window_only():
 
     assert all(int(e["tick"]) >= 30 for e in backend._melody_history)
     assert all(int(e["tick"]) >= 30 for e in backend._accompaniment_history)
+
+
+def test_runtime_info_contract_default_stub():
+    backend = LekaiHttpBackend()
+    info = backend.runtime_info()
+    assert info["mode"] == "rule_stub"
+    assert info["has_real_model"] is False
+    assert "resolved_device" in info
+    assert "resolved_dtype" in info
+
+
+def test_generate_respects_generation_length_cap(monkeypatch):
+    monkeypatch.setenv("LEKAI_MAX_GENERATION_LENGTH_FRAMES", "8")
+    backend = LekaiHttpBackend()
+
+    accompaniment, _ = backend.generate(
+        melody_events=[_note_on(60, 0)],
+        generation_start_tick=4,
+        generation_length_frames=20,
+        generation_interval_ticks=4,
+        prompt_length_ticks=None,
+        inference_mode="sliding_window",
+        model_name="lekai",
+        checkpoint_path=None,
+    )
+
+    note_offs = [e for e in accompaniment if e["type"] == "note_off"]
+    assert note_offs
+    assert max(int(e["tick"]) for e in note_offs) == 12
+
+
+def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
+    ckpt = tmp_path / "model.safetensors"
+    ckpt.write_bytes(b"dummy")
+
+    monkeypatch.setenv("LEKAI_DEVICE", "mps")
+    monkeypatch.setenv("LEKAI_DTYPE", "auto")
+    monkeypatch.setenv("LEKAI_ENABLE_MPS_FALLBACK", "true")
+    monkeypatch.setenv("LEKAI_WARMUP_STEPS", "1")
+
+    calls: list[str] = []
+
+    class _DummyAdapter:
+        BAR_TOKEN = 255
+
+        def generate_from_beats(self, *args, **kwargs):
+            return [[169]]
+
+    def _fake_from_checkpoint(checkpoint_path: str, device: str, dtype=None, use_cache: bool = True):
+        _ = checkpoint_path, dtype, use_cache
+        calls.append(device)
+        if device == "mps":
+            raise RuntimeError("mps unsupported op")
+        return _DummyAdapter()
+
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_model.inference_adapter.PianoLLaMAAdapter.from_checkpoint",
+        _fake_from_checkpoint,
+    )
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_model.MidiConverter.MidiConverter",
+        lambda ticks_per_beat: object(),
+    )
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_model.my_tokenizer.PianoRollTokenizer",
+        lambda patch_h, patch_w: object(),
+    )
+
+    backend = LekaiHttpBackend()
+    backend._load_model(str(ckpt))
+
+    info = backend.runtime_info()
+    assert calls == ["mps", "cpu"]
+    assert info["mode"] == "real_model"
+    assert info["resolved_device"] == "cpu"
+    assert str(info["fallback_reason"]).startswith("mps_load_failed:")

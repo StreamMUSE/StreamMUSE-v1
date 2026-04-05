@@ -1,25 +1,25 @@
 from pathlib import Path
+from typing import Any
+
 import pretty_midi
 import torch
 from transformers import LlamaConfig
 import safetensors.torch
 import os
-import sys
-
-# Add project root to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from lekai_model.PianoDataset import PianoDataset
 from datetime import datetime
-from lekai_model.config import ModelConfig, TrainingConfig
-from lekai_model.model import PianoLLaMA
-from lekai_model.Token2Midi import tokens_to_midi
 import numpy as np
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+from ..runtime_device import dtype_to_name, resolve_device, resolve_dtype
+from .PianoDataset import PianoDataset
+from .config import ModelConfig, TrainingConfig
+from .model import PianoLLaMA
+from .Token2Midi import tokens_to_midi
 
 
-def setup_model_configs_llama(model_config: ModelConfig):
+device = resolve_device("auto")
+
+
+def setup_model_configs_llama(model_config: ModelConfig, *, use_cache: bool = True):
     """创建LLaMA配置"""
     token_config = LlamaConfig(
         vocab_size=model_config.vocab_size,
@@ -33,10 +33,95 @@ def setup_model_configs_llama(model_config: ModelConfig):
         eos_token_id=model_config.eos_token_id,
         rope_theta=model_config.rope_theta,
         attention_dropout=model_config.dropout,
-        use_cache=True,
+        use_cache=use_cache,
         initializer_range=0.02,
     )
     return token_config
+
+
+def infer_checkpoint_format(model_path: str) -> str:
+    suffix = Path(model_path).suffix.lower()
+    if suffix == ".safetensors":
+        return "safetensors"
+    if suffix in {".pt", ".pth", ".ckpt"}:
+        return suffix[1:]
+    return "unknown"
+
+
+def _extract_state_dict(payload: Any) -> dict[str, torch.Tensor]:
+    if isinstance(payload, dict) and payload:
+        if all(isinstance(v, torch.Tensor) for v in payload.values()):
+            return payload  # type: ignore[return-value]
+        for candidate_key in ("state_dict", "model_state_dict", "model"):
+            candidate = payload.get(candidate_key)
+            if isinstance(candidate, dict) and candidate and all(isinstance(v, torch.Tensor) for v in candidate.values()):
+                return candidate  # type: ignore[return-value]
+    raise ValueError(
+        "Unsupported checkpoint structure. Expected a tensor dict or a dict containing "
+        "'state_dict' / 'model_state_dict' / 'model'."
+    )
+
+
+def _strip_prefix_all(state_dict: dict[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
+    if not state_dict:
+        return state_dict
+    keys = list(state_dict.keys())
+    if all(k.startswith(prefix) for k in keys):
+        return {k[len(prefix):]: v for k, v in state_dict.items()}
+    return state_dict
+
+
+def _add_prefix_missing(state_dict: dict[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
+    return {k if k.startswith(prefix) else f"{prefix}{k}": v for k, v in state_dict.items()}
+
+
+def load_state_dict_with_metadata(model_path: str) -> tuple[dict[str, torch.Tensor], str, int]:
+    checkpoint_format = infer_checkpoint_format(model_path)
+    if checkpoint_format == "unknown":
+        raise ValueError(
+            f"Unsupported checkpoint extension for {model_path}. "
+            "Supported: .safetensors, .pt, .pth, .ckpt"
+        )
+
+    if checkpoint_format == "safetensors":
+        raw = safetensors.torch.load_file(model_path)
+    else:
+        raw = torch.load(model_path, map_location="cpu")
+
+    state_dict = _extract_state_dict(raw)
+    tensor_count = len(state_dict)
+    return state_dict, checkpoint_format, tensor_count
+
+
+def _load_state_dict_strict_with_adapters(model: PianoLLaMA, state_dict: dict[str, torch.Tensor]) -> None:
+    candidates: list[tuple[str, dict[str, torch.Tensor]]] = [
+        ("original", state_dict),
+        ("strip_module", _strip_prefix_all(state_dict, "module.")),
+        (
+            "strip_module_add_model",
+            _add_prefix_missing(_strip_prefix_all(state_dict, "module."), "model."),
+        ),
+        ("add_model", _add_prefix_missing(state_dict, "model.")),
+        ("strip_model", _strip_prefix_all(state_dict, "model.")),
+    ]
+
+    seen: set[tuple[str, ...]] = set()
+    last_error: RuntimeError | None = None
+    for name, candidate in candidates:
+        key_tuple = tuple(candidate.keys())
+        if key_tuple in seen:
+            continue
+        seen.add(key_tuple)
+        try:
+            model.load_state_dict(candidate, strict=True)
+            if name != "original":
+                print(f"[load_model] Applied checkpoint key adapter: {name}")
+            return
+        except RuntimeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise RuntimeError(f"Failed to load checkpoint state_dict with strict adapters: {last_error}") from last_error
 
 
 def save_gt_midi(save_path, gt_path, velocity=80, dual_track=True):
@@ -208,7 +293,14 @@ def pianoroll_to_midi(merged_pianoroll, save_path, tempo=120, velocity=80):
     midi.write(save_path)
 
 
-def load_model(model_path: str, model_config, device: str = "cuda", use_fp16: bool = False):
+def load_model(
+    model_path: str,
+    model_config,
+    device: str = "cuda",
+    use_fp16: bool = False,
+    dtype: torch.dtype | None = None,
+    use_cache: bool = True,
+):
     """推理示例代码
 
     Args:
@@ -218,30 +310,44 @@ def load_model(model_path: str, model_config, device: str = "cuda", use_fp16: bo
         use_fp16: 是否使用半精度推理（大幅减少显存占用）
     """
     # 1. 初始化模型
-    token_config = setup_model_configs_llama(model_config)
+    token_config = setup_model_configs_llama(model_config, use_cache=use_cache)
     model = PianoLLaMA(token_config)
+
+    chosen_dtype = dtype
+    if chosen_dtype is None:
+        if use_fp16 and device != "cpu":
+            chosen_dtype = torch.float16
+        else:
+            chosen_dtype = resolve_dtype(device, "auto")
+    if chosen_dtype == torch.float16 and device == "cpu":
+        chosen_dtype = torch.float32
+
+    checkpoint_format = "none"
+    tensor_count = 0
 
     # 2. 加载权重
     if model_path:
-        weights = safetensors.torch.load_file(model_path)
-        model.load_state_dict(weights, strict=True)
+        state_dict, checkpoint_format, tensor_count = load_state_dict_with_metadata(model_path)
+        _load_state_dict_strict_with_adapters(model, state_dict)
 
-    # 3. 转换为半精度（如果启用）
-    if use_fp16 and torch.cuda.is_available():
+    # 3. 设置精度并移动设备
+    if chosen_dtype == torch.float16:
         model = model.half()
-        print("✓ Using FP16 precision (半精度推理)")
 
     model = model.to(device)
     model.eval()
 
     # 计算参数量和显存占用估算
     total_params = sum(p.numel() for p in model.parameters())
-    param_size_mb = total_params * (2 if use_fp16 else 4) / (1024**2)
+    param_size_mb = total_params * (2 if chosen_dtype == torch.float16 else 4) / (1024**2)
 
     print(f"Model loaded:")
+    print(f"  - Checkpoint format: {checkpoint_format}")
+    print(f"  - Checkpoint tensors: {tensor_count}")
     print(f"  - Total params: {total_params:,}")
     print(f"  - Model size: {param_size_mb:.1f} MB")
-    print(f"  - Precision: {'FP16' if use_fp16 else 'FP32'}")
+    print(f"  - Device: {device}")
+    print(f"  - Precision: {dtype_to_name(chosen_dtype)}")
 
     return model
 

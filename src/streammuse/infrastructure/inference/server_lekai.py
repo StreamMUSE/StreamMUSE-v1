@@ -75,6 +75,21 @@ class InjectionStatusResponse(BaseModel):
     runtime_inference_mode: str
 
 
+class RuntimeInfoResponse(BaseModel):
+    mode: str
+    has_real_model: bool
+    resolved_device: str
+    resolved_dtype: str
+    checkpoint_path: Optional[str] = None
+    checkpoint_format: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    load_time_ms: Optional[float] = None
+    warmup_time_ms: Optional[float] = None
+    use_cache: bool
+    runtime_model_name: str
+    runtime_inference_mode: str
+
+
 def _validate_lekai_constraints(model_name: str, generation_length_frames: int) -> None:
     if model_name != "lekai":
         return
@@ -181,6 +196,25 @@ async def injection_status() -> InjectionStatusResponse:
     )
 
 
+@app.get("/runtime_info", response_model=RuntimeInfoResponse)
+async def runtime_info() -> RuntimeInfoResponse:
+    result = backend.runtime_info()
+    return RuntimeInfoResponse(
+        mode=str(result["mode"]),
+        has_real_model=bool(result["has_real_model"]),
+        resolved_device=str(result["resolved_device"]),
+        resolved_dtype=str(result["resolved_dtype"]),
+        checkpoint_path=(str(result["checkpoint_path"]) if result["checkpoint_path"] is not None else None),
+        checkpoint_format=(str(result["checkpoint_format"]) if result["checkpoint_format"] is not None else None),
+        fallback_reason=(str(result["fallback_reason"]) if result["fallback_reason"] is not None else None),
+        load_time_ms=(float(result["load_time_ms"]) if result["load_time_ms"] is not None else None),
+        warmup_time_ms=(float(result["warmup_time_ms"]) if result["warmup_time_ms"] is not None else None),
+        use_cache=bool(result["use_cache"]),
+        runtime_model_name=str(result["runtime_model_name"]),
+        runtime_inference_mode=str(result["runtime_inference_mode"]),
+    )
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -198,10 +232,17 @@ def main() -> None:
     else:
         print("[LekaiServer] LEKAI_CHECKPOINT_PATH not set")
 
-    if backend._has_real_model():
-        print("[LekaiServer] Inference mode: real PianoLLaMA model")
-    else:
-        print("[LekaiServer] Inference mode: rule-based stub")
+    info = backend.runtime_info()
+    print(f"[LekaiServer] Inference mode: {info['mode']}")
+    print(
+        "[LekaiServer] Runtime: "
+        f"device={info['resolved_device']}, "
+        f"dtype={info['resolved_dtype']}, "
+        f"checkpoint_format={info['checkpoint_format']}, "
+        f"use_cache={info['use_cache']}"
+    )
+    if info["fallback_reason"]:
+        print(f"[LekaiServer] Fallback reason: {info['fallback_reason']}")
 
     print(f"Listening on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)

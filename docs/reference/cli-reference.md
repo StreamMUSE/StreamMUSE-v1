@@ -74,6 +74,21 @@ uv run streammuse-cli [参数...]
 
 不满足约束时 CLI 会报错并提示推荐值。
 
+### Lekai Server Runtime 环境变量
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `LEKAI_CHECKPOINT_PATH` | `None` | Lekai checkpoint 路径；为空时使用 rule stub |
+| `LEKAI_DEVICE` | `auto` | 设备策略：`auto` / `mps` / `cpu` / `cuda` |
+| `LEKAI_DTYPE` | `auto` | 精度策略：`auto` / `float32` / `float16` |
+| `LEKAI_ENABLE_MPS_FALLBACK` | `true` | `mps` 失败时是否自动回退 CPU |
+| `LEKAI_USE_CACHE` | `true` | 生成时是否使用 KV cache |
+| `LEKAI_WARMUP_STEPS` | `1` | server 启动后 warmup 步数 |
+| `LEKAI_MAX_GENERATION_LENGTH_FRAMES` | `None` | 可选上限，限制单次生成长度 |
+| `LEKAI_MAX_PROMPT_TICKS` | `None` | 可选上限，限制 prompt 长度 |
+| `LEKAI_SERVER_HOST` | `0.0.0.0` | server 监听 host |
+| `LEKAI_SERVER_PORT` | `8000` | server 监听端口 |
+
 ---
 
 ## 音乐注入参数

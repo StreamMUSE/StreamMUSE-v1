@@ -3,10 +3,18 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 import numpy as np
 import torch
+
+from streammuse.infrastructure.inference.runtime_device import (
+    dtype_to_name,
+    parse_env_bool,
+    resolve_device,
+    resolve_dtype,
+)
 
 
 EventPayload = Dict[str, int | str]
@@ -26,6 +34,19 @@ class BackendRuntimeConfig:
     checkpoint_path: Optional[str]
 
 
+@dataclass
+class BackendRuntimeStatus:
+    mode: str = "rule_stub"
+    resolved_device: str = "cpu"
+    resolved_dtype: str = "float32"
+    checkpoint_path: Optional[str] = None
+    checkpoint_format: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    load_time_ms: Optional[float] = None
+    warmup_time_ms: Optional[float] = None
+    use_cache: bool = True
+
+
 class LekaiHttpBackend:
     """
     HTTP Backend for Lekai model inference.
@@ -40,6 +61,7 @@ class LekaiHttpBackend:
         self._accompaniment_history: List[EventPayload] = []
         self._injection_length_ticks: int = 0
         self._runtime_config: Optional[BackendRuntimeConfig] = None
+        self._runtime_status = BackendRuntimeStatus()
         
         # Model components (Phase 3: real model integration)
         self._model_adapter = None
@@ -50,26 +72,162 @@ class LekaiHttpBackend:
         # Try to load real model if checkpoint provided
         if checkpoint_path:
             self._load_model(checkpoint_path)
-        
+
+    @staticmethod
+    def _checkpoint_format(path: str) -> str:
+        suffix = Path(path).suffix.lower()
+        if suffix == ".safetensors":
+            return "safetensors"
+        if suffix in {".pt", ".pth", ".ckpt"}:
+            return suffix[1:]
+        return "unknown"
+
+    @staticmethod
+    def _env_positive_int(name: str) -> Optional[int]:
+        raw = os.environ.get(name)
+        if raw is None or raw.strip() == "":
+            return None
+        value = int(raw)
+        return value if value > 0 else None
+
+    def _runtime_bool(self, name: str, default: bool) -> bool:
+        return parse_env_bool(os.environ.get(name), default=default)
+
+    def _set_stub_mode(self, *, checkpoint_path: Optional[str], fallback_reason: Optional[str]) -> None:
+        self._model_adapter = None
+        self._converter = None
+        self._tokenizer = None
+        self._runtime_status.mode = "rule_stub"
+        self._runtime_status.resolved_device = "cpu"
+        self._runtime_status.resolved_dtype = "float32"
+        self._runtime_status.checkpoint_path = checkpoint_path
+        self._runtime_status.checkpoint_format = (
+            self._checkpoint_format(checkpoint_path) if checkpoint_path else None
+        )
+        self._runtime_status.fallback_reason = fallback_reason
+        self._runtime_status.load_time_ms = None
+        self._runtime_status.warmup_time_ms = None
+
+    def _warmup_model(self, warmup_steps: int) -> float:
+        assert self._model_adapter is not None
+        warmup_start = time.perf_counter()
+        part0 = [torch.tensor([self._model_adapter.BAR_TOKEN], dtype=torch.long)]
+        _ = self._model_adapter.generate_from_beats(
+            part0_beats=part0,
+            num_beats_to_generate=max(1, int(warmup_steps)),
+            bpm=int(os.environ.get("LEKAI_DEFAULT_BPM", "120")),
+            temperature=0.8,
+            top_k=20,
+            top_p=0.9,
+            verbose=False,
+        )
+        return (time.perf_counter() - warmup_start) * 1000
+
+    def _load_model_once(
+        self,
+        checkpoint_path: str,
+        *,
+        device: str,
+        dtype: torch.dtype,
+        use_cache: bool,
+        warmup_steps: int,
+    ) -> tuple[float, float]:
+        from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
+        from streammuse.infrastructure.inference.lekai_model.inference_adapter import PianoLLaMAAdapter
+        from streammuse.infrastructure.inference.lekai_model.my_tokenizer import PianoRollTokenizer
+
+        load_start = time.perf_counter()
+        self._model_adapter = PianoLLaMAAdapter.from_checkpoint(
+            checkpoint_path,
+            device=device,
+            dtype=dtype,
+            use_cache=use_cache,
+        )
+        self._converter = MidiConverter(ticks_per_beat=4)
+        self._tokenizer = PianoRollTokenizer(patch_h=1, patch_w=4)
+        load_time_ms = (time.perf_counter() - load_start) * 1000
+        warmup_time_ms = self._warmup_model(warmup_steps)
+        return load_time_ms, warmup_time_ms
+
     def _load_model(self, checkpoint_path: str) -> None:
         """Load PianoLLaMA model if available."""
+        self._runtime_status.use_cache = self._runtime_bool("LEKAI_USE_CACHE", True)
+        self._runtime_status.checkpoint_path = checkpoint_path
+        self._runtime_status.checkpoint_format = self._checkpoint_format(checkpoint_path)
+        self._runtime_status.fallback_reason = None
+
+        if not os.path.exists(checkpoint_path):
+            reason = f"checkpoint_not_found:{checkpoint_path}"
+            print(f"[LekaiHttpBackend] Checkpoint not found: {checkpoint_path}, using rule-based stub")
+            self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+            return
+
+        device_preference = os.environ.get("LEKAI_DEVICE", "auto")
+        dtype_preference = os.environ.get("LEKAI_DTYPE", "auto")
+        warmup_steps = self._env_positive_int("LEKAI_WARMUP_STEPS") or 1
+        enable_mps_fallback = self._runtime_bool("LEKAI_ENABLE_MPS_FALLBACK", True)
+
         try:
-            from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
-            from streammuse.infrastructure.inference.lekai_model.my_tokenizer import PianoRollTokenizer
-            from streammuse.infrastructure.inference.lekai_model.inference_adapter import PianoLLaMAAdapter
-            
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            
-            if os.path.exists(checkpoint_path):
-                self._model_adapter = PianoLLaMAAdapter.from_checkpoint(checkpoint_path, device=device)
-                self._converter = MidiConverter(ticks_per_beat=4)
-                self._tokenizer = PianoRollTokenizer(patch_h=1, patch_w=4)
-                print(f"[LekaiHttpBackend] Loaded model from {checkpoint_path} (device: {device})")
-            else:
-                print(f"[LekaiHttpBackend] Checkpoint not found: {checkpoint_path}, using rule-based stub")
-        except Exception as e:
-            print(f"[LekaiHttpBackend] Failed to load model: {e}, using rule-based stub")
-            self._model_adapter = None
+            primary_device = resolve_device(device_preference)
+            primary_dtype = resolve_dtype(primary_device, dtype_preference)
+        except Exception as exc:
+            reason = f"invalid_runtime_preference:{exc}"
+            print(f"[LekaiHttpBackend] {reason}, using rule-based stub")
+            self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+            return
+
+        try:
+            load_time_ms, warmup_time_ms = self._load_model_once(
+                checkpoint_path,
+                device=primary_device,
+                dtype=primary_dtype,
+                use_cache=self._runtime_status.use_cache,
+                warmup_steps=warmup_steps,
+            )
+            self._runtime_status.mode = "real_model"
+            self._runtime_status.resolved_device = primary_device
+            self._runtime_status.resolved_dtype = dtype_to_name(primary_dtype)
+            self._runtime_status.load_time_ms = load_time_ms
+            self._runtime_status.warmup_time_ms = warmup_time_ms
+            print(
+                f"[LekaiHttpBackend] Loaded model from {checkpoint_path} "
+                f"(device: {primary_device}, dtype: {dtype_to_name(primary_dtype)}, "
+                f"load_ms: {load_time_ms:.1f}, warmup_ms: {warmup_time_ms:.1f})"
+            )
+            return
+        except Exception as primary_error:
+            if primary_device == "mps" and enable_mps_fallback:
+                fallback_reason = f"mps_load_failed:{primary_error}"
+                print(f"[LekaiHttpBackend] {fallback_reason}, fallback to CPU")
+                try:
+                    fallback_dtype = resolve_dtype("cpu", "auto")
+                    load_time_ms, warmup_time_ms = self._load_model_once(
+                        checkpoint_path,
+                        device="cpu",
+                        dtype=fallback_dtype,
+                        use_cache=self._runtime_status.use_cache,
+                        warmup_steps=warmup_steps,
+                    )
+                    self._runtime_status.mode = "real_model"
+                    self._runtime_status.resolved_device = "cpu"
+                    self._runtime_status.resolved_dtype = dtype_to_name(fallback_dtype)
+                    self._runtime_status.load_time_ms = load_time_ms
+                    self._runtime_status.warmup_time_ms = warmup_time_ms
+                    self._runtime_status.fallback_reason = fallback_reason
+                    print(
+                        f"[LekaiHttpBackend] CPU fallback succeeded "
+                        f"(load_ms: {load_time_ms:.1f}, warmup_ms: {warmup_time_ms:.1f})"
+                    )
+                    return
+                except Exception as fallback_error:
+                    reason = f"cpu_fallback_failed:{fallback_error}"
+                    print(f"[LekaiHttpBackend] {reason}, using rule-based stub")
+                    self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+                    return
+
+            reason = f"model_load_failed:{primary_error}"
+            print(f"[LekaiHttpBackend] {reason}, using rule-based stub")
+            self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
     
     def _has_real_model(self) -> bool:
         """Check if real model is loaded and available."""
@@ -80,6 +238,48 @@ class LekaiHttpBackend:
         # Try to load model if checkpoint_path provided and not already loaded
         if config.checkpoint_path and not self._has_real_model():
             self._load_model(config.checkpoint_path)
+
+    def _apply_runtime_limits(
+        self,
+        generation_length_frames: int,
+        prompt_length_ticks: Optional[int],
+    ) -> tuple[int, Optional[int]]:
+        adjusted_length = int(generation_length_frames)
+        adjusted_prompt = int(prompt_length_ticks) if prompt_length_ticks is not None else None
+
+        max_generation = self._env_positive_int("LEKAI_MAX_GENERATION_LENGTH_FRAMES")
+        if max_generation is not None and adjusted_length > max_generation:
+            print(
+                f"[LekaiHttpBackend] Cap generation_length_frames from {adjusted_length} to {max_generation} "
+                "by LEKAI_MAX_GENERATION_LENGTH_FRAMES"
+            )
+            adjusted_length = max_generation
+
+        max_prompt = self._env_positive_int("LEKAI_MAX_PROMPT_TICKS")
+        if adjusted_prompt is not None and max_prompt is not None and adjusted_prompt > max_prompt:
+            print(
+                f"[LekaiHttpBackend] Cap prompt_length_ticks from {adjusted_prompt} to {max_prompt} "
+                "by LEKAI_MAX_PROMPT_TICKS"
+            )
+            adjusted_prompt = max_prompt
+
+        return adjusted_length, adjusted_prompt
+
+    def runtime_info(self) -> Dict[str, str | float | bool | None]:
+        return {
+            "mode": "real_model" if self._has_real_model() else "rule_stub",
+            "has_real_model": self._has_real_model(),
+            "resolved_device": self._runtime_status.resolved_device,
+            "resolved_dtype": self._runtime_status.resolved_dtype,
+            "checkpoint_path": self._runtime_status.checkpoint_path,
+            "checkpoint_format": self._runtime_status.checkpoint_format,
+            "fallback_reason": self._runtime_status.fallback_reason,
+            "load_time_ms": self._runtime_status.load_time_ms,
+            "warmup_time_ms": self._runtime_status.warmup_time_ms,
+            "use_cache": self._runtime_status.use_cache,
+            "runtime_model_name": self._runtime_config.model_name if self._runtime_config else "",
+            "runtime_inference_mode": self._runtime_config.inference_mode if self._runtime_config else "",
+        }
 
     def generate(
         self,
@@ -95,13 +295,18 @@ class LekaiHttpBackend:
         request_arrival = time.perf_counter()
         preprocess_start = request_arrival
 
+        effective_generation_length_frames, effective_prompt_length_ticks = self._apply_runtime_limits(
+            generation_length_frames=int(generation_length_frames),
+            prompt_length_ticks=prompt_length_ticks,
+        )
+
         self.configure(
             BackendRuntimeConfig(
                 model_name=model_name,
                 inference_mode=inference_mode,
                 generation_interval_ticks=int(generation_interval_ticks),
-                generation_length_frames=int(generation_length_frames),
-                prompt_length_ticks=prompt_length_ticks,
+                generation_length_frames=effective_generation_length_frames,
+                prompt_length_ticks=effective_prompt_length_ticks,
                 checkpoint_path=checkpoint_path,
             )
         )
@@ -116,14 +321,14 @@ class LekaiHttpBackend:
             accompaniment = self._generate_with_model(
                 generation_start_tick=int(generation_start_tick),
                 generation_interval_ticks=int(generation_interval_ticks),
-                generation_length_frames=int(generation_length_frames),
+                generation_length_frames=effective_generation_length_frames,
             )
         else:
             # Bug #5 fix: 传入 generation_length_frames
             accompaniment = self._generate_rule_based(
                 generation_start_tick=int(generation_start_tick),
                 generation_interval_ticks=int(generation_interval_ticks),
-                generation_length_frames=int(generation_length_frames),
+                generation_length_frames=effective_generation_length_frames,
             )
             
         inference_end = time.perf_counter()
@@ -131,7 +336,7 @@ class LekaiHttpBackend:
         self._accompaniment_history.extend(accompaniment)
         
         # Bug #6 fix: 裁剪历史防止无限增长
-        self._trim_histories(generation_start_tick, generation_length_frames)
+        self._trim_histories(generation_start_tick, effective_generation_length_frames)
         
         response_output = time.perf_counter()
 

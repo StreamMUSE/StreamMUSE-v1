@@ -4,20 +4,17 @@ import torch
 from transformers import LlamaConfig
 import safetensors.torch
 import os
-import sys
 import numpy as np
 from datetime import datetime
 
-# Add project root to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from ..runtime_device import resolve_device
+from .PianoDataset import PianoDataset, encode_bpm, process_measure_with_beat_interleaving
+from .config import ModelConfig, TrainingConfig
+from .model import PianoLLaMA
+from .Token2Midi import tokens_to_midi
+from .generation_utils import sample_token
 
-from lekai_model.PianoDataset import PianoDataset, encode_bpm, process_measure_with_beat_interleaving
-from lekai_model.config import ModelConfig, TrainingConfig
-from lekai_model.model import PianoLLaMA
-from lekai_model.Token2Midi import tokens_to_midi
-from lekai_model.generation_utils import sample_token
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = resolve_device("auto")
 
 
 def setup_model_configs_llama(model_config: ModelConfig):
