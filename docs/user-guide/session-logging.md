@@ -9,7 +9,8 @@ description: 使用 session/composite 模式记录演奏并分析性能数据
 
 说明：
 1. `session` 模式会生成完整日志（含 `performance.json`、`statistics.csv`）。
-2. 当前实现中，`composite` 模式默认会生成 `events.jsonl`、`inferences.json`、`session_config.json`、`combined.mid`，但不会自动生成 `performance.json` 和 `statistics.csv`。
+2. `composite` 模式同样会自动生成完整日志（含 `performance.json`、`statistics.csv`）。
+3. CLI 退出时会调用 `clear_history`，并将服务端返回的历史写入本地会话目录（`melody_history.json`、`accompaniment_history.json`）。
 
 ---
 
@@ -26,25 +27,34 @@ uv run streammuse-cli \
 
 ```
 logs/
-└── session_20241201-120000/
-    ├── events.jsonl
-    ├── inferences.json
-    ├── performance.json
-    ├── statistics.csv
-    ├── session_config.json
-    ├── session_summary.txt
-    └── combined.mid
+└── 2024-12-01/
+    └── session_120000/
+        ├── events.jsonl
+        ├── inferences.json
+        ├── performance.json
+        ├── statistics.csv
+        ├── session_config.json
+        ├── session_summary.txt
+        ├── melody_history.json
+        ├── accompaniment_history.json
+        └── combined.mid
 ```
 
 若使用 `--output-type composite`，通常目录中会有：
 
 ```
 logs/
-└── session_20241201-120000/
-    ├── events.jsonl
-    ├── inferences.json
-    ├── session_config.json
-    └── combined.mid
+└── 2024-12-01/
+    └── session_120000/
+        ├── events.jsonl
+        ├── inferences.json
+        ├── performance.json
+        ├── statistics.csv
+        ├── session_config.json
+        ├── session_summary.txt
+        ├── melody_history.json
+        ├── accompaniment_history.json
+        └── combined.mid
 ```
 
 ---
@@ -99,6 +109,13 @@ JSON 数组，记录每次推理请求和响应：
 ### `combined.mid`
 
 包含两个音轨（User 和 Model）的 MIDI 录制，可用 MuseScore、Logic Pro、GarageBand 等 DAW 打开检查。
+
+### `melody_history.json` / `accompaniment_history.json`
+
+CLI 退出时调用 `/clear_history` 后，从 server 返回并落盘的完整历史数据。常用于排查：
+
+- server 端到底收到了哪些 melody 增量事件；
+- server 端实际累积了哪些伴奏事件。
 
 ---
 

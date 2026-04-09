@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -66,6 +66,8 @@ class DirectInjectionResponse(BaseModel):
 class ClearHistoryResponse(BaseModel):
     success: bool
     message: str
+    melody_history: List[dict[str, Any]] = Field(default_factory=list)
+    accompaniment_history: List[dict[str, Any]] = Field(default_factory=list)
 
 
 class InjectionStatusResponse(BaseModel):
@@ -182,7 +184,12 @@ async def inject_notes(request: DirectInjectionRequest) -> DirectInjectionRespon
 @app.post("/clear_history", response_model=ClearHistoryResponse)
 async def clear_history() -> ClearHistoryResponse:
     result = backend.clear_history()
-    return ClearHistoryResponse(success=bool(result["success"]), message=str(result["message"]))
+    return ClearHistoryResponse(
+        success=bool(result["success"]),
+        message=str(result["message"]),
+        melody_history=list(result.get("melody_history", [])),
+        accompaniment_history=list(result.get("accompaniment_history", [])),
+    )
 
 
 @app.get("/injection_status", response_model=InjectionStatusResponse)

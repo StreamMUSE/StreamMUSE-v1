@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 from streammuse.domain.interfaces import InferenceEngine, TimingInfo
 from streammuse.domain.musical import MusicalEvent, Note
@@ -134,6 +134,12 @@ class StanleyInferenceEngine(InferenceEngine):
     def set_injection_offset(self, offset_ticks: int) -> None:
         self._legacy.set_injection_offset(int(offset_ticks))
 
-    def clear_history(self) -> None:
+    def clear_history(self) -> Dict[str, Any]:
         self._legacy.clear_history()
+        return {
+            "success": True,
+            "message": "History cleared",
+            "melody_history": [],
+            "accompaniment_history": [],
+        }
 

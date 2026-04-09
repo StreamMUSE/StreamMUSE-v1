@@ -1,6 +1,7 @@
 import numpy as np
+import torch
 
-from streammuse.infrastructure.inference.lekai_model.inference_adapter import beats_to_pianoroll
+from streammuse.infrastructure.inference.lekai_model.inference_adapter import PianoLLaMAAdapter, beats_to_pianoroll
 from streammuse.infrastructure.inference.lekai_model.my_tokenizer import PianoRollTokenizer
 
 
@@ -66,3 +67,38 @@ def test_beats_to_pianoroll_roundtrip_real_beat():
 
     assert out.shape == (2, 88, 4)
     assert np.array_equal(out, beat)
+
+
+def test_generate_from_beats_allows_empty_part0_prompt(monkeypatch):
+    class _FakeModel:
+        def eval(self):
+            return None
+
+        def __call__(self, input_ids, past_key_values=None, use_cache=True):
+            _ = past_key_values, use_cache
+
+            class _Output:
+                def __init__(self, seq_len: int):
+                    self.logits = torch.zeros((1, seq_len, 300), dtype=torch.float32)
+                    self.past_key_values = None
+
+            return _Output(input_ids.shape[1])
+
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_model.generation_utils.sample_token",
+        lambda *args, **kwargs: torch.tensor([[169]], dtype=torch.long),
+    )
+
+    adapter = PianoLLaMAAdapter(
+        model=_FakeModel(),
+        tokenizer=_build_tokenizer(),
+        device="cpu",
+    )
+
+    beats = adapter.generate_from_beats(
+        part0_beats=[],
+        num_beats_to_generate=2,
+    )
+
+    assert len(beats) == 2
+    assert all(len(beat) >= 1 for beat in beats)

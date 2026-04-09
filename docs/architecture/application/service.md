@@ -115,13 +115,15 @@ def running(self) -> bool:
 处理推理请求，将结果放回响应队列。
 
 **行为**：
-1. 从 `_inference_request_queue` 获取请求（含 `generation_start_tick` 和 `melody_events`，timeout=0.1s）
-2. 调用 `inference_engine.generate_accompaniment(melody_events, generation_start_tick, generation_length_frames)`
-3. 计算 `round_trip_time`（=响应接收时间 - 请求发出时间）
-4. 将 `(acc_events, generation_start_tick)` 放入 `_inference_response_queue`
-5. 调用 `output_sink.output_stats(round_trip_ms=..., server_process_ms=...)`
-6. 若 `hasattr(output_sink, "log_inference")`，调用 `output_sink.log_inference(request=..., response=..., latency_ms=..., server_process_ms=...)`
-7. 若推理抛出异常，调用 `output_sink.output_status("error", str(e))` 并继续运行
+1. 从 `_inference_request_queue` 获取首个请求（含 `generation_start_tick` 和 `melody_events`，timeout=0.1s）。
+2. 执行 latest-only drain：继续 `get_nowait()` 排空队列，只保留最新 `generation_start_tick`，并将被跳过请求的 `melody_events` 追加合并，避免中间旋律增量丢失。
+3. 调用 `inference_engine.generate_accompaniment(merged_melody_events, latest_generation_start_tick, generation_length_frames)`。
+4. 计算 `round_trip_time`（=响应接收时间 - 请求发出时间）。
+5. 将 `(acc_events, latest_generation_start_tick)` 放入 `_inference_response_queue`。
+6. 调用 `output_sink.output_stats(round_trip_ms=..., server_process_ms=...)`。
+7. 若发生队列合并，调用 `output_sink.output_status("debug", ...)` 输出本轮丢弃/合并统计。
+8. 若 `hasattr(output_sink, "log_inference")`，调用 `output_sink.log_inference(request=..., response=..., latency_ms=..., server_process_ms=...)`。
+9. 若推理抛出异常，调用 `output_sink.output_status("error", str(e))` 并继续运行。
 
 **退出条件**：`self._running == False`
 

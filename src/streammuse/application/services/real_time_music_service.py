@@ -61,7 +61,7 @@ class RealTimeMusicService:
         self._event_q: queue.Queue[MusicalEvent] = queue.Queue()
         self._melody_history: List[MusicalEvent] = []
         self._melody_history_lock = threading.Lock()
-        self._last_sent_index: int = 0  # Bug #4: 追踪上次发送到哪个位置
+        self._last_sent_index: int = 0
         self._inference_request_queue: queue.Queue[tuple[int, List[MusicalEvent]]] = queue.Queue()
         self._inference_response_queue: queue.Queue[tuple[List[MusicalEvent], int]] = queue.Queue()
 
@@ -205,7 +205,7 @@ class RealTimeMusicService:
             # Trigger inference at generation intervals.
             if tick - last_generation_tick >= self._generation_interval_ticks:
                 with self._melody_history_lock:
-                    # Bug #4 fix: 只发送上次请求之后新增的事件
+                    # Send only melody events added since the previous request.
                     new_events = self._melody_history[self._last_sent_index:]
                     self._last_sent_index = len(self._melody_history)
                 if new_events:
@@ -252,6 +252,29 @@ class RealTimeMusicService:
             except queue.Empty:
                 continue
 
+            # Latest-only queue behavior: keep newest tick while merging skipped melody increments.
+            dropped_request_count = 0
+            merged_melody_events = list(melody_events)
+            while True:
+                try:
+                    newer_tick, newer_events = self._inference_request_queue.get_nowait()
+                except queue.Empty:
+                    break
+                generation_start_tick = newer_tick
+                dropped_request_count += 1
+                if newer_events:
+                    merged_melody_events.extend(newer_events)
+
+            if dropped_request_count > 0:
+                self._output.output_status(
+                    "debug",
+                    (
+                        "Latest-only inference dropped "
+                        f"{dropped_request_count} stale request(s); "
+                        f"merged {len(merged_melody_events)} melody event(s)."
+                    ),
+                )
+
             if not self._running:
                 break
 
@@ -259,7 +282,7 @@ class RealTimeMusicService:
                 request_send_time = self._now()
                 # Call inference engine
                 acc_events, timing_info = self._engine.generate_accompaniment(
-                    melody_events=melody_events,
+                    melody_events=merged_melody_events,
                     generation_start_tick=generation_start_tick,
                     generation_length_frames=self._generation_length_frames,
                 )
@@ -292,7 +315,7 @@ class RealTimeMusicService:
                 if hasattr(self._output, "log_inference"):
                     request_data, response_data = self._build_inference_log_payload(
                         generation_start_tick=generation_start_tick,
-                        melody_events=melody_events,
+                        melody_events=merged_melody_events,
                         acc_events=acc_events,
                         timing_info=timing_info,
                         request_timestamp=request_send_time,

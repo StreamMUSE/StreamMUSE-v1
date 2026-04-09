@@ -93,10 +93,17 @@ class HttpInferenceClient(InferenceEngine):
         # We track it client-side for callers that want to store it.
         self._injection_offset_ticks = int(offset_ticks)
 
-    def clear_history(self) -> None:
+    def clear_history(self) -> Dict[str, Any]:
         url = self._endpoint("/clear_history")
         resp = requests.post(url, timeout=float(self._config.timeout_s))
         resp.raise_for_status()
+        data = resp.json()
+        return {
+            "success": bool(data.get("success", True)),
+            "message": str(data.get("message", "History cleared")),
+            "melody_history": list(data.get("melody_history", [])),
+            "accompaniment_history": list(data.get("accompaniment_history", [])),
+        }
 
     # Non-protocol helper
     def get_injection_status(self) -> Dict[str, Any]:

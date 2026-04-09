@@ -47,6 +47,12 @@ uv run streammuse-cli [参数...]
 | `--inference-log-detail` | `str` | `"summary"` | 推理日志粒度：`summary`（摘要）或 `full`（完整 request/response，体积更大） |
 | `--enable-performance-tracking` | flag | `False` | 预留参数；当前版本未接入额外逻辑 |
 
+退出行为说明（除 `midi_file` 外）：
+
+1. CLI 结束时会调用一次 `InferenceEngine.clear_history()`。
+2. 若输出目录可用，会将返回的历史落盘为 `melody_history.json` 与 `accompaniment_history.json`。
+3. `session/composite` 会在关闭阶段自动生成 `performance.json` 与 `statistics.csv`。
+
 ### 输出类型与 MIDI 产物
 
 | output_type | 是否写 `combined.mid` | 说明 |

@@ -64,6 +64,23 @@ curl -s http://127.0.0.1:8000/injection_status
 curl -X POST http://127.0.0.1:8000/clear_history
 ```
 
+返回示例（server 先返回历史，再清空）：
+
+```json
+{
+    "success": true,
+    "message": "History cleared",
+    "melody_history": [
+        {"type": "note_on", "pitch": 60, "tick": 0},
+        {"type": "note_off", "pitch": 60, "tick": 4}
+    ],
+    "accompaniment_history": [
+        {"type": "note_on", "pitch": 48, "tick": 0, "velocity": 80},
+        {"type": "note_off", "pitch": 48, "tick": 4, "velocity": 0}
+    ]
+}
+```
+
 ---
 
 ## 数据格式说明
@@ -81,6 +98,12 @@ curl -X POST http://127.0.0.1:8000/clear_history
 ## 与 CLI 的关系
 
 如果你使用 `streammuse-cli --inference-type http`，CLI 本身不会自动发注入请求。
+
+但 CLI 在会话结束时会自动调用一次 `/clear_history`：
+
+1. 将 server 返回的 `melody_history` 写入 `melody_history.json`
+2. 将 `accompaniment_history` 写入 `accompaniment_history.json`
+3. 清空 server 端历史，确保下一次会话从干净上下文开始
 
 常见做法：
 

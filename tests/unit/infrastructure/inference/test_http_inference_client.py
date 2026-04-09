@@ -111,14 +111,25 @@ def test_http_inference_client_inject_and_clear(monkeypatch):
 
     def fake_post(url, json=None, timeout=None):
         calls.append((url, json))
+        if url.endswith("/clear_history"):
+            return _FakeResponse(
+                {
+                    "success": True,
+                    "message": "History cleared",
+                    "melody_history": [{"type": "note_on", "pitch": 60, "tick": 0}],
+                    "accompaniment_history": [{"type": "note_on", "pitch": 48, "tick": 0, "velocity": 80}],
+                }
+            )
         return _FakeResponse({"ok": True})
 
     monkeypatch.setattr(requests, "post", fake_post)
 
     client = HttpInferenceClient(HttpInferenceClientConfig(generate_url="http://x/generate_accompaniment"))
     client.inject_history([], [], injection_length_ticks=50)
-    client.clear_history()
+    cleared = client.clear_history()
 
     assert calls[0][0].endswith("/inject_notes")
     assert calls[1][0].endswith("/clear_history")
+    assert cleared["melody_history"][0]["pitch"] == 60
+    assert cleared["accompaniment_history"][0]["pitch"] == 48
 

@@ -88,9 +88,14 @@ POST 到 `/inject_notes`，将历史旋律和伴奏注入服务器端模型历�
 
 ---
 
-### `clear_history() -> None`
+### `clear_history() -> dict`
 
-POST 到 `/clear_history`，清空服务器端模型的历史状态。
+POST 到 `/clear_history`，解析并返回 server 的清理结果，典型字段：
+
+- `success`
+- `message`
+- `melody_history`
+- `accompaniment_history`
 
 ---
 

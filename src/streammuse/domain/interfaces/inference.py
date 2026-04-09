@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Protocol
+from typing import Any, Dict, List, Protocol
 
 from streammuse.domain.interfaces.timing_info import TimingInfo
 from streammuse.domain.musical import MusicalEvent
@@ -39,6 +39,6 @@ class InferenceEngine(Protocol):
         """Set the injection offset used for subsequent generation."""
         ...
 
-    def clear_history(self) -> None:
-        """Clear internal history and injection state."""
+    def clear_history(self) -> Dict[str, Any]:
+        """Clear internal history and return any persisted history payload."""
         ...

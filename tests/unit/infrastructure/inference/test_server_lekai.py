@@ -88,6 +88,12 @@ def test_inject_clear_and_status():
 
     clear_resp = client.post("/clear_history")
     assert clear_resp.status_code == 200
+    clear_data = clear_resp.json()
+    assert "melody_history" in clear_data
+    assert "accompaniment_history" in clear_data
+    assert len(clear_data["melody_history"]) >= 1
+    assert len(clear_data["accompaniment_history"]) >= 1
+
     status_resp2 = client.get("/injection_status")
     assert status_resp2.status_code == 200
     assert status_resp2.json()["is_injected"] is False

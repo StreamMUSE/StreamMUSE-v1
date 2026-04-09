@@ -79,8 +79,14 @@ class LekaiInferenceEngine(InferenceEngine):
     def set_injection_offset(self, offset_ticks: int) -> None:
         self._injection_offset = offset_ticks
 
-    def clear_history(self) -> None:
+    def clear_history(self) -> Dict[str, Any]:
         self._model.reset()
+        return {
+            "success": True,
+            "message": "History cleared",
+            "melody_history": [],
+            "accompaniment_history": [],
+        }
 ```
 
 **关键约定**：

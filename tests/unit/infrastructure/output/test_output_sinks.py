@@ -7,6 +7,7 @@ from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.infrastructure.output.composite import CompositeOutputSink
 from streammuse.infrastructure.output.json_logger import JsonLoggerOutputSink
 from streammuse.infrastructure.output.midi_file import MidiFileOutputConfig, MidiFileOutputSink
+from streammuse.infrastructure.output.session_logger import SessionLoggerOutputSink
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 
 
@@ -89,4 +90,50 @@ def test_composite_inference_log_detail_prefers_first_supporting_sink(tmp_path):
     full_sink = JsonLoggerOutputSink(full_dir, inference_log_detail="full")
     composite = CompositeOutputSink([summary_sink, full_sink])
     assert composite.inference_log_detail == "summary"
+
+
+def test_session_logger_close_auto_saves_metrics_after_output_config(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=True,
+    )
+    sink.output_config({"output_type": "session", "generation_length_frames": 20})
+    sink.close()
+
+    assert (tmp_path / "performance.json").exists()
+    assert (tmp_path / "statistics.csv").exists()
+
+
+def test_composite_close_auto_saves_session_metrics(tmp_path):
+    class _NoopSink:
+        def output_event(self, event, source):
+            _ = event, source
+
+        def output_tick(self, tick, bar, beat):
+            _ = tick, bar, beat
+
+        def output_stats(self, **kwargs):
+            _ = kwargs
+
+        def output_status(self, state, message=""):
+            _ = state, message
+
+        def output_config(self, config):
+            _ = config
+
+        def close(self):
+            return None
+
+    session_sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=True,
+    )
+    composite = CompositeOutputSink([_NoopSink(), session_sink])
+    composite.output_config({"output_type": "composite", "generation_length_frames": 20})
+    composite.close()
+
+    assert (tmp_path / "performance.json").exists()
+    assert (tmp_path / "statistics.csv").exists()
 

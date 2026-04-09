@@ -147,7 +147,7 @@ class InferenceEngine(Protocol):
 
     def set_injection_offset(self, offset_ticks: int) -> None: ...
 
-    def clear_history(self) -> None: ...
+    def clear_history(self) -> Dict[str, Any]: ...
 ```
 
 ### `generate_accompaniment(...)  -> tuple[List[MusicalEvent], TimingInfo]`
@@ -175,9 +175,9 @@ class InferenceEngine(Protocol):
 
 设置注入偏移量（tick），影响后续 `generate_accompaniment()` 的 tick 对齐。
 
-### `clear_history() -> None`
+### `clear_history() -> Dict[str, Any]`
 
-清空引擎内部历史状态和注入状态，使引擎恢复到初始状态。
+清空引擎内部历史状态和注入状态，并返回清空前的历史快照（如 `melody_history`、`accompaniment_history`），便于上层落盘调试。
 
 ---
 

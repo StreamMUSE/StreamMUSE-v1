@@ -134,9 +134,9 @@ class PianoLLaMAAdapter:
                         past_key_values = None
                         continue
                     else:
-                        # No more part0 to inject, we're done with prompt
-                        # Now generate part1 autoregressively
-                        break
+                        # Prompt can be empty on first request; continue with part1 generation.
+                        position = 1
+                        continue
                         
                 else:  # Generate part1 (accompaniment)
                     if part1_idx >= num_beats_to_generate:

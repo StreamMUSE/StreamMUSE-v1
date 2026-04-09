@@ -87,8 +87,9 @@ class MockInferenceEngine:
     def set_injection_offset(self, offset_ticks: int) -> None:
         """No-op."""
 
-    def clear_history(self) -> None:
+    def clear_history(self):
         """No-op."""
+        return {"success": True, "melody_history": [], "accompaniment_history": []}
 
 
 @patch("streammuse.presentation.cli.cli.InputSourceFactory")

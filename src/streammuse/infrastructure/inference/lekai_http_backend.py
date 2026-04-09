@@ -4,7 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 import torch
@@ -311,7 +311,7 @@ class LekaiHttpBackend:
             )
         )
 
-        # Bug #4 fix: extend 而非替换
+        # Keep full melody history on the server; requests carry increments.
         self._melody_history.extend(melody_events)
 
         inference_start = time.perf_counter()
@@ -324,7 +324,7 @@ class LekaiHttpBackend:
                 generation_length_frames=effective_generation_length_frames,
             )
         else:
-            # Bug #5 fix: 传入 generation_length_frames
+            # Rule-based fallback path.
             accompaniment = self._generate_rule_based(
                 generation_start_tick=int(generation_start_tick),
                 generation_interval_ticks=int(generation_interval_ticks),
@@ -335,7 +335,7 @@ class LekaiHttpBackend:
 
         self._accompaniment_history.extend(accompaniment)
         
-        # Bug #6 fix: 裁剪历史防止无限增长
+        # Trim server-side histories to bound memory usage.
         self._trim_histories(generation_start_tick, effective_generation_length_frames)
         
         response_output = time.perf_counter()
@@ -363,9 +363,20 @@ class LekaiHttpBackend:
         events -> pianoroll -> beat tokens -> model -> beat tokens -> pianoroll -> events
         """
         assert self._converter is not None and self._model_adapter is not None
-        
-        # 1. Determine prompt window
+
         prompt_start = max(0, generation_start_tick - generation_length_frames)
+        prompt_end = int(generation_start_tick)
+        if prompt_end <= prompt_start:
+            print(
+                "[LekaiHttpBackend] zero prompt window "
+                f"(start_tick={generation_start_tick}, gen_len={generation_length_frames}); "
+                "fallback to rule-based generation"
+            )
+            return self._generate_rule_based(
+                generation_start_tick=generation_start_tick,
+                generation_interval_ticks=generation_interval_ticks,
+                generation_length_frames=generation_length_frames,
+            )
         
         # 2. Convert melody events to pianoroll
         melody_pianoroll = self._converter.events_to_pianoroll(
@@ -448,10 +459,24 @@ class LekaiHttpBackend:
         
         expected_timesteps = num_beats_to_generate * TIMESTEPS_PER_BEAT
         expected_shape = (2, 88, expected_timesteps)
-        if part1_pianoroll.shape != expected_shape:
+        got_shape = tuple(int(dim) for dim in part1_pianoroll.shape)
+        if got_shape != expected_shape:
+            got_time_axis = got_shape[2] if len(got_shape) >= 3 else -1
+            print(
+                "[LekaiHttpBackend] Pianoroll shape mismatch "
+                f"(expected={expected_shape}, got={got_shape}, "
+                f"start_tick={generation_start_tick}, gen_len={generation_length_frames})"
+            )
+            if got_time_axis == 0 and expected_timesteps > 0:
+                print("[LekaiHttpBackend] Recoverable mismatch detected; fallback to rule-based generation")
+                return self._generate_rule_based(
+                    generation_start_tick=generation_start_tick,
+                    generation_interval_ticks=generation_interval_ticks,
+                    generation_length_frames=generation_length_frames,
+                )
             raise RuntimeError(
                 f"Pianoroll shape mismatch: expected {expected_shape}, "
-                f"got {part1_pianoroll.shape}. "
+                f"got {got_shape}. "
                 "This indicates a bug in beats_to_pianoroll."
             )
         
@@ -497,12 +522,20 @@ class LekaiHttpBackend:
             "injection_length_ticks": int(injection_length_ticks),
         }
 
-    def clear_history(self) -> Dict[str, bool | str]:
+    def clear_history(self) -> Dict[str, Any]:
+        melody_history = [dict(event) for event in self._melody_history]
+        accompaniment_history = [dict(event) for event in self._accompaniment_history]
+
         self._melody_history = []
         self._accompaniment_history = []
         self._injection_length_ticks = 0
         self._active_pitches = set()
-        return {"success": True, "message": "History cleared"}
+        return {
+            "success": True,
+            "message": "History cleared",
+            "melody_history": melody_history,
+            "accompaniment_history": accompaniment_history,
+        }
 
     def injection_status(self) -> Dict[str, bool | int | str]:
         return {

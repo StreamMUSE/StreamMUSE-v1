@@ -58,7 +58,7 @@ class _NoopInference:
         return None
 
     def clear_history(self):
-        return None
+        return {"success": True, "melody_history": [], "accompaniment_history": []}
 
 
 def _make_service(detail: str) -> RealTimeMusicService:

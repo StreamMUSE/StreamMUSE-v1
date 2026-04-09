@@ -21,7 +21,7 @@ class _FakeInference:
         return None
 
     def clear_history(self):
-        return None
+        return {"success": True, "melody_history": [], "accompaniment_history": []}
 
 
 class _CollectingOutput:

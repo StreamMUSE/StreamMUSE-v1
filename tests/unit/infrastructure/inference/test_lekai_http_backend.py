@@ -1,3 +1,5 @@
+import numpy as np
+
 from streammuse.infrastructure.inference.lekai_http_backend import LekaiHttpBackend
 
 
@@ -200,3 +202,80 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
     assert info["mode"] == "real_model"
     assert info["resolved_device"] == "cpu"
     assert str(info["fallback_reason"]).startswith("mps_load_failed:")
+
+
+def test_generate_zero_prompt_window_with_model_path_falls_back_without_error():
+    backend = LekaiHttpBackend()
+    backend._model_adapter = object()
+    backend._converter = object()
+    backend._tokenizer = object()
+
+    accompaniment, timings = backend.generate(
+        melody_events=[_note_on(60, 0)],
+        generation_start_tick=0,
+        generation_length_frames=8,
+        generation_interval_ticks=4,
+        prompt_length_ticks=None,
+        inference_mode="sliding_window",
+        model_name="lekai",
+        checkpoint_path=None,
+    )
+
+    assert isinstance(accompaniment, list)
+    assert "response_output_time" in timings
+
+
+def test_generate_recoverable_shape_mismatch_falls_back_to_rule_based(monkeypatch):
+    backend = LekaiHttpBackend()
+
+    class _DummyConverter:
+        def events_to_pianoroll(self, events, start_tick, end_tick, active_pitches=None):
+            _ = events, start_tick, end_tick, active_pitches
+            return np.zeros((2, 88, 16), dtype=np.float32)
+
+    class _DummyAdapter:
+        BAR_TOKEN = 255
+
+        def generate_from_beats(self, *args, **kwargs):
+            _ = args, kwargs
+            return [[169], [169]]
+
+    backend._converter = _DummyConverter()
+    backend._model_adapter = _DummyAdapter()
+    backend._tokenizer = object()
+
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_model.PianoDataset.process_measure_with_beat_interleaving",
+        lambda *args, **kwargs: ([np.array([255], dtype=np.int64)], []),
+    )
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_model.inference_adapter.beats_to_pianoroll",
+        lambda *args, **kwargs: np.zeros((2, 88, 0), dtype=np.float32),
+    )
+
+    accompaniment, _ = backend.generate(
+        melody_events=[_note_on(60, 4)],
+        generation_start_tick=8,
+        generation_length_frames=8,
+        generation_interval_ticks=4,
+        prompt_length_ticks=None,
+        inference_mode="sliding_window",
+        model_name="lekai",
+        checkpoint_path=None,
+    )
+
+    assert isinstance(accompaniment, list)
+    assert accompaniment
+
+
+def test_clear_history_returns_previous_histories_before_clearing():
+    backend = LekaiHttpBackend()
+    backend._melody_history = [_note_on(60, 0)]
+    backend._accompaniment_history = [{"type": "note_on", "pitch": 48, "tick": 0, "velocity": 80}]
+
+    payload = backend.clear_history()
+
+    assert payload["melody_history"][0]["pitch"] == 60
+    assert payload["accompaniment_history"][0]["pitch"] == 48
+    assert backend._melody_history == []
+    assert backend._accompaniment_history == []

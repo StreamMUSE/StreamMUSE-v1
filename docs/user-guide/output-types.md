@@ -117,7 +117,7 @@ uv run streammuse-cli --input-mode keyboard --output-type composite \
 
 等价于同时启用 `console` + `session`。运行时可看到实时输出，结束后有完整日志文件。
 
-说明：在当前 CLI 实现中，`composite` 会创建 `ConsoleOutputSink + SessionLoggerOutputSink`，因此会写入 `combined.mid`、`events.jsonl`、`inferences.json`、`session_config.json`。但 `performance.json` / `statistics.csv` 目前不会自动生成（因为 cleanup 钩子只对顶层 `SessionLoggerOutputSink` 调用 `save_metrics()`）。
+说明：在当前 CLI 实现中，`composite` 会创建 `ConsoleOutputSink + SessionLoggerOutputSink`，并在关闭时自动写入完整会话指标（含 `performance.json` 与 `statistics.csv`）。
 
 说明：`OutputSinkFactory` 在无 `session_manager` 时会退化为 `console + websocket`。但在 CLI 中 `--log-dir` 默认是 `logs`，通常都会创建 `session_manager`。
 
@@ -133,4 +133,4 @@ uv run streammuse-cli --input-mode keyboard --output-type composite \
 | `websocket` | JSON 推送 | ✓（自动 `combined.mid`） | – | – |
 | `json_log` | – | – | ✓ | – |
 | `session` | – | ✓ | ✓ | ✓ |
-| `composite` | ✓ | ✓ | ✓ | – |
+| `composite` | ✓ | ✓ | ✓ | ✓ |

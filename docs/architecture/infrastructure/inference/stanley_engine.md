@@ -77,9 +77,9 @@ List[dict] → List[Note] → note.to_events() → List[MusicalEvent]
 
 ---
 
-### `clear_history() -> None`
+### `clear_history() -> Dict[str, Any]`
 
-委托给 `_legacy.clear_history()`，清空旋律和伴奏历史。
+委托给 `_legacy.clear_history()` 清空旋律和伴奏历史，并返回统一的清理结果结构（`success/message/melody_history/accompaniment_history`，Stanley 场景下历史列表为空）。
 
 ---
 

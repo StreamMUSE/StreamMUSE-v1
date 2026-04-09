@@ -24,6 +24,9 @@ class SessionLoggerOutputSink:
         self.include_midi = include_midi
         self.include_json = include_json
         self.inference_log_detail = inference_log_detail
+        self._session_config: Optional[Dict[str, Any]] = None
+        self._closed = False
+        self._metrics_saved = False
 
         self.midi_sink: Optional[MidiFileOutputSink] = None
         self.json_sink: Optional[JsonLoggerOutputSink] = None
@@ -92,6 +95,8 @@ class SessionLoggerOutputSink:
             self.json_sink.output_status(state, message)
 
     def output_config(self, config: Dict[str, Any]) -> None:
+        self._session_config = dict(config)
+        self._metrics_saved = False
         if self.midi_sink:
             self.midi_sink.output_config(config)
         if self.json_sink:
@@ -108,11 +113,21 @@ class SessionLoggerOutputSink:
             self.json_sink.log_inference(request, response, latency_ms, server_process_ms)
 
     def save_metrics(self, session_config: Dict[str, Any]) -> None:
+        self._session_config = dict(session_config)
         if self.json_sink:
-            self.json_sink.save_metrics(session_config)
+            self.json_sink.save_metrics(self._session_config)
+            self._metrics_saved = True
 
     def close(self) -> None:
+        if self._closed:
+            return
+
+        if self._session_config is not None and self.json_sink and not self._metrics_saved:
+            self.json_sink.save_metrics(self._session_config)
+            self._metrics_saved = True
+
         if self.midi_sink:
             self.midi_sink.close()
         if self.json_sink:
             self.json_sink.close()
+        self._closed = True
