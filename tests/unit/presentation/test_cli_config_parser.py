@@ -19,6 +19,9 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "midi_device_name": None,
         "midi_file_path": None,
         "midi_file_delay_ticks": 0,
+        "injection_file": None,
+        "injection_length": 0,
+        "inject_acc_file": None,
         "output_type": "console",
         "midi_out_port": None,
         "midi_file_output_path": None,
@@ -48,6 +51,9 @@ def test_parse_args_defaults() -> None:
     assert config.tempo.ticks_per_beat == 4
     assert config.tempo.beats_per_bar == 4
     assert config.input.type == "midi_device"
+    assert config.input.injection_file is None
+    assert config.input.injection_length_ticks == 0
+    assert config.input.injection_acc_file is None
     assert config.output.type == "console"
     assert config.output.inference_log_detail == "summary"
     assert config.inference.type == "http"
@@ -123,6 +129,22 @@ def test_args_to_config_midi_file() -> None:
     assert config.output.type == "midi_file"
     assert config.output.midi_file_output_path == "/path/to/output.mid"
     assert config.output.inference_log_detail == "full"
+
+
+def test_args_to_config_injection_fields() -> None:
+    args = _make_args(
+        input_mode="midi_file",
+        midi_file_path="/path/to/input.mid",
+        injection_file="/path/to/mel/1.mid",
+        injection_length=16,
+        inject_acc_file="/path/to/acc/1.mid",
+    )
+
+    config = args_to_config(args)
+
+    assert config.input.injection_file == "/path/to/mel/1.mid"
+    assert config.input.injection_length_ticks == 16
+    assert config.input.injection_acc_file == "/path/to/acc/1.mid"
 
 
 @pytest.mark.parametrize(

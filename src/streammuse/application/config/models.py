@@ -26,6 +26,9 @@ class InputConfig:
     midi_device_name: Optional[str] = None
     midi_file_path: Optional[str] = None
     midi_file_delay_ticks: int = 0
+    injection_file: Optional[str] = None
+    injection_length_ticks: int = 0
+    injection_acc_file: Optional[str] = None
 
 
 @dataclass(frozen=True)

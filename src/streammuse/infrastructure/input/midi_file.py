@@ -20,6 +20,7 @@ class MidiFileInputConfig:
     max_pitch: int = 127
     program: Optional[int] = None
     max_tick: Optional[int] = None
+    start_tick: int = 0
 
     def seconds_per_tick(self) -> float:
         return (60.0 / float(self.bpm)) / float(self.ticks_per_beat)
@@ -124,8 +125,11 @@ class MidiFileInput:
 
         # Build schedule: tick -> list[MusicalEvent]
         schedule: Dict[int, List[MusicalEvent]] = {}
+        start_tick = int(self._config.start_tick)
         start_offset = int(self._config.delay_ticks)
-        for n in notes:
+        effective_notes = [n for n in notes if int(n["tick"]) >= start_tick]
+
+        for n in effective_notes:
             onset = int(n["tick"]) + start_offset
             offset = onset + int(n["duration"])
 

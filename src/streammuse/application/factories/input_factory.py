@@ -29,6 +29,7 @@ class InputSourceFactory:
                     bpm=float(tempo.bpm),
                     ticks_per_beat=int(tempo.ticks_per_beat),
                     delay_ticks=int(cfg.midi_file_delay_ticks),
+                    start_tick=(int(cfg.injection_length_ticks) if cfg.injection_file else 0),
                 ),
             )
 

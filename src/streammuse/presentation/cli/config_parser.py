@@ -38,6 +38,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--midi-device-name", type=str, default=None, help="MIDI input device name")
     parser.add_argument("--midi-file-path", type=str, default=None, help="Path to MIDI file (for simulation)")
     parser.add_argument("--midi-file-delay-ticks", type=int, default=0, help="Delay before starting MIDI file playback")
+    parser.add_argument(
+        "--injection-file",
+        type=str,
+        default=None,
+        help="Path to melody MIDI file to inject as prompt",
+    )
+    parser.add_argument(
+        "--injection-length",
+        type=int,
+        default=0,
+        help="Number of ticks to inject (e.g., 16 for 4 beats)",
+    )
+    parser.add_argument(
+        "--inject-acc-file",
+        type=str,
+        default=None,
+        help="Optional accompaniment MIDI path (default: replace '/mel/' with '/acc/')",
+    )
 
     # Output configuration
     parser.add_argument(
@@ -120,6 +138,9 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         midi_device_name=args.midi_device_name,
         midi_file_path=args.midi_file_path,
         midi_file_delay_ticks=int(args.midi_file_delay_ticks),
+        injection_file=getattr(args, "injection_file", None),
+        injection_length_ticks=int(getattr(args, "injection_length", 0) or 0),
+        injection_acc_file=getattr(args, "inject_acc_file", None),
     )
 
     # Output config
