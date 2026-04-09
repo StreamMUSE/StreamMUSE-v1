@@ -4,7 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
@@ -281,6 +281,287 @@ class LekaiHttpBackend:
             "runtime_inference_mode": self._runtime_config.inference_mode if self._runtime_config else "",
         }
 
+    @staticmethod
+    def _event_sort_key(event: EventPayload) -> Tuple[int, int]:
+        tick = int(event.get("tick", 0))
+        priority = 0 if str(event.get("type", "")) == "note_off" else 1
+        return tick, priority
+
+    def _active_pitches_before_tick(self, events: List[EventPayload], cutoff_tick: int) -> Set[int]:
+        active: Set[int] = set()
+        for event in sorted(events, key=self._event_sort_key):
+            tick = int(event.get("tick", 0))
+            if tick >= cutoff_tick:
+                break
+            if "pitch" not in event:
+                continue
+            pitch = int(event["pitch"])
+            event_type = str(event.get("type", ""))
+            if event_type == "note_on":
+                active.add(pitch)
+            elif event_type == "note_off":
+                active.discard(pitch)
+        return active
+
+    def _advance_active_pitches(
+        self,
+        events: List[EventPayload],
+        start_tick: int,
+        end_tick: int,
+        active_pitches: Set[int],
+    ) -> Set[int]:
+        updated = set(active_pitches)
+        beat_events = [
+            event
+            for event in events
+            if int(event.get("tick", -1)) >= start_tick and int(event.get("tick", -1)) < end_tick
+        ]
+        beat_events.sort(key=self._event_sort_key)
+
+        for event in beat_events:
+            if "pitch" not in event:
+                continue
+            pitch = int(event["pitch"])
+            event_type = str(event.get("type", ""))
+            if event_type == "note_on":
+                updated.add(pitch)
+            elif event_type == "note_off":
+                updated.discard(pitch)
+
+        return updated
+
+    def _encode_beat_tokens(
+        self,
+        events: List[EventPayload],
+        beat_start_tick: int,
+        active_pitches: Set[int],
+        end_marker: int,
+    ) -> tuple[torch.Tensor, Set[int]]:
+        assert self._converter is not None and self._tokenizer is not None
+
+        beat_end_tick = beat_start_tick + TIMESTEPS_PER_BEAT
+        beat_pr = self._converter.events_to_pianoroll(
+            events=events,
+            start_tick=beat_start_tick,
+            end_tick=beat_end_tick,
+            active_pitches=active_pitches,
+        )
+
+        tokens_matrix = self._tokenizer.image_to_patch_tokens(beat_pr, strict_mode=True)
+        compressed = self._tokenizer.compress_tokens(tokens_matrix, end_marker=end_marker)
+
+        next_active = self._advance_active_pitches(
+            events=events,
+            start_tick=beat_start_tick,
+            end_tick=beat_end_tick,
+            active_pitches=active_pitches,
+        )
+        return torch.tensor(compressed, dtype=torch.long), next_active
+
+    def _generate_part1_tokens_from_prompt(
+        self,
+        prompt_tokens: torch.Tensor,
+        *,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        repetition_penalty: float,
+    ) -> List[int]:
+        assert self._model_adapter is not None
+        from streammuse.infrastructure.inference.lekai_model.generation_utils import sample_token
+
+        model = getattr(self._model_adapter, "model", None)
+        if model is None:
+            raise RuntimeError("Model adapter does not expose `model` for interleaved decoding.")
+
+        device = str(getattr(self._model_adapter, "device", "cpu"))
+        use_cache = bool(getattr(self._model_adapter, "use_cache", True))
+        pad_token_id = 258
+        part1_end_marker = 171
+        bar_token = int(getattr(self._model_adapter, "BAR_TOKEN", 255))
+
+        generated = prompt_tokens.unsqueeze(0).to(device)
+        raw_tokens: List[int] = []
+        past_key_values = None
+
+        with torch.no_grad():
+            for _ in range(100):
+                outputs = model(
+                    input_ids=generated[:, -1:] if past_key_values is not None else generated,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                )
+
+                logits = outputs.logits[:, -1, :]
+                past_key_values = outputs.past_key_values
+
+                next_token = sample_token(
+                    logits,
+                    generated_tokens=generated,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                )
+
+                token_val = int(next_token.item())
+                generated = torch.cat([generated, next_token], dim=1)
+                raw_tokens.append(token_val)
+
+                if token_val in {part1_end_marker, bar_token}:
+                    break
+
+        valid_tokens = [token for token in raw_tokens if token != pad_token_id]
+        if valid_tokens and valid_tokens[-1] == bar_token:
+            valid_tokens.pop()
+        if not valid_tokens:
+            return [169]
+        return valid_tokens
+
+    def _generate_with_interleaved_prompt(
+        self,
+        generation_start_tick: int,
+        generation_interval_ticks: int,
+        generation_length_frames: int,
+    ) -> List[EventPayload]:
+        assert self._converter is not None and self._model_adapter is not None and self._tokenizer is not None
+
+        _ = generation_interval_ticks
+
+        from streammuse.infrastructure.inference.lekai_model.PianoDataset import encode_bpm
+        from streammuse.infrastructure.inference.lekai_model.inference_adapter import beats_to_pianoroll
+
+        current_beat = int(generation_start_tick) // TIMESTEPS_PER_BEAT
+        num_beats_to_generate = max(1, int(generation_length_frames) // TIMESTEPS_PER_BEAT)
+        if int(generation_length_frames) % TIMESTEPS_PER_BEAT != 0:
+            num_beats_to_generate += 1
+
+        context_beats = self._env_positive_int("LEKAI_PROMPT_CONTEXT_BEATS") or 32
+        start_beat = max(0, current_beat - context_beats)
+        context_start_tick = start_beat * TIMESTEPS_PER_BEAT
+
+        bpm_token = encode_bpm(int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))) + int(
+            getattr(self._model_adapter, "BPM_OFFSET_ID", 5)
+        )
+        time_signature_idx = int(os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4"))
+        time_sig_token = time_signature_idx + int(getattr(self._model_adapter, "TIME_SIG_OFFSET_ID", 0))
+
+        bar_token = int(getattr(self._model_adapter, "BAR_TOKEN", 255))
+        bos_token = int(getattr(self._model_adapter, "BOS_TOKEN", 1))
+        pad_token = int(getattr(self._model_adapter, "PAD_MARKER", 173))
+
+        seq: List[torch.Tensor] = [
+            torch.tensor([bos_token], dtype=torch.long),
+            torch.tensor([time_sig_token], dtype=torch.long),
+            torch.tensor([bpm_token], dtype=torch.long),
+            torch.tensor([pad_token], dtype=torch.long),
+        ]
+
+        melody_active = self._active_pitches_before_tick(self._melody_history, context_start_tick)
+        accompaniment_context_events: List[EventPayload] = list(self._accompaniment_history)
+        accompaniment_active = self._active_pitches_before_tick(accompaniment_context_events, context_start_tick)
+
+        for beat in range(start_beat, current_beat):
+            if beat % 4 == 0:
+                seq.append(torch.tensor([bar_token], dtype=torch.long))
+                seq.append(torch.tensor([bar_token], dtype=torch.long))
+
+            beat_start_tick = beat * TIMESTEPS_PER_BEAT
+
+            acc_tokens, accompaniment_active = self._encode_beat_tokens(
+                events=accompaniment_context_events,
+                beat_start_tick=beat_start_tick,
+                active_pitches=accompaniment_active,
+                end_marker=171,
+            )
+            seq.append(acc_tokens)
+
+            mel_tokens, melody_active = self._encode_beat_tokens(
+                events=self._melody_history,
+                beat_start_tick=beat_start_tick,
+                active_pitches=melody_active,
+                end_marker=170,
+            )
+            seq.append(mel_tokens)
+
+        generated_events: List[EventPayload] = []
+        running_active = set(self._active_pitches)
+
+        for beat_offset in range(num_beats_to_generate):
+            target_beat = current_beat + beat_offset
+            if target_beat % 4 == 0:
+                seq.append(torch.tensor([bar_token], dtype=torch.long))
+                seq.append(torch.tensor([bar_token], dtype=torch.long))
+
+            prompt_tokens = torch.cat(seq, dim=0)
+            generated_beat_tokens = self._generate_part1_tokens_from_prompt(
+                prompt_tokens,
+                temperature=1.2,
+                top_k=10,
+                top_p=0.9,
+                repetition_penalty=1.2,
+            )
+
+            beat_pianoroll = beats_to_pianoroll(
+                [generated_beat_tokens],
+                tokenizer=self._tokenizer,
+                timesteps_per_beat=TIMESTEPS_PER_BEAT,
+            )
+
+            expected_shape = (2, 88, TIMESTEPS_PER_BEAT)
+            got_shape = tuple(int(dim) for dim in beat_pianoroll.shape)
+            if got_shape != expected_shape:
+                got_time_axis = got_shape[2] if len(got_shape) >= 3 else -1
+                print(
+                    "[LekaiHttpBackend] Pianoroll shape mismatch "
+                    f"(expected={expected_shape}, got={got_shape}, "
+                    f"start_tick={generation_start_tick}, gen_len={generation_length_frames})"
+                )
+                if got_time_axis == 0 and TIMESTEPS_PER_BEAT > 0:
+                    print("[LekaiHttpBackend] Recoverable mismatch detected; fallback to rule-based generation")
+                    return self._generate_rule_based(
+                        generation_start_tick=generation_start_tick,
+                        generation_interval_ticks=generation_interval_ticks,
+                        generation_length_frames=generation_length_frames,
+                    )
+                raise RuntimeError(
+                    f"Pianoroll shape mismatch: expected {expected_shape}, got {got_shape}."
+                )
+
+            beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
+            beat_events, running_active = self._converter.pianoroll_to_events(
+                pianoroll=beat_pianoroll,
+                start_tick=beat_start_tick,
+                close_at_end=False,
+                active_pitches=running_active,
+            )
+            self._active_pitches = set(running_active)
+
+            normalized_beat_events: List[EventPayload] = []
+            for event in beat_events:
+                payload: EventPayload = {
+                    "type": str(event["type"]),
+                    "pitch": int(event["pitch"]),
+                    "tick": int(event["tick"]),
+                }
+                if "velocity" in event:
+                    payload["velocity"] = int(event["velocity"])
+                normalized_beat_events.append(payload)
+
+            generated_events.extend(normalized_beat_events)
+            accompaniment_context_events.extend(normalized_beat_events)
+
+            seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
+            mel_tokens_current, melody_active = self._encode_beat_tokens(
+                events=self._melody_history,
+                beat_start_tick=beat_start_tick,
+                active_pitches=melody_active,
+                end_marker=170,
+            )
+            seq.append(mel_tokens_current)
+
+        return generated_events
+
     def generate(
         self,
         melody_events: List[EventPayload],
@@ -351,6 +632,46 @@ class LekaiHttpBackend:
         return accompaniment, timings
 
     def _generate_with_model(
+        self,
+        generation_start_tick: int,
+        generation_interval_ticks: int,
+        generation_length_frames: int,
+    ) -> List[EventPayload]:
+        assert self._converter is not None and self._model_adapter is not None
+
+        if int(generation_start_tick) <= 0:
+            print(
+                "[LekaiHttpBackend] zero prompt window "
+                f"(start_tick={generation_start_tick}, gen_len={generation_length_frames}); "
+                "fallback to rule-based generation"
+            )
+            return self._generate_rule_based(
+                generation_start_tick=generation_start_tick,
+                generation_interval_ticks=generation_interval_ticks,
+                generation_length_frames=generation_length_frames,
+            )
+
+        has_interleaved_runtime = (
+            hasattr(self._model_adapter, "model")
+            and hasattr(self._model_adapter, "tokenizer")
+            and self._tokenizer is not None
+        )
+
+        if has_interleaved_runtime:
+            return self._generate_with_interleaved_prompt(
+                generation_start_tick=generation_start_tick,
+                generation_interval_ticks=generation_interval_ticks,
+                generation_length_frames=generation_length_frames,
+            )
+
+        # Compatibility path for unit tests with lightweight adapter stubs.
+        return self._generate_with_model_simple(
+            generation_start_tick=generation_start_tick,
+            generation_interval_ticks=generation_interval_ticks,
+            generation_length_frames=generation_length_frames,
+        )
+
+    def _generate_with_model_simple(
         self,
         generation_start_tick: int,
         generation_interval_ticks: int,
@@ -546,8 +867,12 @@ class LekaiHttpBackend:
         }
 
     def _trim_histories(self, generation_start_tick: int, generation_length_frames: int) -> None:
-        """Bug #6: 裁剪历史防止无限增长"""
-        max_history_ticks = int(generation_length_frames) * 2  # 保留 2 倍生成长度的历史
+        """Trim histories with a stable window independent from tiny generation lengths."""
+        configured_max_ticks = self._env_positive_int("LEKAI_HISTORY_MAX_TICKS")
+        if configured_max_ticks is None:
+            configured_max_ticks = max(512, int(generation_length_frames) * 16)
+
+        max_history_ticks = configured_max_ticks
         cutoff_tick = int(generation_start_tick) - max_history_ticks
         
         if cutoff_tick > 0:

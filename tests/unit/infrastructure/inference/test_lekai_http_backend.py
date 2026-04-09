@@ -113,7 +113,8 @@ def test_generate_rule_based_length_is_independent_of_interval():
         assert sorted({int(e["tick"]) for e in note_ons}) == expected_on_ticks
 
 
-def test_trim_histories_keeps_recent_window_only():
+def test_trim_histories_keeps_recent_window_only(monkeypatch):
+    monkeypatch.setenv("LEKAI_HISTORY_MAX_TICKS", "20")
     backend = LekaiHttpBackend()
     backend._melody_history = [_note_on(60, 0), _note_on(62, 40)]
     backend._accompaniment_history = [
@@ -121,7 +122,7 @@ def test_trim_histories_keeps_recent_window_only():
         {"type": "note_off", "pitch": 50, "tick": 41, "velocity": 0},
     ]
 
-    # max_history_ticks=20, cutoff=30 -> remove tick < 30
+    # max_history_ticks=20 (from env), cutoff=30 -> remove tick < 30
     backend._trim_histories(generation_start_tick=50, generation_length_frames=10)
 
     assert all(int(e["tick"]) >= 30 for e in backend._melody_history)

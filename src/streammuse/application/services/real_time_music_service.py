@@ -209,7 +209,11 @@ class RealTimeMusicService:
                     new_events = self._melody_history[self._last_sent_index:]
                     self._last_sent_index = len(self._melody_history)
                 if new_events:
-                    self._inference_request_queue.put((tick, new_events))
+                    generation_start_tick = tick
+                    # Align beat-tail trigger to next beat start (legacy client behavior).
+                    if (tick % self._tempo.ticks_per_beat) == (self._tempo.ticks_per_beat - 1):
+                        generation_start_tick = tick + 1
+                    self._inference_request_queue.put((generation_start_tick, new_events))
                     last_generation_tick = tick
 
             # Process inference responses.
