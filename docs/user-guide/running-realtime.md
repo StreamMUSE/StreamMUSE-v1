@@ -5,7 +5,9 @@ description: 启动推理服务器和 CLI 客户端的完整流程
 
 # 运行实时系统
 
-StreamMUSE 实时系统由两个进程组成：**推理服务器**（提供模型预测）和 **CLI 客户端**（读取输入、播放输出）。
+StreamMUSE 实时系统通常由两个进程组成：**推理服务器**（提供模型预测）和 **CLI 客户端**（读取输入、播放输出）。
+
+例外：`--inference-type stanley` 支持本地单进程模式（无 HTTP server）。
 
 ---
 
@@ -27,24 +29,38 @@ uv run streammuse-cli --input-mode keyboard
 
 ## 使用真实模型
 
-```bash
-# 终端 1：启动真实推理服务器（需要有模型 checkpoint）
-CHECKPOINT_PATH=path/to/model.ckpt \
-    uvicorn src.streammuse.infrastructure.inference.server:app \
-    --host 0.0.0.0 --port 8000
+当前仓库中，真实模型有两条可用路径：
 
-# 终端 2：
-uv run streammuse-cli --input-mode keyboard
+1. **Stanley 本地单进程**：`--inference-type stanley`（不走 HTTP server）
+2. **Lekai HTTP server**：启动 `server_lekai.py`，CLI 走 HTTP
+
+### 方案 A：Stanley 本地单进程
+
+```bash
+uv run streammuse-cli \
+    --input-mode keyboard \
+    --inference-type stanley \
+    --checkpoint-path path/to/model.ckpt
 ```
 
-### 推理服务器可选环境变量
+### 方案 B：Lekai HTTP server
 
-| 环境变量 | 默认值 | 说明 |
-|---|---|---|
-| `CHECKPOINT_PATH` | 必填 | 模型 checkpoint 路径 |
-| `MODEL_MAX_SEQ_LEN_FRAMES` | `96` | context window 帧数 |
-| `GENERATION_LENGTH_FRAMES` | `20` | 每次推理生成帧数 |
-| `MODEL_SIZE` | `"0.12B"` | 模型规模 |
+```bash
+# 终端 1：启动 Lekai 推理服务器
+LEKAI_CHECKPOINT_PATH=path/to/lekai_checkpoint.safetensors \
+LEKAI_DEVICE=auto \
+LEKAI_DTYPE=auto \
+uv run python -m streammuse.infrastructure.inference.server_lekai
+
+# 终端 2：启动 CLI 客户端（走 HTTP）
+uv run streammuse-cli \
+    --input-mode keyboard \
+    --inference-type http \
+    --model-name lekai \
+    --server-url http://localhost:8000/generate_accompaniment \
+    --generation-interval-ticks 4 \
+    --generation-length-frames 16
+```
 
 ---
 
@@ -53,7 +69,7 @@ uv run streammuse-cli --input-mode keyboard
 ```bash
 # MIDI 设备输入 + 实时音频输出
 uv run streammuse-cli \
-    --input-mode midi \
+    --input-mode midi_device \
     --midi-device-name "My MIDI Keyboard" \
     --output-type audio \
     --midi-out-port "My MIDI Output"
@@ -61,42 +77,26 @@ uv run streammuse-cli \
 # MIDI 文件模拟 + 会话日志（含 MIDI 录制和 JSON 日志）
 uv run streammuse-cli \
     --input-mode midi_file \
-    --midi-file prompts/C_major/pop909_216_mel.mid \
+    --midi-file-path prompts/C_major/pop909_216_mel.mid \
     --output-type composite \
     --log-dir logs
-
-# 使用注入预置历史（冷启动更好的初始伴奏）
-uv run streammuse-cli \
-    --input-mode keyboard \
-    --injection-file prompts/C_major/pop909_216_mel.mid \
-    --injection-length 50
 ```
+
+## 默认 MIDI 产物与日志目录结构
+
+当前版本中，除了 `--output-type midi_file` 外，CLI 会创建 session 目录，目录结构为：
+
+```text
+logs/YYYY-MM-DD/session_HHMMSS/
+```
+
+默认 MIDI 输出行为：
+1. `console` / `audio` / `websocket`：自动写 `combined.mid`。
+2. `session` / `composite`：保持原有 `combined.mid` 行为（并继续输出 JSON 日志）。
+3. `json_log`：仍然不写 `combined.mid`（仅 JSON）。
+4. `midi_file`：只写用户指定的 `--midi-file-output-path`，不创建 session 目录。
 
 ---
-
-## 使用 Lekai 模型
-
-Lekai 是另一种基于 LLaMA 架构的伴奏生成模型。使用 Lekai 需要启动专门的推理服务器：
-
-```bash
-# 终端 1：启动 Lekai 推理服务器
-# 注意：设置 checkpoint 路径后会进入 real model；未设置时使用 rule stub
-LEKAI_CHECKPOINT_PATH=path/to/lekai_checkpoint.safetensors \
-LEKAI_DEVICE=auto \
-LEKAI_DTYPE=auto \
-python -m streammuse.infrastructure.inference.server_lekai
-
-# 或使用直接启动方式
-uv run python -m streammuse.infrastructure.inference.server_lekai
-
-# 终端 2：启动 CLI 客户端
-# 注意：lekai 要求 generation-length-frames 为 4 的倍数（generation-interval-ticks 无此约束）
-uv run streammuse-cli \
-    --input-mode keyboard \
-    --model-name lekai \
-    --generation-interval-ticks 4 \
-    --generation-length-frames 16
-```
 
 ### macOS Apple Silicon 建议
 
@@ -139,6 +139,19 @@ uv run streammuse-cli \
     --inference-type stanley \
     --checkpoint-path path/to/model.ckpt
 ```
+
+---
+
+## 音乐注入能力说明
+
+当前 CLI 没有 `--injection-file` / `--injection-length` 参数。
+
+如果需要注入历史，请调用 HTTP API：
+1. `POST /inject_notes`
+2. `GET /injection_status`
+3. `POST /clear_history`
+
+详见：[music-injection](music-injection.md)
 
 ---
 

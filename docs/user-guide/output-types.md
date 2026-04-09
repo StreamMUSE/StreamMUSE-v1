@@ -11,7 +11,7 @@ StreamMUSE 支持七种输出类型，通过 `--output-type` 参数指定。
 
 ## console — 控制台输出（默认）
 
-将事件和统计信息打印到终端，适合调试和快速验证。
+将事件和统计信息打印到终端，适合调试和快速验证。当前版本会自动附加 MIDI 录制，输出到 session 目录中的 `combined.mid`。
 
 ```bash
 uv run streammuse-cli --input-mode keyboard --output-type console
@@ -29,7 +29,7 @@ uv run streammuse-cli --input-mode keyboard --output-type console
 
 ## audio — 实时音频播放
 
-将模型伴奏通过 MIDI 设备实时播放，需要系统中有 MIDI 输出端口。
+将模型伴奏通过 MIDI 设备实时播放，需要系统中有 MIDI 输出端口。当前版本会自动附加 MIDI 录制，输出到 session 目录中的 `combined.mid`。
 
 ```bash
 # 自动选择第一个 MIDI 输出端口
@@ -54,16 +54,16 @@ print(mido.get_output_names())
 
 ```bash
 uv run streammuse-cli --input-mode keyboard --output-type midi_file \
-    --midi-file-output session.mid
+    --midi-file-output-path session.mid
 ```
 
-文件包含两个音轨：`User` 和 `Model`。
+文件包含两个音轨：`Melody` 和 `Accompaniment`。
 
 ---
 
 ## websocket — WebSocket 推送
 
-将事件序列化为 JSON 放入队列，供 WebSocket 服务器推送给前端。
+将事件序列化为 JSON 放入队列，供 WebSocket 服务器推送给前端。当前版本会自动附加 MIDI 录制，输出到 session 目录中的 `combined.mid`。
 
 ```bash
 uv run streammuse-cli --input-mode keyboard --output-type websocket
@@ -83,8 +83,9 @@ uv run streammuse-cli --input-mode keyboard --output-type json_log \
 输出文件：
 - `events.jsonl` — 每行一个事件
 - `inferences.json` — 所有推理记录
-- `performance.json` — 延迟百分位和音乐分析
-- `statistics.csv` — 摘要指标
+- `session_config.json` — 会话配置快照
+
+说明：当前实现中，`json_log` 模式不会自动生成 `performance.json` 和 `statistics.csv`（这两项由 `SessionLoggerOutputSink.save_metrics()` 触发）。
 
 ---
 
@@ -98,7 +99,10 @@ uv run streammuse-cli --input-mode keyboard --output-type session \
 ```
 
 在 `json_log` 文件基础上额外输出：
-- `combined.mid` — 包含 User 和 Model 两个音轨的 MIDI 文件
+- `combined.mid` — 包含 Melody 和 Accompaniment 两个音轨的 MIDI 文件
+- `performance.json` — 延迟与事件统计
+- `statistics.csv` — 摘要指标 CSV
+- `session_summary.txt` — 会话完成摘要
 
 ---
 
@@ -113,7 +117,9 @@ uv run streammuse-cli --input-mode keyboard --output-type composite \
 
 等价于同时启用 `console` + `session`。运行时可看到实时输出，结束后有完整日志文件。
 
-若未指定 `--log-dir`，则组合 `console` + `websocket`。
+说明：在当前 CLI 实现中，`composite` 会创建 `ConsoleOutputSink + SessionLoggerOutputSink`，因此会写入 `combined.mid`、`events.jsonl`、`inferences.json`、`session_config.json`。但 `performance.json` / `statistics.csv` 目前不会自动生成（因为 cleanup 钩子只对顶层 `SessionLoggerOutputSink` 调用 `save_metrics()`）。
+
+说明：`OutputSinkFactory` 在无 `session_manager` 时会退化为 `console + websocket`。但在 CLI 中 `--log-dir` 默认是 `logs`，通常都会创建 `session_manager`。
 
 ---
 
@@ -121,10 +127,10 @@ uv run streammuse-cli --input-mode keyboard --output-type composite \
 
 | 类型 | 实时反馈 | MIDI 录制 | JSON 日志 | 性能分析 |
 |---|---|---|---|---|
-| `console` | ✓ | – | – | – |
-| `audio` | 音符播放 | – | – | – |
+| `console` | ✓ | ✓（自动 `combined.mid`） | – | – |
+| `audio` | 音符播放 | ✓（自动 `combined.mid`） | – | – |
 | `midi_file` | – | ✓ | – | – |
-| `websocket` | JSON 推送 | – | – | – |
-| `json_log` | – | – | ✓ | ✓ |
+| `websocket` | JSON 推送 | ✓（自动 `combined.mid`） | – | – |
+| `json_log` | – | – | ✓ | – |
 | `session` | – | ✓ | ✓ | ✓ |
-| `composite` | ✓ | ✓ | ✓ | ✓ |
+| `composite` | ✓ | ✓ | ✓ | – |

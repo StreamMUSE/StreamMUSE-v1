@@ -7,7 +7,11 @@ description: StreamMUSE Application 层的职责、组件构成与组装流程
 
 **源文件**：`src/streammuse/application/`
 
-Application 层是系统的**编排层**，负责将各组件组装为可运行的服务。它只依赖 Domain 层的接口和类型，**从不直接导入 Infrastructure 层的具体实现类**——所有具体类均通过 Factory 在运行时注入。
+Application 层是系统的**编排层**，负责将各组件组装为可运行的服务。
+
+当前实现中：
+1. `services/` 主要依赖 Domain 协议与类型。
+2. `factories/` 作为组合入口，会直接导入 Infrastructure 的具体实现类并完成装配。
 
 ---
 

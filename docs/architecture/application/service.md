@@ -100,7 +100,7 @@ def running(self) -> bool:
 1. **时钟同步**：计算目标时间 `start + tempo.tick_to_seconds(tick)`，睡眠直到该时间点（使用 `sleep`）
 2. **Tick 回调**：调用 `output_sink.output_tick(tick, bar, beat)`
 3. **播放用户事件**：排空 `_event_q`，对每个事件调用 `output_sink.output_event(ev, "user")`
-4. **触发推理**：若 `tick - last_generation_tick >= generation_interval_ticks`，获取 `_melody_history` 快照，放入 `_inference_request_queue`
+4. **触发推理**：若 `tick - last_generation_tick >= generation_interval_ticks`，仅提取“上次请求之后新增”的旋律事件（由 `_last_sent_index` 跟踪），放入 `_inference_request_queue`
 5. **处理推理响应**：排空 `_inference_response_queue`，对每个响应：
    - 调用 `scheduler.clear_future_events(generation_start_tick, source="model")` 清除旧的 model 事件
    - 将新伴奏事件（`source="model"`）通过 `scheduler.schedule()` 安排到对应 tick
@@ -140,7 +140,7 @@ sequenceDiagram
     IW->>IW: _melody_history.append(user_event)
     TL->>OS: output_tick(tick, bar, beat)
     TL->>OS: output_event(user_event, "user")
-    TL->>InfW: _inference_request_queue.put((tick, melody_snapshot))
+    TL->>InfW: _inference_request_queue.put((tick, new_melody_events))
     InfW->>InfW: engine.generate_accompaniment(...)
     InfW->>TL: _inference_response_queue.put((acc_events, start_tick))
     InfW->>OS: output_stats(round_trip_ms, ...)
@@ -160,7 +160,9 @@ def start(self, *, max_ticks: Optional[int] = None) -> None:
 2. 调用 `output_sink.output_status("running", "")`
 3. 启动三个 daemon 线程（`_input_thread`、`_tick_thread`、`_inference_thread`）
 
-注意：`start()` 是**非阻塞**的（standalone），线程在后台运行。CLI 中通过 `signal.pause()` 或 `threading.Event.wait()` 保持主线程阻塞。
+注意：`start()` 是**非阻塞**的（standalone），线程在后台运行。
+
+当前 CLI 实现使用 `while service.running: time.sleep(0.1)` 保持主线程存活。
 
 ---
 
@@ -174,5 +176,5 @@ def stop(self) -> None:
 1. 设置 `_running = False`
 2. 向 `_inference_request_queue` 放入一个 dummy 条目，唤醒阻塞的 inference worker
 3. 调用 `input_source.close()` 使 `_input_worker` 的生成器退出
-4. 依次 join 三个线程，等待它们完成
-5. 调用 `output_sink.close()` 释放 Sink 资源（写文件、关端口等）
+4. 调用 `output_sink.output_status("stopped", "")` 并执行 `output_sink.close()`
+5. 依次 join 三个线程，等待它们完成

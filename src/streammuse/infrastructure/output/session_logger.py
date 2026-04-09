@@ -17,6 +17,8 @@ class SessionLoggerOutputSink:
         include_midi: bool = True,
         include_json: bool = True,
         inference_log_detail: str = "summary",
+        bpm: float = 120.0,
+        ticks_per_beat: int = 4,
     ) -> None:
         self.session_dir = Path(session_dir)
         self.include_midi = include_midi
@@ -28,8 +30,8 @@ class SessionLoggerOutputSink:
 
         if self.include_midi:
             midi_config = MidiFileOutputConfig(
-                bpm=120.0,
-                ticks_per_beat=4,
+                bpm=float(bpm),
+                ticks_per_beat=int(ticks_per_beat),
                 output_path=str(self.session_dir / "combined.mid"),
             )
             self.midi_sink = MidiFileOutputSink(midi_config)

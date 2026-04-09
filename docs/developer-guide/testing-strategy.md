@@ -126,7 +126,7 @@ engine_mock.generate_accompaniment.return_value = (
         request_arrival_time=0.0,
         inference_start_time=0.0,
         inference_end_time=0.0,
-        response_send_time=0.0,
+        response_output_time=0.0,
         preprocess_start_time=0.0,
         postprocess_start_time=0.0,
     )

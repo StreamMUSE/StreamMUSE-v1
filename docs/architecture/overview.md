@@ -5,7 +5,7 @@ description: StreamMUSE Clean Architecture 四层设计与数据流说明
 
 # 架构总览
 
-StreamMUSE 严格遵循 **Clean Architecture（洁净架构）** 原则，将系统划分为四个依赖单向流动的层次。
+StreamMUSE 以 **Clean Architecture（洁净架构）** 为设计目标，将系统划分为四个主要层次。
 
 ---
 
@@ -24,7 +24,7 @@ StreamMUSE 严格遵循 **Clean Architecture（洁净架构）** 原则，将系
 │   src/streammuse/application/                       │
 │   配置模型、Factory 工厂、RealTimeMusicService 服务      │
 └────────────────────┬────────────────────────────────┘
-                     │ 只依赖 Domain 接口（Protocol）
+                     │ 服务逻辑依赖 Domain；Factory 负责装配 Infrastructure
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │              Domain 层                              │
@@ -45,12 +45,12 @@ StreamMUSE 严格遵循 **Clean Architecture（洁净架构）** 原则，将系
 
 | 层 | 可以依赖 | 不可依赖 |
 |---|---|---|
-| Presentation | Application、Domain | Infrastructure（通过 Factory 间接使用） |
-| Application | Domain | Infrastructure、Presentation |
+| Presentation | Application、Domain、（当前实现中少量）Infrastructure | — |
+| Application | Domain、（Factory 中）Infrastructure | Presentation |
 | Domain | 无外部依赖 | 所有其他层 |
 | Infrastructure | Domain | Application、Presentation |
 
-**核心原则**：内层（Domain）完全不知道外层的存在。Application 层通过 Domain 定义的 Protocol（duck typing）与 Infrastructure 解耦，无需任何 `import` 具体实现类。
+**核心原则**：内层（Domain）完全不知道外层的存在。虽然当前实现的组合代码会导入具体实现类，但运行时核心服务（`RealTimeMusicService`）仍通过 Domain Protocol（duck typing）与具体实现解耦。
 
 ---
 
@@ -92,7 +92,7 @@ graph LR
     IW[_input_worker] -->|MusicalEvent| EQ[_event_q]
     EQ --> TL[_tick_loop]
     TL -->|output_event| OS[OutputSink]
-    TL -->|tick, melody_snapshot| IRQ[_inference_request_queue]
+    TL -->|tick, new_melody_events| IRQ[_inference_request_queue]
     IRQ --> InfW[_inference_worker]
     InfW -->|acc_events| IRSQ[_inference_response_queue]
     IRSQ --> TL

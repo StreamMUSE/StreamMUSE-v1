@@ -96,4 +96,4 @@ EOS_TOKEN 和 PAD_TOKEN 为特殊占位符。
 
 ### `set_injection_offset(offset_ticks: int) -> None`
 
-设置注入偏移，供 CLI `--injection-file` 功能使用。
+设置注入偏移，供上层注入流程（HTTP API 或编程调用）使用。

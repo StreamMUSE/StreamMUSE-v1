@@ -31,7 +31,7 @@ def main() -> int:
 
     session_manager = None
     session_config: dict[str, object] = {}
-    if config.output.type in ["json_log", "session", "composite"]:
+    if config.output.type != "midi_file":
         session_manager = SessionManager(args.log_dir)
         session_manager.create_session_directory()
         session_config = {

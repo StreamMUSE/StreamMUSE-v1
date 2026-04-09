@@ -5,7 +5,7 @@ description: streammuse-cli 所有命令行参数的完整说明
 
 # CLI 参数完整参考
 
-`streammuse-cli` 的所有可用参数一览。
+本文基于当前实现（`src/streammuse/presentation/cli/config_parser.py`）整理。
 
 ## 用法
 
@@ -15,11 +15,11 @@ uv run streammuse-cli [参数...]
 
 ---
 
-## 速度参数
+## 节奏参数
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--bpm` | `float` | `120.0` | 每分钟拍数（Beats Per Minute） |
+| `--tempo` | `float` | `120.0` | 每分钟拍数（BPM） |
 | `--ticks-per-beat` | `int` | `4` | 每拍 tick 数（1 tick = 1/4 拍） |
 | `--beats-per-bar` | `int` | `4` | 每小节拍数 |
 
@@ -29,8 +29,8 @@ uv run streammuse-cli [参数...]
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--input-mode` | `str` | `"keyboard"` | 输入模式：`keyboard`、`midi`、`midi_file`、`list` |
-| `--midi-device-name` | `str` | `None` | MIDI 输入设备名称（`midi` 模式） |
+| `--input-mode` | `str` | `"midi_device"` | 输入模式：`midi_device`、`keyboard`、`midi_file`、`list` |
+| `--midi-device-name` | `str` | `None` | MIDI 输入设备名称（`midi_device` 模式） |
 | `--midi-file-path` | `str` | `None` | MIDI 文件路径（`midi_file` 模式必填） |
 | `--midi-file-delay-ticks` | `int` | `0` | MIDI 文件开始前的延迟 ticks |
 
@@ -40,11 +40,24 @@ uv run streammuse-cli [参数...]
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--output-type` | `str` | `"console"` | 输出类型：`console`、`audio`、`midi_file`、`websocket`、`json_log`、`session`、`composite` |
+| `--output-type` | `str` | `"console"` | 输出类型：`console`、`audio`、`midi_file`、`websocket`、`json_log`、`session`、`composite`。`console/audio/websocket/session/composite` 会生成 `combined.mid` |
 | `--midi-out-port` | `str` | `None` | MIDI 输出端口名称（`audio` 模式） |
-| `--midi-file-output-path` | `str` | `None` | MIDI 录制输出路径（`midi_file` 模式） |
-| `--log-dir` | `str` | `None` | 日志目录（`json_log`/`session`/`composite` 使用） |
+| `--midi-file-output-path` | `str` | `None` | MIDI 录制输出路径（`midi_file` 模式必填） |
+| `--log-dir` | `str` | `"logs"` | session 根目录。除 `midi_file` 外都会创建 `logs/YYYY-MM-DD/session_HHMMSS/` |
 | `--inference-log-detail` | `str` | `"summary"` | 推理日志粒度：`summary`（摘要）或 `full`（完整 request/response，体积更大） |
+| `--enable-performance-tracking` | flag | `False` | 预留参数；当前版本未接入额外逻辑 |
+
+### 输出类型与 MIDI 产物
+
+| output_type | 是否写 `combined.mid` | 说明 |
+|---|---|---|
+| `console` | 是（自动附加） | 控制台 + 自动 MIDI |
+| `audio` | 是（自动附加） | 实时播放 + 自动 MIDI |
+| `websocket` | 是（自动附加） | WebSocket + 自动 MIDI |
+| `session` | 是（原生） | SessionLogger 本身包含 MIDI |
+| `composite` | 是（原生） | Composite 中包含 SessionLogger |
+| `json_log` | 否 | 纯 JSON 日志 |
+| `midi_file` | 否（不写 `combined.mid`） | 仅写 `--midi-file-output-path` |
 
 ---
 
@@ -72,7 +85,15 @@ uv run streammuse-cli [参数...]
 |---|---|---|
 | `--generation-length-frames` | 必须是 4 的倍数 | `20` |
 
-不满足约束时 CLI 会报错并提示推荐值。
+该约束由 Lekai HTTP server 校验；不满足时会返回 HTTP 422 错误。
+
+---
+
+## 注入能力说明
+
+当前 CLI **没有** `--injection-file` / `--injection-length` 参数。
+
+如果需要注入历史，请使用 HTTP API（`/inject_notes`、`/injection_status`、`/clear_history`），详见用户文档：[music-injection](../user-guide/music-injection.md)。
 
 ### Lekai Server Runtime 环境变量
 
@@ -91,15 +112,6 @@ uv run streammuse-cli [参数...]
 
 ---
 
-## 音乐注入参数
-
-| 参数 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `--injection-file` | `str` | `None` | 预置历史的旋律 MIDI 文件路径 |
-| `--injection-length` | `int` | `None` | 注入长度（ticks）；`None` 表示使用全部文件 |
-
----
-
 ## 其他参数
 
 | 参数 | 类型 | 默认值 | 说明 |
@@ -115,7 +127,7 @@ uv run streammuse-cli [参数...]
 uv run streammuse-cli --input-mode keyboard
 
 # MIDI 设备 + 实时播放
-uv run streammuse-cli --input-mode midi --output-type audio
+uv run streammuse-cli --input-mode midi_device --output-type audio
 
 # MIDI 文件 + 完整日志
 uv run streammuse-cli \
@@ -144,7 +156,7 @@ uv run streammuse-cli \
 # 自定义速度参数
 uv run streammuse-cli \
     --input-mode keyboard \
-    --bpm 90 \
+    --tempo 90 \
     --generation-interval-ticks 4 \
     --generation-length-frames 16
 ```

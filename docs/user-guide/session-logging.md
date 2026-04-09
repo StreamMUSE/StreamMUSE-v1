@@ -5,7 +5,11 @@ description: 使用 session/composite 模式记录演奏并分析性能数据
 
 # 会话日志与分析
 
-使用 `--output-type session` 或 `--output-type composite` 启用会话日志，可在演奏结束后分析延迟、事件统计和音乐质量。
+使用 `--output-type session` 或 `--output-type composite` 启用会话日志。
+
+说明：
+1. `session` 模式会生成完整日志（含 `performance.json`、`statistics.csv`）。
+2. 当前实现中，`composite` 模式默认会生成 `events.jsonl`、`inferences.json`、`session_config.json`、`combined.mid`，但不会自动生成 `performance.json` 和 `statistics.csv`。
 
 ---
 
@@ -14,7 +18,7 @@ description: 使用 session/composite 模式记录演奏并分析性能数据
 ```bash
 uv run streammuse-cli \
     --input-mode keyboard \
-    --output-type composite \
+    --output-type session \
     --log-dir logs
 ```
 
@@ -27,6 +31,18 @@ logs/
     ├── inferences.json
     ├── performance.json
     ├── statistics.csv
+    ├── session_config.json
+    ├── session_summary.txt
+    └── combined.mid
+```
+
+若使用 `--output-type composite`，通常目录中会有：
+
+```
+logs/
+└── session_20241201-120000/
+    ├── events.jsonl
+    ├── inferences.json
     ├── session_config.json
     └── combined.mid
 ```
@@ -66,13 +82,15 @@ JSON 数组，记录每次推理请求和响应：
 
 `MetricsCalculator` 生成的性能报告，包含：
 
-- **延迟指标**：p50/p75/p95/p99 推理延迟（ms）
+- **延迟指标**：mean/median/min/max（样本足够时附加 p95/p99）
 - **事件统计**：用户/模型音符数量
 - **音乐分析**：音符密度等
 
 ### `statistics.csv`
 
 性能指标的 CSV 摘要，便于与其他工具（pandas、Excel）对比分析。
+
+> 仅 `session` 模式在当前实现中保证自动生成。
 
 ### `session_config.json`
 
@@ -113,14 +131,16 @@ print(f"用户音符: {len(user_notes)}, 模型音符: {len(model_notes)}")
 
 ## 基准测试
 
-利用 MIDI 文件模拟和会话日志进行批量延迟测试：
+利用现有基准脚本对 HTTP 推理接口做延迟测试：
 
 ```bash
-# 启动推理服务器
-uv run python scripts/fake_inference_server.py &
+# 启动 Lekai 或 fake 推理服务器（任选其一）
+uv run python scripts/fake_inference_server.py
 
-# 使用 MIDI 文件跑基准测试
-uv run python app/benchmark.py \
-    --output_file results/benchmark_test.csv \
-    --num_requests 100
+# 运行基准并导出 JSON
+uv run python scripts/benchmark_lekai_http.py \
+    --url http://127.0.0.1:8000/generate_accompaniment \
+    --num-requests 20 \
+    --warmup-requests 3 \
+    --output results/benchmark_http.json
 ```

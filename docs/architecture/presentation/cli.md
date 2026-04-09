@@ -5,84 +5,103 @@ description: main() 函数、cleanup()、信号处理与会话保存
 
 # presentation/cli — 入口点与生命周期
 
-**源文件**：`src/streammuse/presentation/cli/cli.py`
+源文件：`src/streammuse/presentation/cli/cli.py`
 
-系统的 CLI 入口点，由 `pyproject.toml` 中的 `[project.scripts]` 注册为 `streammuse-cli`。
+CLI 入口负责：参数解析、组件装配、会话日志初始化、信号处理和服务生命周期管理。
 
 ---
 
-## `main() -> None`
+## `main() -> int`
 
-完整启动流程：
+当前实现流程（简化）：
 
 ```python
-def main() -> None:
+def main() -> int:
     args = parse_args()
-    app_config = env_to_config() or args_to_config(args)
-    
+
+    config = env_to_config()
+    if config is None:
+        config = args_to_config(args)
+    else:
+        config = args_to_config(args)  # 当前实现仍以 CLI 参数为最终配置
+
     session_manager = None
-    if args.output_type in ("json_log", "session", "composite") and args.log_dir:
-        session_manager = SessionManager(log_dir=Path(args.log_dir))
-        session_manager.create_session()
-    
-    input_source  = InputSourceFactory.create(app_config)
-    output_sink   = OutputSinkFactory.create(app_config, session_manager)
-    inference_eng = InferenceEngineFactory.create(app_config)
-    
-    tempo     = Tempo(bpm=app_config.tempo.bpm, ticks_per_beat=app_config.tempo.ticks_per_beat)
+    session_config = {}
+    if config.output.type in ["json_log", "session", "composite"]:
+        session_manager = SessionManager(args.log_dir)
+        session_manager.create_session_directory()
+        session_config = {...}
+        session_manager.save_config(session_config)
+
+    input_source = InputSourceFactory.create(config)
+    output_sink = OutputSinkFactory.create(config, session_manager)
+    inference_engine = InferenceEngineFactory.create(config)
+
+    tempo = Tempo(...)
     scheduler = PlaybackScheduler()
-    
-    service = RealTimeMusicService(
-        input_source=input_source,
-        output_sink=output_sink,
-        inference_engine=inference_eng,
-        tempo=tempo,
-        scheduler=scheduler,
-        generation_interval_ticks=app_config.inference.generation_interval_ticks,
-        generation_length_frames=app_config.inference.generation_length_frames,
-    )
-    
-    atexit.register(cleanup, service, output_sink, session_manager, app_config)
-    signal.signal(signal.SIGINT, signal_handler(service, output_sink, session_manager, app_config))
-    signal.signal(signal.SIGTERM, signal_handler(service, output_sink, session_manager, app_config))
-    
+
+    service = RealTimeMusicService(...)
+
+    def cleanup() -> None:
+        output_sink.close()
+        if session_manager and isinstance(output_sink, SessionLoggerOutputSink):
+            output_sink.save_metrics(session_config)
+            session_manager.save_summary({...})
+
+    def signal_handler(sig, frame):
+        print("\nShutting down...")
+        service.stop()
+        sys.exit(0)
+
+    atexit.register(cleanup)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     service.start(max_ticks=args.max_ticks)
-    signal.pause()   # 主线程阻塞
+    while service.running:
+        time.sleep(0.1)
+
+    return 0
 ```
 
-**Music Injection**（`--injection-file`）：若指定了 injection 文件，在 `service.start()` 之前调用 `inference_engine.inject_history()`，将预置旋律和伴奏注入模型历史。
+说明：
+
+1. 当前 CLI 没有 `--injection-file` / `--injection-length` 参数。
+2. `main()` 不会主动调用 `inference_engine.inject_history()`。
 
 ---
 
-## `cleanup(service, output_sink, session_manager, app_config) -> None`
+## `cleanup() -> None`
 
-清理函数，通过 `atexit.register()` 注册，在进程退出时执行：
+`cleanup()` 是 `main()` 内部函数，并通过 `atexit.register(cleanup)` 注册。
 
-1. 调用 `service.stop()`（若正在运行）
-2. 调用 `output_sink.close()`
-3. 若 `output_sink` 为 `SessionLoggerOutputSink` 且有 `session_manager`：
-   - `output_sink.save_metrics(session_config)` → 写入 `performance.json` + `statistics.csv`
-   - `output_sink.json_sink.save_inferences()` → 写入 `inferences.json`
-4. 若适用，调用 `session_manager.save_session_config(...)` → 写入 `session_config.json`
+当前行为：
+
+1. 调用 `output_sink.close()`。
+2. 若 `session_manager` 存在且 `output_sink` 是 `SessionLoggerOutputSink`：
+   - 调用 `output_sink.save_metrics(session_config)`（写 `performance.json`、`statistics.csv`）
+   - 调用 `session_manager.save_summary(...)`（写 `session_summary.txt`）
+
+`session_config.json` 在服务启动前由 `session_manager.save_config(...)` 写入。
 
 ---
 
-## `signal_handler(service, output_sink, session_manager, app_config)`
+## `signal_handler(sig, frame)`
 
-返回一个信号处理函数（闭包），注册到 `SIGINT`（Ctrl+C）和 `SIGTERM`：
+信号处理函数在 `main()` 内部定义，注册到 `SIGINT`（Ctrl+C）和 `SIGTERM`。
 
-```python
-def handler(sig, frame):
-    service.stop()
-    cleanup(service, output_sink, session_manager, app_config)
-    sys.exit(0)
-```
+行为：
+
+1. 打印 `Shutting down...`
+2. 调用 `service.stop()`
+3. 调用 `sys.exit(0)` 退出进程
 
 ---
 
 ## 入口点注册
 
-`pyproject.toml`:
+`pyproject.toml`：
+
 ```toml
 [project.scripts]
 streammuse-cli = "streammuse.presentation.cli.cli:main"

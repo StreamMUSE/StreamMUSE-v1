@@ -1,97 +1,107 @@
 ---
 title: 音乐注入（music injection）
-description: 使用预置 MIDI 文件为模型提供历史上下文，改善冷启动时的伴奏质量
+description: 通过 HTTP API 注入历史上下文（/inject_notes、/injection_status、/clear_history）
 ---
 
 # 音乐注入
 
-在会话开始时，将一段预录制的旋律/伴奏注入模型历史，使模型不需要从零开始"热身"，从第一个音符起就能生成高质量的伴奏。
+音乐注入用于在会话开始前预填充模型历史，使模型不必从空上下文启动。
 
 ---
 
-## 为什么需要注入？
+## 当前实现状态
 
-RoFormer 模型需要足够的历史上下文（最多 96 帧）才能准确预测下一段伴奏。在会话开始时历史为空，最初几秒的伴奏质量通常较差。音乐注入通过预先填充历史记录解决这一问题。
+1. CLI 当前**没有** `--injection-file` / `--injection-length` 参数。
+2. 注入能力仍然存在于推理接口层（`InferenceEngine.inject_history`）和 HTTP server API。
+3. 若要使用注入，请直接调用 HTTP API。
 
 ---
 
-## 基本用法
+## 适用服务
+
+以下服务实现了注入相关端点：
+
+1. `scripts/fake_inference_server.py`（用于开发联调）
+2. `src/streammuse/infrastructure/inference/server_lekai.py`
+
+端点：
+
+1. `POST /inject_notes`
+2. `GET /injection_status`
+3. `POST /clear_history`
+
+---
+
+## API 用法示例
+
+### 1) 注入历史
 
 ```bash
-uv run streammuse-cli \
-    --input-mode keyboard \
-    --injection-file prompts/C_major/pop909_216_mel.mid \
-    --injection-length 50
+curl -X POST http://127.0.0.1:8000/inject_notes \
+    -H "Content-Type: application/json" \
+    -d '{
+        "melody_notes": [
+            {"type": "note_on", "pitch": 60, "tick": 0},
+            {"type": "note_off", "pitch": 60, "tick": 4}
+        ],
+        "accompaniment_notes": [
+            {"type": "note_on", "pitch": 48, "tick": 0},
+            {"type": "note_off", "pitch": 48, "tick": 4}
+        ],
+        "injection_length_ticks": 16
+    }'
 ```
 
-| 参数 | 说明 |
-|---|---|
-| `--injection-file` | 旋律 MIDI 文件路径（用于填充历史） |
-| `--injection-length` | 注入长度（ticks）；`None` 表示使用全部文件 |
-
----
-
-## 预置 prompts 目录
-
-`prompts/` 目录按调性组织了来自 POP909 数据集的旋律和伴奏文件：
-
-| 目录 | 调性 | 文件数 |
-|---|---|---|
-| `prompts/A_major/` | A 大调 | 4 首（mel + acc） |
-| `prompts/A_minor/` | A 小调 | 6 首 |
-| `prompts/B_minor/` | B 小调 | 10 首 |
-| `prompts/C_major/` | C 大调 | 6 首 |
-| `prompts/D_major/` | D 大调 | 6 首 |
-| `prompts/D_minor/` | D 小调 | 2 首 |
-| `prompts/E_minor/` | E 小调 | 4 首 |
-| `prompts/F_major/` | F 大调 | 6 首 |
-| `prompts/G_major/` | G 大调 | 10 首 |
-| `prompts/manual/` | 手工编写 | 若干 |
-
-每个目录下 `*_mel.mid` 为旋律文件，`*_acc.mid` 为对应的伴奏文件。
-
----
-
-## 使用建议
-
-**调性匹配**：建议选择与演奏调性相符的注入文件。例如，若计划演奏 C 大调，使用 `prompts/C_major/` 下的文件：
+### 2) 查询注入状态
 
 ```bash
-uv run streammuse-cli \
-    --input-mode keyboard \
-    --injection-file prompts/C_major/pop909_216_mel.mid \
-    --injection-length 50
+curl -s http://127.0.0.1:8000/injection_status
 ```
 
-**注入长度**：
-- 较短（20–30 ticks）：快速注入，历史较少但启动更快
-- 较长（50–80 ticks）：充分填充历史，伴奏效果更好，但启动时间略长
-
-**与 `--max-ticks` 配合**：对于基准测试，固定运行时长：
+### 3) 清空历史
 
 ```bash
-uv run streammuse-cli \
-    --input-mode midi_file \
-    --midi-file prompts/C_major/pop909_216_mel.mid \
-    --injection-file prompts/C_major/pop909_216_mel.mid \
-    --injection-length 50 \
-    --max-ticks 200 \
-    --output-type composite \
-    --log-dir logs/injected_test
+curl -X POST http://127.0.0.1:8000/clear_history
 ```
 
 ---
 
-## 内部实现
+## 数据格式说明
 
-CLI 在 `service.start()` 之前调用 `inference_engine.inject_history()`：
+`/inject_notes` 请求体中的每个事件至少需要：
+
+1. `type`：`note_on` 或 `note_off`
+2. `pitch`：MIDI 音高
+3. `tick`：绝对 tick
+
+`velocity` 可选。
+
+---
+
+## 与 CLI 的关系
+
+如果你使用 `streammuse-cli --inference-type http`，CLI 本身不会自动发注入请求。
+
+常见做法：
+
+1. 先用 `curl` 调 `/inject_notes`
+2. 再启动或继续运行 CLI 进行实时推理
+
+---
+
+## Python 调用示例
 
 ```python
-# cli.py main() 中
-if args.injection_file:
-    melody_events = load_midi_as_events(args.injection_file, args.injection_length)
-    acc_events = load_midi_as_events(args.injection_acc_file, args.injection_length)
-    inference_engine.inject_history(melody_events, acc_events, args.injection_length)
+import requests
+
+payload = {
+        "melody_notes": [{"type": "note_on", "pitch": 60, "tick": 0}, {"type": "note_off", "pitch": 60, "tick": 4}],
+        "accompaniment_notes": [{"type": "note_on", "pitch": 48, "tick": 0}, {"type": "note_off", "pitch": 48, "tick": 4}],
+        "injection_length_ticks": 16,
+}
+
+resp = requests.post("http://127.0.0.1:8000/inject_notes", json=payload, timeout=10)
+resp.raise_for_status()
+print(resp.json())
 ```
 
-`inject_history()` 对 HTTP 客户端是一个 POST 请求到 `/inject_notes`，对本地 Stanley 引擎则直接填充内存历史列表。

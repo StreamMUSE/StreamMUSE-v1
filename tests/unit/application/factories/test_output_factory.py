@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from streammuse.application.config import ApplicationConfig, OutputConfig, TempoConfig
+from streammuse.application.factories.output_factory import OutputSinkFactory
+from streammuse.domain.logging import SessionManager
+from streammuse.infrastructure.output import (
+    AudioOutputSink,
+    CompositeOutputSink,
+    ConsoleOutputSink,
+    JsonLoggerOutputSink,
+    MidiFileOutputSink,
+    SessionLoggerOutputSink,
+)
+
+
+def _make_config(output_type: str, bpm: float = 120.0, ticks_per_beat: int = 4) -> ApplicationConfig:
+    return ApplicationConfig(
+        tempo=TempoConfig(bpm=bpm, ticks_per_beat=ticks_per_beat, beats_per_bar=4),
+        output=OutputConfig(type=output_type),  # type: ignore[arg-type]
+    )
+
+
+def test_output_factory_console_with_session_manager_attaches_auto_midi(tmp_path):
+    config = _make_config("console", bpm=96.0, ticks_per_beat=8)
+    session_manager = SessionManager(base_log_dir=str(tmp_path))
+    session_dir = session_manager.create_session_directory()
+
+    sink = OutputSinkFactory.create(config, session_manager=session_manager)
+    assert isinstance(sink, CompositeOutputSink)
+    assert len(sink.sinks) == 2
+    assert isinstance(sink.sinks[0], ConsoleOutputSink)
+    assert isinstance(sink.sinks[1], MidiFileOutputSink)
+    assert sink.sinks[1]._config.bpm == 96.0
+    assert sink.sinks[1]._config.ticks_per_beat == 8
+    assert sink.sinks[1]._config.output_path == str(session_dir / "combined.mid")
+    sink.close()
+
+
+def test_output_factory_audio_with_session_manager_attaches_auto_midi(tmp_path):
+    config = _make_config("audio", bpm=110.0, ticks_per_beat=4)
+    session_manager = SessionManager(base_log_dir=str(tmp_path))
+    session_dir = session_manager.create_session_directory()
+
+    sink = OutputSinkFactory.create(config, session_manager=session_manager)
+    assert isinstance(sink, CompositeOutputSink)
+    assert isinstance(sink.sinks[0], AudioOutputSink)
+    assert isinstance(sink.sinks[1], MidiFileOutputSink)
+    assert sink.sinks[1]._config.output_path == str(session_dir / "combined.mid")
+    sink.close()
+
+
+def test_output_factory_json_log_does_not_attach_midi(tmp_path):
+    config = _make_config("json_log")
+    session_manager = SessionManager(base_log_dir=str(tmp_path))
+    session_manager.create_session_directory()
+
+    sink = OutputSinkFactory.create(config, session_manager=session_manager)
+    assert isinstance(sink, JsonLoggerOutputSink)
+    sink.close()
+
+
+def test_output_factory_session_keeps_session_logger_without_double_attach(tmp_path):
+    config = _make_config("session", bpm=110.0, ticks_per_beat=8)
+    session_manager = SessionManager(base_log_dir=str(tmp_path))
+    session_manager.create_session_directory()
+
+    sink = OutputSinkFactory.create(config, session_manager=session_manager)
+    assert isinstance(sink, SessionLoggerOutputSink)
+    assert sink.midi_sink is not None
+    assert sink.midi_sink._config.bpm == 110.0
+    assert sink.midi_sink._config.ticks_per_beat == 8
+    sink.close()
+
+
+def test_output_factory_console_without_session_manager_returns_plain_console_sink():
+    config = _make_config("console")
+    sink = OutputSinkFactory.create(config, session_manager=None)
+    assert isinstance(sink, ConsoleOutputSink)
+
+
+def test_session_logger_uses_passed_bpm_and_ticks(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=True,
+        include_json=False,
+        bpm=110.0,
+        ticks_per_beat=8,
+    )
+
+    assert sink.midi_sink is not None
+    assert sink.midi_sink._config.bpm == 110.0
+    assert sink.midi_sink._config.ticks_per_beat == 8
+    sink.close()

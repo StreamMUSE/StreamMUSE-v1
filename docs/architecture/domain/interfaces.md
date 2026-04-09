@@ -95,12 +95,12 @@ class OutputSink(Protocol):
 | `state` 可能取值 | 含义 |
 |---|---|
 | `"running"` | 服务已启动 |
-| `"stopping"` | 服务正在关闭 |
+| `"stopped"` | 服务已停止 |
 | `"error"` | 发生错误，附带 `message` |
 
 #### `output_config(config) -> None`
 
-在服务启动时（`start()` 内）调用一次，传递会话配置快照。用于 WebSocket / JSON log 在会话开始时记录配置。
+用于输出配置快照（例如 WebSocket / JSON 日志）。当前 `RealTimeMusicService` 中未主动调用该方法，是否调用取决于上层编排代码。
 
 #### `close() -> None`
 
@@ -169,7 +169,7 @@ class InferenceEngine(Protocol):
 
 ### `inject_history(melody_events, accompaniment_events, injection_length_ticks) -> None`
 
-预填充模型历史，用于 MIDI prompt 注入（`--injection-file` 选项）。在 `service.start()` 时调用，`generate_accompaniment()` 调用之前完成。
+预填充模型历史，用于 prompt 注入。当前仓库中此能力主要通过 HTTP API（`/inject_notes`）或编程方式调用，不通过 CLI 参数直接触发。
 
 ### `set_injection_offset(offset_ticks) -> None`
 

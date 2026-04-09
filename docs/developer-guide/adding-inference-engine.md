@@ -61,7 +61,7 @@ class LekaiInferenceEngine(InferenceEngine):
             request_arrival_time=t0,
             inference_start_time=t1,
             inference_end_time=t2,
-            response_send_time=t3,
+            response_output_time=t3,
             preprocess_start_time=t0,
             postprocess_start_time=t2,
         )

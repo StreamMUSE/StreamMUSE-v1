@@ -38,9 +38,10 @@ description: StreamMUSE CLI 所有参数说明
 |---|---|---|---|---|
 | `--output-type` | `str` | `console` | `console` `audio` `midi_file` `websocket` `composite` `json_log` `session` | 输出类型，详见[输出类型](../user-guide/output-types.md) |
 | `--midi-out-port` | `str` | `None` | — | MIDI 输出端口名称（`audio` 模式可选） |
-| `--midi-file-output-path` | `str` | `None` | — | MIDI 文件录制路径（`midi_file` 模式可选） |
+| `--midi-file-output-path` | `str` | `None` | — | MIDI 文件录制路径（`midi_file` 模式必填） |
 | `--log-dir` | `str` | `logs` | — | Session 日志根目录（`composite`/`json_log`/`session` 模式使用） |
-| `--enable-performance-tracking` | flag | `False` | — | 启用详细性能指标计算 |
+| `--inference-log-detail` | `str` | `summary` | `summary` `full` | 推理日志粒度（full 会增大日志体积） |
+| `--enable-performance-tracking` | flag | `False` | — | 预留参数，当前版本未接入额外逻辑 |
 
 ---
 
@@ -51,6 +52,8 @@ description: StreamMUSE CLI 所有参数说明
 | `--inference-type` | `str` | `http` | `http` `stanley` | 推理引擎类型 |
 | `--server-url` | `str` | `http://localhost:8000/generate_accompaniment` | — | HTTP 推理服务器地址 |
 | `--timeout-s` | `float` | `30.0` | — | HTTP 请求超时时间（秒） |
+| `--model-name` | `str` | `stanley` | `stanley` `lekai` | HTTP server 端选择的模型 |
+| `--inference-mode` | `str` | `sliding_window` | `sliding_window` `stateful` | 透传给 HTTP server 的推理模式提示 |
 | `--checkpoint-path` | `str` | `None` | — | 模型 checkpoint 路径（`stanley` 模式必填） |
 | `--model-size` | `str` | `0.12B` | — | Stanley 模型大小 |
 | `--model-max-seq-len-frames` | `int` | `96` | — | 模型最大上下文长度（帧数） |
@@ -93,7 +96,6 @@ uv run streammuse-cli \
 
 **本地 Stanley 引擎（无需服务器）：**
 ```bash
-CHECKPOINT_PATH=path/to/model.ckpt \
 uv run streammuse-cli \
   --input-mode keyboard \
   --inference-type stanley \

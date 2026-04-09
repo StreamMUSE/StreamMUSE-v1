@@ -27,7 +27,7 @@ Presentation 层是系统的**入口点**，负责将命令行参数转换为 `A
 ## 启动流程
 
 ```
-python -m streammuse-cli --input-mode keyboard ...
+uv run streammuse-cli --input-mode keyboard ...
     │
     ▼ main()
 parse_args()
@@ -50,7 +50,8 @@ Tempo + PlaybackScheduler
 RealTimeMusicService.start()
     │
     ▼
-signal.pause()   # 主线程阻塞，等待 SIGINT/SIGTERM
+while service.running:
+    sleep(0.1)
 ```
 
 ---

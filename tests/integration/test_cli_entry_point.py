@@ -106,6 +106,7 @@ def test_cli_main_early_exit(
     # Setup mocks
     mock_args = MagicMock()
     mock_args.max_ticks = 1
+    mock_args.log_dir = "logs"
     mock_parse_args.return_value = mock_args
 
     mock_input_source = MockInputSource()

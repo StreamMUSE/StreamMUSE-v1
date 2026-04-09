@@ -18,12 +18,20 @@ description: 通过 REST API 向远端推理服务器发送推理请求
 class HttpInferenceClientConfig:
     generate_url: str
     timeout_s: float = 30.0
+    model_name: str = "stanley"
+    inference_mode: str = "sliding_window"
+    generation_interval_ticks: int = 2
+    checkpoint_path: Optional[str] = None
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `generate_url` | `str` | 必填 | 推理服务器的 generate 端点，如 `http://localhost:8000/generate_accompaniment` |
 | `timeout_s` | `float` | `30.0` | HTTP 请求超时时间（秒） |
+| `model_name` | `str` | `"stanley"` | 透传给服务器的模型名称（如 `stanley`/`lekai`） |
+| `inference_mode` | `str` | `"sliding_window"` | 透传给服务器的推理模式提示 |
+| `generation_interval_ticks` | `int` | `2` | 透传给服务器的触发间隔参数 |
+| `checkpoint_path` | `Optional[str]` | `None` | 可选透传 checkpoint 路径 |
 
 ---
 
@@ -51,7 +59,12 @@ class HttpInferenceClientConfig:
   "melody_notes": [{"type": "note_on", "pitch": 60, "tick": 0}, ...],
   "generation_start_tick": 12,
   "client_request_send_time": 1700000000.123,
-  "generation_length_frames": 20
+  "generation_length_frames": 20,
+  "generation_interval_ticks": 2,
+  "model_name": "stanley",
+  "inference_mode": "sliding_window",
+  "checkpoint_path": null,
+  "prompt_length_ticks": null
 }
 ```
 

@@ -18,8 +18,8 @@ class MidiFileOutputConfig:
     output_path: Optional[str] = None
     user_program: int = 0
     model_program: int = 0
-    user_track_name: str = "User"
-    model_track_name: str = "Model"
+    user_track_name: str = "Melody"
+    model_track_name: str = "Accompaniment"
 
     def seconds_per_tick(self) -> float:
         return (60.0 / float(self.bpm)) / float(self.ticks_per_beat)
@@ -127,4 +127,3 @@ class MidiFileOutputSink:
             path = Path(self._config.output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             self._midi.write(str(path))
-

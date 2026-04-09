@@ -7,7 +7,7 @@ description: InputSourceFactory、OutputSinkFactory、InferenceEngineFactory 的
 
 **源文件**：`src/streammuse/application/factories/`
 
-三个 Factory 类各自实现一个静态方法 `create()`，将 `ApplicationConfig` 中的类型字符串转换为对应的 Domain 接口实现。Factory 是 Application 层唯一允许导入 Infrastructure 类的位置。
+三个 Factory 类各自实现一个静态方法 `create()`，将 `ApplicationConfig` 中的类型字符串转换为对应的 Domain 接口实现。Factory 模块是当前代码中的主要组合入口（composition root）。
 
 ---
 
@@ -98,7 +98,7 @@ def create(app_config: ApplicationConfig) -> InferenceEngine:
 
 | `type` 值 | 返回类 | 备注 |
 |---|---|---|
-| `"http"` | `HttpInferenceClient` | 使用 `server_generate_url` 和 `timeout_s` |
+| `"http"` | `HttpInferenceClient` | 使用 `server_generate_url`、`timeout_s`，并透传 `model_name`、`inference_mode`、`generation_interval_ticks`、`checkpoint_path` |
 | `"stanley"` | `StanleyInferenceEngine` | 需要 `checkpoint_path` 非 `None` |
 
 **`stanley` 模式**：创建 `StanleyInferenceConfig`（包含 `checkpoint_path`、`model_size`、`model_max_seq_len_frames`、`generation_length_frames`），传入 `StanleyInferenceEngine`。

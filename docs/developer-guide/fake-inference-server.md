@@ -7,7 +7,7 @@ description: 无需真实模型即可测试系统的 fake HTTP 服务器
 
 **源文件**：`scripts/fake_inference_server.py`
 
-一个轻量级 FastAPI 服务器，返回随机或固定的伴奏事件，无需加载真实 ML 模型。适合开发阶段快速验证系统功能。
+一个轻量级 FastAPI 服务器，将请求中的 `melody_notes` 回显为伴奏事件（echo 模式），无需加载真实 ML 模型。适合开发阶段快速验证系统功能。
 
 ---
 
@@ -25,7 +25,7 @@ uv run python scripts/fake_inference_server.py
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/generate_accompaniment` | 返回随机伴奏事件 |
+| `POST` | `/generate_accompaniment` | 回显 melody 事件作为伴奏 |
 | `POST` | `/inject_notes` | 接受注入请求，返回成功（不实际处理） |
 | `POST` | `/clear_history` | 返回成功 |
 | `GET` | `/injection_status` | 返回固定状态 |
@@ -46,7 +46,7 @@ uv run python scripts/fake_inference_server.py
     "request_arrival_time": 1700000000.0,
     "inference_start_time": 1700000000.001,
     "inference_end_time": 1700000000.010,
-    "response_send_time": 1700000000.011,
+    "response_output_time": 1700000000.011,
     "preprocess_start_time": 1700000000.0,
     "postprocess_start_time": 1700000000.010
   }
