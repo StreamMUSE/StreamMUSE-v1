@@ -227,6 +227,7 @@ class RealTimeMusicService:
                 self._scheduler.clear_future_events(from_tick=generation_start_tick, source="model")
 
                 # Schedule new accompaniment events.
+                late_event_count = 0
                 for ev in acc_events:
                     # Create new event with source="model"
                     ev_with_source = MusicalEvent(
@@ -239,8 +240,21 @@ class RealTimeMusicService:
                         is_placeholder=ev.is_placeholder,
                         source="model",  # Mark as model-generated event
                     )
-                    if ev.tick >= tick:  # Only schedule future events
-                        self._scheduler.schedule(ev_with_source, ev.tick)
+                    # Preserve late model events by scheduling them at current tick
+                    # instead of dropping, improving accompaniment continuity.
+                    schedule_tick = ev.tick if ev.tick >= tick else tick
+                    if ev.tick < tick:
+                        late_event_count += 1
+                    self._scheduler.schedule(ev_with_source, schedule_tick)
+
+                if late_event_count > 0:
+                    self._output.output_status(
+                        "debug",
+                        (
+                            f"Recovered {late_event_count} late model event(s) "
+                            f"at tick={tick} (generation_start_tick={generation_start_tick})."
+                        ),
+                    )
 
             # Play scheduled events (if any).
             for ev in self._scheduler.get_events_at_tick(tick):
