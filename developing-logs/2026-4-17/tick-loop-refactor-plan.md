@@ -111,7 +111,26 @@ for n in newly_generated_notes:
 - 没有 backup_level 概念
 - 迟到的事件只是被强制调度到当前 tick，没有记录延迟程度
 
-### 2.3 事件调度粒度
+### 2.3 输入缓冲窗口缺失
+
+**老系统**：
+```python
+time.sleep(seconds_per_tick * 0.1)  # 先睡 10%
+# ... 处理输入 ...
+time.sleep(seconds_per_tick * 0.9)  # 再睡 90%
+```
+
+**设计意图**：
+- tick 开始后，先等待 10% 的时间，给用户输入留出窗口
+- 用户在 tick 内产生的输入，都能被当前 tick 捕获
+- 然后统一处理输入，确保时序一致性
+
+**新系统缺陷**：
+- 到达精确时间点后，立即处理输入队列
+- 如果用户在 tick 边界附近输入，可能落到下一个 tick
+- 没有给用户提供"在本 tick 内完成输入"的机会
+
+### 2.4 事件调度粒度
 
 **老系统**：
 - 使用 `playback_schedule` 字典，key=tick, value=events
@@ -136,6 +155,7 @@ for n in newly_generated_notes:
 - 老系统的推理触发位置（tick=0 开头，4n-1 末尾）
 - 老系统的 backup_level 概念
 - 老系统的 generation_start_tick 计算逻辑
+- 老系统的输入缓冲窗口（10% tick 时间）
 
 ### 3.2 新的 Tick 工作顺序
 
@@ -165,7 +185,11 @@ def _tick_loop(self, *, max_ticks):
                 self._inference_request_queue.put((0, notes_for_request))
                 last_generation_tick = 0
         
-        # === 4. 处理用户输入（保留，但修改 buffer 逻辑）===
+        # === 4. 输入缓冲窗口（借鉴老系统 10% sleep）===
+        seconds_per_tick = self._tempo.seconds_per_tick
+        self._sleep(seconds_per_tick * 0.1)  # 等待用户输入窗口
+        
+        # === 5. 处理用户输入（保留，但修改 buffer 逻辑）===
         while True:
             try:
                 ev = self._event_q.get_nowait()
@@ -175,7 +199,7 @@ def _tick_loop(self, *, max_ticks):
             # 注意：不再立即发送到推理队列，而是累积到 buffer
             notes_for_next_request.append(ev)
         
-        # === 5. 处理推理响应（保留，但增加 backup_level）===
+        # === 6. 处理推理响应（保留，但增加 backup_level）===
         while True:
             try:
                 acc_events, gen_start_tick = self._inference_response_queue.get_nowait()
@@ -194,11 +218,11 @@ def _tick_loop(self, *, max_ticks):
                 schedule_tick = ev.tick if ev.tick >= tick else tick
                 self._scheduler.schedule(ev, schedule_tick)
         
-        # === 6. 播放 scheduled 事件（保留）===
+        # === 7. 播放 scheduled 事件（保留）===
         for ev in self._scheduler.get_events_at_tick(tick):
             self._output.output_event(ev, source=ev.source)
         
-        # === 7. 在 4n-1 末尾触发生成（借鉴老系统）===
+        # === 8. 在 4n-1 末尾触发生成（借鉴老系统）===
         ticks_per_beat = self._tempo.ticks_per_beat
         if tick > 0 and (tick % ticks_per_beat) == (ticks_per_beat - 1):
             # 在拍尾触发，为下一拍生成
@@ -300,11 +324,16 @@ class MusicalEvent:
    - `notes_for_next_request` 如果在 4 ticks 内累积太多事件
    - 需要设置上限或定期清理
 
+4. **输入缓冲窗口影响延迟**
+   - 10% 的 sleep 会增加用户输入到播放的延迟
+   - 需要测试是否可接受（120BPM 下约 12.5ms）
+
 ### 6.2 缓解措施
 
 1. **A/B 测试**：对比新老系统的 latency 指标
 2. **配置开关**：保留旧的推理触发逻辑作为 fallback
 3. **监控告警**：当 backup_level > 2 时输出 warning
+4. **配置可调**：输入缓冲窗口比例可配置（默认 10%，可设为 0-20%）
 
 ---
 
@@ -367,3 +396,69 @@ for n in newly_generated_notes:
 **计划制定者**: Kimi Code  
 **审核状态**: 待审核  
 **实施优先级**: 高
+
+---
+
+## 9. 补充说明：输入缓冲窗口的重要性
+
+### 9.1 为什么需要 10% 缓冲
+
+**场景示例**（120 BPM，4 ticks/beat，每 tick = 125ms）：
+
+```
+时间线：     0ms    31ms   62ms   93ms   125ms
+             │      │      │      │       │
+Tick 0:     [===== Tick 0 =====]  [===== Tick 1 =====]
+                   ↑
+              用户按键发生在这里
+```
+
+**无缓冲（新系统现状）**：
+- tick=0 在 0ms 开始，立即检查 event_queue
+- 用户 31ms 按键，event 进入 queue
+- tick=0 已经处理完输入，event 只能被 tick=1 处理
+- **延迟增加 1 tick**（125ms）
+
+**有缓冲（老系统设计）**：
+- tick=0 在 0ms 开始，sleep 12.5ms（10%）
+- 用户 31ms 按键，event 进入 queue
+- 12.5ms 后唤醒，检查 event_queue，捕获到按键
+- tick=0 正常处理，无额外延迟
+
+### 9.2 缓冲窗口的权衡
+
+| 缓冲比例 | 延迟影响 | 输入准确性 | 适用场景 |
+|---------|---------|-----------|---------|
+| 0% | 无 | 低（易漏输入） | 高速自动化测试 |
+| 10% | 低（~12ms） | 高 | 实时演奏（推荐） |
+| 20% | 中（~25ms） | 很高 | 慢速演奏 |
+| 50% | 高（~62ms） | 极高 | 非实时场景 |
+
+### 9.3 实现细节
+
+```python
+# 在绝对时间同步后，加入输入缓冲窗口
+class RealTimeMusicService:
+    INPUT_BUFFER_RATIO = 0.1  # 10%，可配置
+    
+    def _tick_loop(self, *, max_ticks):
+        while self._running:
+            # 1. 绝对时间同步
+            target_time = start + self._tempo.tick_to_seconds(tick)
+            delay = target_time - self._now()
+            if delay > 0:
+                self._sleep(delay)
+            
+            # 2. 输出 tick 信息
+            self._output.output_tick(...)
+            
+            # 3. 【新增】输入缓冲窗口
+            buffer_time = self._tempo.seconds_per_tick * self.INPUT_BUFFER_RATIO
+            self._sleep(buffer_time)
+            
+            # 4. 处理用户输入（此时输入已在 queue 中）
+            while True:
+                try:
+                    ev = self._event_q.get_nowait()
+                    ...
+```
