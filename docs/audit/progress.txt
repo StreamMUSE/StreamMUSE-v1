@@ -42,16 +42,56 @@ IN PROGRESS
 Catch-up work per plan at ~/.claude/plans/lets-get-started-on-cozy-hickey.md.
 
 [x] Phase 1 — Web UI (streammuse-web) — LANDED 2026-04-24
-    - src/streammuse/presentation/web/{server.py, schema.py, static/*} added
-    - Reuses WebSocketOutputSink + FileSystemPromptRepository (no rewrites)
-    - Endpoints: GET /, GET /api/prompts, GET /api/prompts/{key},
-      POST /api/inject, WS /ws
-    - Entry point: `streammuse-web` in pyproject.toml
-    - 8 unit tests in tests/unit/presentation/web/ (182 total, all green)
-    - Smoke verified: WS clients receive live tick/note/stats events
-    - Added deps: httpx>=0.27, websockets>=12
-    - New CLI flags (shared parser, ignored by streammuse-cli):
-      --web-host, --web-port, --prompts-dir
+    [x] Phase 1.0 — Minimal MVP
+        - src/streammuse/presentation/web/{server.py, schema.py, static/*}
+        - Reuses WebSocketOutputSink + FileSystemPromptRepository
+        - Endpoints: GET /, GET /api/prompts, GET /api/prompts/{key},
+          POST /api/inject, WS /ws
+        - Entry point streammuse-web in pyproject.toml
+        - Added deps: httpx>=0.27, websockets>=12
+    [x] Phase 1.1 — Reference UI port (2026-04-24)
+        - Ported AHY123/StreamMUSE@demo_lekai_fixed:app/web_ui/ verbatim:
+            static/index.html (11.9 KB, full sidebar UI with controls,
+            music/listening/visual settings, stats, legend)
+            static/css/style.css (4 KB)
+            static/js/{main,controls,piano,stats}.js (~32 KB)
+        - Adapted piano.js + main.js to pair separate note_on/note_off
+          events (our protocol differs from reference's combined event).
+        - New src/streammuse/infrastructure/input/queue_input.py with
+          QueueInput Protocol impl; wired into factory via new "queue"
+          InputType.
+        - server.py rewritten with lifecycle separation:
+            build_long_lived() sets up session/ws_sink/composite/repo/queue
+            once per process; start/stop/restart_service() cycle the
+            RealTimeMusicService bound to the shared composite.
+        - New endpoints to match reference UI contract:
+            GET /api/status, POST /api/start, POST /api/stop,
+            POST /api/restart, GET /api/midi_devices,
+            GET /api/manual_prompts
+        - WS inbound: {type: keyboard_input, event, pitch, velocity}
+          translated to MusicalEvent + pushed into QueueInput (only
+          consumed when current config.input.type == "queue").
+        - UI input-mode mapping:
+            UI "keyboard" -> QueueInput (browser keys over WS)
+            UI "midi"     -> MidiDeviceInput
+            UI "file"     -> MidiFileInput
+        - Smoke verified: GET / HTML parity (11.9 KB), all 5 static assets
+          serve, /api/status/start/stop/restart roundtrip with tempo/mode
+          changes propagating, /api/manual_prompts lists 27 prompts, WS
+          note/tick/stats broadcasts live.
+        - 16 unit tests (8 new) — 190 total suite pass.
+
+    Still NOT wired (visible in UI, ignored by backend):
+      - listening_duration_ticks / listening_mode / key_detection_method /
+        prompt_dir / manual_prompt_path (no listening-mode / key-detection
+        implementation yet — part of future phases)
+      - accompaniment_velocity slider
+      - metronome toggle
+      - "inference_result" WS message type (UI logs it but server doesn't
+        emit)
+      These fields are round-tripped through /api/status so UI state
+      survives, but the running engine ignores them. Explicit port
+      decisions for each pending.
 
 [ ] Phase 2 — Regression tests for 8 "already-fixed" bugs
 [ ] Phase 3 — Lekai engine bug sweep (B1 blip, B2 sampling, B3 context_beats)
@@ -105,26 +145,32 @@ KNOWN BUGS / TECH DEBT (surface-from-audit)
 [!] Zero TODO/FIXME comments in src/ or scripts/ at audit time. Good. Keep it
     that way; if you can't fix, log the issue here instead of leaving a TODO.
 
-[!] I/O AUDIT NEEDED (flagged 2026-04-24): the current input and output
-    subsystems have not been end-to-end verified against the reference
-    behavior. Port order (input → service → output → recording) works in
-    unit tests and smoke, but no one has confirmed that each mode behaves
-    as expected on real hardware / in realistic sessions. Audit targets:
-      - Input: midi_device (hardware), keyboard (pynput mapping), midi_file
-        (tempo-accurate playback, delay_ticks, file-end handling), list.
-      - Output: console verbosity, audio port selection + mido message
-        timing, midi_file recording (already flagged by Phase 5 rewrite),
-        websocket envelope stability, json_log completeness, session
-        aggregation (performance.json / statistics.csv / combined.mid),
-        composite fan-out order.
-      - Inference path: http client request/response under Lekai & Stanley,
-        fake-server parity, timeouts and error propagation.
-      - Cross-cutting: tick assignment at each boundary (which of the 8
-        "already fixed" bug regression tests covers, Phase 2), clear-history
-        wiring, injection artifacts, session-dir content invariants.
-    Produce an explicit audit matrix (mode × invariant → PASS/FAIL/UNKNOWN)
-    before Phase 5 MIDI rewrite lands, so the rewrite can be measured
-    against known-good reference behavior.
+[!] INPUT-PATH AUDIT NEEDED (flagged 2026-04-24, user-requested): verify
+    how the user gives input to the system, end to end. Focus on the input
+    side only (output audit deferred — output coverage is already planned
+    via Phase 2 regression tests + Phase 5 MIDI rewrite).
+    Audit targets, per input mode:
+      - **keyboard (pynput)**: key→pitch mapping table correct? modifier
+        keys ignored? sustain behavior? key release vs OS autorepeat? Does
+        focus-loss stop input? What happens when the window loses focus or
+        the terminal is closed?
+      - **midi_device**: device discovery UX (what does the user see if no
+        device is present? multiple devices? hot-plug?), channel filtering,
+        velocity handling, sysex passthrough (should be filtered).
+      - **midi_file**: tempo-accurate playback vs file's own tempo map,
+        --midi-file-delay-ticks semantics, file-end behavior (service keeps
+        running? stops? loops?), very long files, files with multiple
+        tracks and program changes.
+      - **list** (tests / programmatic): drains the list cleanly, no race
+        with stop flag.
+    Cross-cutting:
+      - Tick assignment: for each mode, does the user event reach the
+        scheduler with a tick equal to the wall-clock-of-arrival?
+        (Covered by Phase 2 regression bug 1.1.)
+      - Web-UI input path: once the UI gains an input-mode switcher, does
+        the server support runtime mode switching, or is it startup-only?
+    Produce an explicit audit matrix (input mode × invariant → PASS/FAIL/
+    UNKNOWN) with reproducer commands.
 
 [!] FRONTEND PARITY GAP (flagged 2026-04-24): the Phase 1 web UI is
     functional but not a visual/UX port of the reference at

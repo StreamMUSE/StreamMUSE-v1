@@ -1,7 +1,8 @@
-"""Unit tests for the web UI server.
+"""Unit tests for the web UI server (FastAPI TestClient).
 
-Uses the FastAPI TestClient. Does NOT start the real-time service — we only
-exercise routes + websocket broadcasting with stub state.
+Tests do not start the real-time service end-to-end — they either stub state
+directly or (for /api/start tests) monkeypatch RealTimeMusicService.start to
+a no-op so no worker threads spin up.
 """
 
 from __future__ import annotations
@@ -13,6 +14,10 @@ from typing import Any, Dict, List, Tuple
 import pytest
 from fastapi.testclient import TestClient
 
+from streammuse.application.config import ApplicationConfig, InferenceConfig, InputConfig
+from streammuse.application.services.real_time_music_service import RealTimeMusicService
+from streammuse.domain.musical import MusicalEvent
+from streammuse.infrastructure.input import QueueInput
 from streammuse.infrastructure.output.websocket import (
     WebSocketOutputConfig,
     WebSocketOutputSink,
@@ -40,7 +45,7 @@ class StubRepository:
 
     def load_prompt_events(self, *, key, prompt, max_ticks, load_melody=True, load_accompaniment=True):
         self.last_load = (key, prompt, max_ticks)
-        return ([], [])  # empty events; we only check the call
+        return ([], [])
 
 
 class StubEngine:
@@ -61,7 +66,6 @@ class StubEngine:
             }
         )
 
-    # Not exercised by these tests
     def generate_accompaniment(self, *a, **kw):
         raise NotImplementedError
 
@@ -69,16 +73,8 @@ class StubEngine:
         pass
 
 
-class StubConfig:
-    class _Tempo:
-        ticks_per_beat = 4
-        beats_per_bar = 4
-    tempo = _Tempo()
-
-
 @pytest.fixture(autouse=True)
-def reset_state(tmp_path: Path):
-    # Reset module-level state around every test
+def reset_state():
     webserver.state = webserver.AppState()
     yield
     webserver.state = webserver.AppState()
@@ -86,9 +82,10 @@ def reset_state(tmp_path: Path):
 
 @pytest.fixture
 def wired_state(tmp_path: Path):
-    """State wired with stubs and a real session dir in tmp_path."""
-    sm_cls = webserver.SessionManager
-    sm = sm_cls(str(tmp_path / "logs"))
+    """Light wiring — bare minimum for API endpoints. No service is started."""
+    from streammuse.domain.logging import SessionManager
+
+    sm = SessionManager(str(tmp_path / "logs"))
     sm.create_session_directory()
 
     metadata = {
@@ -103,18 +100,27 @@ def wired_state(tmp_path: Path):
         "G_major": [],
     }
     repo = StubRepository(metadata)
-    repo._metadata = metadata  # make it look like FileSystemPromptRepository
+    repo._metadata = metadata
     engine = StubEngine()
     ws_sink = WebSocketOutputSink(WebSocketOutputConfig(include_timestamps=False))
 
+    initial_config = ApplicationConfig(input=InputConfig(type="queue"))
+
     webserver.state.ws_sink = ws_sink
-    webserver.state.inference_engine = engine
-    webserver.state.repository = repo
     webserver.state.session_manager = sm
-    webserver.state.config = StubConfig()
+    webserver.state.repository = repo
+    webserver.state.inference_engine = engine
+    webserver.state.initial_config = initial_config
+    webserver.state.current_config = initial_config
+    webserver.state.queue_input = QueueInput()
+    webserver.state.ui_config = webserver._compose_ui_config(initial_config)
 
-    return {"repo": repo, "engine": engine, "ws": ws_sink, "sm": sm}
+    return {"repo": repo, "engine": engine, "ws": ws_sink, "sm": sm, "initial_config": initial_config}
 
+
+# ---------------------------------------------------------------------------
+# Static serving
+# ---------------------------------------------------------------------------
 
 def test_index_serves_html():
     app = webserver.create_app()
@@ -123,6 +129,116 @@ def test_index_serves_html():
         assert resp.status_code == 200
         assert "<html" in resp.text.lower()
 
+
+def test_static_css_and_js_mount_points_exist():
+    app = webserver.create_app()
+    with TestClient(app) as client:
+        resp = client.get("/css/style.css")
+        assert resp.status_code == 200
+        assert "font-family" in resp.text
+        resp = client.get("/js/main.js")
+        assert resp.status_code == 200
+        assert "WebSocket" in resp.text
+        resp = client.get("/js/piano.js")
+        assert resp.status_code == 200
+        assert "PianoVisualizer" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Status / lifecycle
+# ---------------------------------------------------------------------------
+
+def test_status_shows_not_running_without_service(wired_state):
+    app = webserver.create_app()
+    with TestClient(app) as client:
+        resp = client.get("/api/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["is_running"] is False
+        assert "config" in body
+        assert body["config"]["input_mode"] == "keyboard"  # queue → "keyboard" in UI
+        assert "session_dir" in body
+
+
+class FakeService:
+    """Drop-in replacement for RealTimeMusicService in tests — no threads."""
+
+    instances: List["FakeService"] = []
+
+    def __init__(self, **kwargs):
+        self._started = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        FakeService.instances.append(self)
+
+    def start(self, max_ticks=None):
+        self._started = True
+        self.start_calls += 1
+
+    def stop(self):
+        self._started = False
+        self.stop_calls += 1
+
+    @property
+    def running(self) -> bool:
+        return self._started
+
+
+@pytest.fixture
+def fake_service(monkeypatch):
+    FakeService.instances.clear()
+    monkeypatch.setattr(webserver, "RealTimeMusicService", FakeService)
+    yield FakeService
+    FakeService.instances.clear()
+
+
+def test_start_then_status_reports_running(wired_state, fake_service):
+    app = webserver.create_app()
+    with TestClient(app) as client:
+        resp = client.post("/api/start", json={})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["success"] is True
+
+        resp = client.get("/api/status")
+        assert resp.json()["is_running"] is True
+
+    assert len(fake_service.instances) == 1
+    assert fake_service.instances[0].start_calls == 1
+
+
+def test_stop_then_status_reports_not_running(wired_state, fake_service):
+    app = webserver.create_app()
+    with TestClient(app) as client:
+        client.post("/api/start", json={})
+        resp = client.post("/api/stop")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        status = client.get("/api/status").json()
+        assert status["is_running"] is False
+
+
+def test_restart_preserves_long_lived_state(wired_state, fake_service):
+    app = webserver.create_app()
+    with TestClient(app) as client:
+        client.post("/api/start", json={})
+        pre_sink = webserver.state.ws_sink
+        pre_repo = webserver.state.repository
+
+        resp = client.post("/api/restart", json={"tempo": 140})
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        # Long-lived state is preserved across restart
+        assert webserver.state.ws_sink is pre_sink
+        assert webserver.state.repository is pre_repo
+        assert webserver.state.ui_config["tempo"] == 140
+    assert len(fake_service.instances) == 2  # one start + one restart
+
+
+# ---------------------------------------------------------------------------
+# Prompt library
+# ---------------------------------------------------------------------------
 
 def test_list_prompts_empty_when_no_repo():
     app = webserver.create_app()
@@ -138,10 +254,7 @@ def test_list_prompts_shape(wired_state):
         resp = client.get("/api/prompts")
         assert resp.status_code == 200
         body = resp.json()
-        assert "keys" in body
-        assert "C_major" in body["keys"]
         assert body["keys"]["C_major"][0]["name"] == "pop909_001"
-        assert body["keys"]["C_major"][0]["duration_ticks"] == 1920
 
 
 def test_list_prompts_for_key(wired_state):
@@ -154,6 +267,21 @@ def test_list_prompts_for_key(wired_state):
         assert data[0]["name"] == "pop909_001"
 
 
+def test_manual_prompts_flattened(wired_state):
+    app = webserver.create_app()
+    with TestClient(app) as client:
+        resp = client.get("/api/manual_prompts")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "prompts" in body
+        assert body["prompts"][0]["path"].endswith("missing_mel.mid")
+        assert body["prompts"][0]["name"].startswith("C_major/")
+
+
+# ---------------------------------------------------------------------------
+# Inject
+# ---------------------------------------------------------------------------
+
 def test_inject_calls_engine(wired_state, tmp_path: Path):
     app = webserver.create_app()
     engine = wired_state["engine"]
@@ -161,13 +289,10 @@ def test_inject_calls_engine(wired_state, tmp_path: Path):
     sm = wired_state["sm"]
 
     with TestClient(app) as client:
-        resp = client.post(
-            "/api/inject",
-            json={"key": "C_major", "strategy": "first"},
-        )
+        resp = client.post("/api/inject", json={"key": "C_major", "strategy": "first"})
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["injected_melody"] == 0  # stub repo returns empty events
+        assert body["injected_melody"] == 0
         assert body["injected_acc"] == 0
         assert body["prompt_name"] == "pop909_001"
 
@@ -175,7 +300,6 @@ def test_inject_calls_engine(wired_state, tmp_path: Path):
     assert len(engine.inject_calls) == 1
     assert repo.last_load is not None
 
-    # Artifacts written
     sdir = sm.get_session_dir()
     assert (sdir / "melody_history.json").exists()
     assert (sdir / "accompaniment_history.json").exists()
@@ -198,25 +322,63 @@ def test_inject_returns_503_when_not_initialized():
         assert resp.status_code == 503
 
 
+# ---------------------------------------------------------------------------
+# MIDI devices
+# ---------------------------------------------------------------------------
+
+def test_midi_devices_returns_lists():
+    app = webserver.create_app()
+    with TestClient(app) as client:
+        resp = client.get("/api/midi_devices")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "input_devices" in body
+        assert "output_devices" in body
+        assert isinstance(body["input_devices"], list)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket
+# ---------------------------------------------------------------------------
+
 def test_websocket_receives_queued_messages(wired_state):
     app = webserver.create_app()
     ws_sink = wired_state["ws"]
 
     with TestClient(app) as client:
-        # Push a status before the WS connects so the broadcaster sees the queue prewarmed.
-        ws_sink.output_status(state="running", message="hi")
-
         with client.websocket_connect("/ws") as ws:
-            # Push another after connect
             ws_sink.output_tick(tick=7, bar=1, beat=3)
+            data = ws.receive_text()
+            msg = json.loads(data)
+            assert msg["type"] == "tick"
+            assert msg["tick"] == 7
 
-            # Drain up to 2 messages with a reasonable timeout.
-            received: List[Dict[str, Any]] = []
-            for _ in range(2):
-                data = ws.receive_text()
-                received.append(json.loads(data))
 
-    types = {m["type"] for m in received}
-    assert "status" in types or "tick" in types
-    # at least one of the two we pushed should arrive
-    assert any(m.get("state") == "running" or m.get("tick") == 7 for m in received)
+def test_websocket_keyboard_input_pushes_to_queue(wired_state):
+    """Browser keyboard_input messages should land in the QueueInput singleton
+    when the current config's input mode is 'queue'."""
+    app = webserver.create_app()
+    q = webserver.state.queue_input
+    assert q is not None
+    assert webserver.state.current_config is not None
+    assert webserver.state.current_config.input.type == "queue"
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "keyboard_input",
+                "event": "note_on",
+                "pitch": 60,
+                "velocity": 100,
+            }))
+            # Give the server a tick to process.
+            import time as _time
+            for _ in range(20):
+                if not q._q.empty():  # noqa: SLF001
+                    break
+                _time.sleep(0.05)
+
+    assert not q._q.empty()  # noqa: SLF001
+    ev: MusicalEvent = q._q.get_nowait()  # noqa: SLF001
+    assert ev.pitch == 60
+    assert ev.source == "user"

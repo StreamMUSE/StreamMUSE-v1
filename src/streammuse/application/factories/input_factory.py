@@ -5,12 +5,24 @@ from __future__ import annotations
 from streammuse.application.config import ApplicationConfig
 from streammuse.domain.interfaces import InputSource
 from streammuse.domain.musical import MusicalEvent
-from streammuse.infrastructure.input import KeyboardInput, ListInput, MidiDeviceInput, MidiFileInput, MidiFileInputConfig
+from streammuse.infrastructure.input import (
+    KeyboardInput,
+    ListInput,
+    MidiDeviceInput,
+    MidiFileInput,
+    MidiFileInputConfig,
+    QueueInput,
+)
 
 
 class InputSourceFactory:
     @staticmethod
-    def create(app_config: ApplicationConfig, *, list_events: list[MusicalEvent] | None = None) -> InputSource:
+    def create(
+        app_config: ApplicationConfig,
+        *,
+        list_events: list[MusicalEvent] | None = None,
+        queue_input: QueueInput | None = None,
+    ) -> InputSource:
         cfg = app_config.input
         tempo = app_config.tempo
 
@@ -35,6 +47,9 @@ class InputSourceFactory:
 
         if cfg.type == "list":
             return ListInput(list_events or [])
+
+        if cfg.type == "queue":
+            return queue_input if queue_input is not None else QueueInput()
 
         raise ValueError(f"Unknown input type: {cfg.type}")
 

@@ -13,7 +13,7 @@ class TempoConfig:
     beats_per_bar: int = 4
 
 
-InputType = Literal["midi_device", "keyboard", "midi_file", "list"]
+InputType = Literal["midi_device", "keyboard", "midi_file", "list", "queue"]
 OutputType = Literal["audio", "midi_file", "console", "websocket", "composite", "json_log", "session"]
 InferenceLogDetail = Literal["summary", "full"]
 InferenceType = Literal["http", "stanley"]
