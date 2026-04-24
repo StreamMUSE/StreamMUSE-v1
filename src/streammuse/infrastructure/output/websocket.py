@@ -95,6 +95,34 @@ class WebSocketOutputSink:
     def output_config(self, config: Dict[str, Any]) -> None:
         self._enqueue({"type": "config", **config})
 
+    def log_inference(
+        self,
+        request: Dict[str, Any],
+        response: Dict[str, Any],
+        latency_ms: float,
+        server_process_ms: float,
+    ) -> None:
+        """Forward inference summary to connected clients as `inference_result`.
+
+        Matches the reference web UI's expected WS message shape so main.js
+        can surface per-request latency / generation-size metrics.
+        """
+        msg: Dict[str, Any] = {
+            "type": "inference_result",
+            "latency_ms": float(latency_ms),
+            "server_process_ms": float(server_process_ms),
+        }
+        # Pull a few summary fields (rather than raw payloads — those can be
+        # large and end up in session logs anyway).
+        if isinstance(request, dict):
+            if "generation_start_tick" in request:
+                msg["generation_start_tick"] = request["generation_start_tick"]
+            if "melody_notes_count" in request:
+                msg["melody_notes_count"] = request["melody_notes_count"]
+        if isinstance(response, dict) and "accompaniment_notes_count" in response:
+            msg["accompaniment_notes_count"] = response["accompaniment_notes_count"]
+        self._enqueue(msg)
+
     def get_pending_messages(self) -> List[str]:
         messages: List[str] = []
         while True:

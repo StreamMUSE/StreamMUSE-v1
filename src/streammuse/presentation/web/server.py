@@ -26,7 +26,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -203,7 +203,13 @@ def _save_injection_artifacts(
 
 
 def _compose_ui_config(app_config: ApplicationConfig, overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """Return a UI-friendly config dict (matching reference field names)."""
+    """Return a UI-friendly config dict (matching reference field names).
+
+    Fields the UI surfaces but that aren't part of ApplicationConfig
+    (accompaniment_velocity, metronome, listening_*, manual_prompt_path) are
+    preserved via the overrides dict so they round-trip through /api/status.
+    Key-detection fields intentionally not tracked — feature cut.
+    """
     ov = overrides or {}
     ui_input_mode = _UI_INPUT_MODE_INV.get(app_config.input.type, app_config.input.type)
     merged: Dict[str, Any] = {
@@ -220,9 +226,6 @@ def _compose_ui_config(app_config: ApplicationConfig, overrides: Dict[str, Any] 
         "midi_file_path": app_config.input.midi_file_path,
         "metronome": ov.get("metronome", True),
         "listening_duration_ticks": ov.get("listening_duration_ticks", 0),
-        "listening_mode": ov.get("listening_mode", "auto"),
-        "prompt_dir": ov.get("prompt_dir") or state.prompts_dir,
-        "key_detection_method": ov.get("key_detection_method", "lightweight"),
         "manual_prompt_path": ov.get("manual_prompt_path"),
     }
     return merged
@@ -328,6 +331,80 @@ def _build_input_source(config: ApplicationConfig):
     return InputSourceFactory.create(config, queue_input=state.queue_input)
 
 
+def _find_prompt_by_manual_path(manual_path: str) -> tuple[str, Dict[str, Any]] | None:
+    """Locate (key, prompt) in the repository whose melody_path matches.
+
+    The UI sends whatever `path` value /api/manual_prompts returned — which
+    for us is the raw `melody_path`. Match by exact equality then by
+    basename as a fallback (handles old absolute-path entries).
+    """
+    repo = state.repository
+    if repo is None or not manual_path:
+        return None
+    metadata = repo._metadata  # noqa: SLF001
+    basename = manual_path.rsplit("/", 1)[-1]
+    for key, prompts in metadata.items():
+        for p in prompts:
+            mp = str(p.get("melody_path", ""))
+            if mp == manual_path or mp.endswith("/" + basename) or basename == mp.rsplit("/", 1)[-1]:
+                return key, p
+    return None
+
+
+def _build_listening_callback(ui_cfg: Dict[str, Any], config: ApplicationConfig) -> Optional[Callable[[], None]]:
+    """If the UI selected a manual prompt to inject at listening-end, bake
+    the injection call into a callback the service can invoke at the
+    boundary tick. Returns None if no manual prompt is selected."""
+    manual_path = ui_cfg.get("manual_prompt_path") or ""
+    if not manual_path:
+        return None
+    engine_ref = [state.inference_engine]  # captured by closure; resolved at call time
+
+    def _callback() -> None:
+        engine = engine_ref[0] or state.inference_engine
+        repo = state.repository
+        if engine is None or repo is None:
+            return
+        found = _find_prompt_by_manual_path(manual_path)
+        if found is None:
+            if state.composite_sink is not None:
+                state.composite_sink.output_status(
+                    "error", f"manual prompt not found: {manual_path}"
+                )
+            return
+        key, prompt = found
+        max_ticks = (
+            config.tempo.ticks_per_beat
+            * config.tempo.beats_per_bar
+            * 16
+        )
+        mel_events, acc_events = repo.load_prompt_events(
+            key=key,
+            prompt=prompt,
+            max_ticks=max_ticks,
+        )
+        try:
+            engine.inject_history(
+                melody_events=mel_events,
+                accompaniment_events=acc_events,
+                injection_length_ticks=max_ticks,
+            )
+            _save_injection_artifacts(mel_events, acc_events)
+            if state.composite_sink is not None:
+                state.composite_sink.output_status(
+                    "injected",
+                    f"listening-end injected {prompt.get('name', key)} "
+                    f"(mel={len(mel_events)}, acc={len(acc_events)})",
+                )
+        except Exception as exc:
+            if state.composite_sink is not None:
+                state.composite_sink.output_status(
+                    "error", f"listening-end injection failed: {exc}"
+                )
+
+    return _callback
+
+
 def start_service(config: ApplicationConfig, ui_cfg: Dict[str, Any] | None = None) -> None:
     with state.lock:
         if state.service is not None and state.service.running:
@@ -341,8 +418,20 @@ def start_service(config: ApplicationConfig, ui_cfg: Dict[str, Any] | None = Non
                 except Exception:
                     break
 
+        ui_cfg = ui_cfg or {}
         inference_engine = InferenceEngineFactory.create(config)
         input_source = _build_input_source(config)
+
+        # Publish engine early so the listening callback closure can resolve it.
+        state.inference_engine = inference_engine
+        listening_duration = int(ui_cfg.get("listening_duration_ticks", 0) or 0)
+        acc_velocity_raw = ui_cfg.get("accompaniment_velocity")
+        acc_velocity = int(acc_velocity_raw) if acc_velocity_raw is not None else None
+        listening_cb = (
+            _build_listening_callback(ui_cfg, config)
+            if listening_duration > 0
+            else None
+        )
 
         tempo = Tempo(
             bpm=config.tempo.bpm,
@@ -358,16 +447,15 @@ def start_service(config: ApplicationConfig, ui_cfg: Dict[str, Any] | None = Non
             scheduler=scheduler,
             generation_interval_ticks=config.inference.generation_interval_ticks,
             generation_length_frames=config.inference.generation_length_frames,
+            listening_duration_ticks=listening_duration,
+            accompaniment_velocity=acc_velocity,
+            on_listening_end=listening_cb,
         )
 
         state.service = service
-        state.inference_engine = inference_engine
         state.input_source = input_source
         state.current_config = config
-        if ui_cfg is not None:
-            state.ui_config = _compose_ui_config(config, ui_cfg)
-        else:
-            state.ui_config = _compose_ui_config(config)
+        state.ui_config = _compose_ui_config(config, ui_cfg)
 
         # Broadcast config snapshot to any connected UI clients.
         if state.composite_sink is not None:

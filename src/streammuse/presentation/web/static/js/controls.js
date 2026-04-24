@@ -25,9 +25,6 @@ const Controls = (function() {
             midi_file_path: document.getElementById('midi-file-path').value || null,
             metronome: document.getElementById('metronome').checked,
             listening_duration_ticks: parseInt(document.getElementById('listening-duration').value),
-            listening_mode: document.getElementById('listening-mode-type').value,
-            prompt_dir: document.getElementById('prompt-dir').value || null,
-            key_detection_method: document.getElementById('key-detection').value,
             manual_prompt_path: document.getElementById('manual-prompt').value || null,
         };
     }
@@ -70,12 +67,6 @@ const Controls = (function() {
             document.getElementById('listening-duration').value = config.listening_duration_ticks;
             document.getElementById('listening-duration-value').textContent = config.listening_duration_ticks;
         }
-        if (config.prompt_dir) {
-            document.getElementById('prompt-dir').value = config.prompt_dir;
-        }
-        if (config.key_detection_method) {
-            document.getElementById('key-detection').value = config.key_detection_method;
-        }
         if (config.midi_input_name) {
             document.getElementById('midi-input-device').value = config.midi_input_name;
         }
@@ -84,11 +75,6 @@ const Controls = (function() {
         }
         if (config.midi_file_path) {
             document.getElementById('midi-file-path').value = config.midi_file_path;
-        }
-        if (config.listening_mode) {
-            document.getElementById('listening-mode-type').value = config.listening_mode;
-            // Trigger mode change to show/hide correct controls
-            document.getElementById('listening-mode-type').dispatchEvent(new Event('change'));
         }
         if (config.manual_prompt_path) {
             document.getElementById('manual-prompt').value = config.manual_prompt_path;
@@ -235,24 +221,6 @@ const Controls = (function() {
         inputMode.dispatchEvent(new Event('change'));
     }
     
-    function setupListeningModeHandling() {
-        const listeningModeType = document.getElementById('listening-mode-type');
-        const autoModeGroup = document.getElementById('auto-mode-group');
-        const autoModeGroup2 = document.getElementById('auto-mode-group-2');
-        const manualModeGroup = document.getElementById('manual-mode-group');
-        
-        listeningModeType.addEventListener('change', (e) => {
-            const mode = e.target.value;
-            const isManual = mode === 'manual';
-            autoModeGroup.style.display = isManual ? 'none' : 'block';
-            autoModeGroup2.style.display = isManual ? 'none' : 'block';
-            manualModeGroup.style.display = isManual ? 'block' : 'none';
-        });
-        
-        // Trigger initial state
-        listeningModeType.dispatchEvent(new Event('change'));
-    }
-    
     async function loadManualPrompts() {
         try {
             const response = await fetch('/api/manual_prompts');
@@ -280,7 +248,6 @@ const Controls = (function() {
     
     setupSliderDisplays();
     setupInputModeHandling();
-    setupListeningModeHandling();
     loadMidiDevices();
     loadManualPrompts();
     

@@ -7,7 +7,44 @@
     let ws = null;
     let reconnectAttempts = 0;
     const MAX_RECONNECT_ATTEMPTS = 10;
-    
+
+    // Tracked from config/status messages so the metronome knows where
+    // beat boundaries are.
+    let ticksPerBeat = 4;
+
+    // Client-side metronome: plays a short Web Audio click on every beat
+    // boundary when the checkbox is ticked. Lives entirely in-browser.
+    const Metronome = {
+        enabled: false,
+        ctx: null,
+        click(accent) {
+            if (!this.ctx) {
+                try {
+                    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                } catch (e) { return; }
+            }
+            const ctx = this.ctx;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'square';
+            osc.frequency.value = accent ? 1600 : 1000;
+            const peak = accent ? 0.22 : 0.14;
+            gain.gain.setValueAtTime(peak, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.06);
+        },
+        onTick(tick, beat) {
+            if (!this.enabled || !ticksPerBeat) return;
+            if (tick % ticksPerBeat === 0) {
+                // Accent beat 0 of each bar for a downbeat feel.
+                this.click(beat === 0);
+            }
+        },
+    };
+
     // Keyboard mapping (same as Python client)
     const KEY_TO_PITCH = {
         'z': 60, 'x': 62, 'c': 64, 'v': 65, 'b': 67, 'n': 69, 'm': 71,
@@ -72,6 +109,7 @@
                     bar: data.bar,
                     beat: data.beat
                 });
+                Metronome.onTick(data.tick, data.beat);
                 break;
                 
             case 'note':
@@ -89,8 +127,10 @@
                 break;
                 
             case 'config':
-                console.log('Config received:', data.config);
-                Controls.populateFromConfig(data.config);
+                console.log('Config received:', data);
+                Controls.populateFromConfig(data);
+                if (data.ticks_per_beat) ticksPerBeat = data.ticks_per_beat;
+                if (data.metronome !== undefined) Metronome.enabled = !!data.metronome;
                 break;
                 
             case 'status':
@@ -170,9 +210,25 @@
                 Controls.setRunning(status.is_running);
                 if (status.config) {
                     Controls.populateFromConfig(status.config);
+                    if (status.config.ticks_per_beat) ticksPerBeat = status.config.ticks_per_beat;
+                    if (status.config.metronome !== undefined) {
+                        Metronome.enabled = !!status.config.metronome;
+                    }
                     console.log('Initial config from server:', status.config);
                 }
             })
             .catch(e => console.error('Error fetching status:', e));
+
+        // Wire the metronome checkbox to toggle live (no restart required).
+        const metroEl = document.getElementById('metronome');
+        if (metroEl) {
+            metroEl.addEventListener('change', (e) => {
+                Metronome.enabled = !!e.target.checked;
+                if (Metronome.enabled) {
+                    // First click primes the AudioContext (browser policy)
+                    Metronome.click(false);
+                }
+            });
+        }
     });
 })();

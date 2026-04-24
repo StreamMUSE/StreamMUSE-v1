@@ -81,17 +81,51 @@ Catch-up work per plan at ~/.claude/plans/lets-get-started-on-cozy-hickey.md.
           note/tick/stats broadcasts live.
         - 16 unit tests (8 new) — 190 total suite pass.
 
-    Still NOT wired (visible in UI, ignored by backend):
-      - listening_duration_ticks / listening_mode / key_detection_method /
-        prompt_dir / manual_prompt_path (no listening-mode / key-detection
-        implementation yet — part of future phases)
-      - accompaniment_velocity slider
-      - metronome toggle
-      - "inference_result" WS message type (UI logs it but server doesn't
-        emit)
-      These fields are round-tripped through /api/status so UI state
-      survives, but the running engine ignores them. Explicit port
-      decisions for each pending.
+    [x] Phase 1.2 — UI wiring (2026-04-24)
+        - Listening mode (backend): RealTimeMusicService gained
+          listening_duration_ticks + on_listening_end callback.
+          During listening the tick loop suppresses the tick=0 boot
+          inference and all beat-tail triggers. At the first tick >=
+          duration it fires the callback then emits a full-history
+          bootstrap inference request. Emits "listening" and
+          "listening_ended" status events.
+        - Manual-prompt injection at listening-end: server builds a
+          callback that resolves the UI's manual_prompt_path against
+          the repository metadata (with basename fallback for stale
+          absolute-path metadata entries) and calls
+          engine.inject_history + saves melody/acc history artifacts.
+        - Accompaniment velocity: RealTimeMusicService gained
+          accompaniment_velocity param applied to NOTE_ON events on
+          the inference-response drain path. NOTE_OFF preserved at
+          velocity=0.
+        - "inference_result" WS message: WebSocketOutputSink.log_inference
+          emits a summary envelope (latency, server_process_ms, counts)
+          so the reference UI's console logger lights up.
+        - Key-detection UI stripped: dropdown, "Auto/Manual" toggle,
+          prompt-dir text box, key-detection-method select removed
+          from index.html + controls.js. Manual prompt picker remains
+          as the primary injection path.
+        - Metronome: client-side Web Audio click on beat boundaries
+          (accented on beat 0 of each bar) driven by the checkbox;
+          no backend involvement.
+        - Visible ahead/behind: piano.js stubs replaced with real
+          variables; sliders now size the gridline range + cleanup
+          horizon.
+        - Fall speed slider already worked via setPixelsPerTick.
+        - 4 new unit tests (listening-mode wiring, callback
+          invocation, log_inference envelope) — 194 total green.
+        - Smoke verified at tick 8: listening->injected->
+          listening_ended sequence fires correctly; velocity + metronome
+          + visible-ahead/behind propagate through /api/status.
+
+    Known rough edges (post-Phase 1.2):
+      - [status] "stopped" emits twice on /api/restart (service.stop and
+        stop_service both announce). Cosmetic; to clean up.
+      - RealTimeMusicService.stop() calls output_sink.close() on the
+        long-lived composite, which in turn closes MidiFileOutputSink.
+        Subsequent restart writes go to closed sinks. Mostly benign
+        since combined.mid for the first session is already on disk,
+        but this needs fixing before Phase 5 MIDI rewrite lands.
 
 [ ] Phase 2 — Regression tests for 8 "already-fixed" bugs
 [ ] Phase 3 — Lekai engine bug sweep (B1 blip, B2 sampling, B3 context_beats)

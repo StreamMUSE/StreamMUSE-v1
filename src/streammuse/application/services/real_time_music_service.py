@@ -10,7 +10,7 @@ from typing import Callable, List, Optional
 
 from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
 from streammuse.domain.interfaces.timing_info import TimingInfo
-from streammuse.domain.musical import MusicalEvent
+from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
 
 
@@ -40,6 +40,9 @@ class RealTimeMusicService:
         scheduler: PlaybackScheduler,
         generation_interval_ticks: int = 2,
         generation_length_frames: int = 20,
+        listening_duration_ticks: int = 0,
+        accompaniment_velocity: Optional[int] = None,
+        on_listening_end: Optional[Callable[[], None]] = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -50,6 +53,9 @@ class RealTimeMusicService:
         self._scheduler = scheduler
         self._generation_interval_ticks = generation_interval_ticks
         self._generation_length_frames = generation_length_frames
+        self._listening_duration_ticks = int(listening_duration_ticks)
+        self._accompaniment_velocity = accompaniment_velocity
+        self._on_listening_end = on_listening_end
         self._now = now
         self._sleep = sleep
 
@@ -184,6 +190,14 @@ class RealTimeMusicService:
         tick = 0
         # Accumulates user events between beat-tail triggers.
         notes_for_next_request: List[MusicalEvent] = []
+        # Listening mode: while True, all inference triggers are suppressed.
+        # The tick loop still drains user events and advances time normally.
+        in_listening_mode = self._listening_duration_ticks > 0
+        if in_listening_mode:
+            self._output.output_status(
+                "listening",
+                f"listening for {self._listening_duration_ticks} ticks",
+            )
 
         while self._running:
             if max_ticks is not None and tick >= max_ticks:
@@ -200,8 +214,10 @@ class RealTimeMusicService:
             mt = MusicalTime.from_tick(tick, self._tempo)
             self._output.output_tick(tick=tick, bar=mt.bar, beat=mt.beat)
 
-            # 3. tick=0: fire once with full melody history (covers injected history).
-            if tick == 0:
+            # 3. tick=0: fire once with full melody history (covers injected
+            #    history). Suppressed while listening — the listening-end
+            #    handler will emit an equivalent bootstrap request instead.
+            if tick == 0 and not in_listening_mode:
                 with self._melody_history_lock:
                     notes_for_request = self._melody_history.copy()
                 if notes_for_request:
@@ -232,11 +248,19 @@ class RealTimeMusicService:
                 late_event_count = 0
                 for ev in acc_events:
                     backup_level = max(0, ev.tick - generation_start_tick)
+                    # Accompaniment velocity override: applies only to
+                    # NOTE_ON so NOTE_OFF keeps velocity=0 semantics.
+                    velocity = ev.velocity
+                    if (
+                        self._accompaniment_velocity is not None
+                        and ev.event_type == EventType.NOTE_ON
+                    ):
+                        velocity = int(self._accompaniment_velocity)
                     ev_model = MusicalEvent(
                         tick=ev.tick,
                         pitch=ev.pitch,
                         event_type=ev.event_type,
-                        velocity=ev.velocity,
+                        velocity=velocity,
                         channel=ev.channel,
                         program=ev.program,
                         is_placeholder=ev.is_placeholder,
@@ -261,12 +285,40 @@ class RealTimeMusicService:
             for ev in self._scheduler.get_events_at_tick(tick):
                 self._output.output_event(ev, source=ev.source)
 
+            # 7b. Listening-mode transition: first tick at/after the threshold.
+            if in_listening_mode and tick >= self._listening_duration_ticks:
+                in_listening_mode = False
+                # Invoke user callback (typically injects a chosen prompt).
+                if self._on_listening_end is not None:
+                    try:
+                        self._on_listening_end()
+                    except Exception as exc:
+                        self._output.output_status(
+                            "error", f"listening-end callback failed: {exc}"
+                        )
+                # Drop buffered events from listening period; the bootstrap
+                # enqueue below covers them via melody_history.
+                notes_for_next_request = []
+                # Bootstrap inference with the full history accumulated so far
+                # (user's listening melody + anything injected by the callback).
+                with self._melody_history_lock:
+                    history = self._melody_history.copy()
+                if history:
+                    self._inference_request_queue.put((tick, history))
+                self._output.output_status(
+                    "listening_ended", f"listening mode ended at tick {tick}"
+                )
+
             # 8. Beat tail (tick 4n-1, n≥1): send buffered events for next beat.
-            ticks_per_beat = self._tempo.ticks_per_beat
-            if tick > 0 and (tick % ticks_per_beat) == (ticks_per_beat - 1):
-                if notes_for_next_request:
-                    self._inference_request_queue.put((tick + 1, notes_for_next_request))
-                    notes_for_next_request = []
+            # Suppressed entirely during listening mode.
+            if not in_listening_mode:
+                ticks_per_beat = self._tempo.ticks_per_beat
+                if tick > 0 and (tick % ticks_per_beat) == (ticks_per_beat - 1):
+                    if notes_for_next_request:
+                        self._inference_request_queue.put(
+                            (tick + 1, notes_for_next_request)
+                        )
+                        notes_for_next_request = []
 
             tick += 1
 

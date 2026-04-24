@@ -18,6 +18,10 @@ const PianoVisualizer = (function() {
     
     let pixelsPerTick = 40;
     let currentTick = 0;
+    // Horizontal visible range around NOW. Used for gridline rendering
+    // and note cleanup horizon; wired from UI sliders via setVisibleTicks*.
+    let visibleTicksAhead = 32;
+    let visibleTicksBehind = 16;
     
     const pressedKeys = new Set();
     const noteHistory = [];
@@ -112,7 +116,7 @@ const PianoVisualizer = (function() {
         ctx.fillStyle = 'rgba(0,0,0,0.02)';
         ctx.fillRect(KEYBOARD_WIDTH, pianoStartY, canvas.width - KEYBOARD_WIDTH, pianoHeight);
         
-        for (let tick = currentTick - 30; tick <= currentTick + 50; tick++) {
+        for (let tick = currentTick - visibleTicksBehind; tick <= currentTick + visibleTicksAhead; tick++) {
             if (tick < 0) continue;
             const x = tickToX(tick);
             if (x < KEYBOARD_WIDTH || x > canvas.width) continue;
@@ -256,7 +260,9 @@ const PianoVisualizer = (function() {
     }
     
     function cleanupOldNotes() {
-        const cutoffTick = currentTick - 40;
+        // Keep a small buffer past the visible-behind window so the edge
+        // of the roll doesn't pop notes as it scrolls.
+        const cutoffTick = currentTick - (visibleTicksBehind + 8);
         while (noteHistory.length > 0) {
             const n = noteHistory[0];
             const endTick = n.duration == null ? currentTick : n.startTick + n.duration;
@@ -334,8 +340,12 @@ const PianoVisualizer = (function() {
         pixelsPerTick = value;
     }
     
-    function setVisibleTicksAhead(value) {}
-    function setVisibleTicksBehind(value) {}
+    function setVisibleTicksAhead(value) {
+        visibleTicksAhead = Math.max(1, parseInt(value) || 32);
+    }
+    function setVisibleTicksBehind(value) {
+        visibleTicksBehind = Math.max(1, parseInt(value) || 16);
+    }
     
     function clearNotes() {
         noteHistory.length = 0;
