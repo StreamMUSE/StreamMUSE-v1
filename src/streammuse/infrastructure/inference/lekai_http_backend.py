@@ -15,6 +15,7 @@ from streammuse.infrastructure.inference.runtime_device import (
     resolve_device,
     resolve_dtype,
 )
+from streammuse.infrastructure.inference.generation_logger import GenerationLogger
 
 
 EventPayload = Dict[str, int | str]
@@ -69,6 +70,10 @@ class LekaiHttpBackend:
         self._converter = None
         self._tokenizer = None
         self._active_pitches: Set[int] = set()  # For tracking sustained notes across calls
+        
+        # Logger for generation comparison
+        log_dir = os.environ.get("LEKAI_RT_LOG_DIR", "logs/generation")
+        self._logger = GenerationLogger(output_dir=log_dir, mode="fake_rt")
         
         # Try to load real model if checkpoint provided
         if checkpoint_path:
@@ -234,8 +239,10 @@ class LekaiHttpBackend:
         """Check if real model is loaded and available."""
         return self._model_adapter is not None and self._converter is not None
 
-    def configure(self, config: BackendRuntimeConfig) -> None:
+    def configure(self, config: BackendRuntimeConfig, input_file: Optional[str] = None) -> None:
         self._runtime_config = config
+        if input_file:
+            self._current_input_file = input_file
         # Try to load model if checkpoint_path provided and not already loaded
         if config.checkpoint_path and not self._has_real_model():
             self._load_model(config.checkpoint_path)
@@ -472,12 +479,15 @@ class LekaiHttpBackend:
         accompaniment_active = self._active_pitches_before_tick(accompaniment_context_events, context_start_tick)
 
         # Context loop — training data interleaving order is ACC first, then MEL.
-        # Pattern: [pad, bar, bar, acc_0, mel_0, acc_1, mel_1, ...]
-        # where bar tokens appear at the start of every measure (every 4 beats).
+        # Training structure with delay_beats=-1:
+        #   [BOS, ts, bpm, PAD, BAR(part1), PAD(part0), ACC_0, MEL_0, BAR, BAR, ACC_4, MEL_4, ...]
+        # At beat 0 the second slot is a dummy PAD (second pad injection for delay_beats=-1).
+        # At all subsequent measure starts (beat 4, 8, ...) it is a real BAR from part0.
         for beat in range(start_beat, current_beat):
             if beat % 4 == 0:
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
-                seq.append(torch.tensor([bar_token], dtype=torch.long))
+                second = pad_token if beat == 0 else bar_token
+                seq.append(torch.tensor([second], dtype=torch.long))
 
             beat_start_tick = beat * TIMESTEPS_PER_BEAT
 
@@ -524,9 +534,12 @@ class LekaiHttpBackend:
             beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
 
             # Add bar tokens at the start of each measure, before generating acc.
+            # Beat 0: [BAR, PAD] (second dummy part0 slot for delay_beats=-1).
+            # Beat 4+: [BAR, BAR] (both part1 and part0 contribute a real bar token).
             if target_beat % 4 == 0:
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
-                seq.append(torch.tensor([bar_token], dtype=torch.long))
+                second = pad_token if target_beat == 0 else bar_token
+                seq.append(torch.tensor([second], dtype=torch.long))
 
             # Generate ACC directly — do NOT inject mel[target_beat] first.
             # Training context ends with mel[target_beat-1]; the model predicts acc[target_beat].
@@ -601,6 +614,33 @@ class LekaiHttpBackend:
             )
             seq.append(mel_tokens_current)
 
+        # Build full prompt tokens for logging
+        full_prompt_tokens = torch.cat(seq, dim=0).tolist()
+        
+        # Get melody events in the prompt window
+        prompt_melody_events = [
+            e for e in self._melody_history
+            if context_start_tick <= int(e.get("tick", 0)) <= generation_start_tick
+        ]
+        
+        # Log the generation
+        input_file = getattr(self, '_current_input_file', 'unknown')
+        self._logger.log_generation(
+            input_file=input_file,
+            generation_start_tick=int(generation_start_tick),
+            generation_length_frames=int(generation_length_frames),
+            prompt_tokens=full_prompt_tokens,
+            temperature=rt_temperature,
+            top_k=rt_top_k,
+            top_p=rt_top_p,
+            repetition_penalty=rt_repetition_penalty,
+            melody_events=prompt_melody_events,
+            accompaniment_events=generated_events,
+            bpm=self._request_bpm,
+            notes=f"context_start_tick={context_start_tick}, current_beat={current_beat}",
+            suffix="",
+        )
+
         return generated_events
 
     def generate(
@@ -614,6 +654,7 @@ class LekaiHttpBackend:
         model_name: str,
         checkpoint_path: Optional[str],
         bpm: Optional[int] = None,
+        input_file: Optional[str] = None,
     ) -> tuple[List[EventPayload], TimingPayload]:
         request_arrival = time.perf_counter()
         preprocess_start = request_arrival
@@ -631,7 +672,8 @@ class LekaiHttpBackend:
                 generation_length_frames=effective_generation_length_frames,
                 prompt_length_ticks=effective_prompt_length_ticks,
                 checkpoint_path=checkpoint_path,
-            )
+            ),
+            input_file=input_file,
         )
 
         # Update request-level BPM if provided (overrides LEKAI_DEFAULT_BPM env var).
