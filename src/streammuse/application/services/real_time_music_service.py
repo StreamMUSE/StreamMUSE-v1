@@ -61,7 +61,6 @@ class RealTimeMusicService:
         self._event_q: queue.Queue[MusicalEvent] = queue.Queue()
         self._melody_history: List[MusicalEvent] = []
         self._melody_history_lock = threading.Lock()
-        self._last_sent_index: int = 0
         self._inference_request_queue: queue.Queue[tuple[int, List[MusicalEvent]]] = queue.Queue()
         self._inference_response_queue: queue.Queue[tuple[List[MusicalEvent], int]] = queue.Queue()
 
@@ -79,6 +78,7 @@ class RealTimeMusicService:
             "program": int(event.program),
             "source": str(event.source),
             "is_placeholder": bool(event.is_placeholder),
+            "backup_level": int(event.backup_level),
         }
 
     def _timing_to_log_dict(self, timing: TimingInfo) -> dict:
@@ -173,64 +173,66 @@ class RealTimeMusicService:
             with self._melody_history_lock:
                 self._melody_history.append(stamped)
 
+    # Fraction of a tick to sleep after time-sync before draining the input queue,
+    # giving user events generated near the tick boundary time to arrive.
+    _INPUT_BUFFER_RATIO: float = 0.1
+
     def _tick_loop(self, *, max_ticks: Optional[int]) -> None:
         """Main tick loop: timing, event playback, and inference triggering."""
         assert self._runtime is not None
         start = self._runtime.session_start_time
         tick = 0
-        last_generation_tick = -self._generation_interval_ticks
+        # Accumulates user events between beat-tail triggers.
+        notes_for_next_request: List[MusicalEvent] = []
 
         while self._running:
             if max_ticks is not None and tick >= max_ticks:
                 self._running = False
                 break
 
-            # Target-time sync: sleep until the next tick boundary.
+            # 1. Absolute time sync: sleep until this tick's wall-clock boundary.
             target_time = start + self._tempo.tick_to_seconds(tick)
             delay = target_time - self._now()
             if delay > 0:
                 self._sleep(delay)
 
+            # 2. Emit tick info.
             mt = MusicalTime.from_tick(tick, self._tempo)
             self._output.output_tick(tick=tick, bar=mt.bar, beat=mt.beat)
 
-            # Drain input events and emit user events immediately.
+            # 3. tick=0: fire once with full melody history (covers injected history).
+            if tick == 0:
+                with self._melody_history_lock:
+                    notes_for_request = self._melody_history.copy()
+                if notes_for_request:
+                    self._inference_request_queue.put((0, notes_for_request))
+
+            # 4. Input buffer window: wait 10% of a tick so events near the
+            #    boundary have time to arrive before we drain the queue.
+            self._sleep(self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO)
+
+            # 5. Drain input events: emit immediately and buffer for next trigger.
             while True:
                 try:
                     ev = self._event_q.get_nowait()
                 except queue.Empty:
                     break
                 self._output.output_event(ev, source="user")
+                notes_for_next_request.append(ev)
 
-            # Trigger inference at generation intervals.
-            if tick - last_generation_tick >= self._generation_interval_ticks:
-                with self._melody_history_lock:
-                    # Send only melody events added since the previous request.
-                    new_events = self._melody_history[self._last_sent_index:]
-                    self._last_sent_index = len(self._melody_history)
-                if new_events:
-                    generation_start_tick = tick
-                    # Align beat-tail trigger to next beat start (legacy client behavior).
-                    if (tick % self._tempo.ticks_per_beat) == (self._tempo.ticks_per_beat - 1):
-                        generation_start_tick = tick + 1
-                    self._inference_request_queue.put((generation_start_tick, new_events))
-                    last_generation_tick = tick
-
-            # Process inference responses.
+            # 6. Process inference responses.
             while True:
                 try:
                     acc_events, generation_start_tick = self._inference_response_queue.get_nowait()
                 except queue.Empty:
                     break
 
-                # Clear stale model events from this generation point onward.
                 self._scheduler.clear_future_events(from_tick=generation_start_tick, source="model")
 
-                # Schedule new accompaniment events.
                 late_event_count = 0
                 for ev in acc_events:
-                    # Create new event with source="model"
-                    ev_with_source = MusicalEvent(
+                    backup_level = max(0, ev.tick - generation_start_tick)
+                    ev_model = MusicalEvent(
                         tick=ev.tick,
                         pitch=ev.pitch,
                         event_type=ev.event_type,
@@ -238,14 +240,13 @@ class RealTimeMusicService:
                         channel=ev.channel,
                         program=ev.program,
                         is_placeholder=ev.is_placeholder,
-                        source="model",  # Mark as model-generated event
+                        source="model",
+                        backup_level=backup_level,
                     )
-                    # Preserve late model events by scheduling them at current tick
-                    # instead of dropping, improving accompaniment continuity.
                     schedule_tick = ev.tick if ev.tick >= tick else tick
                     if ev.tick < tick:
                         late_event_count += 1
-                    self._scheduler.schedule(ev_with_source, schedule_tick)
+                    self._scheduler.schedule(ev_model, schedule_tick)
 
                 if late_event_count > 0:
                     self._output.output_status(
@@ -256,9 +257,16 @@ class RealTimeMusicService:
                         ),
                     )
 
-            # Play scheduled events (if any).
+            # 7. Play scheduled events.
             for ev in self._scheduler.get_events_at_tick(tick):
                 self._output.output_event(ev, source=ev.source)
+
+            # 8. Beat tail (tick 4n-1, n≥1): send buffered events for next beat.
+            ticks_per_beat = self._tempo.ticks_per_beat
+            if tick > 0 and (tick % ticks_per_beat) == (ticks_per_beat - 1):
+                if notes_for_next_request:
+                    self._inference_request_queue.put((tick + 1, notes_for_next_request))
+                    notes_for_next_request = []
 
             tick += 1
 

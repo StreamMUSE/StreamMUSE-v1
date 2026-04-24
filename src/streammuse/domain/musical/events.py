@@ -36,6 +36,7 @@ class MusicalEvent:
     program: int = 0  # MIDI program/instrument
     is_placeholder: bool = False
     source: str = "unknown"  # Event source: "user" or "model"
+    backup_level: int = 0  # Ticks this note is offset from gen_start (0 = first frame)
 
     def __post_init__(self) -> None:
         """Validate event data."""

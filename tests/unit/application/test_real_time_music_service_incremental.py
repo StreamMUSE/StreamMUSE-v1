@@ -69,7 +69,9 @@ def _note(pitch: int, tick: int) -> MusicalEvent:
     return MusicalEvent(tick=tick, pitch=pitch, event_type=EventType.NOTE_ON, velocity=100)
 
 
-def test_tick_loop_sends_all_events_on_first_cycle():
+# --- tick=0 trigger ---
+
+def test_tick0_sends_full_melody_history():
     svc = _make_service()
     svc._melody_history = [_note(60, 0), _note(64, 1)]
     svc._runtime = SimpleNamespace(session_start_time=0.0)
@@ -80,42 +82,75 @@ def test_tick_loop_sends_all_events_on_first_cycle():
     generation_start_tick, sent_events = svc._inference_request_queue.get_nowait()
     assert generation_start_tick == 0
     assert [e.pitch for e in sent_events] == [60, 64]
-    assert svc._last_sent_index == 2
 
 
-def test_tick_loop_only_sends_incremental_events_after_first_cycle():
+def test_tick0_skips_when_history_empty():
     svc = _make_service()
-    svc._melody_history = [_note(60, 0), _note(64, 1)]
+    svc._melody_history = []
     svc._runtime = SimpleNamespace(session_start_time=0.0)
     svc._running = True
-    svc._tick_loop(max_ticks=1)
-    _ = svc._inference_request_queue.get_nowait()
 
-    svc._melody_history.append(_note(67, 2))
-    svc._runtime = SimpleNamespace(session_start_time=0.0)
-    svc._running = True
-    svc._tick_loop(max_ticks=1)
-
-    _, sent_events = svc._inference_request_queue.get_nowait()
-    assert [e.pitch for e in sent_events] == [67]
-    assert svc._last_sent_index == 3
-
-
-def test_tick_loop_does_not_enqueue_when_no_incremental_events():
-    svc = _make_service()
-    svc._melody_history = [_note(60, 0)]
-    svc._runtime = SimpleNamespace(session_start_time=0.0)
-    svc._running = True
-    svc._tick_loop(max_ticks=1)
-    _ = svc._inference_request_queue.get_nowait()
-
-    svc._runtime = SimpleNamespace(session_start_time=0.0)
-    svc._running = True
     svc._tick_loop(max_ticks=1)
 
     with pytest.raises(queue.Empty):
         svc._inference_request_queue.get_nowait()
 
+
+# --- beat-tail (4n-1) trigger ---
+
+def test_beat_tail_sends_buffered_events():
+    # ticks_per_beat=4, so beat tail fires at tick=3 with gen_start=4.
+    # melody_history is empty to prevent the tick=0 trigger from firing.
+    svc = _make_service()
+    svc._melody_history = []
+    svc._runtime = SimpleNamespace(session_start_time=0.0)
+    svc._running = True
+
+    # Pre-populate event queue; they will be drained and buffered during ticks 0-3.
+    svc._event_q.put(_note(60, 0))
+    svc._event_q.put(_note(64, 1))
+
+    svc._tick_loop(max_ticks=4)  # runs ticks 0, 1, 2, 3
+
+    generation_start_tick, sent_events = svc._inference_request_queue.get_nowait()
+    assert generation_start_tick == 4
+    assert {e.pitch for e in sent_events} == {60, 64}
+
+
+def test_beat_tail_skips_when_buffer_empty():
+    svc = _make_service()
+    svc._melody_history = []
+    svc._runtime = SimpleNamespace(session_start_time=0.0)
+    svc._running = True
+
+    svc._tick_loop(max_ticks=4)  # no events added
+
+    with pytest.raises(queue.Empty):
+        svc._inference_request_queue.get_nowait()
+
+
+def test_beat_tail_only_one_trigger_across_two_beats_with_no_new_events():
+    # Events arrive before tick=3; no new events between tick=4 and tick=7.
+    # Expect exactly one trigger (at tick=3) and nothing at tick=7.
+    svc = _make_service()
+    svc._melody_history = []
+    svc._runtime = SimpleNamespace(session_start_time=0.0)
+    svc._running = True
+
+    svc._event_q.put(_note(60, 0))
+
+    svc._tick_loop(max_ticks=8)  # runs ticks 0-7
+
+    first_tick, first_events = svc._inference_request_queue.get_nowait()
+    assert first_tick == 4
+    assert [e.pitch for e in first_events] == [60]
+
+    # No second trigger since buffer was cleared and no new events arrived.
+    with pytest.raises(queue.Empty):
+        svc._inference_request_queue.get_nowait()
+
+
+# --- inference worker (unchanged behavior) ---
 
 def test_inference_worker_latest_only_merges_events_and_keeps_latest_tick():
     class _DebugOutput(_NoopOutput):
