@@ -2,6 +2,76 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Session Protocol (MANDATORY)
+
+**Canonical docs live in `docs/audit/`. CLAUDE.md stays at the project root.**
+
+**At the start of every session:**
+1. Read `docs/audit/progress.txt` — the session bridge (COMPLETED / IN PROGRESS / KNOWN BUGS / NEXT).
+2. Read `docs/audit/lessons.md` — past mistakes and the rules they produced. Do not repeat them.
+3. Read the relevant `docs/audit/*_SPEC.md` for whatever layer you are about to touch.
+
+**At the end of every session (before stopping):**
+1. Update `docs/audit/progress.txt` — move completed items out of IN PROGRESS; add new KNOWN BUGS you discovered; set NEXT for the following session.
+2. If you hit a dead end or a fix that was non-obvious, append to `docs/audit/lessons.md` in the format: `Problem: [observation] -> Rule: [constraint]`.
+3. If you changed an API contract, data schema, or module boundary, update the corresponding `docs/audit/*_SPEC.md`. The specs are the source of truth after the code itself.
+
+If you cannot complete a task, leave `progress.txt` honest — do not pretend work is done.
+
+## Canonical Document Set
+
+The project reality is frozen in `docs/audit/`. Treat these as authoritative alongside the code:
+
+| Doc | Purpose |
+|---|---|
+| `docs/audit/PRD.md` | Every currently working feature as a hard requirement. Do not regress. |
+| `docs/audit/TECH_STACK.md` | Verified library versions actually in use. |
+| `docs/audit/DOMAIN_SPEC.md` | `MusicalEvent`, `Note`, `Tempo`, converters, scheduler — exact schemas. |
+| `docs/audit/APPLICATION_SPEC.md` | `RealTimeMusicService` 3-thread contract, config dataclasses, factories. |
+| `docs/audit/INFRASTRUCTURE_SPEC.md` | Input/output sink implementations and their contracts. |
+| `docs/audit/INFERENCE_SPEC.md` | HTTP API contract, Lekai pathway (primary), Stanley pathway (secondary). |
+| `docs/audit/PROCESS_FLOW.md` | End-to-end data flow and state transitions. |
+| `docs/audit/lessons.md` | Problem → Rule log. Read before writing code. |
+| `docs/audit/progress.txt` | Session bridge. Read at start, update at end. |
+
+## Project Rules (Extracted from Audited Patterns)
+
+These rules were extracted by reading the code, not by asking. Follow them unless the user explicitly overrides.
+
+### Architecture
+- **Rule:** The codebase uses **Clean Architecture** with 4 layers (`presentation` → `application` → `domain` → `infrastructure`). Dependencies only point inward. Domain has zero external imports. Do not violate this direction.
+- **Rule:** Cross-layer wiring goes through **Factories** in `src/streammuse/application/factories/`. Do not instantiate `infrastructure/` classes directly from `presentation/`.
+- **Rule:** Protocols in `src/streammuse/domain/interfaces/` are the contract. Every new input source / output sink / inference engine must implement the matching Protocol exactly.
+
+### Domain Model
+- **Rule:** `MusicalEvent` and `Note` are **frozen dataclasses**. Never mutate them — construct new ones. Validation runs in `__post_init__`; respect the ranges (pitch 0–127 or -1 for placeholders, velocity 0–127, channel 0–15, program 0–127).
+- **Rule:** Time is expressed in **ticks**, not seconds, inside the domain and inference layers. Convert at I/O boundaries only, via `Tempo.tick_to_seconds` / `Tempo.seconds_to_tick`.
+- **Rule:** Event-to-note conversion uses the **close-at-horizon policy** (`domain/musical/converters.py`). Unpaired note_ons are closed at `horizon_tick`; re-triggered same-pitch notes close the previous at the new note_on's tick. Do not invent alternative policies.
+
+### Threading & Real-Time
+- **Rule:** The `RealTimeMusicService` runs **exactly 3 threads**: `_input_worker`, `_tick_loop`, `_inference_worker`, decoupled by queues. Do not add more threads without updating `APPLICATION_SPEC.md`.
+- **Rule:** The inference worker implements **latest-only** semantics — it drains pending requests, keeps the newest `generation_start_tick`, and merges melody events. Do not change this to FIFO without explicit approval; it exists to prevent inference backlog under load.
+- **Rule:** On new inference response, the tick loop **clears future model events** from the scheduler before scheduling the new ones (`PlaybackScheduler.clear_future_events(from_tick, source="model")`). This preserves the user's authoritative stream and replaces stale predictions.
+
+### Inference
+- **Rule:** **Lekai is the primary inference pathway.** Stanley is retained as a secondary / historical path. New inference work targets Lekai unless specified otherwise. (Note: `InferenceConfig.model_name` still defaults to `"stanley"` in code — see `progress.txt` KNOWN BUGS.)
+- **Rule:** The HTTP contract is frozen in `INFERENCE_SPEC.md`. Any change to request/response JSON is a breaking change — update the fake server (`scripts/fake_inference_server.py`) in the same commit.
+- **Rule:** The Stanley engine uses a **two-layer adapter**: `StanleyInferenceEngine` (infrastructure, event↔note converter) wraps `LegacyInferenceEngineStanley` (RoFormer model on duration-note dicts). Do not call the legacy engine directly from application code.
+
+### Configuration
+- **Rule:** All configuration flows through the frozen dataclasses in `src/streammuse/application/config/models.py` (`ApplicationConfig` / `TempoConfig` / `InputConfig` / `OutputConfig` / `InferenceConfig`). Environment-variable parsing is centralized in `presentation/cli/config_parser.py`. Do not read env vars or argparse in infrastructure code.
+
+### Testing
+- **Rule:** Tests live in `tests/unit/` (fast, no I/O — domain, infrastructure adapters, application) and `tests/integration/` (CLI, simulator, Lekai runtime). Domain tests must not import `infrastructure/`.
+- **Rule:** Run `uv run pytest tests/` before committing anything non-trivial. There are currently **zero** `xfail`/`skip` markers — keep it that way; fix tests rather than skip them.
+
+### Scope
+- **Rule:** This repository contains the **inference service and real-time application only**. Training, preprocessing pipelines, and dataset prep are **out of scope** — they live elsewhere. Do not add training code here, even if a comment in `README.md` suggests otherwise (README has stale sections; the code is the truth).
+
+### Git & Workflow
+- **Rule:** Development follows a **plan → implement → report** pattern. Planning docs live in `developing-logs/YYYY-M-D/*-plan.md`, results in `*-report.md`. For non-trivial changes, write a plan before touching code.
+- **Rule:** The checked-in branch is `new_system_stanley`. Untracked asset: `FluidR3Mono_GM.sf3` (23.7 MB SoundFont) — do not commit it; treat it as local-only.
+
 ## Project Overview
 
 StreamMUSE is a real-time AI music generation system that creates accompaniment for user-played melodies. The system follows **Clean Architecture** (4 layers: Presentation → Application → Domain → Infrastructure) and uses a transformer-based model (RoFormer/Stanley engine). The real-time application runs as a single CLI process that communicates with an inference server over HTTP.

@@ -1,0 +1,123 @@
+===============================================================================
+PROGRESS.TXT — Session Bridge
+Audited commit: 05fc2fa (branch: new_system_stanley)
+Last audit: 2026-04-24
+===============================================================================
+
+Read this at the start of every session. Update it at the end of every session.
+
+-------------------------------------------------------------------------------
+COMPLETED (validated working in Phase 1 audit)
+-------------------------------------------------------------------------------
+[x] Clean Architecture skeleton — 4 layers wired, dependencies point inward
+[x] CLI entry point — streammuse-cli → presentation.cli.cli:main
+[x] Factories — InputSourceFactory, OutputSinkFactory, InferenceEngineFactory
+[x] 3-thread RealTimeMusicService — input_worker, tick_loop, inference_worker
+[x] Input sources — midi_device, keyboard, midi_file, list (all 4 pass tests)
+[x] Output sinks — console, audio, midi_file, websocket, json_log, session,
+    composite (all 7 pass tests)
+[x] Stanley inference — two-layer adapter (StanleyInferenceEngine wrapping
+    LegacyInferenceEngineStanley over the RoFormer model)
+[x] Lekai inference — full parallel pathway in infrastructure/inference/lekai_model/
+    + server_lekai.py + lekai_http_backend.py; tests present
+[x] Fake inference server — scripts/fake_inference_server.py (echo mode, for dev)
+[x] HTTP client — HttpInferenceClient with frozen request/response contract
+[x] Music injection — --injection-file / --injection-length; melody+acc prepopulated
+[x] Session logging — logs/YYYY-MM-DD/session_HHMMSS/ with config, events.jsonl,
+    inferences.json, performance.json, statistics.csv, combined.mid,
+    session_summary.txt
+[x] Timing model — Tempo (BPM, ticks_per_beat, beats_per_bar), MusicalTime,
+    PlaybackScheduler with thread-safe schedule/drain/clear-future
+[x] Domain model — frozen MusicalEvent, Note, close-at-horizon converter
+[x] Test suite — 38 test files, zero xfail, zero skip at audit time
+[x] Mac adaptation — CUDA packages guarded behind platform markers; runs on
+    Apple Silicon (see developing-logs for mac-m1-baseline-report.md)
+[x] Fakeoffline mode — recent feature (commits 77220db, cea7630)
+[x] Docs structure — docs/{architecture, getting-started, user-guide,
+    developer-guide, reference} organized and current
+
+-------------------------------------------------------------------------------
+IN PROGRESS
+-------------------------------------------------------------------------------
+Catch-up work per plan at ~/.claude/plans/lets-get-started-on-cozy-hickey.md.
+
+[x] Phase 1 — Web UI (streammuse-web) — LANDED 2026-04-24
+    - src/streammuse/presentation/web/{server.py, schema.py, static/*} added
+    - Reuses WebSocketOutputSink + FileSystemPromptRepository (no rewrites)
+    - Endpoints: GET /, GET /api/prompts, GET /api/prompts/{key},
+      POST /api/inject, WS /ws
+    - Entry point: `streammuse-web` in pyproject.toml
+    - 8 unit tests in tests/unit/presentation/web/ (182 total, all green)
+    - Smoke verified: WS clients receive live tick/note/stats events
+    - Added deps: httpx>=0.27, websockets>=12
+    - New CLI flags (shared parser, ignored by streammuse-cli):
+      --web-host, --web-port, --prompts-dir
+
+[ ] Phase 2 — Regression tests for 8 "already-fixed" bugs
+[ ] Phase 3 — Lekai engine bug sweep (B1 blip, B2 sampling, B3 context_beats)
+[ ] Phase 4 — Late note_off release-now (B4)
+[ ] Phase 5 — MIDI recording rewrite on mido (B5)
+[ ] Phase 6 — Features (F1 snap, F2 picker, F3 listening + unconditional clear, L1 Lekai default)
+[ ] Phase 7 — Docs (REFERENCE_PARITY, ported reference audits, lessons append)
+
+-------------------------------------------------------------------------------
+KNOWN BUGS / TECH DEBT (surface-from-audit)
+-------------------------------------------------------------------------------
+[!] DRIFT: InferenceConfig.model_name defaults to "stanley" in
+    src/streammuse/application/config/models.py, but the project directive
+    (2026-04-24) is that **Lekai is the primary pathway**. Decide: flip the
+    default, or leave it and require explicit --model-name lekai invocation.
+    Document the decision in a developing-logs plan before changing.
+
+[!] SHADOW DEPENDENCY: infrastructure/inference/http_client.py imports
+    `requests` but it is not listed in pyproject.toml dependencies. It resolves
+    transitively today (via wandb / transformers). Add it explicitly or switch
+    to `httpx` (now declared as of Phase 1).
+
+[!] UNTRACKED ASSET: FluidR3Mono_GM.sf3 (23.7 MB SoundFont) sits in the repo
+    root untracked. Decision: keep local-only (current), add to .gitignore
+    explicitly (currently not listed), or document a canonical download URL in
+    docs/getting-started/installation.md.
+
+[!] README.md staleness: README.md references training pipelines
+    (m2a_transformer.py --batch_size ..., exact/, preprocess/,
+    training_runner.py) that are NOT in this repository. Training is
+    out-of-scope (per project directive). README should be updated to clarify
+    that this repo is inference/service only.
+
+[!] Potentially-unused declared deps: tensorflow, tensorboard, tensorboardx,
+    wandb, torch-tb-profiler, joblib, nvitop — none are imported under
+    src/streammuse/. They are training-time artifacts. Consider moving to
+    a [project.optional-dependencies] group named "training" or "analysis".
+
+[!] Candidates for future-extension modules (exist but not reached from CLI
+    entry point):
+      - src/streammuse/domain/events/generic.py (multi-modal event abstraction)
+      - src/streammuse/domain/musical/sequence.py
+      - src/streammuse/domain/logging/metrics_calculator.py
+    Per project directive (2026-04-24), these are DESIGNED-FOR-FUTURE, not
+    dead code. Do not delete without explicit approval.
+
+[!] Legacy path in SessionManager: dual-path logic to support both
+    logs/session_HHMMSS/ and logs/YYYY-MM-DD/session_HHMMSS/ — once historical
+    sessions are archived, this can be collapsed.
+
+[!] Zero TODO/FIXME comments in src/ or scripts/ at audit time. Good. Keep it
+    that way; if you can't fix, log the issue here instead of leaving a TODO.
+
+-------------------------------------------------------------------------------
+NEXT (current session goal)
+-------------------------------------------------------------------------------
+Catch up to the old system at:
+  https://github.com/AHY123/StreamMUSE/tree/demo_lekai_fixed
+
+Plus any other features listed by the user during that work. Start by:
+  1. Cloning or fetching the demo_lekai_fixed branch for reference.
+  2. Diffing feature-for-feature against this branch (new_system_stanley).
+  3. Writing a plan in developing-logs/YYYY-M-D/catch-up-plan.md before coding.
+  4. Resolving the DRIFT item above (Lekai as default) as part of this catch-up,
+     since Lekai is the primary pathway going forward.
+
+Write the plan first. Implement second. Report third. Keep this file honest.
+
+===============================================================================
