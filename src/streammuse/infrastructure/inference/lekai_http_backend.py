@@ -452,6 +452,9 @@ class LekaiHttpBackend:
         bos_token = int(getattr(self._model_adapter, "BOS_TOKEN", 1))
         pad_token = int(getattr(self._model_adapter, "PAD_MARKER", 173))
 
+        # Initial sequence matches offline training structure with delay_beats=-1:
+        # [BOS, ts, bpm, pad, bar, bar, acc_0, mel_0, acc_1, mel_1, ...]
+        # The pad corresponds to the dummy part0 slot before the first bar.
         seq: List[torch.Tensor] = [
             torch.tensor([bos_token], dtype=torch.long),
             torch.tensor([time_sig_token], dtype=torch.long),
@@ -459,74 +462,26 @@ class LekaiHttpBackend:
             torch.tensor([pad_token], dtype=torch.long),
         ]
 
-        # Match offline delay_beats=-1 structure: before any melody, offline generates acc_{-1}
-        # from [BOS, ts, bpm, pad]. We replicate this only when there is no prior history
-        # (i.e., the very first generation call after clear_history).
-        _generated_acc_neg1 = False
-        if start_beat == 0 and not self._accompaniment_history:
-            _primer_prompt = torch.cat(seq, dim=0)
-            try:
-                rt_temperature_primer = float(os.environ.get("LEKAI_RT_TEMPERATURE", "0.8"))
-                rt_top_k_primer = int(os.environ.get("LEKAI_RT_TOP_K", "50"))
-                rt_top_p_primer = float(os.environ.get("LEKAI_RT_TOP_P", "0.95"))
-                rt_rp_primer = float(os.environ.get("LEKAI_RT_REPETITION_PENALTY", "1.2"))
-            except Exception:
-                rt_temperature_primer, rt_top_k_primer, rt_top_p_primer, rt_rp_primer = 0.8, 50, 0.95, 1.2
-            _acc_neg1_tokens = self._generate_part1_tokens_from_prompt(
-                _primer_prompt,
-                temperature=rt_temperature_primer,
-                top_k=rt_top_k_primer,
-                top_p=rt_top_p_primer,
-                repetition_penalty=rt_rp_primer,
-            )
-            seq.append(torch.tensor(_acc_neg1_tokens, dtype=torch.long))
-            _generated_acc_neg1 = True
-            
-            # ===== ROUND2 FIX: Record acc_{-1} to history for context encoding =====
-            # Create a virtual event to represent acc_{-1} at tick -4 (beat -1)
-            self._accompaniment_history.append({
-                "type": "note_on",
-                "pitch": 60,  # Middle C as placeholder (will not affect encoding significantly)
-                "tick": -4,   # Beat -1
-                "velocity": 80,
-                "_source": "acc_neg1_primer",
-                "_tokens": _acc_neg1_tokens,
-            })
-            
-            # Debug log for Round 2
-            print(f"[PROMPT_DEBUG] Generated acc_{{-1}} tokens: {_acc_neg1_tokens}")
-            print(f"[PROMPT_DEBUG] Added virtual acc_{{-1}} event to history")
-        
-        # Debug log for Round 2
-        print(f"[PROMPT_DEBUG] {'='*60}")
-        print(f"[PROMPT_DEBUG] Mode: FakeRT")
-        print(f"[PROMPT_DEBUG] start_beat: {start_beat}, current_beat: {current_beat}")
-        print(f"[PROMPT_DEBUG] Initial seq (4 tokens): [{bos_token}, {time_sig_token}, {bpm_token}, {pad_token}]")
-        if _generated_acc_neg1:
-            print(f"[PROMPT_DEBUG] After acc_{{-1}}: seq length = {len(seq)}")
-        print(f"[PROMPT_DEBUG] Melody history size: {len(self._melody_history)}")
-        print(f"[PROMPT_DEBUG] Acc history size: {len(self._accompaniment_history)}")
+        # Filter out any stale virtual events inserted by earlier debug code (tick < 0).
+        real_accompaniment_history = [
+            e for e in self._accompaniment_history if int(e.get("tick", 0)) >= 0
+        ]
 
         melody_active = self._active_pitches_before_tick(self._melody_history, context_start_tick)
-        accompaniment_context_events: List[EventPayload] = list(self._accompaniment_history)
+        accompaniment_context_events: List[EventPayload] = list(real_accompaniment_history)
         accompaniment_active = self._active_pitches_before_tick(accompaniment_context_events, context_start_tick)
 
+        # Context loop — training data interleaving order is ACC first, then MEL.
+        # Pattern: [pad, bar, bar, acc_0, mel_0, acc_1, mel_1, ...]
+        # where bar tokens appear at the start of every measure (every 4 beats).
         for beat in range(start_beat, current_beat):
             if beat % 4 == 0:
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
 
             beat_start_tick = beat * TIMESTEPS_PER_BEAT
-            # Historical context follows the standard interleaved order:
-            # melody slot then accompaniment slot.
-            mel_tokens, melody_active = self._encode_beat_tokens(
-                events=self._melody_history,
-                beat_start_tick=beat_start_tick,
-                active_pitches=melody_active,
-                end_marker=170,
-            )
-            seq.append(mel_tokens)
 
+            # ACC first (part1 slot in training data)
             acc_tokens, accompaniment_active = self._encode_beat_tokens(
                 events=accompaniment_context_events,
                 beat_start_tick=beat_start_tick,
@@ -535,19 +490,18 @@ class LekaiHttpBackend:
             )
             seq.append(acc_tokens)
 
-        # Debug log for Round 2: Print full prompt sequence before generation
-        _full_prompt_for_debug = torch.cat(seq, dim=0)
-        print(f"[PROMPT_DEBUG] Context loop completed")
-        print(f"[PROMPT_DEBUG] Full prompt length: {len(_full_prompt_for_debug)}")
-        print(f"[PROMPT_DEBUG] First 30 tokens: {_full_prompt_for_debug[:30].tolist()}")
-        if len(_full_prompt_for_debug) > 30:
-            print(f"[PROMPT_DEBUG] Tokens at positions 30-50: {_full_prompt_for_debug[30:50].tolist()}")
-        print(f"[PROMPT_DEBUG] {'='*60}")
-        
+            # MEL second (part0 slot in training data)
+            mel_tokens, melody_active = self._encode_beat_tokens(
+                events=self._melody_history,
+                beat_start_tick=beat_start_tick,
+                active_pitches=melody_active,
+                end_marker=170,
+            )
+            seq.append(mel_tokens)
+
         generated_events: List[EventPayload] = []
         running_active = set(self._active_pitches)
 
-        # Match offline defaults by default; keep runtime override via env vars.
         try:
             rt_temperature = float(os.environ.get("LEKAI_RT_TEMPERATURE", "0.8"))
         except Exception:
@@ -567,26 +521,17 @@ class LekaiHttpBackend:
 
         for beat_offset in range(num_beats_to_generate):
             target_beat = current_beat + beat_offset
+            beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
+
+            # Add bar tokens at the start of each measure, before generating acc.
             if target_beat % 4 == 0:
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
 
-            beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
-
-            # Match offline semantics: inject current-beat part0 (melody) first,
-            # then generate current-beat part1 (accompaniment).
-            mel_tokens_current, melody_active = self._encode_beat_tokens(
-                events=self._melody_history,
-                beat_start_tick=beat_start_tick,
-                active_pitches=melody_active,
-                end_marker=170,
-            )
-
-            seq_with_current_melody = list(seq)
-            seq_with_current_melody.append(mel_tokens_current)
-
-            prompt_tokens = torch.cat(seq_with_current_melody, dim=0)
-            generated_primary_tokens = self._generate_part1_tokens_from_prompt(
+            # Generate ACC directly — do NOT inject mel[target_beat] first.
+            # Training context ends with mel[target_beat-1]; the model predicts acc[target_beat].
+            prompt_tokens = torch.cat(seq, dim=0)
+            generated_beat_tokens = self._generate_part1_tokens_from_prompt(
                 prompt_tokens,
                 temperature=rt_temperature,
                 top_k=rt_top_k,
@@ -594,14 +539,14 @@ class LekaiHttpBackend:
                 repetition_penalty=rt_repetition_penalty,
             )
 
-            beat_pianoroll_primary = beats_to_pianoroll(
-                [generated_primary_tokens],
+            beat_pianoroll = beats_to_pianoroll(
+                [generated_beat_tokens],
                 tokenizer=self._tokenizer,
                 timesteps_per_beat=TIMESTEPS_PER_BEAT,
             )
 
             expected_shape = (2, 88, TIMESTEPS_PER_BEAT)
-            got_shape = tuple(int(dim) for dim in beat_pianoroll_primary.shape)
+            got_shape = tuple(int(dim) for dim in beat_pianoroll.shape)
             if got_shape != expected_shape:
                 got_time_axis = got_shape[2] if len(got_shape) >= 3 else -1
                 print(
@@ -621,61 +566,12 @@ class LekaiHttpBackend:
                 )
 
             active_snapshot = set(running_active)
-            beat_events_primary, next_active_primary = self._converter.pianoroll_to_events(
-                pianoroll=beat_pianoroll_primary,
+            beat_events, next_running_active = self._converter.pianoroll_to_events(
+                pianoroll=beat_pianoroll,
                 start_tick=beat_start_tick,
                 close_at_end=False,
                 active_pitches=active_snapshot,
             )
-
-            use_fallback = len(beat_events_primary) == 0
-            beat_events = beat_events_primary
-            next_running_active = next_active_primary
-            generated_beat_tokens = generated_primary_tokens
-
-            if use_fallback:
-                fallback_prompt_tokens = torch.cat(seq, dim=0)
-                generated_fallback_tokens = self._generate_part1_tokens_from_prompt(
-                    fallback_prompt_tokens,
-                    temperature=rt_temperature,
-                    top_k=rt_top_k,
-                    top_p=rt_top_p,
-                    repetition_penalty=rt_repetition_penalty,
-                )
-
-                beat_pianoroll_fallback = beats_to_pianoroll(
-                    [generated_fallback_tokens],
-                    tokenizer=self._tokenizer,
-                    timesteps_per_beat=TIMESTEPS_PER_BEAT,
-                )
-
-                fallback_shape = tuple(int(dim) for dim in beat_pianoroll_fallback.shape)
-                if fallback_shape == expected_shape:
-                    beat_events_fallback, next_active_fallback = self._converter.pianoroll_to_events(
-                        pianoroll=beat_pianoroll_fallback,
-                        start_tick=beat_start_tick,
-                        close_at_end=False,
-                        active_pitches=active_snapshot,
-                    )
-
-                    if len(beat_events_fallback) > 0:
-                        beat_events = beat_events_fallback
-                        next_running_active = next_active_fallback
-                        generated_beat_tokens = generated_fallback_tokens
-                        # In fallback mode, append accompaniment first, then melody.
-                        # This matches the legacy interleaving behavior for this beat.
-                        seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
-                        seq.append(mel_tokens_current)
-                    else:
-                        seq = seq_with_current_melody
-                        seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
-                else:
-                    seq = seq_with_current_melody
-                    seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
-            else:
-                seq = seq_with_current_melody
-                seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
-
             running_active = next_running_active
             self._active_pitches = set(running_active)
 
@@ -692,6 +588,18 @@ class LekaiHttpBackend:
 
             generated_events.extend(normalized_beat_events)
             accompaniment_context_events.extend(normalized_beat_events)
+
+            # Extend seq with: ACC tokens (just generated), then MEL tokens for this beat.
+            # This prepares the context for generating acc[target_beat+1].
+            seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
+
+            mel_tokens_current, melody_active = self._encode_beat_tokens(
+                events=self._melody_history,
+                beat_start_tick=beat_start_tick,
+                active_pitches=melody_active,
+                end_marker=170,
+            )
+            seq.append(mel_tokens_current)
 
         return generated_events
 

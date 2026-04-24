@@ -196,9 +196,12 @@ def main() -> int:
             last_generation_tick = tick
 
     combined_path = output_dir / f"{midi_file.stem}_fake_realtime_combined.mid"
+    # Use BPM extracted from MIDI file so that the exported melody timing matches ground truth.
+    # Falling back to args.tempo only when the MIDI has no tempo event.
+    export_bpm = float(midi_bpm if midi_bpm is not None else args.tempo)
     export_midi(
         combined_path,
-        bpm=float(args.tempo),
+        bpm=export_bpm,
         ticks_per_beat=int(args.ticks_per_beat),
         melody_events=[ev for ev in melody_events if start_tick <= ev.tick < max_ticks],
         model_events=model_events,
