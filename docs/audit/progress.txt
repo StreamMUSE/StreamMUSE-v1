@@ -105,6 +105,46 @@ KNOWN BUGS / TECH DEBT (surface-from-audit)
 [!] Zero TODO/FIXME comments in src/ or scripts/ at audit time. Good. Keep it
     that way; if you can't fix, log the issue here instead of leaving a TODO.
 
+[!] I/O AUDIT NEEDED (flagged 2026-04-24): the current input and output
+    subsystems have not been end-to-end verified against the reference
+    behavior. Port order (input → service → output → recording) works in
+    unit tests and smoke, but no one has confirmed that each mode behaves
+    as expected on real hardware / in realistic sessions. Audit targets:
+      - Input: midi_device (hardware), keyboard (pynput mapping), midi_file
+        (tempo-accurate playback, delay_ticks, file-end handling), list.
+      - Output: console verbosity, audio port selection + mido message
+        timing, midi_file recording (already flagged by Phase 5 rewrite),
+        websocket envelope stability, json_log completeness, session
+        aggregation (performance.json / statistics.csv / combined.mid),
+        composite fan-out order.
+      - Inference path: http client request/response under Lekai & Stanley,
+        fake-server parity, timeouts and error propagation.
+      - Cross-cutting: tick assignment at each boundary (which of the 8
+        "already fixed" bug regression tests covers, Phase 2), clear-history
+        wiring, injection artifacts, session-dir content invariants.
+    Produce an explicit audit matrix (mode × invariant → PASS/FAIL/UNKNOWN)
+    before Phase 5 MIDI rewrite lands, so the rewrite can be measured
+    against known-good reference behavior.
+
+[!] FRONTEND PARITY GAP (flagged 2026-04-24): the Phase 1 web UI is
+    functional but not a visual/UX port of the reference at
+    AHY123/StreamMUSE@demo_lekai_fixed:app/web_ui/. Missing: key detection,
+    listening-mode UI, input-mode switcher, key-filtered prompt library,
+    metronome, stats graphs, runtime config editing, horizontal scrolling
+    piano roll. Reference is 11.9 KB of HTML + separate css/ and js/ dirs
+    plus a 28 KB PLAN.md and a WEB_CLIENT_USER_GUIDE.md. Decision pending:
+    port the reference shell directly vs. iterate on the minimal one.
+
+[!] USER EXPERIENCE ISSUES (flagged 2026-04-24, enumeration pending): user
+    has observed UX issues not yet documented. Track them individually in
+    this file as they are enumerated; do not file one blanket ticket.
+    Topics to probe when the user next describes specifics:
+      - startup time, first-sound latency, shutdown behavior
+      - prompt-picker discoverability and default behavior
+      - error messaging when server unreachable / MIDI device missing
+      - visual feedback under sustained input
+      - any keyboard-input mapping surprise
+
 -------------------------------------------------------------------------------
 NEXT (current session goal)
 -------------------------------------------------------------------------------
