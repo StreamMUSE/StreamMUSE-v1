@@ -62,7 +62,8 @@ class LekaiHttpBackend:
         self._injection_length_ticks: int = 0
         self._runtime_config: Optional[BackendRuntimeConfig] = None
         self._runtime_status = BackendRuntimeStatus()
-        
+        self._request_bpm: Optional[int] = None  # BPM from the current request, overrides LEKAI_DEFAULT_BPM
+
         # Model components (Phase 3: real model integration)
         self._model_adapter = None
         self._converter = None
@@ -440,7 +441,8 @@ class LekaiHttpBackend:
         start_beat = max(0, current_beat - context_beats)
         context_start_tick = start_beat * TIMESTEPS_PER_BEAT
 
-        bpm_token = encode_bpm(int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))) + int(
+        effective_bpm = self._request_bpm if self._request_bpm is not None else int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))
+        bpm_token = encode_bpm(effective_bpm) + int(
             getattr(self._model_adapter, "BPM_OFFSET_ID", 5)
         )
         time_signature_idx = int(os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4"))
@@ -456,6 +458,54 @@ class LekaiHttpBackend:
             torch.tensor([bpm_token], dtype=torch.long),
             torch.tensor([pad_token], dtype=torch.long),
         ]
+
+        # Match offline delay_beats=-1 structure: before any melody, offline generates acc_{-1}
+        # from [BOS, ts, bpm, pad]. We replicate this only when there is no prior history
+        # (i.e., the very first generation call after clear_history).
+        _generated_acc_neg1 = False
+        if start_beat == 0 and not self._accompaniment_history:
+            _primer_prompt = torch.cat(seq, dim=0)
+            try:
+                rt_temperature_primer = float(os.environ.get("LEKAI_RT_TEMPERATURE", "0.8"))
+                rt_top_k_primer = int(os.environ.get("LEKAI_RT_TOP_K", "50"))
+                rt_top_p_primer = float(os.environ.get("LEKAI_RT_TOP_P", "0.95"))
+                rt_rp_primer = float(os.environ.get("LEKAI_RT_REPETITION_PENALTY", "1.2"))
+            except Exception:
+                rt_temperature_primer, rt_top_k_primer, rt_top_p_primer, rt_rp_primer = 0.8, 50, 0.95, 1.2
+            _acc_neg1_tokens = self._generate_part1_tokens_from_prompt(
+                _primer_prompt,
+                temperature=rt_temperature_primer,
+                top_k=rt_top_k_primer,
+                top_p=rt_top_p_primer,
+                repetition_penalty=rt_rp_primer,
+            )
+            seq.append(torch.tensor(_acc_neg1_tokens, dtype=torch.long))
+            _generated_acc_neg1 = True
+            
+            # ===== ROUND2 FIX: Record acc_{-1} to history for context encoding =====
+            # Create a virtual event to represent acc_{-1} at tick -4 (beat -1)
+            self._accompaniment_history.append({
+                "type": "note_on",
+                "pitch": 60,  # Middle C as placeholder (will not affect encoding significantly)
+                "tick": -4,   # Beat -1
+                "velocity": 80,
+                "_source": "acc_neg1_primer",
+                "_tokens": _acc_neg1_tokens,
+            })
+            
+            # Debug log for Round 2
+            print(f"[PROMPT_DEBUG] Generated acc_{{-1}} tokens: {_acc_neg1_tokens}")
+            print(f"[PROMPT_DEBUG] Added virtual acc_{{-1}} event to history")
+        
+        # Debug log for Round 2
+        print(f"[PROMPT_DEBUG] {'='*60}")
+        print(f"[PROMPT_DEBUG] Mode: FakeRT")
+        print(f"[PROMPT_DEBUG] start_beat: {start_beat}, current_beat: {current_beat}")
+        print(f"[PROMPT_DEBUG] Initial seq (4 tokens): [{bos_token}, {time_sig_token}, {bpm_token}, {pad_token}]")
+        if _generated_acc_neg1:
+            print(f"[PROMPT_DEBUG] After acc_{{-1}}: seq length = {len(seq)}")
+        print(f"[PROMPT_DEBUG] Melody history size: {len(self._melody_history)}")
+        print(f"[PROMPT_DEBUG] Acc history size: {len(self._accompaniment_history)}")
 
         melody_active = self._active_pitches_before_tick(self._melody_history, context_start_tick)
         accompaniment_context_events: List[EventPayload] = list(self._accompaniment_history)
@@ -485,6 +535,15 @@ class LekaiHttpBackend:
             )
             seq.append(acc_tokens)
 
+        # Debug log for Round 2: Print full prompt sequence before generation
+        _full_prompt_for_debug = torch.cat(seq, dim=0)
+        print(f"[PROMPT_DEBUG] Context loop completed")
+        print(f"[PROMPT_DEBUG] Full prompt length: {len(_full_prompt_for_debug)}")
+        print(f"[PROMPT_DEBUG] First 30 tokens: {_full_prompt_for_debug[:30].tolist()}")
+        if len(_full_prompt_for_debug) > 30:
+            print(f"[PROMPT_DEBUG] Tokens at positions 30-50: {_full_prompt_for_debug[30:50].tolist()}")
+        print(f"[PROMPT_DEBUG] {'='*60}")
+        
         generated_events: List[EventPayload] = []
         running_active = set(self._active_pitches)
 
@@ -646,6 +705,7 @@ class LekaiHttpBackend:
         inference_mode: str,
         model_name: str,
         checkpoint_path: Optional[str],
+        bpm: Optional[int] = None,
     ) -> tuple[List[EventPayload], TimingPayload]:
         request_arrival = time.perf_counter()
         preprocess_start = request_arrival
@@ -665,6 +725,10 @@ class LekaiHttpBackend:
                 checkpoint_path=checkpoint_path,
             )
         )
+
+        # Update request-level BPM if provided (overrides LEKAI_DEFAULT_BPM env var).
+        if bpm is not None:
+            self._request_bpm = int(bpm)
 
         # Keep full melody history on the server; requests carry increments.
         self._melody_history.extend(melody_events)
@@ -713,9 +777,9 @@ class LekaiHttpBackend:
     ) -> List[EventPayload]:
         assert self._converter is not None and self._model_adapter is not None
 
-        if int(generation_start_tick) <= 0:
+        if int(generation_start_tick) < 0:
             print(
-                "[LekaiHttpBackend] zero prompt window "
+                "[LekaiHttpBackend] negative start_tick "
                 f"(start_tick={generation_start_tick}, gen_len={generation_length_frames}); "
                 "fallback to rule-based generation"
             )
@@ -925,6 +989,7 @@ class LekaiHttpBackend:
         self._accompaniment_history = []
         self._injection_length_ticks = 0
         self._active_pitches = set()
+        self._request_bpm = None
         return {
             "success": True,
             "message": "History cleared",

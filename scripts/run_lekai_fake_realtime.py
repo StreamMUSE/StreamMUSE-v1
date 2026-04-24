@@ -4,6 +4,9 @@ import argparse
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
+
+import mido
 
 from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.infrastructure.inference.http_client import HttpInferenceClient, HttpInferenceClientConfig
@@ -101,6 +104,20 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Extract BPM from MIDI file for accurate model conditioning.
+    midi_bpm: Optional[int] = None
+    try:
+        mid_raw = mido.MidiFile(str(midi_file))
+        for track in mid_raw.tracks:
+            for msg in track:
+                if msg.type == "set_tempo":
+                    midi_bpm = round(60_000_000 / msg.tempo)
+                    break
+            if midi_bpm is not None:
+                break
+    except Exception:
+        pass
+
     notes, _res, max_tick = MidiFileInput._midi_to_notes(
         str(midi_file),
         beat_div=int(args.ticks_per_beat),
@@ -130,8 +147,11 @@ def main() -> int:
             inference_mode="sliding_window",
             generation_interval_ticks=int(args.generation_interval_ticks),
             checkpoint_path=None,
+            bpm=midi_bpm,
         )
     )
+    if midi_bpm is not None:
+        print(f"[fake-rt] detected BPM={midi_bpm} from MIDI file")
 
     try:
         client.clear_history()
@@ -188,6 +208,7 @@ def main() -> int:
         "midi_file_path": str(midi_file),
         "server_url": str(args.server_url),
         "tempo": float(args.tempo),
+        "midi_bpm": midi_bpm,
         "ticks_per_beat": int(args.ticks_per_beat),
         "generation_interval_ticks": int(args.generation_interval_ticks),
         "generation_length_frames": int(args.generation_length_frames),

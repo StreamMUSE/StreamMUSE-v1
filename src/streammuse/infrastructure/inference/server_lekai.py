@@ -32,6 +32,7 @@ class InferenceRequest(BaseModel):
     model_name: str = "lekai"
     checkpoint_path: Optional[str] = None
     client_request_send_time: Optional[float] = None
+    bpm: Optional[int] = None
 
 
 class Timings(BaseModel):
@@ -131,6 +132,7 @@ async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResp
         inference_mode=request.inference_mode,
         model_name=request.model_name,
         checkpoint_path=request.checkpoint_path,
+        bpm=request.bpm,
     )
 
     response_events = [

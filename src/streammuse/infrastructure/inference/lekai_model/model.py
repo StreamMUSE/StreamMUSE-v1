@@ -152,6 +152,14 @@ class PianoLLaMA(PreTrainedModel):
             torch.tensor([idx_value + dataset.time_sig_offset_id], dtype=torch.long),
             torch.tensor([bpm_token], dtype=torch.long),
         ]
+        
+        # Debug log for Round 2
+        print(f"[PROMPT_DEBUG] {'='*60}")
+        print(f"[PROMPT_DEBUG] Mode: Offline")
+        print(f"[PROMPT_DEBUG] delay_beats: {delay_beats}, gt_prefix_beats: {gt_prefix_beats}")
+        print(f"[PROMPT_DEBUG] Initial tokens (3 tokens): {[dataset.bos_token, idx_value + dataset.time_sig_offset_id, bpm_token]}")
+        print(f"[PROMPT_DEBUG] part0_beats_list length: {len(part0_beats_list)}")
+        print(f"[PROMPT_DEBUG] part1_beats_gt_list length: {len(part1_beats_gt_list)}")
 
         generated = torch.cat(initial_tokens, dim=0).unsqueeze(0).to(device)
 
@@ -230,6 +238,15 @@ class PianoLLaMA(PreTrainedModel):
                         continue
 
                     # 开始真正生成part1（过了GT前缀后）
+                    # Debug log for Round 2: Print full prompt at first generation step
+                    if part1_idx == gt_prefix_beats:
+                        print(f"[PROMPT_DEBUG] First generation step (part1_idx={part1_idx})")
+                        print(f"[PROMPT_DEBUG] Full prompt length: {generated.shape[1]}")
+                        print(f"[PROMPT_DEBUG] First 30 tokens: {generated[0, :30].tolist()}")
+                        if generated.shape[1] > 30:
+                            print(f"[PROMPT_DEBUG] Tokens at positions 30-50: {generated[0, 30:50].tolist()}")
+                        print(f"[PROMPT_DEBUG] {'='*60}")
+                    
                     # 生成一个token
                     outputs = self.model(
                         input_ids=generated[:, -1:] if past_key_values else generated,

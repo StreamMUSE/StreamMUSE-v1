@@ -19,6 +19,12 @@ def sample_token(
         top_p: float
         repetition_penalty: float
     """
+    # Handle temperature=0 (greedy decoding)
+    if temperature == 0.0:
+        # Greedy: return the token with highest logit
+        next_token = torch.argmax(logits, dim=-1, keepdim=True)
+        return next_token
+    
     # Temperature scaling
     logits = logits / temperature
     
