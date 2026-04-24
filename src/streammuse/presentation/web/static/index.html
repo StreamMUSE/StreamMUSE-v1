@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StreamMUSE</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>StreamMUSE</h1>
+    <div id="status-pill" class="pill disconnected">disconnected</div>
+  </header>
+
+  <main>
+    <section id="roll-section">
+      <div class="section-head">
+        <h2>Piano roll</h2>
+        <div class="legend">
+          <span class="dot user"></span> user
+          <span class="dot model"></span> model
+        </div>
+      </div>
+      <canvas id="roll" width="960" height="320"></canvas>
+      <div class="meta">
+        <span>tick: <b id="m-tick">0</b></span>
+        <span>bar: <b id="m-bar">0</b></span>
+        <span>beat: <b id="m-beat">0</b></span>
+      </div>
+    </section>
+
+    <section id="stats-section">
+      <h2>Stats</h2>
+      <dl>
+        <dt>round trip</dt><dd><span id="s-rtt">—</span> ms</dd>
+        <dt>server processing</dt><dd><span id="s-srv">—</span> ms</dd>
+        <dt>network</dt><dd><span id="s-net">—</span> ms</dd>
+        <dt>hits / ticks</dt><dd><span id="s-hits">—</span> / <span id="s-ticks">—</span></dd>
+      </dl>
+    </section>
+
+    <section id="picker-section">
+      <h2>Inject prompt</h2>
+      <div class="picker-row">
+        <label for="pk-key">Key</label>
+        <select id="pk-key"></select>
+      </div>
+      <div class="picker-row">
+        <label for="pk-prompt">Prompt</label>
+        <select id="pk-prompt"></select>
+      </div>
+      <div class="picker-row">
+        <label for="pk-strategy">Strategy</label>
+        <select id="pk-strategy">
+          <option value="random">random</option>
+          <option value="first">first</option>
+        </select>
+      </div>
+      <button id="pk-inject">Inject</button>
+      <div id="pk-msg" class="msg"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

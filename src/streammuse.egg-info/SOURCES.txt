@@ -88,3 +88,6 @@ src/streammuse/presentation/__init__.py
 src/streammuse/presentation/cli/__init__.py
 src/streammuse/presentation/cli/cli.py
 src/streammuse/presentation/cli/config_parser.py
+src/streammuse/presentation/web/__init__.py
+src/streammuse/presentation/web/schema.py
+src/streammuse/presentation/web/server.py

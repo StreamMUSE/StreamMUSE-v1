@@ -120,6 +120,11 @@ def parse_args() -> argparse.Namespace:
     # Runtime options
     parser.add_argument("--max-ticks", type=int, default=None, help="Maximum ticks to run (for testing)")
 
+    # Web UI options (used by `streammuse-web`; ignored by the CLI entry point)
+    parser.add_argument("--web-host", type=str, default="127.0.0.1", help="Web UI bind host (streammuse-web only)")
+    parser.add_argument("--web-port", type=int, default=8001, help="Web UI port (streammuse-web only)")
+    parser.add_argument("--prompts-dir", type=str, default="prompts", help="Prompt library directory (streammuse-web only)")
+
     return parser.parse_args()
 
 
