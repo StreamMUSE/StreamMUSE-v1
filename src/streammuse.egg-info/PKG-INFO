@@ -6,6 +6,7 @@ Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 Requires-Dist: deepspeed>=0.17.1
 Requires-Dist: fastapi>=0.116.1
+Requires-Dist: httpx>=0.28.1
 Requires-Dist: ipykernel>=6.29.5
 Requires-Dist: joblib>=1.5.1
 Requires-Dist: lightning>=2.5.2

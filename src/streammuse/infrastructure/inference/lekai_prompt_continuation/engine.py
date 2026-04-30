@@ -1,0 +1,264 @@
+"""Inference engine for the Lekai prompt-continuation path.
+
+The engine owns model/runtime work. The backend should call this class instead of
+loading models or constructing inference inputs directly.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from streammuse.infrastructure.inference.lekai_http_backend import (
+    BackendRuntimeConfig,
+    EventPayload,
+    TIMESTEPS_PER_BEAT,
+    TimingPayload,
+)
+from streammuse.infrastructure.inference.lekai_prompt_continuation.catchup_state import (
+    CatchUpState,
+)
+from streammuse.infrastructure.inference.lekai_prompt_continuation.continuation_engine import (
+    LekaiContinuationEngine,
+)
+from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_engine import (
+    LekaiPromptEngine,
+)
+from streammuse.infrastructure.inference.lekai_prompt_continuation.scheduler import (
+    LekaiPromptContinuationScheduler,
+)
+from streammuse.infrastructure.inference.lekai_prompt_continuation.token_conversion import (
+    PromptContinuationRequest,
+    copy_events,
+)
+
+
+class LekaiPromptContinuationEngine:
+    """Run the two-stage prompt accompaniment plus continuation inference flow."""
+
+    MODEL_NAME = "lekai_prompt_continuation"
+
+    def __init__(
+        self,
+        prompt_checkpoint_path: Optional[str] = None,
+        continuation_checkpoint_path: Optional[str] = None,
+        checkpoint_path: Optional[str] = None,
+        prompt_engine: Optional[LekaiPromptEngine] = None,
+        continuation_engine: Optional[LekaiContinuationEngine] = None,
+    ) -> None:
+        resolved_continuation_checkpoint = continuation_checkpoint_path or checkpoint_path
+        self._prompt_engine = prompt_engine or LekaiPromptEngine(
+            checkpoint_path=prompt_checkpoint_path
+        )
+        self._continuation_engine = continuation_engine or LekaiContinuationEngine(
+            checkpoint_path=resolved_continuation_checkpoint
+        )
+        self._catchup_state = CatchUpState()
+        self._scheduler = LekaiPromptContinuationScheduler(
+            prompt_engine=self._prompt_engine,
+            continuation_engine=self._continuation_engine,
+        )
+
+    def configure(self, config: BackendRuntimeConfig) -> None:
+        self._continuation_engine.configure(config)
+
+    def runtime_info(self) -> dict[str, str | float | bool | int | None]:
+        info = dict(self._continuation_engine.runtime_info())
+        info["runtime_model_name"] = self.MODEL_NAME
+        prompt_info = self._prompt_engine.runtime_info()
+        info["prompt_mode"] = str(prompt_info["mode"])
+        info["prompt_has_real_model"] = bool(prompt_info["has_real_model"])
+        info["prompt_checkpoint_path"] = (
+            str(prompt_info["checkpoint_path"]) if prompt_info["checkpoint_path"] is not None else None
+        )
+        info["prompt_fallback_reason"] = (
+            str(prompt_info["fallback_reason"]) if prompt_info.get("fallback_reason") is not None else None
+        )
+        info["prompt_load_time_ms"] = (
+            float(prompt_info["load_time_ms"]) if prompt_info.get("load_time_ms") is not None else None
+        )
+        info["prompt_warmup_time_ms"] = (
+            float(prompt_info["warmup_time_ms"]) if prompt_info.get("warmup_time_ms") is not None else None
+        )
+        info["prompt_warmup_error"] = (
+            str(prompt_info["warmup_error"]) if prompt_info.get("warmup_error") is not None else None
+        )
+        info["prompt_is_warmed_up"] = bool(prompt_info.get("is_warmed_up", False))
+        info.update(self._prefixed_catchup_snapshot())
+        scheduler_status = self.scheduler_status()
+        info["scheduler_phase"] = str(scheduler_status["phase"])
+        info["scheduler_is_running"] = bool(scheduler_status["is_running"])
+        info["scheduler_is_failed"] = bool(scheduler_status["is_failed"])
+        info["scheduler_error"] = (
+            str(scheduler_status["error"]) if scheduler_status["error"] is not None else None
+        )
+        return info
+
+    @staticmethod
+    def _ticks_to_beats(ticks: int) -> int:
+        tick_count = max(0, int(ticks))
+        return (tick_count + TIMESTEPS_PER_BEAT - 1) // TIMESTEPS_PER_BEAT
+
+    @staticmethod
+    def _max_event_tick(events: list[EventPayload]) -> int:
+        if not events:
+            return 0
+        return max(int(event.get("tick", 0)) for event in events)
+
+    def _prefixed_catchup_snapshot(self) -> dict[str, int | bool]:
+        return {
+            f"catchup_{key}": value
+            for key, value in self._catchup_state.snapshot().items()
+        }
+
+    def catchup_status(self) -> dict[str, int | bool]:
+        return self._catchup_state.snapshot()
+
+    def start_prompt_catchup(
+        self,
+        *,
+        melody_events: list[EventPayload],
+        prompt_length_ticks: int,
+        generation_interval_ticks: int,
+        inference_mode: str,
+        model_name: str,
+        checkpoint_path: Optional[str],
+        observed_until_tick: Optional[int] = None,
+    ) -> dict[str, int | bool | str | None]:
+        return self._scheduler.start(
+            melody_events=melody_events,
+            prompt_length_ticks=prompt_length_ticks,
+            generation_interval_ticks=generation_interval_ticks,
+            inference_mode=inference_mode,
+            model_name=model_name,
+            checkpoint_path=checkpoint_path,
+            observed_until_tick=observed_until_tick,
+        )
+
+    def append_melody_events(
+        self,
+        melody_events: list[EventPayload],
+        *,
+        observed_until_tick: Optional[int] = None,
+    ) -> dict[str, int | bool | str | None]:
+        return self._scheduler.append_melody(
+            melody_events=melody_events,
+            observed_until_tick=observed_until_tick,
+        )
+
+    def scheduler_status(self) -> dict[str, int | bool | str | None]:
+        return self._scheduler.status()
+
+    def wait_for_scheduler(self, timeout: Optional[float] = None) -> dict[str, int | bool | str | None]:
+        return self._scheduler.wait(timeout=timeout)
+
+    def playable_accompaniment(self) -> list[EventPayload]:
+        return self._scheduler.playable_accompaniment()
+
+    def generate(
+        self,
+        melody_events: list[EventPayload],
+        generation_start_tick: int,
+        generation_length_frames: int,
+        generation_interval_ticks: int,
+        prompt_length_ticks: Optional[int],
+        inference_mode: str,
+        model_name: str,
+        checkpoint_path: Optional[str],
+    ) -> tuple[list[EventPayload], TimingPayload]:
+        request = PromptContinuationRequest(
+            melody_events=copy_events(melody_events),
+            generation_start_tick=int(generation_start_tick),
+            generation_length_frames=int(generation_length_frames),
+            generation_interval_ticks=int(generation_interval_ticks),
+            prompt_length_ticks=(int(prompt_length_ticks) if prompt_length_ticks is not None else None),
+            inference_mode=str(inference_mode),
+            model_name=str(model_name),
+            checkpoint_path=checkpoint_path,
+        )
+        return self._generate_from_request(request)
+
+    def _generate_from_request(
+        self,
+        request: PromptContinuationRequest,
+    ) -> tuple[list[EventPayload], TimingPayload]:
+        prompt_accompaniment: list[EventPayload] = []
+        observed_melody_end_tick = max(
+            int(request.generation_start_tick),
+            self._max_event_tick(request.melody_events),
+        )
+        self._catchup_state.melody_history_beats = max(
+            self._catchup_state.melody_history_beats,
+            self._ticks_to_beats(observed_melody_end_tick),
+        )
+
+        if request.prompt_length_ticks is not None and request.prompt_length_ticks > 0:
+            prompt_accompaniment = self._prompt_engine.generate_prompt_accompaniment(
+                melody_events=request.melody_events,
+                prompt_start_tick=0,
+                prompt_length_ticks=request.prompt_length_ticks,
+            )
+            if prompt_accompaniment:
+                prompt_beats = self._ticks_to_beats(request.prompt_length_ticks)
+                self._catchup_state.accompaniment_history_beats = max(
+                    self._catchup_state.accompaniment_history_beats,
+                    prompt_beats,
+                )
+                self._continuation_engine.inject_history(
+                    melody_events=request.melody_events,
+                    accompaniment_events=prompt_accompaniment,
+                    injection_length_ticks=request.prompt_length_ticks,
+                )
+
+        accompaniment, timings = self._continuation_engine.generate(
+            melody_events=request.melody_events,
+            generation_start_tick=request.generation_start_tick,
+            generation_length_frames=request.generation_length_frames,
+            generation_interval_ticks=request.generation_interval_ticks,
+            prompt_length_ticks=request.prompt_length_ticks,
+            inference_mode=request.inference_mode,
+            model_name=request.model_name,
+            checkpoint_path=request.checkpoint_path,
+        )
+        if request.generation_length_frames > 0:
+            continuation_end_tick = int(request.generation_start_tick) + int(request.generation_length_frames)
+            self._catchup_state.accompaniment_history_beats = max(
+                self._catchup_state.accompaniment_history_beats,
+                self._ticks_to_beats(continuation_end_tick),
+            )
+        return accompaniment, timings
+
+    def inject_history(
+        self,
+        melody_events: list[EventPayload],
+        accompaniment_events: list[EventPayload],
+        injection_length_ticks: int,
+    ) -> dict[str, int | bool | str]:
+        injection_beats = self._ticks_to_beats(injection_length_ticks)
+        self._catchup_state.set_history_lengths(
+            melody_beats=injection_beats,
+            accompaniment_beats=injection_beats,
+        )
+        result = self._continuation_engine.inject_history(
+            melody_events=copy_events(melody_events),
+            accompaniment_events=copy_events(accompaniment_events),
+            injection_length_ticks=injection_length_ticks,
+        )
+        result.update(self._prefixed_catchup_snapshot())
+        return result
+
+    def clear_history(self) -> dict[str, Any]:
+        self._catchup_state.reset()
+        self._scheduler.clear()
+        result = self._continuation_engine.clear_history()
+        result.update(self._prefixed_catchup_snapshot())
+        return result
+
+    def injection_status(self) -> dict[str, bool | int | str]:
+        status = dict(self._continuation_engine.injection_status())
+        status["runtime_model_name"] = self.MODEL_NAME
+        status.update(self._prefixed_catchup_snapshot())
+        scheduler_status = self.scheduler_status()
+        status["scheduler_phase"] = str(scheduler_status["phase"])
+        status["scheduler_is_running"] = bool(scheduler_status["is_running"])
+        status["scheduler_is_failed"] = bool(scheduler_status["is_failed"])
+        return status
