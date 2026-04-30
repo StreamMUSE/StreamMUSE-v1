@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--midi-file-path", type=str, default=None, help="Path to MIDI file (for simulation)")
     parser.add_argument("--midi-file-delay-ticks", type=int, default=0, help="Delay before starting MIDI file playback")
     parser.add_argument(
+        "--midi-file-trim-leading-rest",
+        action="store_true",
+        help="For MIDI-file simulation, emit from the first retained note instead of waiting through leading rests",
+    )
+    parser.add_argument(
         "--injection-file",
         type=str,
         default=None,
@@ -99,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-name",
         type=str,
-        choices=["stanley", "lekai"],
+        choices=["stanley", "lekai", "lekai_prompt_continuation"],
         default="stanley",
         help="Model backend selected on HTTP server",
     )
@@ -116,6 +121,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-max-seq-len-frames", type=int, default=96, help="Model max sequence length (frames)")
     parser.add_argument("--generation-length-frames", type=int, default=20, help="Frames to generate per request")
     parser.add_argument("--generation-interval-ticks", type=int, default=2, help="Ticks between generation requests")
+    parser.add_argument(
+        "--prompt-length-ticks",
+        type=int,
+        default=32,
+        help="Prompt window length for lekai_prompt_continuation (8 beats at 4 ticks/beat)",
+    )
 
     # Runtime options
     parser.add_argument("--max-ticks", type=int, default=None, help="Maximum ticks to run (for testing)")
@@ -138,6 +149,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         midi_device_name=args.midi_device_name,
         midi_file_path=args.midi_file_path,
         midi_file_delay_ticks=int(args.midi_file_delay_ticks),
+        midi_file_trim_leading_rest=bool(getattr(args, "midi_file_trim_leading_rest", False)),
         injection_file=getattr(args, "injection_file", None),
         injection_length_ticks=int(getattr(args, "injection_length", 0) or 0),
         injection_acc_file=getattr(args, "inject_acc_file", None),
@@ -163,6 +175,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         model_max_seq_len_frames=int(args.model_max_seq_len_frames),
         generation_length_frames=int(args.generation_length_frames),
         generation_interval_ticks=int(args.generation_interval_ticks),
+        prompt_length_ticks=int(getattr(args, "prompt_length_ticks", 32)),
     )
 
     return ApplicationConfig(

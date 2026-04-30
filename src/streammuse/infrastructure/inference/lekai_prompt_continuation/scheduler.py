@@ -55,6 +55,7 @@ class LekaiPromptContinuationScheduler:
         self._melody_history: list[EventPayload] = []
         self._prompt_melody_input: list[EventPayload] = []
         self._accompaniment_history: list[EventPayload] = []
+        self._continuation_sent_melody_event_count = 0
         self._catchup_state = CatchUpState()
         self._prompt_length_ticks = 0
         self._generation_interval_ticks = TIMESTEPS_PER_BEAT
@@ -112,6 +113,7 @@ class LekaiPromptContinuationScheduler:
             self._melody_history = copy_events(melody_events)
             self._prompt_melody_input = copy_events(melody_events)
             self._accompaniment_history = []
+            self._continuation_sent_melody_event_count = 0
             self._catchup_state.reset()
             self._prompt_length_ticks = int(prompt_length_ticks)
             self._generation_interval_ticks = int(generation_interval_ticks)
@@ -165,6 +167,7 @@ class LekaiPromptContinuationScheduler:
             self._melody_history = []
             self._prompt_melody_input = []
             self._accompaniment_history = []
+            self._continuation_sent_melody_event_count = 0
             self._catchup_state.reset()
             self._continuation_calls = 0
             return self.status()
@@ -222,13 +225,13 @@ class LekaiPromptContinuationScheduler:
                 )
                 self._phase = "catchup_running"
                 melody_snapshot = copy_events(self._melody_history)
+                self._continuation_sent_melody_event_count = len(self._melody_history)
 
-            if prompt_accompaniment:
-                self._continuation_engine.inject_history(
-                    melody_events=melody_snapshot,
-                    accompaniment_events=prompt_accompaniment,
-                    injection_length_ticks=prompt_length_ticks,
-                )
+            self._continuation_engine.inject_history(
+                melody_events=melody_snapshot,
+                accompaniment_events=prompt_accompaniment,
+                injection_length_ticks=prompt_length_ticks,
+            )
 
             self._run_catchup_loop(run_id)
         except Exception as exc:
@@ -251,14 +254,16 @@ class LekaiPromptContinuationScheduler:
                 generation_start_tick = (
                     int(self._catchup_state.accompaniment_history_beats) * TIMESTEPS_PER_BEAT
                 )
-                melody_snapshot = copy_events(self._melody_history)
+                sent_melody_event_count = int(self._continuation_sent_melody_event_count)
+                melody_increment = copy_events(self._melody_history[sent_melody_event_count:])
+                next_sent_melody_event_count = len(self._melody_history)
                 generation_interval_ticks = int(self._generation_interval_ticks)
                 inference_mode = str(self._inference_mode)
                 model_name = str(self._model_name)
                 checkpoint_path = self._checkpoint_path
 
             accompaniment, _timings = self._continuation_engine.generate(
-                melody_events=melody_snapshot,
+                melody_events=melody_increment,
                 generation_start_tick=generation_start_tick,
                 generation_length_frames=chunk_beats * TIMESTEPS_PER_BEAT,
                 generation_interval_ticks=generation_interval_ticks,
@@ -273,4 +278,8 @@ class LekaiPromptContinuationScheduler:
                     return
                 self._accompaniment_history.extend(copy_events(accompaniment))
                 self._catchup_state.accept_continuation_beats(chunk_beats)
+                self._continuation_sent_melody_event_count = max(
+                    int(self._continuation_sent_melody_event_count),
+                    int(next_sent_melody_event_count),
+                )
                 self._continuation_calls += 1

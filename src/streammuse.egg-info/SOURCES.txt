@@ -15,6 +15,7 @@ src/streammuse/application/factories/inference_factory.py
 src/streammuse/application/factories/input_factory.py
 src/streammuse/application/factories/output_factory.py
 src/streammuse/application/services/real_time_music_service.py
+src/streammuse/application/services/prompt_continuation_realtime_service.py
 src/streammuse/domain/__init__.py
 src/streammuse/domain/events/__init__.py
 src/streammuse/domain/events/generic.py
@@ -38,6 +39,7 @@ src/streammuse/infrastructure/__init__.py
 src/streammuse/infrastructure/inference/__init__.py
 src/streammuse/infrastructure/inference/http_client.py
 src/streammuse/infrastructure/inference/lekai_http_backend.py
+src/streammuse/infrastructure/inference/prompt_continuation_http_client.py
 src/streammuse/infrastructure/inference/runtime_device.py
 src/streammuse/infrastructure/inference/serialization.py
 src/streammuse/infrastructure/inference/server_lekai.py

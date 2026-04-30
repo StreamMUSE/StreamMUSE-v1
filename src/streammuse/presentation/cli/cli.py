@@ -16,9 +16,16 @@ from streammuse.application.factories import (
 )
 from streammuse.domain.interfaces import InferenceEngine
 from streammuse.domain.musical import EventType, MusicalEvent, Note
+from streammuse.application.services.prompt_continuation_realtime_service import (
+    PromptContinuationRealtimeService,
+)
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
 from streammuse.domain.logging import SessionManager
 from streammuse.domain.timing import PlaybackScheduler, Tempo
+from streammuse.infrastructure.inference.prompt_continuation_http_client import (
+    PromptContinuationHttpClient,
+    PromptContinuationHttpClientConfig,
+)
 from streammuse.infrastructure.input.midi_file import MidiFileInput
 from streammuse.presentation.cli.config_parser import args_to_config, env_to_config, parse_args
 
@@ -138,9 +145,11 @@ def main() -> int:
         session_manager.save_config(session_config)
 
     output_sink = OutputSinkFactory.create(config, session_manager)
-    inference_engine = InferenceEngineFactory.create(config)
+    inference_engine = None
+    if config.inference.model_name != "lekai_prompt_continuation":
+        inference_engine = InferenceEngineFactory.create(config)
 
-    if config.input.injection_file:
+    if config.input.injection_file and inference_engine is not None:
         injected = _perform_injection(inference_engine, config)
         if injected == 0:
             try:
@@ -161,15 +170,36 @@ def main() -> int:
     )
     scheduler = PlaybackScheduler()
 
-    service = RealTimeMusicService(
-        input_source=input_source,
-        inference_engine=inference_engine,
-        output_sink=output_sink,
-        tempo=tempo,
-        scheduler=scheduler,
-        generation_interval_ticks=config.inference.generation_interval_ticks,
-        generation_length_frames=config.inference.generation_length_frames,
-    )
+    if config.inference.model_name == "lekai_prompt_continuation":
+        prompt_client = PromptContinuationHttpClient(
+            PromptContinuationHttpClientConfig(
+                base_url=config.inference.server_generate_url,
+                timeout_s=float(config.inference.timeout_s),
+                model_name=config.inference.model_name,
+                inference_mode=config.inference.inference_mode,
+                checkpoint_path=config.inference.checkpoint_path,
+            )
+        )
+        service = PromptContinuationRealtimeService(
+            input_source=input_source,
+            prompt_client=prompt_client,
+            output_sink=output_sink,
+            tempo=tempo,
+            scheduler=scheduler,
+            prompt_length_ticks=int(config.inference.prompt_length_ticks),
+            generation_interval_ticks=config.inference.generation_interval_ticks,
+        )
+    else:
+        assert inference_engine is not None
+        service = RealTimeMusicService(
+            input_source=input_source,
+            inference_engine=inference_engine,
+            output_sink=output_sink,
+            tempo=tempo,
+            scheduler=scheduler,
+            generation_interval_ticks=config.inference.generation_interval_ticks,
+            generation_length_frames=config.inference.generation_length_frames,
+        )
 
     def _save_history_logs(history_payload: object) -> None:
         if session_manager is None:
@@ -192,7 +222,10 @@ def main() -> int:
 
     def cleanup() -> None:
         try:
-            history_payload = inference_engine.clear_history()
+            if inference_engine is not None:
+                history_payload = inference_engine.clear_history()
+            else:
+                history_payload = prompt_client.clear_history()
             if session_manager:
                 _save_history_logs(history_payload)
         except Exception as exc:

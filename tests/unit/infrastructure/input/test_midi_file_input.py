@@ -115,3 +115,33 @@ def test_midi_file_input_start_tick_uses_absolute_timing(tmp_path):
 
     assert sleeps
     assert sleeps[0] == pytest.approx(16 * cfg.seconds_per_tick())
+
+
+def test_midi_file_input_trim_leading_rest_starts_from_first_retained_note(tmp_path):
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+
+    # Output tick 16 note with a long leading rest.
+    track.append(mido.Message("note_on", note=64, velocity=64, time=1920))
+    track.append(mido.Message("note_off", note=64, velocity=0, time=120))
+
+    path = tmp_path / "leading_rest.mid"
+    mid.save(str(path))
+
+    sleeps = []
+
+    def fake_sleep(dt: float) -> None:
+        sleeps.append(dt)
+
+    cfg = MidiFileInputConfig(
+        bpm=120.0,
+        ticks_per_beat=4,
+        trim_leading_rest=True,
+    )
+    src = MidiFileInput(str(path), config=cfg, now=lambda: 0.0, sleep=fake_sleep)
+    events = list(src.read_events())
+
+    assert [e.pitch for e in events] == [64, 64]
+    assert sleeps
+    assert sleeps[0] == pytest.approx(1 * cfg.seconds_per_tick())

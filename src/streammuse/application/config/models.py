@@ -17,7 +17,7 @@ InputType = Literal["midi_device", "keyboard", "midi_file", "list"]
 OutputType = Literal["audio", "midi_file", "console", "websocket", "composite", "json_log", "session"]
 InferenceLogDetail = Literal["summary", "full"]
 InferenceType = Literal["http", "stanley"]
-ModelName = Literal["stanley", "lekai"]
+ModelName = Literal["stanley", "lekai", "lekai_prompt_continuation"]
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class InputConfig:
     midi_device_name: Optional[str] = None
     midi_file_path: Optional[str] = None
     midi_file_delay_ticks: int = 0
+    midi_file_trim_leading_rest: bool = False
     injection_file: Optional[str] = None
     injection_length_ticks: int = 0
     injection_acc_file: Optional[str] = None
@@ -51,6 +52,7 @@ class InferenceConfig:
     model_max_seq_len_frames: int = 96
     generation_length_frames: int = 20
     generation_interval_ticks: int = 2  # How often to trigger generation
+    prompt_length_ticks: int = 32  # First 8 beats at 4 ticks/beat for prompt-continuation
 
 
 @dataclass(frozen=True)
@@ -59,4 +61,3 @@ class ApplicationConfig:
     input: InputConfig = InputConfig()
     output: OutputConfig = OutputConfig()
     inference: InferenceConfig = InferenceConfig()
-

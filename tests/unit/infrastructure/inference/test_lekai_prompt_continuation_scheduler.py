@@ -103,6 +103,12 @@ def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
         40,
         44,
     ]
+    assert [call["melody_events"] for call in continuation_engine.generate_calls] == [
+        [],
+        [],
+        [],
+        [],
+    ]
     assert continuation_engine.inject_calls[0]["melody_events"] == [
         _note_on(60, 0),
         _note_on(62, 44),
@@ -175,6 +181,7 @@ def test_scheduler_uses_midi_converted_ticks_for_prompt_and_append_boundaries(tm
     assert ready_status["accompaniment_history_beats"] == 12
     assert ready_status["continuation_calls"] == 4
     assert continuation_engine.inject_calls[0]["melody_events"] == events
+    assert all(call["melody_events"] == [] for call in continuation_engine.generate_calls)
 
 
 def test_scheduler_clear_invalidates_running_work():

@@ -30,8 +30,7 @@ from streammuse.infrastructure.inference.lekai_prompt_continuation.token_convers
 
 
 TIMESTEPS_PER_BEAT = 4
-BEATS_PER_BAR = 4
-TIMESTEPS_PER_BAR = TIMESTEPS_PER_BEAT * BEATS_PER_BAR
+DEFAULT_BEATS_PER_BAR = 4
 
 
 class LekaiPromptEngine:
@@ -91,6 +90,26 @@ class LekaiPromptEngine:
     @staticmethod
     def _env_bool(name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
+
+    def _measure_beats_from_time_signature_idx(self, time_signature_idx: int) -> int:
+        prompt_override = self._env_positive_int("LEKAI_PROMPT_MEASURE_BEATS")
+        if prompt_override is not None:
+            return prompt_override
+        shared_override = self._env_positive_int("LEKAI_MEASURE_BEATS")
+        if shared_override is not None:
+            return shared_override
+
+        # Match the Lekai offline metadata conventions. Unknown values fall back
+        # to common-time behavior instead of corrupting the prompt sequence.
+        if int(time_signature_idx) == 9:
+            time_signature_idx = 4
+        return {
+            0: 4,  # 4/4
+            2: 2,  # 2/4
+            3: 3,  # 3/4
+            4: 4,
+            6: 6,
+        }.get(int(time_signature_idx), DEFAULT_BEATS_PER_BAR)
 
     def _sync_device(self) -> None:
         if self._resolved_device.startswith("cuda") and torch.cuda.is_available():
@@ -186,13 +205,17 @@ class LekaiPromptEngine:
         prompt_start_tick: int,
         prompt_length_ticks: int,
     ) -> tuple[torch.Tensor, int, int]:
+        time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
+        beats_per_bar = self._measure_beats_from_time_signature_idx(time_signature_idx)
+        timesteps_per_bar = TIMESTEPS_PER_BEAT * beats_per_bar
+        num_bars = max(1, int(np.ceil(prompt_length_ticks / timesteps_per_bar)))
+        window_ticks = num_bars * timesteps_per_bar
+
         metadata = {
-            "time_signature_idx": self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4),
+            "time_signature_idx": time_signature_idx,
             "bpm": self._env_int("LEKAI_PROMPT_BPM", self._env_int("LEKAI_DEFAULT_BPM", 120)),
-            "num_measures": 1,
+            "num_measures": num_bars,
         }
-        num_bars = max(1, int(np.ceil(prompt_length_ticks / TIMESTEPS_PER_BAR)))
-        window_ticks = num_bars * TIMESTEPS_PER_BAR
         prompt_end_tick = int(prompt_start_tick) + window_ticks
 
         active = self._active_pitches_before_tick(melody_events, int(prompt_start_tick))
@@ -205,9 +228,9 @@ class LekaiPromptEngine:
 
         measures = []
         for bar_idx in range(num_bars):
-            start = bar_idx * TIMESTEPS_PER_BAR
-            end = start + TIMESTEPS_PER_BAR
-            measure = np.zeros((4, 88, TIMESTEPS_PER_BAR), dtype=np.uint8)
+            start = bar_idx * timesteps_per_bar
+            end = start + timesteps_per_bar
+            measure = np.zeros((4, 88, timesteps_per_bar), dtype=np.uint8)
             measure[:2] = melody_pr[:, :, start:end]
             measures.append(measure)
 
@@ -289,7 +312,7 @@ class LekaiPromptEngine:
             ),
             temperature=self._env_float("LEKAI_PROMPT_TEMPERATURE", 1.1),
             top_k=top_k,
-            top_p=self._env_float("LEKAI_PROMPT_TOP_P", 0.98),
+            top_p=self._env_float("LEKAI_PROMPT_TOP_P", 0.95),
             repetition_penalty=self._env_float("LEKAI_PROMPT_REPETITION_PENALTY", 1.0),
         )
 
@@ -301,7 +324,10 @@ class LekaiPromptEngine:
             self._is_warmed_up = False
             return self.runtime_info()
 
-        warmup_beats = self._env_positive_int("LEKAI_PROMPT_WARMUP_BEATS") or (BEATS_PER_BAR * 2)
+        warmup_time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
+        warmup_beats = self._env_positive_int("LEKAI_PROMPT_WARMUP_BEATS") or (
+            self._measure_beats_from_time_signature_idx(warmup_time_signature_idx) * 2
+        )
         warmup_ticks = int(warmup_beats) * TIMESTEPS_PER_BEAT
         warmup_new_tokens = self._env_positive_int("LEKAI_PROMPT_WARMUP_MAX_NEW_TOKENS")
 
