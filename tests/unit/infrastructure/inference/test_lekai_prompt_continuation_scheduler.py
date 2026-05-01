@@ -42,6 +42,21 @@ class _BlockingPromptEngine:
         return [_note_on(48, 0)]
 
 
+class _ImmediatePromptEngine:
+    def __init__(self):
+        self.calls = []
+
+    def generate_prompt_accompaniment(self, melody_events, prompt_start_tick, prompt_length_ticks):
+        self.calls.append(
+            {
+                "melody_events": melody_events,
+                "prompt_start_tick": prompt_start_tick,
+                "prompt_length_ticks": prompt_length_ticks,
+            }
+        )
+        return [_note_on(48, 0)]
+
+
 class _RecordingContinuationEngine:
     def __init__(self):
         self.inject_calls = []
@@ -114,6 +129,50 @@ def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
         _note_on(62, 44),
     ]
     assert scheduler.playable_accompaniment()
+
+
+def test_scheduler_restarts_catchup_when_append_arrives_after_prompt_ready():
+    prompt_engine = _ImmediatePromptEngine()
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        observed_until_tick=32,
+    )
+    initial_ready = scheduler.wait(timeout=2.0)
+    assert initial_ready["phase"] == "ready"
+    assert initial_ready["melody_history_beats"] == 8
+    assert initial_ready["accompaniment_history_beats"] == 9
+    assert initial_ready["is_playback_ready"] is True
+
+    appended = scheduler.append_melody(
+        [_note_on(62, 44)],
+        observed_until_tick=44,
+    )
+    assert appended["phase"] == "catchup_running"
+    assert appended["is_playback_ready"] is False
+
+    final_ready = scheduler.wait(timeout=2.0)
+    assert final_ready["phase"] == "ready"
+    assert final_ready["melody_history_beats"] == 11
+    assert final_ready["accompaniment_history_beats"] == 12
+    assert final_ready["continuation_calls"] == 4
+    assert final_ready["is_playback_ready"] is True
+    assert [call["generation_start_tick"] for call in continuation_engine.generate_calls] == [
+        32,
+        36,
+        40,
+        44,
+    ]
 
 
 def test_scheduler_uses_midi_converted_ticks_for_prompt_and_append_boundaries(tmp_path):

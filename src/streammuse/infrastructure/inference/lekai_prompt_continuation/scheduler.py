@@ -148,6 +148,16 @@ class LekaiPromptContinuationScheduler:
                 else self._max_event_tick(self._melody_history)
             )
             self._set_melody_observed_until(observed_tick)
+            if (
+                self._phase == "ready"
+                and (self._future is None or self._future.done())
+                and self._catchup_state.beats_needed_for_playback() > 0
+            ):
+                # Prompt generation can finish before the client sends melody
+                # observed after the prompt window. In that case a later append
+                # must restart catch-up instead of leaving a stale "ready" phase.
+                self._phase = "catchup_running"
+                self._future = self._executor.submit(self._run_catchup_loop, self._run_id)
             return self.status()
 
     def wait(self, timeout: Optional[float] = None) -> dict[str, int | bool | str | None]:
