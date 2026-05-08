@@ -6,8 +6,6 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
-import mido
-
 from streammuse.domain.musical import EventType, MusicalEvent
 
 
@@ -66,51 +64,34 @@ class MidiFileInput:
         """
         Read a MIDI file and convert to a note list in `beat_div` ticks/beat.
 
+        Uses pretty_midi (same pipeline as NPZ generation) so that note
+        quantization is identical to what the model was trained on.
+
         Returns (notes, resolution, actual_max_tick).
         Each note dict has: pitch, tick, duration.
         """
-        midi_file = mido.MidiFile(midi_path)
-        resolution = int(midi_file.ticks_per_beat)
-        ticks_per_output_tick = resolution / float(beat_div)
+        from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
+
+        converter = MidiConverter(ticks_per_beat=beat_div)
+        pm, _meta = converter.load_midi(midi_path)
+        if pm is None:
+            return [], beat_div, 0
+
+        raw_notes, actual_max_tick = converter.midi_to_notes(pm, filter_drums=True)
 
         notes: List[Dict[str, int]] = []
-        active: Dict[Tuple[int, int], int] = {}
-
-        for track in midi_file.tracks:
-            current_tick = 0
-            current_program = 0
-            for msg in track:
-                current_tick += int(msg.time)
-
-                if msg.type == "program_change":
-                    current_program = int(msg.program)
-                    continue
-
-                if msg.type == "note_on" and int(msg.velocity) > 0:
-                    if program is not None and current_program != program:
-                        continue
-                    if min_pitch <= int(msg.note) <= max_pitch:
-                        output_tick = int(round(current_tick / ticks_per_output_tick))
-                        active[(int(msg.channel), int(msg.note))] = output_tick
-                    continue
-
-                if msg.type == "note_off" or (msg.type == "note_on" and int(msg.velocity) == 0):
-                    key = (int(msg.channel), int(msg.note))
-                    if key not in active:
-                        continue
-                    start_tick = active.pop(key)
-                    output_tick = int(round(current_tick / ticks_per_output_tick))
-                    duration = max(1, output_tick - start_tick)
-                    notes.append(
-                        {"pitch": int(msg.note), "tick": int(start_tick), "duration": int(duration)}
-                    )
+        for n in raw_notes:
+            if not (min_pitch <= n["pitch"] <= max_pitch):
+                continue
+            if program is not None and n.get("program") != program:
+                continue
+            notes.append({"pitch": n["pitch"], "tick": n["tick"], "duration": n["duration"]})
 
         notes.sort(key=lambda n: (n["tick"], n["pitch"]))
-        actual_max_tick = max((n["tick"] + n["duration"] for n in notes), default=0)
         if max_tick is not None:
             notes = [n for n in notes if n["tick"] < max_tick]
             actual_max_tick = min(actual_max_tick, int(max_tick))
-        return notes, resolution, int(actual_max_tick)
+        return notes, beat_div, int(actual_max_tick)
 
     def read_events(self) -> Iterator[MusicalEvent]:
         seconds_per_tick = self._config.seconds_per_tick()

@@ -386,6 +386,7 @@ class LekaiHttpBackend:
         use_cache = bool(getattr(self._model_adapter, "use_cache", True))
         pad_token_id = 258
         part1_end_marker = 171
+        part1_empty_marker = 169
         bar_token = int(getattr(self._model_adapter, "BAR_TOKEN", 255))
 
         generated = prompt_tokens.unsqueeze(0).to(device)
@@ -416,7 +417,7 @@ class LekaiHttpBackend:
                 generated = torch.cat([generated, next_token], dim=1)
                 raw_tokens.append(token_val)
 
-                if token_val in {part1_end_marker, bar_token}:
+                if token_val in {part1_end_marker, part1_empty_marker, bar_token}:
                     break
 
         valid_tokens = [token for token in raw_tokens if token != pad_token_id]

@@ -22,6 +22,7 @@ class HttpInferenceClientConfig:
     generation_interval_ticks: int = 2
     checkpoint_path: Optional[str] = None
     bpm: Optional[int] = None
+    input_file: Optional[str] = None  # 输入文件名，用于日志记录
 
 
 class HttpInferenceClient(InferenceEngine):
@@ -58,6 +59,7 @@ class HttpInferenceClient(InferenceEngine):
             "checkpoint_path": self._config.checkpoint_path,
             "prompt_length_ticks": (int(prompt_length_ticks) if prompt_length_ticks is not None else None),
             "bpm": self._config.bpm,
+            "input_file": self._config.input_file,
         }
         # Drop nulls for cleaner wire format.
         payload = {k: v for k, v in payload.items() if v is not None}

@@ -6,8 +6,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-import mido
-
 from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.infrastructure.inference.http_client import HttpInferenceClient, HttpInferenceClientConfig
 from streammuse.infrastructure.input.midi_file import MidiFileInput
@@ -107,14 +105,10 @@ def main() -> int:
     # Extract BPM from MIDI file for accurate model conditioning.
     midi_bpm: Optional[int] = None
     try:
-        mid_raw = mido.MidiFile(str(midi_file))
-        for track in mid_raw.tracks:
-            for msg in track:
-                if msg.type == "set_tempo":
-                    midi_bpm = round(60_000_000 / msg.tempo)
-                    break
-            if midi_bpm is not None:
-                break
+        from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
+        _pm, _meta = MidiConverter(ticks_per_beat=int(args.ticks_per_beat)).load_midi(str(midi_file))
+        if _meta is not None:
+            midi_bpm = int(round(float(_meta["bpm"])))
     except Exception:
         pass
 
@@ -148,6 +142,7 @@ def main() -> int:
             generation_interval_ticks=int(args.generation_interval_ticks),
             checkpoint_path=None,
             bpm=midi_bpm,
+            input_file=str(midi_file),
         )
     )
     if midi_bpm is not None:
