@@ -132,6 +132,11 @@ class PromptContinuationPlayableResponse(BaseModel):
     status: PromptContinuationStatusResponse
 
 
+class PromptContinuationRawHistoryResponse(BaseModel):
+    accompaniment: List[AccompanimentNoteEvent]
+    status: PromptContinuationStatusResponse
+
+
 LEKAI_MODEL_NAME = "lekai"
 LEKAI_PROMPT_CONTINUATION_MODEL_NAME = "lekai_prompt_continuation"
 _LEKAI_FIXED_BEAT_MODELS = {LEKAI_MODEL_NAME, LEKAI_PROMPT_CONTINUATION_MODEL_NAME}
@@ -293,6 +298,17 @@ async def prompt_continuation_playable() -> PromptContinuationPlayableResponse:
     return PromptContinuationPlayableResponse(
         accompaniment=_accompaniment_response_events(
             prompt_continuation_backend.playable_accompaniment()
+        ),
+        status=_scheduler_status_response(status),
+    )
+
+
+@app.get("/prompt_continuation/raw_history", response_model=PromptContinuationRawHistoryResponse)
+async def prompt_continuation_raw_history() -> PromptContinuationRawHistoryResponse:
+    status = prompt_continuation_backend.scheduler_status()
+    return PromptContinuationRawHistoryResponse(
+        accompaniment=_accompaniment_response_events(
+            prompt_continuation_backend.raw_accompaniment_history()
         ),
         status=_scheduler_status_response(status),
     )

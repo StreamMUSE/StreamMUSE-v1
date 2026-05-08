@@ -26,7 +26,9 @@ from streammuse.infrastructure.inference.prompt_continuation_http_client import 
     PromptContinuationHttpClient,
     PromptContinuationHttpClientConfig,
 )
+from streammuse.infrastructure.inference.serialization import event_to_dict
 from streammuse.infrastructure.input.midi_file import MidiFileInput
+from streammuse.infrastructure.output.midi_file import MidiFileOutputConfig, MidiFileOutputSink
 from streammuse.presentation.cli.config_parser import args_to_config, env_to_config, parse_args
 
 
@@ -220,8 +222,53 @@ def main() -> int:
         with open(accompaniment_path, "w") as f:
             json.dump(accompaniment_history if isinstance(accompaniment_history, list) else [], f, indent=2)
 
+    def _save_prompt_continuation_raw_outputs() -> None:
+        if session_manager is None:
+            return
+        if config.inference.model_name != "lekai_prompt_continuation":
+            return
+        if config.input.type != "midi_file" or not config.input.midi_file_path:
+            return
+
+        try:
+            accompaniment, status = prompt_client.raw_history()
+            session_dir = session_manager.get_session_dir()
+            raw_json_path = session_dir / "prompt_continuation_raw_accompaniment.json"
+            raw_status_path = session_dir / "prompt_continuation_status.json"
+            raw_midi_path = session_dir / "prompt_continuation_raw_history.mid"
+
+            with open(raw_json_path, "w") as f:
+                json.dump([event_to_dict(event) for event in accompaniment], f, indent=2)
+            with open(raw_status_path, "w") as f:
+                json.dump(status, f, indent=2)
+
+            mel_notes, _resolution, _max_tick = MidiFileInput._midi_to_notes(
+                midi_path=config.input.midi_file_path,
+                beat_div=config.tempo.ticks_per_beat,
+                min_pitch=0,
+                max_pitch=127,
+                program=None,
+                max_tick=None,
+            )
+            melody_events = _notes_to_musical_events(mel_notes)
+            sink = MidiFileOutputSink(
+                MidiFileOutputConfig(
+                    bpm=config.tempo.bpm,
+                    ticks_per_beat=config.tempo.ticks_per_beat,
+                    output_path=str(raw_midi_path),
+                )
+            )
+            for event in melody_events:
+                sink.output_event(event, source="user")
+            for event in accompaniment:
+                sink.output_event(event, source="model")
+            sink.close()
+        except Exception as exc:
+            print(f"Warning: Failed to save prompt-continuation raw outputs: {exc}")
+
     def cleanup() -> None:
         try:
+            _save_prompt_continuation_raw_outputs()
             if inference_engine is not None:
                 history_payload = inference_engine.clear_history()
             else:

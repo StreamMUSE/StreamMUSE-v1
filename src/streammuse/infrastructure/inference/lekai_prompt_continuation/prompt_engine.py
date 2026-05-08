@@ -49,6 +49,7 @@ class LekaiPromptEngine:
         self._warmup_time_ms: Optional[float] = None
         self._warmup_error: Optional[str] = None
         self._is_warmed_up = False
+        self._last_generated_acc_beats = 0
 
         if checkpoint_path:
             self._load_model(checkpoint_path)
@@ -88,8 +89,48 @@ class LekaiPromptEngine:
             return default
 
     @staticmethod
+    def _env_optional_int(name: str) -> Optional[int]:
+        raw = os.environ.get(name)
+        if raw is None or raw.strip() == "":
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
     def _env_bool(name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
+
+    def _seed_if_configured(self) -> None:
+        seed = self._env_optional_int("LEKAI_PROMPT_SEED")
+        if seed is None:
+            seed = self._env_optional_int("LEKAI_SEED")
+        if seed is None:
+            return
+        torch.manual_seed(int(seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed))
+
+    def _prompt_condition_length_ticks(self, prompt_length_ticks: int) -> int:
+        time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
+        beats_per_bar = self._measure_beats_from_time_signature_idx(time_signature_idx)
+        condition_beats = self._env_positive_int("LEKAI_PROMPT_CONDITION_BEATS")
+        if condition_beats is not None:
+            condition_ticks = int(condition_beats) * TIMESTEPS_PER_BEAT
+            return max(1, min(int(prompt_length_ticks), int(condition_ticks)))
+
+        # Compatibility escape hatch for older experiments. The default path is
+        # beat-based: prompt_length_ticks=32 means an 8-beat prompt condition.
+        condition_bars = self._env_positive_int("LEKAI_PROMPT_CONDITION_BARS") or self._env_positive_int(
+            "LEKAI_PROMPT_NUM_BARS"
+        )
+        if condition_bars is not None:
+            condition_ticks = int(condition_bars) * int(beats_per_bar) * TIMESTEPS_PER_BEAT
+            return max(1, min(int(prompt_length_ticks), int(condition_ticks)))
+
+        condition_ticks = int(prompt_length_ticks)
+        return max(1, min(int(prompt_length_ticks), int(condition_ticks)))
 
     def _measure_beats_from_time_signature_idx(self, time_signature_idx: int) -> int:
         prompt_override = self._env_positive_int("LEKAI_PROMPT_MEASURE_BEATS")
@@ -258,7 +299,12 @@ class LekaiPromptEngine:
     ) -> list[EventPayload]:
         _mel_beats, acc_beats = self._tokenizer.parse_generated_sequence(generated_tokens.squeeze(0))
         if not acc_beats:
+            self._last_generated_acc_beats = 0
             return []
+        self._last_generated_acc_beats = min(
+            len(acc_beats),
+            max(0, (int(prompt_length_ticks) + TIMESTEPS_PER_BEAT - 1) // TIMESTEPS_PER_BEAT),
+        )
 
         acc_pr = self._tokenizer.decode_beats_to_pianoroll(
             acc_beats,
@@ -286,6 +332,11 @@ class LekaiPromptEngine:
             normalized.append(payload)
         return normalized
 
+    def last_generated_acc_beats(self) -> int:
+        """Return the number of accompaniment beats produced by the last prompt call."""
+
+        return int(self._last_generated_acc_beats)
+
     def _generation_max_length(self, prompt_token_count: int, max_new_tokens: Optional[int] = None) -> int:
         if max_new_tokens is None:
             max_new_tokens = self._env_positive_int("LEKAI_PROMPT_MAX_NEW_TOKENS") or 2048
@@ -303,6 +354,7 @@ class LekaiPromptEngine:
         if top_k < 0:
             top_k = 0
 
+        self._seed_if_configured()
         return self._model.generate_music(
             initial_tokens=prompt_tokens,
             device=self._resolved_device,
@@ -372,14 +424,15 @@ class LekaiPromptEngine:
         if prompt_length_ticks <= 0 or not self._has_real_model():
             return []
 
+        condition_length_ticks = self._prompt_condition_length_ticks(prompt_length_ticks)
         prompt_tokens, _bpm, window_ticks = self._build_melody_prompt_tokens(
             melody_events=copied_melody,
             prompt_start_tick=prompt_start_tick,
-            prompt_length_ticks=prompt_length_ticks,
+            prompt_length_ticks=condition_length_ticks,
         )
         generated = self._generate_tokens(prompt_tokens)
         return self._decode_accompaniment_events(
             generated_tokens=generated,
             prompt_start_tick=prompt_start_tick,
-            prompt_length_ticks=min(prompt_length_ticks, window_ticks),
+            prompt_length_ticks=prompt_length_ticks,
         )

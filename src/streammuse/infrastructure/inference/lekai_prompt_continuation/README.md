@@ -48,6 +48,13 @@ Standard scenario:
 6. The client polls `/prompt_continuation/status`.
 7. Once ready, the client fetches `/prompt_continuation/playable`.
 
+The prompt window is beat-based, not bar-based. With the current CLI default,
+`prompt_length_ticks=32` and `ticks_per_beat=4`, so the prompt model receives
+8 beats of melody condition and attempts to generate 8 beats of prompt
+accompaniment. `LEKAI_PROMPT_CONDITION_BEATS` can override the condition length
+for diagnostics; older bar-based overrides are kept only as compatibility
+escape hatches.
+
 ## Catch-Up Rule
 
 The system is not playback-ready when accompaniment merely reaches the same
@@ -59,6 +66,23 @@ playback_ready = accompaniment_history_beats >= melody_history_beats + 1
 
 The extra beat is intentional. Equal history lengths mean the model has caught
 up to the past, but there is no next accompaniment beat available to play.
+
+## Playback-Ready Scheduling Policy
+
+The frontend/client may be silent before playback is ready. The backend still
+returns the generated accompaniment history through `/prompt_continuation/playable`.
+When the client receives that ready signal, it does not schedule events at their
+original historical ticks, because those ticks may already be in the past.
+
+`PromptContinuationRealtimeService` therefore schedules only returned
+accompaniment events whose original tick is still at or after the frontend's
+current tick. Events before the current tick are dropped from audible playback.
+
+This means the user does not hear the prompt-model accompaniment directly. The
+initial audible behavior is silence while the user keeps playing melody; sound
+starts only after the backend reports catch-up readiness. For debugging, a
+separate diagnostic export can still save the full raw accompaniment history
+including prompt accompaniment and catch-up accompaniment.
 
 ## Main Files
 
@@ -211,4 +235,3 @@ with fallback/stub logic.
 - Real prompt + continuation quality must be checked with GPU and checkpoints.
 - The current protocol is HTTP polling. WebSocket streaming is still an open
   design choice.
-

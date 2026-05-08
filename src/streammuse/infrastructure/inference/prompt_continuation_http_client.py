@@ -95,6 +95,11 @@ class PromptContinuationHttpClient:
         accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
         return accompaniment, dict(data.get("status", {}))
 
+    def raw_history(self) -> tuple[list[MusicalEvent], dict[str, Any]]:
+        data = self._request_json("GET", "/prompt_continuation/raw_history")
+        accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
+        return accompaniment, dict(data.get("status", {}))
+
     def wait_until_terminal(
         self,
         *,

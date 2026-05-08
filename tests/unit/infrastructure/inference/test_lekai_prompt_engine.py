@@ -38,3 +38,18 @@ def test_prompt_engine_defaults_to_common_time_bars(monkeypatch):
     assert window_ticks == 32
     assert _count_markers(tokens, vocab.bar_token_id) == 2
     assert _count_markers(tokens, vocab.beat_marker) == 8
+
+
+def test_prompt_engine_condition_length_defaults_to_prompt_beats(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", "2")
+    engine = LekaiPromptEngine()
+
+    assert engine._prompt_condition_length_ticks(32) == 32
+
+
+def test_prompt_engine_condition_length_can_be_overridden_by_beats(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", "2")
+    monkeypatch.setenv("LEKAI_PROMPT_CONDITION_BEATS", "4")
+    engine = LekaiPromptEngine()
+
+    assert engine._prompt_condition_length_ticks(32) == 16

@@ -154,6 +154,9 @@ class LekaiPromptContinuationEngine:
     def playable_accompaniment(self) -> list[EventPayload]:
         return self._scheduler.playable_accompaniment()
 
+    def raw_accompaniment_history(self) -> list[EventPayload]:
+        return self._scheduler.raw_accompaniment_history()
+
     def generate(
         self,
         melody_events: list[EventPayload],

@@ -75,7 +75,7 @@ class MidiFileInput:
         ticks_per_output_tick = resolution / float(beat_div)
 
         notes: List[Dict[str, int]] = []
-        active: Dict[Tuple[int, int], int] = {}
+        active: Dict[Tuple[int, int], List[int]] = {}
 
         for track in midi_file.tracks:
             current_tick = 0
@@ -92,14 +92,16 @@ class MidiFileInput:
                         continue
                     if min_pitch <= int(msg.note) <= max_pitch:
                         output_tick = int(round(current_tick / ticks_per_output_tick))
-                        active[(int(msg.channel), int(msg.note))] = output_tick
+                        active.setdefault((int(msg.channel), int(msg.note)), []).append(output_tick)
                     continue
 
                 if msg.type == "note_off" or (msg.type == "note_on" and int(msg.velocity) == 0):
                     key = (int(msg.channel), int(msg.note))
-                    if key not in active:
+                    if key not in active or not active[key]:
                         continue
-                    start_tick = active.pop(key)
+                    start_tick = active[key].pop(0)
+                    if not active[key]:
+                        active.pop(key, None)
                     output_tick = int(round(current_tick / ticks_per_output_tick))
                     duration = max(1, output_tick - start_tick)
                     notes.append(

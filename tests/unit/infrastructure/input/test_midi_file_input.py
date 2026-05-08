@@ -31,6 +31,33 @@ def test_midi_file_input_parses_and_emits_events(tmp_path):
     assert all(e.tick == 0 for e in events)
 
 
+def test_midi_file_input_preserves_overlapping_same_pitch_notes(tmp_path):
+    mid = mido.MidiFile(ticks_per_beat=220)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("note_on", note=74, velocity=64, time=55))
+    track.append(mido.Message("note_on", note=74, velocity=64, time=55))
+    track.append(mido.Message("note_off", note=74, velocity=0, time=55))
+    track.append(mido.Message("note_off", note=74, velocity=0, time=0))
+
+    path = tmp_path / "overlap_same_pitch.mid"
+    mid.save(str(path))
+
+    notes, _resolution, _max_tick = MidiFileInput._midi_to_notes(
+        str(path),
+        beat_div=220,
+        min_pitch=0,
+        max_pitch=127,
+        program=None,
+        max_tick=None,
+    )
+
+    assert notes == [
+        {"pitch": 74, "tick": 55, "duration": 110},
+        {"pitch": 74, "tick": 110, "duration": 55},
+    ]
+
+
 def test_midi_file_input_delay_ticks_sleeps(tmp_path):
     mid = mido.MidiFile(ticks_per_beat=480)
     track = mido.MidiTrack()

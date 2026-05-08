@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 
+import mido
 import pytest
 
 from streammuse.domain.musical import EventType, MusicalEvent
@@ -32,6 +33,35 @@ def test_midi_file_output_sink_records_and_writes(tmp_path):
     sink.close()
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+def test_midi_file_output_sink_preserves_overlapping_same_pitch_notes(tmp_path):
+    out_path = tmp_path / "overlap_same_pitch.mid"
+    cfg = MidiFileOutputConfig(bpm=60.0, ticks_per_beat=220, output_path=str(out_path))
+    sink = MidiFileOutputSink(cfg)
+    sink.output_event(MusicalEvent(tick=55, pitch=74, event_type=EventType.NOTE_ON, velocity=100), source="user")
+    sink.output_event(MusicalEvent(tick=110, pitch=74, event_type=EventType.NOTE_ON, velocity=100), source="user")
+    sink.output_event(MusicalEvent(tick=165, pitch=74, event_type=EventType.NOTE_OFF, velocity=0), source="user")
+    sink.output_event(MusicalEvent(tick=165, pitch=74, event_type=EventType.NOTE_OFF, velocity=0), source="user")
+    sink.close()
+
+    mid = mido.MidiFile(str(out_path))
+    notes = []
+    for track in mid.tracks:
+        abs_tick = 0
+        active = {}
+        for msg in track:
+            abs_tick += int(msg.time)
+            if msg.type == "note_on" and int(msg.velocity) > 0:
+                active.setdefault((int(msg.channel), int(msg.note)), []).append(abs_tick)
+            elif msg.type == "note_off" or (msg.type == "note_on" and int(msg.velocity) == 0):
+                key = (int(msg.channel), int(msg.note))
+                if key not in active or not active[key]:
+                    continue
+                start = active[key].pop(0)
+                notes.append((start, abs_tick, int(msg.note)))
+
+    assert sorted(notes) == [(55, 165, 74), (110, 165, 74)]
 
 
 def test_composite_output_sink_fans_out_calls():
@@ -136,4 +166,3 @@ def test_composite_close_auto_saves_session_metrics(tmp_path):
 
     assert (tmp_path / "performance.json").exists()
     assert (tmp_path / "statistics.csv").exists()
-

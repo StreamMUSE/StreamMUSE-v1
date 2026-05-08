@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pretty_midi
 
@@ -44,8 +44,8 @@ class MidiFileOutputSink:
         self._midi.instruments.append(self._user)
         self._midi.instruments.append(self._model)
 
-        self._active_user: Dict[int, Dict[str, float]] = {}
-        self._active_model: Dict[int, Dict[str, float]] = {}
+        self._active_user: Dict[int, List[Dict[str, float]]] = {}
+        self._active_model: Dict[int, List[Dict[str, float]]] = {}
         self._max_time = 0.0
 
     def _time(self, tick: int) -> float:
@@ -56,7 +56,7 @@ class MidiFileOutputSink:
         event: MusicalEvent,
         *,
         instrument: pretty_midi.Instrument,
-        active: Dict[int, Dict[str, float]],
+        active: Dict[int, List[Dict[str, float]]],
         default_velocity: int,
     ) -> None:
         if event.is_placeholder or event.pitch == -1:
@@ -66,19 +66,17 @@ class MidiFileOutputSink:
 
         pitch = int(event.pitch)
         if event.event_type == EventType.NOTE_ON and event.velocity > 0:
-            if pitch in active:
-                prev = active.pop(pitch)
-                start = float(prev["start"])
-                vel = int(prev["velocity"])
-                if t > start:
-                    instrument.notes.append(pretty_midi.Note(velocity=vel, pitch=pitch, start=start, end=t))
-            active[pitch] = {"start": t, "velocity": float(event.velocity or default_velocity)}
+            active.setdefault(pitch, []).append(
+                {"start": t, "velocity": float(event.velocity or default_velocity)}
+            )
             return
 
         if event.event_type == EventType.NOTE_OFF:
-            prev = active.pop(pitch, None)
-            if prev is None:
+            if pitch not in active or not active[pitch]:
                 return
+            prev = active[pitch].pop(0)
+            if not active[pitch]:
+                active.pop(pitch, None)
             start = float(prev["start"])
             vel = int(prev["velocity"])
             if t > start:
@@ -114,11 +112,12 @@ class MidiFileOutputSink:
     def _finalize(self) -> None:
         end = self._max_time
         for active, inst in ((self._active_user, self._user), (self._active_model, self._model)):
-            for pitch, info in list(active.items()):
-                start = float(info["start"])
-                vel = int(info["velocity"])
-                if end > start:
-                    inst.notes.append(pretty_midi.Note(velocity=vel, pitch=int(pitch), start=start, end=end))
+            for pitch, infos in list(active.items()):
+                for info in infos:
+                    start = float(info["start"])
+                    vel = int(info["velocity"])
+                    if end > start:
+                        inst.notes.append(pretty_midi.Note(velocity=vel, pitch=int(pitch), start=start, end=end))
                 active.pop(pitch, None)
 
     def close(self) -> None:

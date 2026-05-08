@@ -208,6 +208,10 @@ class LekaiPromptContinuationScheduler:
                 return []
             return copy_events(self._accompaniment_history)
 
+    def raw_accompaniment_history(self) -> list[EventPayload]:
+        with self._lock:
+            return copy_events(self._accompaniment_history)
+
     def _is_current_run(self, run_id: int) -> bool:
         return int(run_id) == int(self._run_id)
 
@@ -224,6 +228,15 @@ class LekaiPromptContinuationScheduler:
                 prompt_start_tick=0,
                 prompt_length_ticks=prompt_length_ticks,
             )
+            generated_acc_beats = (
+                self._prompt_engine.last_generated_acc_beats()
+                if hasattr(self._prompt_engine, "last_generated_acc_beats")
+                else self._ticks_to_beats(prompt_length_ticks)
+            )
+            actual_prompt_length_ticks = min(
+                prompt_length_ticks,
+                max(0, int(generated_acc_beats) * TIMESTEPS_PER_BEAT),
+            )
 
             with self._lock:
                 if not self._is_current_run(run_id):
@@ -231,7 +244,7 @@ class LekaiPromptContinuationScheduler:
                 self._accompaniment_history = copy_events(prompt_accompaniment)
                 self._catchup_state.accompaniment_history_beats = max(
                     self._catchup_state.accompaniment_history_beats,
-                    self._ticks_to_beats(prompt_length_ticks),
+                    self._ticks_to_beats(actual_prompt_length_ticks),
                 )
                 self._phase = "catchup_running"
                 melody_snapshot = copy_events(self._melody_history)
@@ -240,7 +253,7 @@ class LekaiPromptContinuationScheduler:
             self._continuation_engine.inject_history(
                 melody_events=melody_snapshot,
                 accompaniment_events=prompt_accompaniment,
-                injection_length_ticks=prompt_length_ticks,
+                injection_length_ticks=actual_prompt_length_ticks,
             )
 
             self._run_catchup_loop(run_id)

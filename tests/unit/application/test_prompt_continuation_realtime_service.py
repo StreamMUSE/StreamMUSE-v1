@@ -48,6 +48,7 @@ class _FakePromptClient:
     def __init__(self):
         self.status_calls = 0
         self.playable_calls = 0
+        self.playable_responses = [[]]
 
     def clear_history(self):
         return {"success": True}
@@ -64,7 +65,8 @@ class _FakePromptClient:
 
     def playable(self):
         self.playable_calls += 1
-        return [], {"phase": "ready"}
+        index = min(self.playable_calls - 1, len(self.playable_responses) - 1)
+        return self.playable_responses[index], {"phase": "ready"}
 
 
 def _note(pitch: int, tick: int) -> MusicalEvent:
@@ -131,6 +133,18 @@ def test_prompt_continuation_schedule_playable_drops_past_events():
     assert any("dropped 1 past" in message for _state, message in output.statuses)
 
 
+def test_prompt_continuation_schedule_playable_skips_duplicates():
+    service = _make_service()
+    output = service._output
+
+    service._schedule_playable([_note(50, 36)], current_tick=32)
+    service._schedule_playable([_note(50, 36), _note(52, 40)], current_tick=32)
+
+    assert [event.pitch for event in service._scheduler.get_events_at_tick(36)] == [50]
+    assert [event.pitch for event in service._scheduler.get_events_at_tick(40)] == [52]
+    assert any("skipped 1 duplicate" in message for _state, message in output.statuses)
+
+
 def test_protocol_worker_does_not_fetch_playable_before_first_append():
     service = _make_service()
     client = service._client
@@ -174,3 +188,28 @@ def test_protocol_worker_fetches_playable_after_rest_append():
     assert not worker.is_alive()
     assert client.status_calls >= 1
     assert client.playable_calls == 1
+
+
+def test_protocol_worker_fetches_playable_more_than_once_after_append():
+    service = _make_service()
+    client = service._client
+    service._running = True
+    action_cls = __import__(
+        "streammuse.application.services.prompt_continuation_realtime_service",
+        fromlist=["_ControlAction"],
+    )._ControlAction
+    service._control_q.put(action_cls(kind="start", melody_events=[_note(60, 0)], observed_until_tick=32))
+    service._control_q.put(action_cls(kind="append", melody_events=[], observed_until_tick=36))
+    service._control_q.put(action_cls(kind="append", melody_events=[_note(64, 38)], observed_until_tick=40))
+
+    worker = threading.Thread(target=service._protocol_worker)
+    worker.start()
+    deadline = time.monotonic() + 1.0
+    while client.playable_calls < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    service._running = False
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert client.status_calls >= 2
+    assert client.playable_calls >= 2

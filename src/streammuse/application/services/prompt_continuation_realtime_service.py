@@ -103,7 +103,9 @@ class PromptContinuationRealtimeService:
         self._pending_append_events: list[MusicalEvent] = []
         self._start_enqueued = False
         self._last_append_observed_tick = 0
-        self._playable_fetched = False
+        self._scheduled_model_event_keys: set[tuple[int, int, str, int]] = set()
+        self._append_generation = 0
+        self._last_playable_marker: tuple[int, int, int] | None = None
         self._protocol_started = False
         self._append_sent_after_prompt = False
 
@@ -161,22 +163,28 @@ class PromptContinuationRealtimeService:
                         )
                         if int(action.observed_until_tick) > self._prompt_length_ticks:
                             self._append_sent_after_prompt = True
+                            self._append_generation += 1
                     else:
                         self._output.output_status("error", f"Unknown prompt-continuation action: {action.kind}")
                 except Exception as exc:
                     self._output.output_status("error", f"Prompt-continuation {action.kind} failed: {exc}")
 
-            if self._protocol_started and self._append_sent_after_prompt and not self._playable_fetched:
+            if self._protocol_started and self._append_sent_after_prompt:
                 try:
                     status = self._client.status()
                     if status.get("is_failed"):
                         self._output.output_status("error", f"Prompt-continuation failed: {status.get('error')}")
-                        self._playable_fetched = True
                     elif status.get("is_playback_ready"):
-                        accompaniment, playable_status = self._client.playable()
-                        self._playable_q.put((accompaniment, playable_status))
-                        self._playable_fetched = True
-                        self._output.output_status("ready", "Prompt-continuation accompaniment is playable")
+                        marker = (
+                            int(self._append_generation),
+                            int(status.get("accompaniment_event_count", 0) or 0),
+                            int(status.get("continuation_calls", 0) or 0),
+                        )
+                        if marker != self._last_playable_marker:
+                            accompaniment, playable_status = self._client.playable()
+                            self._playable_q.put((accompaniment, playable_status))
+                            self._last_playable_marker = marker
+                            self._output.output_status("ready", "Prompt-continuation accompaniment is playable")
                 except Exception as exc:
                     self._output.output_status("error", f"Prompt-continuation status/playable failed: {exc}")
                     self._sleep(self._protocol_poll_interval_s)
@@ -232,9 +240,19 @@ class PromptContinuationRealtimeService:
     def _schedule_playable(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
         scheduled = 0
         dropped_past = 0
+        skipped_duplicate = 0
         for event in accompaniment:
             if int(event.tick) < int(current_tick):
                 dropped_past += 1
+                continue
+            event_key = (
+                int(event.tick),
+                int(event.pitch),
+                str(event.event_type.value),
+                int(event.velocity),
+            )
+            if event_key in self._scheduled_model_event_keys:
+                skipped_duplicate += 1
                 continue
             model_event = MusicalEvent(
                 tick=event.tick,
@@ -248,10 +266,13 @@ class PromptContinuationRealtimeService:
                 backup_level=max(0, int(event.tick) - int(current_tick)),
             )
             self._scheduler.schedule(model_event, int(event.tick))
+            self._scheduled_model_event_keys.add(event_key)
             scheduled += 1
         self._output.output_status(
             "ready",
-            f"Scheduled {scheduled} playable accompaniment event(s); dropped {dropped_past} past event(s).",
+            f"Scheduled {scheduled} playable accompaniment event(s); "
+            f"dropped {dropped_past} past event(s); "
+            f"skipped {skipped_duplicate} duplicate event(s).",
         )
 
     def _tick_loop(self, *, max_ticks: int | None) -> None:
