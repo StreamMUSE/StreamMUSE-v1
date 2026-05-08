@@ -33,6 +33,8 @@ class InferenceRequest(BaseModel):
     model_name: str = "lekai"
     checkpoint_path: Optional[str] = None
     client_request_send_time: Optional[float] = None
+    bpm: Optional[int] = None
+    input_file: Optional[str] = None  # 输入文件名，用于日志记录
 
 
 class Timings(BaseModel):
@@ -233,6 +235,8 @@ async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResp
         inference_mode=request.inference_mode,
         model_name=request.model_name,
         checkpoint_path=request.checkpoint_path,
+        bpm=request.bpm,
+        input_file=request.input_file,
     )
 
     response_events = _accompaniment_response_events(accompaniment)

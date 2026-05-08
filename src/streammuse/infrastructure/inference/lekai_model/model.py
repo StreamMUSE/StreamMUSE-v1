@@ -2,11 +2,13 @@ import os
 import torch
 import torch.nn as nn
 from transformers import LlamaForCausalLM, PreTrainedModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from .PianoDataset import encode_bpm, process_measure_with_beat_interleaving
 from .generation_utils import sample_token
 import numpy as np
+
+from streammuse.infrastructure.inference.generation_logger import GenerationLogger
 
 
 class PianoLLaMA(PreTrainedModel):
@@ -99,6 +101,10 @@ class PianoLLaMA(PreTrainedModel):
         """
         self.eval()
 
+        # 初始化 logger
+        log_dir = os.environ.get("LEKAI_OFFLINE_LOG_DIR", "logs/generation")
+        logger = GenerationLogger(output_dir=log_dir, mode="offline")
+
         # ========== 1. 从数据集提取条件 ==========
         file_path = os.path.join(dataset.root_dir, dataset.data_files[condition_idx])
 
@@ -152,6 +158,14 @@ class PianoLLaMA(PreTrainedModel):
             torch.tensor([idx_value + dataset.time_sig_offset_id], dtype=torch.long),
             torch.tensor([bpm_token], dtype=torch.long),
         ]
+        
+        # Debug log for Round 2
+        print(f"[PROMPT_DEBUG] {'='*60}")
+        print(f"[PROMPT_DEBUG] Mode: Offline")
+        print(f"[PROMPT_DEBUG] delay_beats: {delay_beats}, gt_prefix_beats: {gt_prefix_beats}")
+        print(f"[PROMPT_DEBUG] Initial tokens (3 tokens): {[dataset.bos_token, idx_value + dataset.time_sig_offset_id, bpm_token]}")
+        print(f"[PROMPT_DEBUG] part0_beats_list length: {len(part0_beats_list)}")
+        print(f"[PROMPT_DEBUG] part1_beats_gt_list length: {len(part1_beats_gt_list)}")
 
         generated = torch.cat(initial_tokens, dim=0).unsqueeze(0).to(device)
 
@@ -230,6 +244,15 @@ class PianoLLaMA(PreTrainedModel):
                         continue
 
                     # 开始真正生成part1（过了GT前缀后）
+                    # Debug log for Round 2: Print full prompt at first generation step
+                    if part1_idx == gt_prefix_beats:
+                        print(f"[PROMPT_DEBUG] First generation step (part1_idx={part1_idx})")
+                        print(f"[PROMPT_DEBUG] Full prompt length: {generated.shape[1]}")
+                        print(f"[PROMPT_DEBUG] First 30 tokens: {generated[0, :30].tolist()}")
+                        if generated.shape[1] > 30:
+                            print(f"[PROMPT_DEBUG] Tokens at positions 30-50: {generated[0, 30:50].tolist()}")
+                        print(f"[PROMPT_DEBUG] {'='*60}")
+                    
                     # 生成一个token
                     outputs = self.model(
                         input_ids=generated[:, -1:] if past_key_values else generated,
@@ -266,6 +289,37 @@ class PianoLLaMA(PreTrainedModel):
 
         num_gt_beats = min(gt_prefix_beats, len(part1_beats_generated))
         num_generated_beats = len(part1_beats_generated) - num_gt_beats
+
+        # 构建 prompt tokens (用于对比)
+        # 从 initial_tokens 到第一次生成前的所有 tokens
+        prompt_tokens = generated[0].cpu().tolist()
+
+        # 计算 melody 和 accompaniment 的"事件"数量（用 beat 数近似）
+        melody_events: List[Dict[str, Any]] = [
+            {"type": "beat", "beat_index": i, "tick": i * 4} 
+            for i in range(part0_idx)
+        ]
+        accompaniment_events: List[Dict[str, Any]] = [
+            {"type": "beat", "beat_index": i, "tick": i * 4} 
+            for i in range(len(part1_beats_generated))
+        ]
+
+        # 记录生成日志
+        logger.log_generation(
+            input_file=file_path,
+            generation_start_tick=0,  # Offline 从 tick 0 开始
+            generation_length_frames=num_generated_beats * 4,
+            prompt_tokens=prompt_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            melody_events=melody_events,
+            accompaniment_events=accompaniment_events,
+            bpm=bpm_value,
+            notes=f"delay_beats={delay_beats}, gt_prefix_beats={gt_prefix_beats}, num_measures={num_measures}",
+            suffix="",
+        )
 
         return {
             "generated_sequence": generated.cpu(),

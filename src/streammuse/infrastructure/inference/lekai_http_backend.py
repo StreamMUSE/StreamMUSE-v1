@@ -15,6 +15,7 @@ from streammuse.infrastructure.inference.runtime_device import (
     resolve_device,
     resolve_dtype,
 )
+from streammuse.infrastructure.inference.generation_logger import GenerationLogger
 
 
 EventPayload = Dict[str, int | str]
@@ -76,12 +77,17 @@ class LekaiHttpBackend:
         self._injection_length_ticks: int = 0
         self._runtime_config: Optional[BackendRuntimeConfig] = None
         self._runtime_status = BackendRuntimeStatus()
-        
+        self._request_bpm: Optional[int] = None  # BPM from the current request, overrides LEKAI_DEFAULT_BPM
+
         # Model components (Phase 3: real model integration)
         self._model_adapter = None
         self._converter = None
         self._tokenizer = None
         self._active_pitches: Set[int] = set()  # For tracking sustained notes across calls
+        
+        # Logger for generation comparison
+        log_dir = os.environ.get("LEKAI_RT_LOG_DIR", "logs/generation")
+        self._logger = GenerationLogger(output_dir=log_dir, mode="fake_rt")
         
         # Try to load real model if checkpoint provided
         if checkpoint_path:
@@ -269,8 +275,10 @@ class LekaiHttpBackend:
         """Check if real model is loaded and available."""
         return self._model_adapter is not None and self._converter is not None
 
-    def configure(self, config: BackendRuntimeConfig) -> None:
+    def configure(self, config: BackendRuntimeConfig, input_file: Optional[str] = None) -> None:
         self._runtime_config = config
+        if input_file:
+            self._current_input_file = input_file
         # Try to load model if checkpoint_path provided and not already loaded
         if config.checkpoint_path and not self._has_real_model():
             self._load_model(config.checkpoint_path)
@@ -507,7 +515,8 @@ class LekaiHttpBackend:
         start_beat = max(0, current_beat - context_beats) if context_beats is not None else 0
         context_start_tick = start_beat * TIMESTEPS_PER_BEAT
 
-        bpm_token = encode_bpm(int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))) + LEKAI_BPM_OFFSET
+        effective_bpm = self._request_bpm if self._request_bpm is not None else int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))
+        bpm_token = encode_bpm(int(effective_bpm)) + LEKAI_BPM_OFFSET
         time_signature_idx = int(os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4"))
         measure_beats = self._measure_beats_from_time_signature_idx(time_signature_idx)
         if time_signature_idx == 9:
@@ -520,9 +529,13 @@ class LekaiHttpBackend:
             torch.tensor([bpm_token], dtype=torch.long),
         ]
 
-        accompaniment_context_events: List[EventPayload] = list(self._accompaniment_history)
-
+        # Ignore stale virtual events left by older debug code, but otherwise keep
+        # real generated history so continuation can condition on prior output.
+        accompaniment_context_events: List[EventPayload] = [
+            e for e in self._accompaniment_history if int(e.get("tick", 0)) >= 0
+        ]
         generated_events: List[EventPayload] = []
+        last_prompt_tokens: List[int] = []
 
         # Match offline defaults by default; keep runtime override via env vars.
         try:
@@ -592,6 +605,7 @@ class LekaiHttpBackend:
             beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
 
             prompt_tokens = build_standard_offline_prompt(target_beat)
+            last_prompt_tokens = prompt_tokens.tolist()
             generated_beat_tokens = self._generate_part1_tokens_from_prompt(
                 prompt_tokens,
                 temperature=rt_temperature,
@@ -649,6 +663,28 @@ class LekaiHttpBackend:
             generated_events.extend(normalized_beat_events)
             accompaniment_context_events.extend(normalized_beat_events)
 
+        prompt_melody_events = [
+            e for e in self._melody_history
+            if context_start_tick <= int(e.get("tick", 0)) <= int(generation_start_tick)
+        ]
+
+        input_file = getattr(self, "_current_input_file", "unknown")
+        self._logger.log_generation(
+            input_file=input_file,
+            generation_start_tick=int(generation_start_tick),
+            generation_length_frames=int(generation_length_frames),
+            prompt_tokens=last_prompt_tokens,
+            temperature=rt_temperature,
+            top_k=rt_top_k,
+            top_p=rt_top_p,
+            repetition_penalty=rt_repetition_penalty,
+            melody_events=prompt_melody_events,
+            accompaniment_events=generated_events,
+            bpm=int(effective_bpm),
+            notes=f"context_start_tick={context_start_tick}, current_beat={current_beat}",
+            suffix="",
+        )
+
         return generated_events
 
     def generate(
@@ -661,6 +697,8 @@ class LekaiHttpBackend:
         inference_mode: str,
         model_name: str,
         checkpoint_path: Optional[str],
+        bpm: Optional[int] = None,
+        input_file: Optional[str] = None,
     ) -> tuple[List[EventPayload], TimingPayload]:
         request_arrival = time.perf_counter()
         preprocess_start = request_arrival
@@ -678,8 +716,13 @@ class LekaiHttpBackend:
                 generation_length_frames=effective_generation_length_frames,
                 prompt_length_ticks=effective_prompt_length_ticks,
                 checkpoint_path=checkpoint_path,
-            )
+            ),
+            input_file=input_file,
         )
+
+        # Update request-level BPM if provided (overrides LEKAI_DEFAULT_BPM env var).
+        if bpm is not None:
+            self._request_bpm = int(bpm)
 
         # Keep full melody history on the server; requests carry increments.
         self._melody_history.extend(melody_events)
@@ -728,9 +771,9 @@ class LekaiHttpBackend:
     ) -> List[EventPayload]:
         assert self._converter is not None and self._model_adapter is not None
 
-        if int(generation_start_tick) <= 0:
+        if int(generation_start_tick) < 0:
             print(
-                "[LekaiHttpBackend] zero prompt window "
+                "[LekaiHttpBackend] negative start_tick "
                 f"(start_tick={generation_start_tick}, gen_len={generation_length_frames}); "
                 "fallback to rule-based generation"
             )
@@ -940,6 +983,7 @@ class LekaiHttpBackend:
         self._accompaniment_history = []
         self._injection_length_ticks = 0
         self._active_pitches = set()
+        self._request_bpm = None
         return {
             "success": True,
             "message": "History cleared",
