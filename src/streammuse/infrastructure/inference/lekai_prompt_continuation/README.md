@@ -97,6 +97,29 @@ prompt_beats % beats_per_bar == 0
 
 That is a prompt-model/data-preparation constraint, not a frontend display rule.
 
+## Time-Signature Handling
+
+The realtime path keeps the source piece's `beats_per_bar` instead of assuming
+4/4.
+
+Current prompt-length policy:
+
+```text
+4/4 piece -> 8 beat prompt
+2/4 piece -> 8 beat prompt
+3/4 piece -> 6 beat prompt
+```
+
+The 2/4 case still uses 8 beats because 8 is divisible by `beats_per_bar=2`,
+so it satisfies the RT prompt-preparation constraint and gives the model the same
+amount of beat-level context as the 4/4 demo cases. We do not convert 2/4 into
+4/4 internally.
+
+MIDI export must also preserve the original time signature. `MidiFileOutputConfig`
+therefore carries `beats_per_bar`, and the session MIDI writer emits the matching
+MIDI time-signature meta event. This avoids the previous bug where a 2/4 piece
+was musically generated as 2/4 but exported with a misleading 4/4 grid.
+
 ## Playback Scheduling Policy
 
 There are three histories to keep separate:
