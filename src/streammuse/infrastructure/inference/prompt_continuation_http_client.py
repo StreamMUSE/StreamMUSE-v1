@@ -100,6 +100,11 @@ class PromptContinuationHttpClient:
         accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
         return accompaniment, dict(data.get("status", {}))
 
+    def prompt_history(self) -> tuple[list[MusicalEvent], dict[str, Any]]:
+        data = self._request_json("GET", "/prompt_continuation/prompt_history")
+        accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
+        return accompaniment, dict(data.get("status", {}))
+
     def wait_until_terminal(
         self,
         *,
@@ -128,6 +133,8 @@ def normalize_prompt_continuation_base_url(server_url: str) -> str:
         "/prompt_continuation/append_melody",
         "/prompt_continuation/status",
         "/prompt_continuation/playable",
+        "/prompt_continuation/raw_history",
+        "/prompt_continuation/prompt_history",
     )
     path = parsed.path.rstrip("/")
     for suffix in known_suffixes:

@@ -6,6 +6,7 @@ loading models or constructing inference inputs directly.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from streammuse.infrastructure.inference.lekai_http_backend import (
@@ -30,6 +31,7 @@ from streammuse.infrastructure.inference.lekai_prompt_continuation.token_convers
     PromptContinuationRequest,
     copy_events,
 )
+from streammuse.infrastructure.inference.runtime_device import parse_env_bool
 
 
 class LekaiPromptContinuationEngine:
@@ -57,6 +59,41 @@ class LekaiPromptContinuationEngine:
             prompt_engine=self._prompt_engine,
             continuation_engine=self._continuation_engine,
         )
+        self._validate_required_real_models()
+
+    def _validate_required_real_models(self) -> None:
+        if not parse_env_bool(
+            os.environ.get("LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS"),
+            default=False,
+        ):
+            return
+
+        prompt_info = self._prompt_engine.runtime_info()
+        continuation_info = self._continuation_engine.runtime_info()
+        failures = []
+        if not bool(prompt_info.get("has_real_model")):
+            failures.append(
+                "prompt model not loaded"
+                + (
+                    f" ({prompt_info.get('fallback_reason')})"
+                    if prompt_info.get("fallback_reason") is not None
+                    else ""
+                )
+            )
+        if not bool(continuation_info.get("has_real_model")):
+            failures.append(
+                "continuation model not loaded"
+                + (
+                    f" ({continuation_info.get('fallback_reason')})"
+                    if continuation_info.get("fallback_reason") is not None
+                    else ""
+                )
+            )
+        if failures:
+            raise RuntimeError(
+                "LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1 but "
+                + "; ".join(failures)
+            )
 
     def configure(self, config: BackendRuntimeConfig) -> None:
         self._continuation_engine.configure(config)
@@ -156,6 +193,9 @@ class LekaiPromptContinuationEngine:
 
     def raw_accompaniment_history(self) -> list[EventPayload]:
         return self._scheduler.raw_accompaniment_history()
+
+    def prompt_accompaniment_history(self) -> list[EventPayload]:
+        return self._scheduler.prompt_accompaniment_history()
 
     def generate(
         self,

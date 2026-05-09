@@ -122,6 +122,7 @@ class LekaiHttpBackend:
             time_signature_idx = 4
         return {
             0: 4,  # 4/4
+            1: 3,  # 3/4
             2: 2,  # 2/4
             3: 3,  # 3/4
             4: 4,
@@ -130,6 +131,32 @@ class LekaiHttpBackend:
 
     def _runtime_bool(self, name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
+
+    def _fallback_disabled(self) -> bool:
+        return self._runtime_bool("LEKAI_DISABLE_FALLBACK", False) or self._runtime_bool(
+            "LEKAI_REQUIRE_REAL_MODEL",
+            False,
+        )
+
+    def _fallback_or_raise(
+        self,
+        reason: str,
+        *,
+        checkpoint_path: Optional[str] = None,
+        generation_start_tick: Optional[int] = None,
+        generation_interval_ticks: Optional[int] = None,
+        generation_length_frames: Optional[int] = None,
+    ) -> List[EventPayload]:
+        if self._fallback_disabled():
+            raise RuntimeError(f"Lekai fallback disabled: {reason}")
+        if generation_start_tick is None:
+            self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+            return []
+        return self._generate_rule_based(
+            generation_start_tick=int(generation_start_tick),
+            generation_interval_ticks=int(generation_interval_ticks or TIMESTEPS_PER_BEAT),
+            generation_length_frames=int(generation_length_frames or 0),
+        )
 
     def _set_stub_mode(self, *, checkpoint_path: Optional[str], fallback_reason: Optional[str]) -> None:
         self._model_adapter = None
@@ -197,7 +224,7 @@ class LekaiHttpBackend:
         if not os.path.exists(checkpoint_path):
             reason = f"checkpoint_not_found:{checkpoint_path}"
             print(f"[LekaiHttpBackend] Checkpoint not found: {checkpoint_path}, using rule-based stub")
-            self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+            self._fallback_or_raise(reason, checkpoint_path=checkpoint_path)
             return
 
         device_preference = os.environ.get("LEKAI_DEVICE", "auto")
@@ -215,7 +242,7 @@ class LekaiHttpBackend:
             else:
                 reason = f"invalid_runtime_preference:{exc}"
                 print(f"[LekaiHttpBackend] {reason}, using rule-based stub")
-                self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+                self._fallback_or_raise(reason, checkpoint_path=checkpoint_path)
                 return
 
         try:
@@ -264,12 +291,12 @@ class LekaiHttpBackend:
                 except Exception as fallback_error:
                     reason = f"cpu_fallback_failed:{fallback_error}"
                     print(f"[LekaiHttpBackend] {reason}, using rule-based stub")
-                    self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+                    self._fallback_or_raise(reason, checkpoint_path=checkpoint_path)
                     return
 
             reason = f"model_load_failed:{primary_error}"
             print(f"[LekaiHttpBackend] {reason}, using rule-based stub")
-            self._set_stub_mode(checkpoint_path=checkpoint_path, fallback_reason=reason)
+            self._fallback_or_raise(reason, checkpoint_path=checkpoint_path)
     
     def _has_real_model(self) -> bool:
         """Check if real model is loaded and available."""
@@ -627,7 +654,8 @@ class LekaiHttpBackend:
                 )
                 if got_time_axis == 0 and TIMESTEPS_PER_BEAT > 0:
                     print("[LekaiHttpBackend] Recoverable mismatch detected; fallback to rule-based generation")
-                    return self._generate_rule_based(
+                    return self._fallback_or_raise(
+                        f"recoverable_pianoroll_shape_mismatch:{got_shape}",
                         generation_start_tick=generation_start_tick,
                         generation_interval_ticks=generation_interval_ticks,
                         generation_length_frames=generation_length_frames,
@@ -738,7 +766,8 @@ class LekaiHttpBackend:
             )
         else:
             # Rule-based fallback path.
-            accompaniment = self._generate_rule_based(
+            accompaniment = self._fallback_or_raise(
+                "real_model_not_loaded",
                 generation_start_tick=int(generation_start_tick),
                 generation_interval_ticks=int(generation_interval_ticks),
                 generation_length_frames=effective_generation_length_frames,
@@ -777,7 +806,8 @@ class LekaiHttpBackend:
                 f"(start_tick={generation_start_tick}, gen_len={generation_length_frames}); "
                 "fallback to rule-based generation"
             )
-            return self._generate_rule_based(
+            return self._fallback_or_raise(
+                f"negative_start_tick:{generation_start_tick}",
                 generation_start_tick=generation_start_tick,
                 generation_interval_ticks=generation_interval_ticks,
                 generation_length_frames=generation_length_frames,
@@ -825,7 +855,8 @@ class LekaiHttpBackend:
                 f"(start_tick={generation_start_tick}, gen_len={generation_length_frames}); "
                 "fallback to rule-based generation"
             )
-            return self._generate_rule_based(
+            return self._fallback_or_raise(
+                f"zero_prompt_window:start={generation_start_tick}:len={generation_length_frames}",
                 generation_start_tick=generation_start_tick,
                 generation_interval_ticks=generation_interval_ticks,
                 generation_length_frames=generation_length_frames,
@@ -922,7 +953,8 @@ class LekaiHttpBackend:
             )
             if got_time_axis == 0 and expected_timesteps > 0:
                 print("[LekaiHttpBackend] Recoverable mismatch detected; fallback to rule-based generation")
-                return self._generate_rule_based(
+                return self._fallback_or_raise(
+                    f"recoverable_pianoroll_shape_mismatch:{got_shape}",
                     generation_start_tick=generation_start_tick,
                     generation_interval_ticks=generation_interval_ticks,
                     generation_length_frames=generation_length_frames,

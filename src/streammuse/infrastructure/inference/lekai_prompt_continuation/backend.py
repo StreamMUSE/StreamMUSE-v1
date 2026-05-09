@@ -96,6 +96,9 @@ class LekaiPromptContinuationBackend:
     def raw_accompaniment_history(self) -> list[EventPayload]:
         return self._engine.raw_accompaniment_history()
 
+    def prompt_accompaniment_history(self) -> list[EventPayload]:
+        return self._engine.prompt_accompaniment_history()
+
     def generate(
         self,
         melody_events: list[EventPayload],

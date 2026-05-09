@@ -32,6 +32,7 @@ venv/
 *.tmp
 .nfs*
 local_tmp/
+realtime_runs/
 
 # Caches
 .cache/

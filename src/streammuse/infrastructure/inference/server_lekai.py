@@ -296,6 +296,11 @@ async def prompt_continuation_status() -> PromptContinuationStatusResponse:
     return _scheduler_status_response(prompt_continuation_backend.scheduler_status())
 
 
+@app.get("/prompt_continuation/runtime_info")
+async def prompt_continuation_runtime_info() -> dict[str, object]:
+    return dict(prompt_continuation_backend.runtime_info())
+
+
 @app.get("/prompt_continuation/playable", response_model=PromptContinuationPlayableResponse)
 async def prompt_continuation_playable() -> PromptContinuationPlayableResponse:
     status = prompt_continuation_backend.scheduler_status()
@@ -313,6 +318,17 @@ async def prompt_continuation_raw_history() -> PromptContinuationRawHistoryRespo
     return PromptContinuationRawHistoryResponse(
         accompaniment=_accompaniment_response_events(
             prompt_continuation_backend.raw_accompaniment_history()
+        ),
+        status=_scheduler_status_response(status),
+    )
+
+
+@app.get("/prompt_continuation/prompt_history", response_model=PromptContinuationRawHistoryResponse)
+async def prompt_continuation_prompt_history() -> PromptContinuationRawHistoryResponse:
+    status = prompt_continuation_backend.scheduler_status()
+    return PromptContinuationRawHistoryResponse(
+        accompaniment=_accompaniment_response_events(
+            prompt_continuation_backend.prompt_accompaniment_history()
         ),
         status=_scheduler_status_response(status),
     )

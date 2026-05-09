@@ -54,6 +54,7 @@ class LekaiPromptContinuationScheduler:
         self._error: Optional[str] = None
         self._melody_history: list[EventPayload] = []
         self._prompt_melody_input: list[EventPayload] = []
+        self._prompt_accompaniment_history: list[EventPayload] = []
         self._accompaniment_history: list[EventPayload] = []
         self._continuation_sent_melody_event_count = 0
         self._catchup_state = CatchUpState()
@@ -112,6 +113,7 @@ class LekaiPromptContinuationScheduler:
             self._error = None
             self._melody_history = copy_events(melody_events)
             self._prompt_melody_input = copy_events(melody_events)
+            self._prompt_accompaniment_history = []
             self._accompaniment_history = []
             self._continuation_sent_melody_event_count = 0
             self._catchup_state.reset()
@@ -176,6 +178,7 @@ class LekaiPromptContinuationScheduler:
             self._run_id += 1
             self._melody_history = []
             self._prompt_melody_input = []
+            self._prompt_accompaniment_history = []
             self._accompaniment_history = []
             self._continuation_sent_melody_event_count = 0
             self._catchup_state.reset()
@@ -212,6 +215,10 @@ class LekaiPromptContinuationScheduler:
         with self._lock:
             return copy_events(self._accompaniment_history)
 
+    def prompt_accompaniment_history(self) -> list[EventPayload]:
+        with self._lock:
+            return copy_events(self._prompt_accompaniment_history)
+
     def _is_current_run(self, run_id: int) -> bool:
         return int(run_id) == int(self._run_id)
 
@@ -241,6 +248,7 @@ class LekaiPromptContinuationScheduler:
             with self._lock:
                 if not self._is_current_run(run_id):
                     return
+                self._prompt_accompaniment_history = copy_events(prompt_accompaniment)
                 self._accompaniment_history = copy_events(prompt_accompaniment)
                 self._catchup_state.accompaniment_history_beats = max(
                     self._catchup_state.accompaniment_history_beats,

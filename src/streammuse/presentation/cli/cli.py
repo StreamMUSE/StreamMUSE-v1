@@ -231,16 +231,7 @@ def main() -> int:
             return
 
         try:
-            accompaniment, status = prompt_client.raw_history()
             session_dir = session_manager.get_session_dir()
-            raw_json_path = session_dir / "prompt_continuation_raw_accompaniment.json"
-            raw_status_path = session_dir / "prompt_continuation_status.json"
-            raw_midi_path = session_dir / "prompt_continuation_raw_history.mid"
-
-            with open(raw_json_path, "w") as f:
-                json.dump([event_to_dict(event) for event in accompaniment], f, indent=2)
-            with open(raw_status_path, "w") as f:
-                json.dump(status, f, indent=2)
 
             mel_notes, _resolution, _max_tick = MidiFileInput._midi_to_notes(
                 midi_path=config.input.midi_file_path,
@@ -251,18 +242,48 @@ def main() -> int:
                 max_tick=None,
             )
             melody_events = _notes_to_musical_events(mel_notes)
-            sink = MidiFileOutputSink(
-                MidiFileOutputConfig(
-                    bpm=config.tempo.bpm,
-                    ticks_per_beat=config.tempo.ticks_per_beat,
-                    output_path=str(raw_midi_path),
+
+            def save_accompaniment_snapshot(
+                *,
+                stem: str,
+                accompaniment: list[MusicalEvent],
+                status: dict[str, object],
+            ) -> None:
+                json_path = session_dir / f"{stem}.json"
+                status_path = session_dir / f"{stem}_status.json"
+                midi_path = session_dir / f"{stem}.mid"
+
+                with open(json_path, "w") as f:
+                    json.dump([event_to_dict(event) for event in accompaniment], f, indent=2)
+                with open(status_path, "w") as f:
+                    json.dump(status, f, indent=2)
+
+                sink = MidiFileOutputSink(
+                    MidiFileOutputConfig(
+                        bpm=config.tempo.bpm,
+                        ticks_per_beat=config.tempo.ticks_per_beat,
+                        output_path=str(midi_path),
+                    )
                 )
+                for event in melody_events:
+                    sink.output_event(event, source="user")
+                for event in accompaniment:
+                    sink.output_event(event, source="model")
+                sink.close()
+
+            raw_accompaniment, raw_status = prompt_client.raw_history()
+            save_accompaniment_snapshot(
+                stem="prompt_continuation_raw_history",
+                accompaniment=raw_accompaniment,
+                status=raw_status,
             )
-            for event in melody_events:
-                sink.output_event(event, source="user")
-            for event in accompaniment:
-                sink.output_event(event, source="model")
-            sink.close()
+
+            prompt_accompaniment, prompt_status = prompt_client.prompt_history()
+            save_accompaniment_snapshot(
+                stem="prompt_continuation_prompt_history",
+                accompaniment=prompt_accompaniment,
+                status=prompt_status,
+            )
         except Exception as exc:
             print(f"Warning: Failed to save prompt-continuation raw outputs: {exc}")
 

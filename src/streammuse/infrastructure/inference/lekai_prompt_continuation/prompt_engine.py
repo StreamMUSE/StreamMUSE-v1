@@ -102,6 +102,12 @@ class LekaiPromptEngine:
     def _env_bool(name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
 
+    def _require_real_model(self) -> bool:
+        return self._env_bool("LEKAI_PROMPT_REQUIRE_REAL_MODEL", False) or self._env_bool(
+            "LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS",
+            False,
+        )
+
     def _seed_if_configured(self) -> None:
         seed = self._env_optional_int("LEKAI_PROMPT_SEED")
         if seed is None:
@@ -146,6 +152,7 @@ class LekaiPromptEngine:
             time_signature_idx = 4
         return {
             0: 4,  # 4/4
+            1: 3,  # 3/4
             2: 2,  # 2/4
             3: 3,  # 3/4
             4: 4,
@@ -316,7 +323,7 @@ class LekaiPromptEngine:
         events, _active = self._converter.pianoroll_to_events(
             pianoroll=acc_pr,
             start_tick=int(prompt_start_tick),
-            close_at_end=False,
+            close_at_end=True,
             active_pitches=None,
         )
 
@@ -421,7 +428,12 @@ class LekaiPromptEngine:
         copied_melody = copy_events(melody_events)
         prompt_start_tick = int(prompt_start_tick)
         prompt_length_ticks = int(prompt_length_ticks)
-        if prompt_length_ticks <= 0 or not self._has_real_model():
+        if prompt_length_ticks <= 0:
+            return []
+        if not self._has_real_model():
+            if self._require_real_model():
+                reason = self._fallback_reason or "prompt_model_not_loaded"
+                raise RuntimeError(f"Lekai prompt fallback disabled: {reason}")
             return []
 
         condition_length_ticks = self._prompt_condition_length_ticks(prompt_length_ticks)

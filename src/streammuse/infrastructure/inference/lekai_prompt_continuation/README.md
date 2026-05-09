@@ -151,6 +151,8 @@ continuation integration added:
 - `/prompt_continuation/append_melody`.
 - `/prompt_continuation/status`.
 - `/prompt_continuation/playable`.
+- `/prompt_continuation/raw_history`.
+- `/prompt_continuation/prompt_history`.
 
 ## Client Entry
 
@@ -195,11 +197,29 @@ export LEKAI_PROMPT_TOP_K=0
 export LEKAI_PROMPT_TEMPERATURE=1.1
 ```
 
-## Minimal Smoke Test Shape
+Strict real-model mode:
+
+```bash
+export LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1
+export LEKAI_DISABLE_FALLBACK=1
+```
+
+With these set, missing checkpoints, model-load failures, or any rule-based
+fallback path fail loudly instead of producing stub accompaniment.
+
+## CLI-Only Prompt Verification Shape
+
+For prompt-continuation validation, use `streammuse-cli` only. Do not use a
+separate fake-offline runner as evidence for realtime behavior.
 
 Start server:
 
 ```bash
+export LEKAI_PROMPT_CHECKPOINT_PATH=/data/home/yuanxin/RT-accompanimentV2/external/lekai_real_time/prompt_model/checkpoints/best_model/model.safetensors
+export LEKAI_CONTINUATION_CHECKPOINT_PATH=/path/to/continuation/model.safetensors
+export LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1
+export LEKAI_DISABLE_FALLBACK=1
+export LEKAI_SERVER_PORT=8001
 uv run python -m streammuse.infrastructure.inference.server_lekai
 ```
 
@@ -220,18 +240,27 @@ uv run streammuse-cli \
   --generation-interval-ticks 4 \
   --generation-length-frames 16 \
   --output-type session \
-  --log-dir local_tmp/prompt_continuation_smoke \
+  --log-dir realtime_runs/0509_prompt_continuation_cli \
   --max-ticks 80
 ```
 
-If no checkpoint env vars are set, this only tests protocol/scheduler behavior
-with fallback/stub logic.
+The session directory saves:
+
+- `combined.mid`: audible realtime output after catch-up scheduling.
+- `prompt_continuation_prompt_history.mid`: prompt-model accompaniment only,
+  plus the input melody track for inspection.
+- `prompt_continuation_prompt_history.json`: prompt-model accompaniment events
+  only. This is the file to compare against the RT offline prompt-stage output.
+- `prompt_continuation_raw_history.mid`: prompt plus continuation history,
+  before frontend scheduling drops past events.
+
+If the strict env vars above are set, fallback/stub output is impossible: the
+server or CLI request fails instead.
 
 ## Current Caveats
 
 - `scripts/run_lekai_batch_client.py` still needs its model-name allowlist
   updated before it can batch-run `lekai_prompt_continuation`.
-- CPU/stub mode should not be used to judge musical quality.
 - Real prompt + continuation quality must be checked with GPU and checkpoints.
 - The current protocol is HTTP polling. WebSocket streaming is still an open
   design choice.
