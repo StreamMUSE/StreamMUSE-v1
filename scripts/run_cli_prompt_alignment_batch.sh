@@ -14,6 +14,9 @@ CONT_CKPT=/data/home/yuanxin/RT-accompanimentV2/checkpoints-resume/epoch_15_0307
 DEVICE=${DEVICE:-0}
 MAX_TICKS=${MAX_TICKS:-96}
 CLI_TEMPO=${CLI_TEMPO:-240}
+SAMPLING_TEMPERATURE=${SAMPLING_TEMPERATURE:-1.1}
+SAMPLING_TOP_K=${SAMPLING_TOP_K:-0}
+SAMPLING_TOP_P=${SAMPLING_TOP_P:-0.95}
 
 mkdir -p "$OUT_ROOT/server"
 
@@ -34,9 +37,9 @@ for id in "${IDS[@]}"; do
     --reference \
     --device cuda \
     --seed 42 \
-    --top-p 0.95 \
-    --top-k 0 \
-    --temperature 1.1
+    --top-p "$SAMPLING_TOP_P" \
+    --top-k "$SAMPLING_TOP_K" \
+    --temperature "$SAMPLING_TEMPERATURE"
 
   meta_json="$OUT_ROOT/$id/input_manifest.json"
   bpm=$(python - <<PY
@@ -85,9 +88,12 @@ PY
     export LEKAI_PROMPT_SEED=42
     export LEKAI_SEED=42
     export LEKAI_PROMPT_CONDITION_BEATS=8
-    export LEKAI_PROMPT_TOP_P=0.95
-    export LEKAI_PROMPT_TOP_K=0
-    export LEKAI_PROMPT_TEMPERATURE=1.1
+    export LEKAI_PROMPT_TOP_P="$SAMPLING_TOP_P"
+    export LEKAI_PROMPT_TOP_K="$SAMPLING_TOP_K"
+    export LEKAI_PROMPT_TEMPERATURE="$SAMPLING_TEMPERATURE"
+    export LEKAI_RT_TOP_P="$SAMPLING_TOP_P"
+    export LEKAI_RT_TOP_K="$SAMPLING_TOP_K"
+    export LEKAI_RT_TEMPERATURE="$SAMPLING_TEMPERATURE"
     export LEKAI_PROMPT_REPETITION_PENALTY=1.0
     export LEKAI_PROMPT_MAX_NEW_TOKENS=1024
     export LEKAI_PROMPT_TIME_SIGNATURE_INDEX="$ts_idx"
