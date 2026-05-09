@@ -40,6 +40,22 @@ cleanup_server() {
 trap cleanup_server EXIT
 
 for id in "${IDS[@]}"; do
+  beats_per_bar=$(python - <<PY
+import numpy as np
+p='/data/home/yuanxin/data/allxml_npz_dual_track_optimized_no_underscore/$id.npz'
+d=np.load(p, allow_pickle=True)
+print(int(d['measure_0'].shape[2]//4))
+PY
+)
+  prompt_beats="$PROMPT_BEATS"
+  if [[ "$prompt_beats" == "auto" ]]; then
+    if [[ "$beats_per_bar" == "3" ]]; then
+      prompt_beats=6
+    else
+      prompt_beats=8
+    fi
+  fi
+
   echo "=== $id: prepare/reference ==="
   python scripts/prepare_and_compare_lekai_prompt_alignment.py \
     --npz-id "$id" \
@@ -48,7 +64,7 @@ for id in "${IDS[@]}"; do
     --reference \
     --device cuda \
     --seed 42 \
-    --prompt-beats "$PROMPT_BEATS" \
+    --prompt-beats "$prompt_beats" \
     --top-p "$PROMPT_TOP_P" \
     --top-k "$PROMPT_TOP_K" \
     --temperature "$PROMPT_TEMPERATURE"
@@ -66,13 +82,6 @@ m=json.load(open('$meta_json'))
 print(int(m['time_signature_idx']))
 PY
 )
-  beats_per_bar=$(python - <<PY
-import numpy as np
-p='/data/home/yuanxin/data/allxml_npz_dual_track_optimized_no_underscore/$id.npz'
-d=np.load(p, allow_pickle=True)
-print(int(d['measure_0'].shape[2]//4))
-PY
-)
   cli_tempo="$CLI_TEMPO"
   if [[ "$cli_tempo" == "metadata" ]]; then
     cli_tempo="$bpm"
@@ -86,7 +95,7 @@ PY
 )
   fi
 
-  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} recover_late_events=$RECOVER_LATE_EVENTS recover_late_max_ticks=${RECOVER_LATE_MAX_TICKS:-none} ==="
+  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar prompt_beats=$prompt_beats cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} recover_late_events=$RECOVER_LATE_EVENTS recover_late_max_ticks=${RECOVER_LATE_MAX_TICKS:-none} ==="
   cleanup_server
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:$PORT | xargs -r kill || true
@@ -107,7 +116,7 @@ PY
     export LEKAI_DISABLE_FALLBACK=1
     export LEKAI_PROMPT_SEED=42
     export LEKAI_SEED=42
-    export LEKAI_PROMPT_CONDITION_BEATS="$PROMPT_BEATS"
+    export LEKAI_PROMPT_CONDITION_BEATS="$prompt_beats"
     export LEKAI_PROMPT_TOP_P="$PROMPT_TOP_P"
     export LEKAI_PROMPT_TOP_K="$PROMPT_TOP_K"
     export LEKAI_PROMPT_TEMPERATURE="$PROMPT_TEMPERATURE"
@@ -170,7 +179,7 @@ PY
     --server-url "http://127.0.0.1:$PORT/generate_accompaniment" \
     --model-name lekai_prompt_continuation \
     --inference-mode sliding_window \
-    --prompt-length-ticks "$((PROMPT_BEATS * 4))" \
+    --prompt-length-ticks "$((prompt_beats * 4))" \
     --generation-interval-ticks 4 \
     --generation-length-frames 4 \
     --timeout-s 120 \

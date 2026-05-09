@@ -319,7 +319,58 @@ to server/CLI.
 Use `streammuse-cli` for realtime-path validation. Do not use a separate fake
 runner as evidence for frontend/backend realtime behavior.
 
-Example for one piece:
+Recommended one-command demo/validation run:
+
+```bash
+scripts/run_lekai_prompt_continuation_realtime_demo.sh
+```
+
+This command is intentionally usable without editing. It defaults to:
+
+```text
+DEVICE=0
+PORT=8001
+IDS="6217163 5472152 5472153 6144911 332891 3329166 6303422"
+OUT_ROOT=realtime_runs/lekai_prompt_continuation_demo
+CLI_TEMPO=metadata
+CLI_TEMPO_MAX=120
+PROMPT_BEATS=auto
+MAX_TICKS=432
+PROMPT_TEMPERATURE=1.1
+PROMPT_TOP_K=0
+PROMPT_TOP_P=0.95
+RT_TEMPERATURE=0.8
+RT_TOP_K=50
+RT_TOP_P=0.98
+RT_REPETITION_PENALTY=1.2
+RECOVER_LATE_EVENTS=1
+RECOVER_LATE_MAX_TICKS=4
+```
+
+`PROMPT_BEATS=auto` means:
+
+```text
+4/4 -> 8 beat prompt
+2/4 -> 8 beat prompt
+3/4 -> 6 beat prompt
+```
+
+To change only the GPU or output folder, prefix environment variables without
+editing the script:
+
+```bash
+DEVICE=5 OUT_ROOT=realtime_runs/my_prompt_continuation_demo \
+  scripts/run_lekai_prompt_continuation_realtime_demo.sh
+```
+
+To smoke-test only one piece:
+
+```bash
+IDS="6217163" MAX_TICKS=96 \
+  scripts/run_lekai_prompt_continuation_realtime_demo.sh
+```
+
+The lower-level batch script is still available for explicit parameter sweeps:
 
 ```bash
 DEVICE=0 \
@@ -341,8 +392,6 @@ RECOVER_LATE_EVENTS=1 \
 RECOVER_LATE_MAX_TICKS=4 \
  scripts/run_cli_prompt_alignment_batch.sh
 ```
-
-For 3/4 pieces, use `PROMPT_BEATS=6`.
 
 The script checks:
 
