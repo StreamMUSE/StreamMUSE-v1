@@ -101,9 +101,10 @@ class PianoLLaMA(PreTrainedModel):
         """
         self.eval()
 
-        # 初始化 logger
+        # 初始化 logger，每首歌用独立子目录避免覆盖
         log_dir = os.environ.get("LEKAI_OFFLINE_LOG_DIR", "logs/generation")
-        logger = GenerationLogger(output_dir=log_dir, mode="offline")
+        song_log_dir = os.path.join(log_dir, f"song_{condition_idx:03d}")
+        logger = GenerationLogger(output_dir=song_log_dir, mode="offline")
 
         # ========== 1. 从数据集提取条件 ==========
         file_path = os.path.join(dataset.root_dir, dataset.data_files[condition_idx])
