@@ -13,6 +13,7 @@ PROMPT_CKPT=/data/home/yuanxin/RT-accompanimentV2/external/lekai_real_time/promp
 CONT_CKPT=/data/home/yuanxin/RT-accompanimentV2/checkpoints-resume/epoch_15_0307_1858/model.safetensors
 DEVICE=${DEVICE:-0}
 MAX_TICKS=${MAX_TICKS:-96}
+CLI_TEMPO=${CLI_TEMPO:-240}
 
 mkdir -p "$OUT_ROOT/server"
 
@@ -57,8 +58,12 @@ d=np.load(p, allow_pickle=True)
 print(int(d['measure_0'].shape[2]//4))
 PY
 )
+  cli_tempo="$CLI_TEMPO"
+  if [[ "$cli_tempo" == "metadata" ]]; then
+    cli_tempo="$bpm"
+  fi
 
-  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar ==="
+  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar cli_tempo=$cli_tempo ==="
   cleanup_server
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:$PORT | xargs -r kill || true
@@ -128,7 +133,7 @@ PY
   uv run streammuse-cli \
     --input-mode midi_file \
     --midi-file-path "$OUT_ROOT/$id/${id}_npz_melody_input.mid" \
-    --tempo 240 \
+    --tempo "$cli_tempo" \
     --ticks-per-beat 4 \
     --beats-per-bar "$beats_per_bar" \
     --inference-type http \

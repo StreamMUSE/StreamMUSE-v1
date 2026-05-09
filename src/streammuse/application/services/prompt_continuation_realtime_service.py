@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from streammuse.domain.interfaces import InputSource, OutputSink
-from streammuse.domain.musical import MusicalEvent
+from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
 
 
@@ -241,10 +241,14 @@ class PromptContinuationRealtimeService:
         scheduled = 0
         dropped_past = 0
         skipped_duplicate = 0
-        for event in accompaniment:
-            if int(event.tick) < int(current_tick):
-                dropped_past += 1
-                continue
+        clipped_sustains = 0
+
+        events_to_schedule, dropped_past, clipped_sustains = self._clip_playable_to_current_tick(
+            accompaniment,
+            current_tick=int(current_tick),
+        )
+
+        for event in events_to_schedule:
             event_key = (
                 int(event.tick),
                 int(event.pitch),
@@ -272,8 +276,96 @@ class PromptContinuationRealtimeService:
             "ready",
             f"Scheduled {scheduled} playable accompaniment event(s); "
             f"dropped {dropped_past} past event(s); "
+            f"clipped {clipped_sustains} sustaining note(s); "
             f"skipped {skipped_duplicate} duplicate event(s).",
         )
+
+    @staticmethod
+    def _clone_event_at_tick(event: MusicalEvent, tick: int) -> MusicalEvent:
+        return MusicalEvent(
+            tick=int(tick),
+            pitch=event.pitch,
+            event_type=event.event_type,
+            velocity=event.velocity,
+            channel=event.channel,
+            program=event.program,
+            is_placeholder=event.is_placeholder,
+            source=event.source,
+            backup_level=event.backup_level,
+        )
+
+    def _clip_playable_to_current_tick(
+        self,
+        accompaniment: list[MusicalEvent],
+        *,
+        current_tick: int,
+    ) -> tuple[list[MusicalEvent], int, int]:
+        """Drop fully-past notes, but preserve notes sustaining into now.
+
+        The backend returns the full generated accompaniment history. A realtime
+        player cannot go back and play notes that ended in the past, but if a
+        note started before `current_tick` and its note_off is still in the
+        future, the audible output should retrigger it at `current_tick` instead
+        of losing the whole sustaining note.
+        """
+        current_tick = int(current_tick)
+        sorted_events = sorted(
+            accompaniment,
+            key=lambda event: (
+                int(event.tick),
+                0 if event.event_type == EventType.NOTE_OFF else 1,
+            ),
+        )
+        active: dict[int, list[MusicalEvent]] = {}
+        scheduled: list[MusicalEvent] = []
+        dropped_past = 0
+        clipped_sustains = 0
+
+        for event in sorted_events:
+            if event.is_placeholder or event.pitch == -1:
+                continue
+
+            pitch = int(event.pitch)
+            event_tick = int(event.tick)
+            if event.event_type == EventType.NOTE_ON and event.velocity > 0:
+                active.setdefault(pitch, []).append(event)
+                continue
+
+            if event.event_type != EventType.NOTE_OFF:
+                continue
+
+            if not active.get(pitch):
+                if event_tick < current_tick:
+                    dropped_past += 1
+                continue
+
+            note_on = active[pitch].pop(0)
+            if not active[pitch]:
+                active.pop(pitch, None)
+
+            note_on_tick = int(note_on.tick)
+            note_off_tick = event_tick
+            if note_off_tick <= current_tick:
+                dropped_past += 2
+                continue
+
+            if note_on_tick < current_tick:
+                scheduled.append(self._clone_event_at_tick(note_on, current_tick))
+                scheduled.append(event)
+                clipped_sustains += 1
+                continue
+
+            scheduled.append(note_on)
+            scheduled.append(event)
+
+        for pitch_events in active.values():
+            for note_on in pitch_events:
+                if int(note_on.tick) >= current_tick:
+                    scheduled.append(note_on)
+                else:
+                    dropped_past += 1
+
+        return scheduled, dropped_past, clipped_sustains
 
     def _tick_loop(self, *, max_ticks: int | None) -> None:
         assert self._runtime is not None

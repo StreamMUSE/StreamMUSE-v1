@@ -73,6 +73,10 @@ def _note(pitch: int, tick: int) -> MusicalEvent:
     return MusicalEvent(tick=tick, pitch=pitch, event_type=EventType.NOTE_ON, velocity=100)
 
 
+def _note_off(pitch: int, tick: int) -> MusicalEvent:
+    return MusicalEvent(tick=tick, pitch=pitch, event_type=EventType.NOTE_OFF, velocity=0)
+
+
 def _make_service() -> PromptContinuationRealtimeService:
     client = _FakePromptClient()
     return PromptContinuationRealtimeService(
@@ -131,6 +135,27 @@ def test_prompt_continuation_schedule_playable_drops_past_events():
     scheduled = service._scheduler.get_events_at_tick(36)
     assert [event.pitch for event in scheduled] == [50]
     assert any("dropped 1 past" in message for _state, message in output.statuses)
+
+
+def test_prompt_continuation_schedule_playable_clips_sustaining_notes():
+    service = _make_service()
+    output = service._output
+
+    service._schedule_playable(
+        [_note(48, 28), _note_off(48, 40), _note(50, 36), _note_off(50, 44)],
+        current_tick=32,
+    )
+
+    clipped_on = service._scheduler.get_events_at_tick(32)
+    future_on = service._scheduler.get_events_at_tick(36)
+    note_offs = service._scheduler.get_events_at_tick(40) + service._scheduler.get_events_at_tick(44)
+    assert [(event.pitch, event.event_type) for event in clipped_on] == [(48, EventType.NOTE_ON)]
+    assert [(event.pitch, event.event_type) for event in future_on] == [(50, EventType.NOTE_ON)]
+    assert [(event.pitch, event.event_type) for event in note_offs] == [
+        (48, EventType.NOTE_OFF),
+        (50, EventType.NOTE_OFF),
+    ]
+    assert any("clipped 1 sustaining" in message for _state, message in output.statuses)
 
 
 def test_prompt_continuation_schedule_playable_skips_duplicates():
