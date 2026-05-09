@@ -24,9 +24,9 @@ TimingPayload = Dict[str, float]
 # PianoLLaMA tokenization is fixed: 4 timesteps per beat.
 TIMESTEPS_PER_BEAT = 4
 
-# Standard Lekai offline_model vocabulary. These values must match
+# Standard Lekai RT offline_model vocabulary. These values must match
 # external/lekai_real_time/offline_model/my_tokenizer.py, because the
-# continuation checkpoint was trained with that schedule/token layout.
+# continuation checkpoint was trained with that acc-first schedule/token layout.
 LEKAI_EMPTY_TOKEN = 169
 LEKAI_ACC_END_TOKEN = 170
 LEKAI_MEL_END_TOKEN = 171
@@ -176,16 +176,24 @@ class LekaiHttpBackend:
     def _warmup_model(self, warmup_steps: int) -> float:
         assert self._model_adapter is not None
         warmup_start = time.perf_counter()
-        part0 = [torch.tensor([self._model_adapter.BAR_TOKEN], dtype=torch.long)]
-        _ = self._model_adapter.generate_from_beats(
-            part0_beats=part0,
-            num_beats_to_generate=max(1, int(warmup_steps)),
-            bpm=int(os.environ.get("LEKAI_DEFAULT_BPM", "120")),
-            temperature=0.8,
-            top_k=20,
-            top_p=0.9,
-            verbose=False,
+        prompt = torch.tensor(
+            [
+                LEKAI_BOS_TOKEN,
+                LEKAI_TIME_SIG_OFFSET + 0,
+                LEKAI_BPM_OFFSET + 1,
+                LEKAI_BAR_TOKEN,
+                LEKAI_BEAT_TOKEN,
+            ],
+            dtype=torch.long,
         )
+        for _ in range(max(1, int(warmup_steps))):
+            self._generate_part1_tokens_from_prompt(
+                prompt,
+                temperature=0.8,
+                top_k=20,
+                top_p=0.9,
+                repetition_penalty=1.0,
+            )
         return (time.perf_counter() - warmup_start) * 1000
 
     def _load_model_once(
@@ -197,19 +205,20 @@ class LekaiHttpBackend:
         use_cache: bool,
         warmup_steps: int,
     ) -> tuple[float, float]:
+        from streammuse.infrastructure.inference.lekai_continuation_model.inference_adapter import (
+            PianoContinuationAdapter,
+        )
         from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
-        from streammuse.infrastructure.inference.lekai_model.inference_adapter import PianoLLaMAAdapter
-        from streammuse.infrastructure.inference.lekai_model.my_tokenizer import PianoRollTokenizer
 
         load_start = time.perf_counter()
-        self._model_adapter = PianoLLaMAAdapter.from_checkpoint(
+        self._model_adapter = PianoContinuationAdapter.from_checkpoint(
             checkpoint_path,
             device=device,
             dtype=dtype,
             use_cache=use_cache,
         )
         self._converter = MidiConverter(ticks_per_beat=4)
-        self._tokenizer = PianoRollTokenizer(patch_h=1, patch_w=4)
+        self._tokenizer = self._model_adapter.tokenizer
         load_time_ms = (time.perf_counter() - load_start) * 1000
         warmup_time_ms = self._warmup_model(warmup_steps)
         return load_time_ms, warmup_time_ms
@@ -418,8 +427,14 @@ class LekaiHttpBackend:
             active_pitches=active_pitches,
         )
 
-        tokens_matrix = self._tokenizer.image_to_patch_tokens(beat_pr, strict_mode=True)
-        compressed = self._tokenizer.compress_tokens(tokens_matrix, end_marker=end_marker)
+        if hasattr(self._tokenizer, "_codec"):
+            tokens_matrix = self._tokenizer._codec.image_to_patch_tokens(beat_pr, strict_mode=True)
+            compressed = self._tokenizer.compress_tokens(tokens_matrix, track_marker=end_marker)
+        else:
+            # Compatibility for lightweight unit-test stubs and older tokenizer
+            # objects. The real prompt-continuation runtime uses the branch above.
+            tokens_matrix = self._tokenizer.image_to_patch_tokens(beat_pr, strict_mode=True)
+            compressed = self._tokenizer.compress_tokens(tokens_matrix, end_marker=end_marker)
         if len(compressed) == 1 and int(compressed[0]) == LEKAI_EMPTY_TOKEN:
             compressed = np.array([LEKAI_EMPTY_TOKEN, int(end_marker)], dtype=np.int64)
 
@@ -502,15 +517,10 @@ class LekaiHttpBackend:
         if beat_tokens == [LEKAI_EMPTY_TOKEN, LEKAI_ACC_END_TOKEN]:
             return np.zeros((2, 88, TIMESTEPS_PER_BEAT), dtype=np.float32)
 
-        compressed = np.array(beat_tokens, dtype=np.int64)
-        tokens_matrix = self._tokenizer.decompress_tokens(
-            compressed,
-            end_marker_id=LEKAI_ACC_END_TOKEN,
+        pianoroll = self._tokenizer.decode_beats_to_pianoroll(
+            [beat_tokens],
+            track_marker_id=LEKAI_ACC_END_TOKEN,
         )
-        if tokens_matrix.size == 0:
-            return np.zeros((2, 88, TIMESTEPS_PER_BEAT), dtype=np.float32)
-
-        pianoroll = self._tokenizer.patch_tokens_to_image(tokens_matrix)
         if pianoroll.shape[2] < TIMESTEPS_PER_BEAT:
             pianoroll = np.pad(
                 pianoroll,
@@ -531,8 +541,6 @@ class LekaiHttpBackend:
 
         _ = generation_interval_ticks
 
-        from streammuse.infrastructure.inference.lekai_model.PianoDataset import encode_bpm
-
         current_beat = int(generation_start_tick) // TIMESTEPS_PER_BEAT
         num_beats_to_generate = max(1, int(generation_length_frames) // TIMESTEPS_PER_BEAT)
         if int(generation_length_frames) % TIMESTEPS_PER_BEAT != 0:
@@ -543,7 +551,12 @@ class LekaiHttpBackend:
         context_start_tick = start_beat * TIMESTEPS_PER_BEAT
 
         effective_bpm = self._request_bpm if self._request_bpm is not None else int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))
-        bpm_token = encode_bpm(int(effective_bpm)) + LEKAI_BPM_OFFSET
+        if hasattr(self._tokenizer, "encode_bpm"):
+            bpm_token = self._tokenizer.encode_bpm(int(effective_bpm))
+        else:
+            from streammuse.infrastructure.inference.lekai_model.PianoDataset import encode_bpm
+
+            bpm_token = encode_bpm(int(effective_bpm)) + LEKAI_BPM_OFFSET
         time_signature_idx = int(os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4"))
         measure_beats = self._measure_beats_from_time_signature_idx(time_signature_idx)
         if time_signature_idx == 9:
@@ -875,7 +888,9 @@ class LekaiHttpBackend:
         # 3. Convert pianoroll to beat tokens (part0)
         # For simplicity, we treat the entire melody as part0 (high voice)
         # In real usage, you might want to separate tracks
-        from streammuse.infrastructure.inference.lekai_model.PianoDataset import process_measure_with_beat_interleaving
+        from streammuse.infrastructure.inference.lekai_model.PianoDataset import (
+            process_measure_with_beat_interleaving,
+        )
         
         # Pad to measure boundary (4 beats = 16 timesteps with ticks_per_beat=4)
         T = melody_pianoroll.shape[2]

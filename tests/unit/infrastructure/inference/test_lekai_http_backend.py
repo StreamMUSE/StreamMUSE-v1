@@ -171,9 +171,7 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
 
     class _DummyAdapter:
         BAR_TOKEN = 255
-
-        def generate_from_beats(self, *args, **kwargs):
-            return [[169]]
+        tokenizer = object()
 
     def _fake_from_checkpoint(checkpoint_path: str, device: str, dtype=None, use_cache: bool = True):
         _ = checkpoint_path, dtype, use_cache
@@ -183,7 +181,7 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
         return _DummyAdapter()
 
     monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.PianoLLaMAAdapter.from_checkpoint",
+        "streammuse.infrastructure.inference.lekai_continuation_model.inference_adapter.PianoContinuationAdapter.from_checkpoint",
         _fake_from_checkpoint,
     )
     monkeypatch.setattr(
@@ -191,8 +189,9 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
         lambda ticks_per_beat: object(),
     )
     monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.my_tokenizer.PianoRollTokenizer",
-        lambda patch_h, patch_w: object(),
+        LekaiHttpBackend,
+        "_warmup_model",
+        lambda self, warmup_steps: 1.0,
     )
 
     backend = LekaiHttpBackend()

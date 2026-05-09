@@ -123,8 +123,33 @@ tokens, calls generation, and decodes generated accompaniment events.
 
 `continuation_engine.py`
 
-Thin wrapper around the existing Lekai continuation runtime. It receives melody
+Thin wrapper around the Lekai continuation runtime. It receives melody
 increments and uses injected accompaniment history.
+
+Important tokenizer boundary:
+
+- Prompt model tokenizer: `lekai_prompt_continuation/prompt_model/`.
+- Continuation model tokenizer: `lekai_continuation_model/`.
+- Older StreamMUSE Lekai tokenizer: `lekai_model/`.
+
+The prompt model and continuation model do not share the same sequence order.
+The prompt model is melody-first. The current continuation checkpoint follows
+the RT `offline_model` acc-first schedule:
+
+```text
+[BOS][TS][BPM] [bar] [beat] acc...track_acc mel...track_mel ...
+```
+
+Therefore prompt accompaniment must be decoded to piano-roll/events and then
+re-encoded into the continuation tokenizer layout before continuation catches
+up. Do not feed prompt-model beat tokens directly into continuation.
+
+`LekaiHttpBackend` now loads continuation through
+`src/streammuse/infrastructure/inference/lekai_continuation_model`, which is
+the packaged RT `offline_model` tokenizer/model layout. The older
+`lekai_model` package is retained for compatibility with the original Lekai
+backend and old tests, but it should not be used for prompt-continuation
+quality validation.
 
 `token_conversion.py`
 
@@ -256,6 +281,18 @@ The session directory saves:
 
 If the strict env vars above are set, fallback/stub output is impossible: the
 server or CLI request fails instead.
+
+Prompt alignment regression:
+
+```bash
+DEVICE=0 OUT_ROOT=realtime_runs/0509_prompt_alignment_batch_final \
+  scripts/run_cli_prompt_alignment_batch.sh
+```
+
+This runs strict `streammuse-cli` sessions and compares
+`prompt_continuation_prompt_history.json` against RT offline prompt-stage
+reference events. It should stay green before touching prompt generation or
+the prompt/continuation bridge.
 
 ## Current Caveats
 
