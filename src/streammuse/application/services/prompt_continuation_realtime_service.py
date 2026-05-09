@@ -116,6 +116,9 @@ class PromptContinuationRealtimeService:
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS",
             "",
         ).lower() in {"1", "true", "yes", "on"}
+        self._recover_late_max_ticks = self._env_optional_int(
+            "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS"
+        )
 
     def _trace(self, kind: str, **payload: Any) -> None:
         if not self._trace_path:
@@ -127,6 +130,16 @@ class PromptContinuationRealtimeService:
         except Exception:
             # Tracing must never affect realtime playback.
             return
+
+    @staticmethod
+    def _env_optional_int(name: str) -> int | None:
+        value = os.environ.get(name)
+        if value is None or str(value).strip() == "":
+            return None
+        try:
+            return max(0, int(value))
+        except ValueError:
+            return None
 
     @property
     def running(self) -> bool:
@@ -371,6 +384,7 @@ class PromptContinuationRealtimeService:
         scheduled = 0
         skipped_duplicate = 0
         late_event_count = 0
+        dropped_too_late_note_on = 0
         placeholder_count = 0
         current_tick = int(current_tick)
 
@@ -388,9 +402,19 @@ class PromptContinuationRealtimeService:
                 skipped_duplicate += 1
                 continue
 
-            schedule_tick = int(event.tick) if int(event.tick) >= current_tick else current_tick
-            if int(event.tick) < current_tick:
+            event_tick = int(event.tick)
+            schedule_tick = event_tick if event_tick >= current_tick else current_tick
+            if event_tick < current_tick:
                 late_event_count += 1
+                if (
+                    self._recover_late_max_ticks is not None
+                    and current_tick - event_tick > self._recover_late_max_ticks
+                    and event.event_type == EventType.NOTE_ON
+                    and int(event.velocity) > 0
+                ):
+                    dropped_too_late_note_on += 1
+                    self._scheduled_model_event_keys.add(event_key)
+                    continue
 
             model_event = MusicalEvent(
                 tick=event.tick,
@@ -411,6 +435,7 @@ class PromptContinuationRealtimeService:
             "ready",
             f"Scheduled {scheduled} playable accompaniment event(s); "
             f"recovered {late_event_count} late event(s); "
+            f"dropped {dropped_too_late_note_on} too-late note_on event(s); "
             f"skipped {skipped_duplicate} duplicate event(s); "
             f"skipped {placeholder_count} placeholder event(s).",
         )
@@ -421,6 +446,8 @@ class PromptContinuationRealtimeService:
             input_event_count=len(accompaniment),
             scheduled_event_count=scheduled,
             late_event_count=late_event_count,
+            dropped_too_late_note_on=dropped_too_late_note_on,
+            recover_late_max_ticks=self._recover_late_max_ticks,
             skipped_duplicate=skipped_duplicate,
             placeholder_count=placeholder_count,
         )

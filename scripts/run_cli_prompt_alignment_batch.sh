@@ -27,6 +27,7 @@ RT_TOP_K=${RT_TOP_K:-$SAMPLING_TOP_K}
 RT_TOP_P=${RT_TOP_P:-$SAMPLING_TOP_P}
 RT_REPETITION_PENALTY=${RT_REPETITION_PENALTY:-1.0}
 RECOVER_LATE_EVENTS=${RECOVER_LATE_EVENTS:-1}
+RECOVER_LATE_MAX_TICKS=${RECOVER_LATE_MAX_TICKS:-}
 
 mkdir -p "$OUT_ROOT/server"
 
@@ -85,7 +86,7 @@ PY
 )
   fi
 
-  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} recover_late_events=$RECOVER_LATE_EVENTS ==="
+  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} recover_late_events=$RECOVER_LATE_EVENTS recover_late_max_ticks=${RECOVER_LATE_MAX_TICKS:-none} ==="
   cleanup_server
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:$PORT | xargs -r kill || true
@@ -157,6 +158,7 @@ PY
 
   echo "=== $id: streammuse-cli ==="
   LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS="$RECOVER_LATE_EVENTS" \
+  LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS="$RECOVER_LATE_MAX_TICKS" \
   LEKAI_PROMPT_CONTINUATION_TRACE_PATH="$OUT_ROOT/$id/prompt_continuation_client_trace.jsonl" \
   uv run streammuse-cli \
     --input-mode midi_file \

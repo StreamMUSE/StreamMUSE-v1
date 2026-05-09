@@ -37,6 +37,7 @@ class OutputSinkFactory:
             MidiFileOutputConfig(
                 bpm=float(tempo.bpm),
                 ticks_per_beat=int(tempo.ticks_per_beat),
+                beats_per_bar=int(tempo.beats_per_bar),
                 output_path=str(session_manager.get_session_dir() / "combined.mid"),
             )
         )
@@ -71,6 +72,7 @@ class OutputSinkFactory:
                 MidiFileOutputConfig(
                     bpm=float(tempo.bpm),
                     ticks_per_beat=int(tempo.ticks_per_beat),
+                    beats_per_bar=int(tempo.beats_per_bar),
                     output_path=cfg.midi_file_output_path,
                 )
             )
@@ -100,6 +102,7 @@ class OutputSinkFactory:
                 inference_log_detail=cfg.inference_log_detail,
                 bpm=float(tempo.bpm),
                 ticks_per_beat=int(tempo.ticks_per_beat),
+                beats_per_bar=int(tempo.beats_per_bar),
             )
 
         if cfg.type == "composite":
@@ -112,6 +115,7 @@ class OutputSinkFactory:
                             inference_log_detail=cfg.inference_log_detail,
                             bpm=float(tempo.bpm),
                             ticks_per_beat=int(tempo.ticks_per_beat),
+                            beats_per_bar=int(tempo.beats_per_bar),
                         ),
                     ]
                 )
@@ -120,4 +124,3 @@ class OutputSinkFactory:
             )
 
         raise ValueError(f"Unknown output type: {cfg.type}")
-

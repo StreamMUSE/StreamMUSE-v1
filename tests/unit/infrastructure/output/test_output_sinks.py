@@ -35,6 +35,31 @@ def test_midi_file_output_sink_records_and_writes(tmp_path):
     assert out_path.stat().st_size > 0
 
 
+def test_midi_file_output_sink_writes_configured_time_signature(tmp_path):
+    out_path = tmp_path / "two_four.mid"
+    cfg = MidiFileOutputConfig(
+        bpm=80.0,
+        ticks_per_beat=4,
+        beats_per_bar=2,
+        output_path=str(out_path),
+    )
+    sink = MidiFileOutputSink(cfg)
+    sink.output_event(MusicalEvent(tick=0, pitch=60, event_type=EventType.NOTE_ON, velocity=100), source="user")
+    sink.output_event(MusicalEvent(tick=4, pitch=60, event_type=EventType.NOTE_OFF, velocity=0), source="user")
+    sink.close()
+
+    mid = mido.MidiFile(str(out_path))
+    signatures = [
+        msg
+        for track in mid.tracks
+        for msg in track
+        if msg.is_meta and msg.type == "time_signature"
+    ]
+    assert signatures
+    assert signatures[0].numerator == 2
+    assert signatures[0].denominator == 4
+
+
 def test_midi_file_output_sink_closes_same_pitch_retrigger(tmp_path):
     out_path = tmp_path / "retrigger_same_pitch.mid"
     cfg = MidiFileOutputConfig(bpm=60.0, ticks_per_beat=220, output_path=str(out_path))

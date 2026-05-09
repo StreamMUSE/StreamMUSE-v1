@@ -180,6 +180,31 @@ def test_prompt_continuation_schedule_playable_skips_duplicates():
     assert any("skipped 1 duplicate note" in message for _state, message in output.statuses)
 
 
+def test_prompt_continuation_recover_late_can_drop_too_old_note_on(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS", "1")
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS", "4")
+    service = _make_service()
+    output = service._output
+
+    service._schedule_playable(
+        [
+            _note(48, 20),
+            _note_off(48, 24),
+            _note(50, 34),
+            _note_off(50, 40),
+        ],
+        current_tick=36,
+    )
+
+    tick_36 = service._scheduler.get_events_at_tick(36)
+    assert [(event.pitch, event.event_type) for event in tick_36] == [
+        (48, EventType.NOTE_OFF),
+        (50, EventType.NOTE_ON),
+    ]
+    assert service._scheduler.get_events_at_tick(20) == []
+    assert any("dropped 1 too-late note_on" in message for _state, message in output.statuses)
+
+
 def test_protocol_worker_does_not_fetch_playable_before_first_append():
     service = _make_service()
     client = service._client

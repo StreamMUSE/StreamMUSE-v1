@@ -15,6 +15,7 @@ from streammuse.domain.musical import EventType, MusicalEvent
 class MidiFileOutputConfig:
     bpm: float
     ticks_per_beat: int
+    beats_per_bar: int = 4
     output_path: Optional[str] = None
     user_program: int = 0
     model_program: int = 0
@@ -38,6 +39,9 @@ class MidiFileOutputSink:
         self._config = config
         self._sp_tick = config.seconds_per_tick()
         self._midi = pretty_midi.PrettyMIDI(initial_tempo=float(config.bpm))
+        self._midi.time_signature_changes = [
+            pretty_midi.TimeSignature(int(config.beats_per_bar), 4, 0.0)
+        ]
 
         self._user = pretty_midi.Instrument(program=int(config.user_program), name=config.user_track_name)
         self._model = pretty_midi.Instrument(program=int(config.model_program), name=config.model_track_name)

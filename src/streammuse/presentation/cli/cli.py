@@ -262,6 +262,7 @@ def main() -> int:
                     MidiFileOutputConfig(
                         bpm=config.tempo.bpm,
                         ticks_per_beat=config.tempo.ticks_per_beat,
+                        beats_per_bar=config.tempo.beats_per_bar,
                         output_path=str(midi_path),
                     )
                 )
