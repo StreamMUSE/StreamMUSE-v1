@@ -66,6 +66,15 @@ class MidiFileOutputSink:
 
         pitch = int(event.pitch)
         if event.event_type == EventType.NOTE_ON and event.velocity > 0:
+            # MIDI same-pitch retriggers are ambiguous; close any still-open
+            # notes at the retrigger time so a missing note_off cannot stretch
+            # the previous note to the end of the file.
+            if pitch in active:
+                for prev in active.pop(pitch):
+                    start = float(prev["start"])
+                    vel = int(prev["velocity"])
+                    if t > start:
+                        instrument.notes.append(pretty_midi.Note(velocity=vel, pitch=pitch, start=start, end=t))
             active.setdefault(pitch, []).append(
                 {"start": t, "velocity": float(event.velocity or default_velocity)}
             )

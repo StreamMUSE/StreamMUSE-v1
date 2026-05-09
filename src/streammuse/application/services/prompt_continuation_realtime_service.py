@@ -104,6 +104,7 @@ class PromptContinuationRealtimeService:
         self._start_enqueued = False
         self._last_append_observed_tick = 0
         self._scheduled_model_event_keys: set[tuple[int, int, str, int]] = set()
+        self._scheduled_model_note_keys: set[tuple[int, int, int, int, int]] = set()
         self._append_generation = 0
         self._last_playable_marker: tuple[int, int, int] | None = None
         self._protocol_started = False
@@ -242,42 +243,54 @@ class PromptContinuationRealtimeService:
         dropped_past = 0
         skipped_duplicate = 0
         clipped_sustains = 0
+        skipped_unpaired = 0
 
         events_to_schedule, dropped_past, clipped_sustains = self._clip_playable_to_current_tick(
             accompaniment,
             current_tick=int(current_tick),
         )
 
-        for event in events_to_schedule:
-            event_key = (
-                int(event.tick),
-                int(event.pitch),
-                str(event.event_type.value),
-                int(event.velocity),
+        note_pairs, skipped_unpaired = self._pair_playable_events(events_to_schedule)
+        for note_on, note_off in note_pairs:
+            note_key = (
+                int(note_on.tick),
+                int(note_off.tick),
+                int(note_on.pitch),
+                int(note_on.channel),
+                int(note_on.program),
             )
-            if event_key in self._scheduled_model_event_keys:
+            if note_key in self._scheduled_model_note_keys:
                 skipped_duplicate += 1
                 continue
-            model_event = MusicalEvent(
-                tick=event.tick,
-                pitch=event.pitch,
-                event_type=event.event_type,
-                velocity=event.velocity,
-                channel=event.channel,
-                program=event.program,
-                is_placeholder=event.is_placeholder,
-                source="model",
-                backup_level=max(0, int(event.tick) - int(current_tick)),
-            )
-            self._scheduler.schedule(model_event, int(event.tick))
-            self._scheduled_model_event_keys.add(event_key)
-            scheduled += 1
+            for event in (note_on, note_off):
+                event_key = (
+                    int(event.tick),
+                    int(event.pitch),
+                    str(event.event_type.value),
+                    int(event.velocity),
+                )
+                model_event = MusicalEvent(
+                    tick=event.tick,
+                    pitch=event.pitch,
+                    event_type=event.event_type,
+                    velocity=event.velocity,
+                    channel=event.channel,
+                    program=event.program,
+                    is_placeholder=event.is_placeholder,
+                    source="model",
+                    backup_level=max(0, int(event.tick) - int(current_tick)),
+                )
+                self._scheduler.schedule(model_event, int(event.tick))
+                self._scheduled_model_event_keys.add(event_key)
+                scheduled += 1
+            self._scheduled_model_note_keys.add(note_key)
         self._output.output_status(
             "ready",
             f"Scheduled {scheduled} playable accompaniment event(s); "
             f"dropped {dropped_past} past event(s); "
             f"clipped {clipped_sustains} sustaining note(s); "
-            f"skipped {skipped_duplicate} duplicate event(s).",
+            f"skipped {skipped_duplicate} duplicate note(s); "
+            f"skipped {skipped_unpaired} unpaired event(s).",
         )
 
     @staticmethod
@@ -366,6 +379,42 @@ class PromptContinuationRealtimeService:
                     dropped_past += 1
 
         return scheduled, dropped_past, clipped_sustains
+
+    def _pair_playable_events(
+        self,
+        events: list[MusicalEvent],
+    ) -> tuple[list[tuple[MusicalEvent, MusicalEvent]], int]:
+        sorted_events = sorted(
+            events,
+            key=lambda event: (
+                int(event.tick),
+                0 if event.event_type == EventType.NOTE_OFF else 1,
+            ),
+        )
+        active: dict[int, list[MusicalEvent]] = {}
+        pairs: list[tuple[MusicalEvent, MusicalEvent]] = []
+        skipped_unpaired = 0
+        for event in sorted_events:
+            if event.is_placeholder or event.pitch == -1:
+                continue
+            pitch = int(event.pitch)
+            if event.event_type == EventType.NOTE_ON and event.velocity > 0:
+                active.setdefault(pitch, []).append(event)
+                continue
+            if event.event_type != EventType.NOTE_OFF:
+                continue
+            if not active.get(pitch):
+                skipped_unpaired += 1
+                continue
+            note_on = active[pitch].pop(0)
+            if not active[pitch]:
+                active.pop(pitch, None)
+            if int(event.tick) > int(note_on.tick):
+                pairs.append((note_on, event))
+            else:
+                skipped_unpaired += 2
+        skipped_unpaired += sum(len(pitch_events) for pitch_events in active.values())
+        return pairs, skipped_unpaired
 
     def _tick_loop(self, *, max_ticks: int | None) -> None:
         assert self._runtime is not None

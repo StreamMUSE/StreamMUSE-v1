@@ -129,12 +129,15 @@ def test_prompt_continuation_schedule_playable_drops_past_events():
     service = _make_service()
     output = service._output
 
-    service._schedule_playable([_note(48, 12), _note(50, 36)], current_tick=32)
+    service._schedule_playable(
+        [_note(48, 12), _note_off(48, 16), _note(50, 36), _note_off(50, 40)],
+        current_tick=32,
+    )
 
     assert service._scheduler.get_events_at_tick(12) == []
     scheduled = service._scheduler.get_events_at_tick(36)
     assert [event.pitch for event in scheduled] == [50]
-    assert any("dropped 1 past" in message for _state, message in output.statuses)
+    assert any("dropped 2 past" in message for _state, message in output.statuses)
 
 
 def test_prompt_continuation_schedule_playable_clips_sustaining_notes():
@@ -162,12 +165,19 @@ def test_prompt_continuation_schedule_playable_skips_duplicates():
     service = _make_service()
     output = service._output
 
-    service._schedule_playable([_note(50, 36)], current_tick=32)
-    service._schedule_playable([_note(50, 36), _note(52, 40)], current_tick=32)
+    service._schedule_playable([_note(50, 36), _note_off(50, 40)], current_tick=32)
+    service._schedule_playable(
+        [_note(50, 36), _note_off(50, 40), _note(52, 40), _note_off(52, 44)],
+        current_tick=32,
+    )
 
     assert [event.pitch for event in service._scheduler.get_events_at_tick(36)] == [50]
-    assert [event.pitch for event in service._scheduler.get_events_at_tick(40)] == [52]
-    assert any("skipped 1 duplicate" in message for _state, message in output.statuses)
+    tick_40 = service._scheduler.get_events_at_tick(40)
+    assert [(event.pitch, event.event_type) for event in tick_40] == [
+        (50, EventType.NOTE_OFF),
+        (52, EventType.NOTE_ON),
+    ]
+    assert any("skipped 1 duplicate note" in message for _state, message in output.statuses)
 
 
 def test_protocol_worker_does_not_fetch_playable_before_first_append():

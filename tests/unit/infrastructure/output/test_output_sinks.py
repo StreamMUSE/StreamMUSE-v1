@@ -35,13 +35,12 @@ def test_midi_file_output_sink_records_and_writes(tmp_path):
     assert out_path.stat().st_size > 0
 
 
-def test_midi_file_output_sink_preserves_overlapping_same_pitch_notes(tmp_path):
-    out_path = tmp_path / "overlap_same_pitch.mid"
+def test_midi_file_output_sink_closes_same_pitch_retrigger(tmp_path):
+    out_path = tmp_path / "retrigger_same_pitch.mid"
     cfg = MidiFileOutputConfig(bpm=60.0, ticks_per_beat=220, output_path=str(out_path))
     sink = MidiFileOutputSink(cfg)
     sink.output_event(MusicalEvent(tick=55, pitch=74, event_type=EventType.NOTE_ON, velocity=100), source="user")
     sink.output_event(MusicalEvent(tick=110, pitch=74, event_type=EventType.NOTE_ON, velocity=100), source="user")
-    sink.output_event(MusicalEvent(tick=165, pitch=74, event_type=EventType.NOTE_OFF, velocity=0), source="user")
     sink.output_event(MusicalEvent(tick=165, pitch=74, event_type=EventType.NOTE_OFF, velocity=0), source="user")
     sink.close()
 
@@ -61,7 +60,7 @@ def test_midi_file_output_sink_preserves_overlapping_same_pitch_notes(tmp_path):
                 start = active[key].pop(0)
                 notes.append((start, abs_tick, int(msg.note)))
 
-    assert sorted(notes) == [(55, 165, 74), (110, 165, 74)]
+    assert sorted(notes) == [(55, 110, 74), (110, 165, 74)]
 
 
 def test_composite_output_sink_fans_out_calls():
