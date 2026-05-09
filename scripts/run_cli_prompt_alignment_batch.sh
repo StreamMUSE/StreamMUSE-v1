@@ -12,6 +12,7 @@ OUT_ROOT=${OUT_ROOT:-realtime_runs/0509_prompt_alignment_batch}
 PROMPT_CKPT=/data/home/yuanxin/RT-accompanimentV2/external/lekai_real_time/prompt_model/checkpoints/best_model/model.safetensors
 CONT_CKPT=/data/home/yuanxin/RT-accompanimentV2/checkpoints-resume/epoch_15_0307_1858/model.safetensors
 DEVICE=${DEVICE:-0}
+MAX_TICKS=${MAX_TICKS:-96}
 
 mkdir -p "$OUT_ROOT/server"
 
@@ -140,7 +141,7 @@ PY
     --timeout-s 120 \
     --output-type session \
     --log-dir "$OUT_ROOT/$id/cli" \
-    --max-ticks 96
+    --max-ticks "$MAX_TICKS"
 
   session_dir=$(find "$OUT_ROOT/$id/cli" -path '*/session_*' -type d | sort | tail -1)
   echo "session_dir=$session_dir"
