@@ -1,27 +1,39 @@
-# Lekai Prompt Continuation
+# Lekai Prompt-Continuation Realtime System
 
-Temporary integration notes for the Lekai prompt-continuation realtime path.
+This document describes the current StreamMUSE integration of Lekai's two-stage
+prompt-continuation realtime accompaniment flow. It is intended as an engineering
+handoff note: what the system does, which files are involved, what was changed,
+and how to validate that the realtime path is still aligned with the RT offline
+reference.
 
-This folder implements the special realtime flow where a prompt model first
-generates initial accompaniment, then a continuation model catches up while the
-user keeps playing melody.
+## Current Status
 
-## Status
+The `lekai_prompt_continuation` path is wired through `streammuse-cli` and the
+Lekai HTTP server. It has been validated with real prompt and continuation
+checkpoints under strict real-model mode, with fallback disabled.
 
-This path is wired and covered by unit tests, but model-quality testing still
-requires available GPU time and real checkpoints.
+The current validated behavior is:
 
-Current CPU/stub tests validate:
+- Prompt model output from `streammuse-cli` matches RT offline prompt-stage output
+  exactly by event SHA for the tested pieces.
+- Continuation uses the RT offline tokenizer/model layout, not the older
+  StreamMUSE Lekai tokenizer.
+- Realtime audible MIDI now preserves recoverable late model events instead of
+  dropping most cross-beat notes.
+- MIDI exports now write the configured time signature, so 2/4 pieces are not
+  exported as 4/4.
+- Debug exports retain raw prompt + continuation history even when the audible
+  realtime output drops late notes.
 
-- HTTP protocol shape.
-- Scheduler state transitions.
-- Melody append while prompt generation is running.
-- Melody append after prompt generation has already reached `ready`.
-- Catch-up readiness accounting.
+Recent validation artifacts are local generated files and are intentionally not
+tracked by git:
 
-They do not validate musical quality.
+```text
+realtime_runs/0509_unified_recover_late_author_top50_topp098_tempclamp120/
+realtime_runs/0509_6217163_2-4_recover_late_comparison/
+```
 
-## High-Level Runtime Flow
+## Runtime Flow
 
 ```text
 streammuse-cli
@@ -38,70 +50,139 @@ streammuse-cli
 
 Standard scenario:
 
-1. The user plays the first prompt window, currently 8 beats by default.
-2. The client sends those melody events to `/prompt_continuation/start`.
-3. `LekaiPromptEngine` generates accompaniment for the prompt window.
-4. While prompt generation is running, the client continues sending later melody
-   events to `/prompt_continuation/append_melody`.
-5. After prompt accompaniment is available, `LekaiContinuationEngine` continues
-   generating accompaniment until playback is safe.
-6. The client polls `/prompt_continuation/status`.
-7. Once ready, the client fetches `/prompt_continuation/playable`.
+1. User/client provides a melody prompt window, normally 8 beats.
+2. Client sends that melody to `/prompt_continuation/start`.
+3. Prompt model generates initial accompaniment for the prompt window.
+4. While prompt generation is running, client continues sending melody chunks to
+   `/prompt_continuation/append_melody`.
+5. Continuation model consumes prompt accompaniment plus later melody and keeps
+   generating accompaniment until playback is ready.
+6. Client polls `/prompt_continuation/status`.
+7. Once ready, client fetches `/prompt_continuation/playable`.
+8. `PromptContinuationRealtimeService` schedules playable events into the local
+   realtime `PlaybackScheduler`.
 
-The prompt window is beat-based, not bar-based. With the current CLI default,
-`prompt_length_ticks=32` and `ticks_per_beat=4`, so the prompt model receives
-8 beats of melody condition and attempts to generate 8 beats of prompt
-accompaniment. `LEKAI_PROMPT_CONDITION_BEATS` can override the condition length
-for diagnostics; older bar-based overrides are kept only as compatibility
-escape hatches.
+The frontend/client can be silent before playback is ready. The user does not
+need to hear prompt-model accompaniment immediately. Prompt accompaniment is
+still saved in debug history.
 
 ## Catch-Up Rule
 
-The system is not playback-ready when accompaniment merely reaches the same
+The system is not playback-ready when accompaniment merely reaches the same beat
 length as melody history. It needs one extra beat of lookahead:
 
 ```text
 playback_ready = accompaniment_history_beats >= melody_history_beats + 1
 ```
 
-The extra beat is intentional. Equal history lengths mean the model has caught
-up to the past, but there is no next accompaniment beat available to play.
+Equal history lengths mean the model has caught up to the past, but there is no
+next accompaniment beat available to play.
 
-## Playback-Ready Scheduling Policy
+## Prompt Length Units
 
-The frontend/client may be silent before playback is ready. The backend still
-returns the generated accompaniment history through `/prompt_continuation/playable`.
-When the client receives that ready signal, it does not schedule events at their
-original historical ticks, because those ticks may already be in the past.
+Use beats as the user-facing unit.
 
-`PromptContinuationRealtimeService` therefore schedules only returned
-accompaniment events whose original tick is still at or after the frontend's
-current tick. Events before the current tick are dropped from audible playback.
+With default `ticks_per_beat=4`:
 
-This means the user does not hear the prompt-model accompaniment directly. The
-initial audible behavior is silence while the user keeps playing melody; sound
-starts only after the backend reports catch-up readiness. For debugging, a
-separate diagnostic export can still save the full raw accompaniment history
-including prompt accompaniment and catch-up accompaniment.
+```text
+prompt_length_ticks = prompt_beats * 4
+```
+
+For normal 4/4 and 2/4 cases, the current tested prompt is 8 beats. For 3/4
+pieces, we use 6 beats because RT prompt preparation requires:
+
+```text
+prompt_beats % beats_per_bar == 0
+```
+
+That is a prompt-model/data-preparation constraint, not a frontend display rule.
+
+## Playback Scheduling Policy
+
+There are three histories to keep separate:
+
+- `prompt_continuation_prompt_history.*`: prompt-model accompaniment only.
+- `prompt_continuation_raw_history.*`: full prompt + continuation accompaniment
+  history from the backend.
+- `combined.mid`: audible realtime output after local scheduling policy.
+
+The important realtime policy is in
+`PromptContinuationRealtimeService._schedule_playable`.
+
+Two modes exist:
+
+- Default historical strict mode: pair `note_on/note_off`, drop events whose
+  original ticks are already in the past.
+- Recover-late mode: schedule returned events event-by-event. If an event is late,
+  schedule it at the current tick. This mirrors the ordinary realtime service's
+  late-event behavior.
+
+Recover-late mode is enabled by:
+
+```bash
+export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
+```
+
+To avoid a burst of very old `note_on` events when the system first becomes
+ready, use:
+
+```bash
+export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
+```
+
+When this cap is set, too-old late `note_on` events are dropped from audible
+playback, but late `note_off` events are still allowed so already-sounding notes
+can be closed. Raw debug history is not affected.
+
+For demo-style runs, the current practical setting is:
+
+```bash
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
+```
 
 ## Main Files
 
-`backend.py`
+`src/streammuse/infrastructure/inference/server_lekai.py`
 
-Request-facing backend wrapper. It exposes the server contract and delegates
-runtime work to `LekaiPromptContinuationEngine`.
+HTTP entrypoint. Existing Lekai server file extended with prompt-continuation
+routes:
 
-`engine.py`
+```text
+/prompt_continuation/start
+/prompt_continuation/append_melody
+/prompt_continuation/status
+/prompt_continuation/playable
+/prompt_continuation/raw_history
+/prompt_continuation/prompt_history
+/prompt_continuation/runtime_info
+```
 
-Owns the prompt engine, continuation engine, and scheduler. This is the
-orchestrator for the two-stage inference flow.
+`src/streammuse/infrastructure/inference/prompt_continuation_http_client.py`
 
-`scheduler.py`
+Small HTTP client used by the realtime service for the endpoints above.
+
+`src/streammuse/application/services/prompt_continuation_realtime_service.py`
+
+Realtime client-side service. It handles user input, sends prompt/append requests,
+polls backend status, fetches playable accompaniment, and schedules audible model
+events. Recent changes here added trace logging and recover-late scheduling.
+
+`src/streammuse/infrastructure/inference/lekai_prompt_continuation/backend.py`
+
+Request-facing backend wrapper. Delegates runtime work to
+`LekaiPromptContinuationEngine`.
+
+`src/streammuse/infrastructure/inference/lekai_prompt_continuation/engine.py`
+
+Owns the prompt engine, continuation engine, and scheduler.
+
+`src/streammuse/infrastructure/inference/lekai_prompt_continuation/scheduler.py`
 
 Single-process background scheduler. It serializes prompt and continuation model
-calls on one worker thread while HTTP requests can keep appending melody.
+calls on one worker thread while HTTP requests can continue appending melody.
 
-Important phases:
+Phases:
 
 ```text
 idle
@@ -111,95 +192,71 @@ ready
 failed
 ```
 
-`catchup_state.py`
+`src/streammuse/infrastructure/inference/lekai_prompt_continuation/catchup_state.py`
 
-Pure beat-count logic for deciding whether accompaniment has caught up enough
-for playback.
+Pure beat-count logic for catch-up readiness.
 
-`prompt_engine.py`
+`src/streammuse/infrastructure/inference/lekai_prompt_continuation/prompt_engine.py`
 
-Loads and runs the Lekai prompt model. It converts melody events to prompt-model
-tokens, calls generation, and decodes generated accompaniment events.
+Loads and runs the Lekai prompt model. Converts melody events to prompt-model
+condition tokens and decodes generated accompaniment events.
 
-`continuation_engine.py`
+`src/streammuse/infrastructure/inference/lekai_prompt_continuation/continuation_engine.py`
 
-Thin wrapper around the Lekai continuation runtime. It receives melody
-increments and uses injected accompaniment history.
+Thin wrapper around the Lekai continuation runtime.
 
-Important tokenizer boundary:
+`src/streammuse/infrastructure/inference/lekai_prompt_continuation/token_conversion.py`
 
-- Prompt model tokenizer: `lekai_prompt_continuation/prompt_model/`.
-- Continuation model tokenizer: `lekai_continuation_model/`.
-- Older StreamMUSE Lekai tokenizer: `lekai_model/`.
+Shared request/event conversion helpers.
 
-The prompt model and continuation model do not share the same sequence order.
-The prompt model is melody-first. The current continuation checkpoint follows
-the RT `offline_model` acc-first schedule:
+`src/streammuse/infrastructure/output/midi_file.py`
+
+Writes session MIDI. Recent change: `MidiFileOutputConfig` includes
+`beats_per_bar`, and MIDI exports now write the correct time signature.
+
+`scripts/run_cli_prompt_alignment_batch.sh`
+
+Strict validation runner for `streammuse-cli` prompt-continuation sessions.
+It starts the real server, rejects fallback, runs CLI, and compares prompt output
+against RT offline reference prompt output.
+
+## Tokenizer Boundary
+
+Prompt model tokenizer:
+
+```text
+src/streammuse/infrastructure/inference/lekai_prompt_continuation/prompt_model/
+```
+
+Continuation model tokenizer:
+
+```text
+src/streammuse/infrastructure/inference/lekai_continuation_model/
+```
+
+Older StreamMUSE Lekai tokenizer:
+
+```text
+src/streammuse/infrastructure/inference/lekai_model/
+```
+
+Do not feed prompt-model beat tokens directly into continuation. The prompt model
+and continuation model do not share the same sequence layout. Prompt output must
+be decoded to events/piano-roll and re-encoded into the RT offline continuation
+layout.
+
+The continuation checkpoint follows RT offline acc-first ordering:
 
 ```text
 [BOS][TS][BPM] [bar] [beat] acc...track_acc mel...track_mel ...
 ```
 
-Therefore prompt accompaniment must be decoded to piano-roll/events and then
-re-encoded into the continuation tokenizer layout before continuation catches
-up. Do not feed prompt-model beat tokens directly into continuation.
-
-`LekaiHttpBackend` now loads continuation through
-`src/streammuse/infrastructure/inference/lekai_continuation_model`, which is
-the packaged RT `offline_model` tokenizer/model layout. The older
-`lekai_model` package is retained for compatibility with the original Lekai
-backend and old tests, but it should not be used for prompt-continuation
-quality validation.
-
-`token_conversion.py`
-
-Small payload/request helpers used by the engine and scheduler.
-
-`prompt_model/`
-
-Copied Lekai prompt-model implementation and tokenizer code.
-
-## Server Entry
-
-The HTTP entrypoint is outside this folder:
-
-```text
-src/streammuse/infrastructure/inference/server_lekai.py
-```
-
-`server_lekai.py` already existed before this integration. The prompt-
-continuation integration added:
-
-- `LekaiPromptContinuationBackend` construction.
-- `model_name == "lekai_prompt_continuation"` backend selection.
-- `/prompt_continuation/start`.
-- `/prompt_continuation/append_melody`.
-- `/prompt_continuation/status`.
-- `/prompt_continuation/playable`.
-- `/prompt_continuation/raw_history`.
-- `/prompt_continuation/prompt_history`.
-
-## Client Entry
-
-The CLI path is:
-
-```text
-src/streammuse/presentation/cli/cli.py
-```
-
-When `--model-name lekai_prompt_continuation` is selected, CLI creates:
-
-- `PromptContinuationHttpClient`
-- `PromptContinuationRealtimeService`
-
-It does not use the normal per-window `InferenceEngineFactory` path.
-
-## Useful Environment Variables
+## Strict Real-Model Environment
 
 Prompt model checkpoint:
 
 ```bash
-export LEKAI_PROMPT_CHECKPOINT_PATH=/path/to/lekai_prompt_model/model.safetensors
+export LEKAI_PROMPT_CHECKPOINT_PATH=/path/to/prompt/model.safetensors
 ```
 
 Continuation model checkpoint:
@@ -208,96 +265,136 @@ Continuation model checkpoint:
 export LEKAI_CONTINUATION_CHECKPOINT_PATH=/path/to/continuation/model.safetensors
 ```
 
-Server port:
+Recommended strict mode:
 
 ```bash
-export LEKAI_SERVER_PORT=8000
+export LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1
+export LEKAI_DISABLE_FALLBACK=1
 ```
 
-Prompt model sampling overrides:
+With these set, missing checkpoints or model-load failures fail loudly instead
+of silently producing rule-based fallback output.
+
+Important sampling knobs:
 
 ```bash
-export LEKAI_PROMPT_TOP_P=0.95
-export LEKAI_PROMPT_TOP_K=0
 export LEKAI_PROMPT_TEMPERATURE=1.1
+export LEKAI_PROMPT_TOP_K=0
+export LEKAI_PROMPT_TOP_P=0.95
+
+export LEKAI_RT_TEMPERATURE=0.8
+export LEKAI_RT_TOP_K=50
+export LEKAI_RT_TOP_P=0.98
+export LEKAI_RT_REPETITION_PENALTY=1.2
 ```
 
-Strict real-model mode:
+The batch validation script accepts these as shell variables and forwards them
+to server/CLI.
+
+## How To Run A Strict CLI Test
+
+Use `streammuse-cli` for realtime-path validation. Do not use a separate fake
+runner as evidence for frontend/backend realtime behavior.
+
+Example for one piece:
 
 ```bash
-export LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1
-export LEKAI_DISABLE_FALLBACK=1
+DEVICE=0 \
+PORT=8102 \
+IDS='6217163' \
+OUT_ROOT=realtime_runs/example_prompt_continuation \
+CLI_TEMPO=metadata \
+CLI_TEMPO_MAX=120 \
+PROMPT_BEATS=8 \
+MAX_TICKS=432 \
+PROMPT_TEMPERATURE=1.1 \
+PROMPT_TOP_K=0 \
+PROMPT_TOP_P=0.95 \
+RT_TEMPERATURE=0.8 \
+RT_TOP_K=50 \
+RT_TOP_P=0.98 \
+RT_REPETITION_PENALTY=1.2 \
+RECOVER_LATE_EVENTS=1 \
+RECOVER_LATE_MAX_TICKS=4 \
+ scripts/run_cli_prompt_alignment_batch.sh
 ```
 
-With these set, missing checkpoints, model-load failures, or any rule-based
-fallback path fail loudly instead of producing stub accompaniment.
+For 3/4 pieces, use `PROMPT_BEATS=6`.
 
-## CLI-Only Prompt Verification Shape
+The script checks:
 
-For prompt-continuation validation, use `streammuse-cli` only. Do not use a
-separate fake-offline runner as evidence for realtime behavior.
+- server health;
+- real prompt model loaded;
+- real continuation model loaded;
+- no fallback reason present;
+- prompt-stage CLI output equals offline reference by event SHA.
 
-Start server:
+## Session Output Files
 
-```bash
-export LEKAI_PROMPT_CHECKPOINT_PATH=/data/home/yuanxin/RT-accompanimentV2/external/lekai_real_time/prompt_model/checkpoints/best_model/model.safetensors
-export LEKAI_CONTINUATION_CHECKPOINT_PATH=/path/to/continuation/model.safetensors
-export LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1
-export LEKAI_DISABLE_FALLBACK=1
-export LEKAI_SERVER_PORT=8001
-uv run python -m streammuse.infrastructure.inference.server_lekai
+A `--output-type session` run writes:
+
+```text
+combined.mid
 ```
 
-Run CLI with a melody MIDI:
+Audible realtime output after local scheduling policy.
 
-```bash
-uv run streammuse-cli \
-  --input-mode midi_file \
-  --midi-file-path path/to/melody.mid \
-  --midi-file-trim-leading-rest \
-  --tempo 240 \
-  --ticks-per-beat 4 \
-  --beats-per-bar 4 \
-  --inference-type http \
-  --server-url http://127.0.0.1:8000/generate_accompaniment \
-  --model-name lekai_prompt_continuation \
-  --prompt-length-ticks 32 \
-  --generation-interval-ticks 4 \
-  --generation-length-frames 16 \
-  --output-type session \
-  --log-dir realtime_runs/0509_prompt_continuation_cli \
-  --max-ticks 80
+```text
+prompt_continuation_prompt_history.mid/json
 ```
 
-The session directory saves:
+Prompt-model accompaniment only, plus melody track in the MIDI for inspection.
+The JSON is the file used for prompt SHA comparison.
 
-- `combined.mid`: audible realtime output after catch-up scheduling.
-- `prompt_continuation_prompt_history.mid`: prompt-model accompaniment only,
-  plus the input melody track for inspection.
-- `prompt_continuation_prompt_history.json`: prompt-model accompaniment events
-  only. This is the file to compare against the RT offline prompt-stage output.
-- `prompt_continuation_raw_history.mid`: prompt plus continuation history,
-  before frontend scheduling drops past events.
-
-If the strict env vars above are set, fallback/stub output is impossible: the
-server or CLI request fails instead.
-
-Prompt alignment regression:
-
-```bash
-DEVICE=0 OUT_ROOT=realtime_runs/0509_prompt_alignment_batch_final \
-  scripts/run_cli_prompt_alignment_batch.sh
+```text
+prompt_continuation_raw_history.mid/json
 ```
 
-This runs strict `streammuse-cli` sessions and compares
-`prompt_continuation_prompt_history.json` against RT offline prompt-stage
-reference events. It should stay green before touching prompt generation or
-the prompt/continuation bridge.
+Full backend prompt + continuation history before frontend scheduling policy.
+Use this for debugging model output.
+
+```text
+prompt_continuation_*_status.json
+```
+
+Backend status snapshots for the corresponding debug histories.
+
+```text
+prompt_continuation_client_trace.jsonl
+```
+
+Optional client-side trace when `LEKAI_PROMPT_CONTINUATION_TRACE_PATH` is set.
+The batch script sets this automatically. It records start/append/status/playable
+fetches and scheduling counts.
+
+## What Changed Recently
+
+The current branch includes these key changes:
+
+- Added Lekai prompt-continuation integration and HTTP endpoints.
+- Copied packaged Lekai prompt-model code into `prompt_model/`.
+- Switched continuation to RT offline tokenizer/model layout.
+- Added strict prompt alignment comparison against RT offline reference.
+- Split prompt sampling params from continuation sampling params.
+- Added repeated status/playable polling so the client can continue fetching
+  after more melody arrives.
+- Preserved note pairs in MIDI output and closed same-pitch retriggers.
+- Added recover-late event scheduling for prompt-continuation audible playback.
+- Added `RECOVER_LATE_MAX_TICKS` policy for dropping very old audible `note_on`
+  events while preserving raw history.
+- Added correct MIDI time-signature export through `beats_per_bar`.
+- Added local trace output for prompt-continuation client scheduling.
+- Ignored generated realtime/test-set/user-sample directories in `.gitignore`.
 
 ## Current Caveats
 
-- `scripts/run_lekai_batch_client.py` still needs its model-name allowlist
-  updated before it can batch-run `lekai_prompt_continuation`.
-- Real prompt + continuation quality must be checked with GPU and checkpoints.
-- The current protocol is HTTP polling. WebSocket streaming is still an open
-  design choice.
+- Prompt alignment can be exact, but continuation output is stochastic unless
+  seeds/sampling are fixed and the same runtime path is used.
+- Real frontend behavior still needs a clear playback policy: when to start
+  sounding, how much late material to recover, and how to handle user timing
+  jitter.
+- `midi_file` tests simulate user input under controlled timing. Real MIDI-device
+  latency should still be tested before claiming live performance reliability.
+- `RECOVER_LATE_MAX_TICKS` is a policy knob, not a model fix. Tune it based on
+  listening tests.
+- Generated outputs under `realtime_runs/` are not tracked by git.
