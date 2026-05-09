@@ -33,6 +33,9 @@ venv/
 .nfs*
 local_tmp/
 realtime_runs/
+realtime_test_sets/
+user_samples_0419/
+user_samples_0419_match/
 
 # Caches
 .cache/

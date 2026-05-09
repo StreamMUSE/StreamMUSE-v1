@@ -13,7 +13,9 @@ PROMPT_CKPT=/data/home/yuanxin/RT-accompanimentV2/external/lekai_real_time/promp
 CONT_CKPT=/data/home/yuanxin/RT-accompanimentV2/checkpoints-resume/epoch_15_0307_1858/model.safetensors
 DEVICE=${DEVICE:-0}
 MAX_TICKS=${MAX_TICKS:-96}
+PROMPT_BEATS=${PROMPT_BEATS:-8}
 CLI_TEMPO=${CLI_TEMPO:-240}
+CLI_TEMPO_MAX=${CLI_TEMPO_MAX:-}
 SAMPLING_TEMPERATURE=${SAMPLING_TEMPERATURE:-1.1}
 SAMPLING_TOP_K=${SAMPLING_TOP_K:-0}
 SAMPLING_TOP_P=${SAMPLING_TOP_P:-0.95}
@@ -24,6 +26,7 @@ RT_TEMPERATURE=${RT_TEMPERATURE:-$SAMPLING_TEMPERATURE}
 RT_TOP_K=${RT_TOP_K:-$SAMPLING_TOP_K}
 RT_TOP_P=${RT_TOP_P:-$SAMPLING_TOP_P}
 RT_REPETITION_PENALTY=${RT_REPETITION_PENALTY:-1.0}
+RECOVER_LATE_EVENTS=${RECOVER_LATE_EVENTS:-1}
 
 mkdir -p "$OUT_ROOT/server"
 
@@ -44,6 +47,7 @@ for id in "${IDS[@]}"; do
     --reference \
     --device cuda \
     --seed 42 \
+    --prompt-beats "$PROMPT_BEATS" \
     --top-p "$PROMPT_TOP_P" \
     --top-k "$PROMPT_TOP_K" \
     --temperature "$PROMPT_TEMPERATURE"
@@ -72,8 +76,16 @@ PY
   if [[ "$cli_tempo" == "metadata" ]]; then
     cli_tempo="$bpm"
   fi
+  if [[ -n "$CLI_TEMPO_MAX" ]]; then
+    cli_tempo=$(python - <<PY
+tempo=float("$cli_tempo")
+limit=float("$CLI_TEMPO_MAX")
+print(int(min(tempo, limit)))
+PY
+)
+  fi
 
-  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar cli_tempo=$cli_tempo ==="
+  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} recover_late_events=$RECOVER_LATE_EVENTS ==="
   cleanup_server
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:$PORT | xargs -r kill || true
@@ -94,7 +106,7 @@ PY
     export LEKAI_DISABLE_FALLBACK=1
     export LEKAI_PROMPT_SEED=42
     export LEKAI_SEED=42
-    export LEKAI_PROMPT_CONDITION_BEATS=8
+    export LEKAI_PROMPT_CONDITION_BEATS="$PROMPT_BEATS"
     export LEKAI_PROMPT_TOP_P="$PROMPT_TOP_P"
     export LEKAI_PROMPT_TOP_K="$PROMPT_TOP_K"
     export LEKAI_PROMPT_TEMPERATURE="$PROMPT_TEMPERATURE"
@@ -144,6 +156,8 @@ print('runtime ok:', r.get('prompt_mode'), r.get('mode'))
 PY
 
   echo "=== $id: streammuse-cli ==="
+  LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS="$RECOVER_LATE_EVENTS" \
+  LEKAI_PROMPT_CONTINUATION_TRACE_PATH="$OUT_ROOT/$id/prompt_continuation_client_trace.jsonl" \
   uv run streammuse-cli \
     --input-mode midi_file \
     --midi-file-path "$OUT_ROOT/$id/${id}_npz_melody_input.mid" \
@@ -154,7 +168,7 @@ PY
     --server-url "http://127.0.0.1:$PORT/generate_accompaniment" \
     --model-name lekai_prompt_continuation \
     --inference-mode sliding_window \
-    --prompt-length-ticks 32 \
+    --prompt-length-ticks "$((PROMPT_BEATS * 4))" \
     --generation-interval-ticks 4 \
     --generation-length-frames 4 \
     --timeout-s 120 \

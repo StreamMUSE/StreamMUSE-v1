@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import threading
 import time
@@ -109,6 +111,22 @@ class PromptContinuationRealtimeService:
         self._last_playable_marker: tuple[int, int, int] | None = None
         self._protocol_started = False
         self._append_sent_after_prompt = False
+        self._trace_path = os.environ.get("LEKAI_PROMPT_CONTINUATION_TRACE_PATH")
+        self._recover_late_events = os.environ.get(
+            "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS",
+            "",
+        ).lower() in {"1", "true", "yes", "on"}
+
+    def _trace(self, kind: str, **payload: Any) -> None:
+        if not self._trace_path:
+            return
+        row = {"timestamp": self._now(), "kind": kind, **payload}
+        try:
+            with open(self._trace_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, sort_keys=True) + "\n")
+        except Exception:
+            # Tracing must never affect realtime playback.
+            return
 
     @property
     def running(self) -> bool:
@@ -149,6 +167,13 @@ class PromptContinuationRealtimeService:
             if action is not None:
                 try:
                     if action.kind == "start":
+                        self._trace(
+                            "start_send",
+                            observed_until_tick=action.observed_until_tick,
+                            melody_event_count=len(action.melody_events),
+                            prompt_length_ticks=self._prompt_length_ticks,
+                            generation_interval_ticks=self._generation_interval_ticks,
+                        )
                         self._client.start(
                             melody_events=action.melody_events,
                             prompt_length_ticks=self._prompt_length_ticks,
@@ -158,6 +183,11 @@ class PromptContinuationRealtimeService:
                         self._protocol_started = True
                         self._output.output_status("prompt_running", "Prompt-continuation start sent")
                     elif action.kind == "append":
+                        self._trace(
+                            "append_send",
+                            observed_until_tick=action.observed_until_tick,
+                            melody_event_count=len(action.melody_events),
+                        )
                         self._client.append_melody(
                             melody_events=action.melody_events,
                             observed_until_tick=action.observed_until_tick,
@@ -173,6 +203,18 @@ class PromptContinuationRealtimeService:
             if self._protocol_started and self._append_sent_after_prompt:
                 try:
                     status = self._client.status()
+                    self._trace(
+                        "status",
+                        phase=status.get("phase"),
+                        is_running=status.get("is_running"),
+                        is_playback_ready=status.get("is_playback_ready"),
+                        melody_history_beats=status.get("melody_history_beats"),
+                        accompaniment_history_beats=status.get("accompaniment_history_beats"),
+                        target_playable_accompaniment_beats=status.get("target_playable_accompaniment_beats"),
+                        beats_needed_for_playback=status.get("beats_needed_for_playback"),
+                        continuation_calls=status.get("continuation_calls"),
+                        accompaniment_event_count=status.get("accompaniment_event_count"),
+                    )
                     if status.get("is_failed"):
                         self._output.output_status("error", f"Prompt-continuation failed: {status.get('error')}")
                     elif status.get("is_playback_ready"):
@@ -183,6 +225,15 @@ class PromptContinuationRealtimeService:
                         )
                         if marker != self._last_playable_marker:
                             accompaniment, playable_status = self._client.playable()
+                            self._trace(
+                                "playable_fetch",
+                                accompaniment_event_count=len(accompaniment),
+                                status_phase=playable_status.get("phase"),
+                                status_melody_history_beats=playable_status.get("melody_history_beats"),
+                                status_accompaniment_history_beats=playable_status.get("accompaniment_history_beats"),
+                                status_beats_needed_for_playback=playable_status.get("beats_needed_for_playback"),
+                                status_continuation_calls=playable_status.get("continuation_calls"),
+                            )
                             self._playable_q.put((accompaniment, playable_status))
                             self._last_playable_marker = marker
                             self._output.output_status("ready", "Prompt-continuation accompaniment is playable")
@@ -239,6 +290,10 @@ class PromptContinuationRealtimeService:
         self._last_append_observed_tick = observed_until_tick
 
     def _schedule_playable(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
+        if self._recover_late_events:
+            self._schedule_playable_recover_late(accompaniment, current_tick=int(current_tick))
+            return
+
         scheduled = 0
         dropped_past = 0
         skipped_duplicate = 0
@@ -291,6 +346,83 @@ class PromptContinuationRealtimeService:
             f"clipped {clipped_sustains} sustaining note(s); "
             f"skipped {skipped_duplicate} duplicate note(s); "
             f"skipped {skipped_unpaired} unpaired event(s).",
+        )
+        self._trace(
+            "schedule_playable",
+            current_tick=int(current_tick),
+            mode="paired_future_only",
+            input_event_count=len(accompaniment),
+            scheduled_event_count=scheduled,
+            dropped_past=dropped_past,
+            clipped_sustains=clipped_sustains,
+            skipped_duplicate=skipped_duplicate,
+            skipped_unpaired=skipped_unpaired,
+        )
+
+    def _schedule_playable_recover_late(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
+        """Schedule playable history event-by-event, recovering late events now.
+
+        This mirrors the ordinary realtime service behavior: if a model event
+        arrives after its musical tick, schedule it at the current tick instead
+        of discarding it. The pair-gated path is safer for strict MIDI note
+        pairing, but it can starve long notes whose note_off arrives after the
+        note_on has already passed.
+        """
+        scheduled = 0
+        skipped_duplicate = 0
+        late_event_count = 0
+        placeholder_count = 0
+        current_tick = int(current_tick)
+
+        for event in sorted(accompaniment, key=lambda ev: (int(ev.tick), str(ev.event_type.value), int(ev.pitch))):
+            if event.is_placeholder or event.pitch == -1:
+                placeholder_count += 1
+                continue
+            event_key = (
+                int(event.tick),
+                int(event.pitch),
+                str(event.event_type.value),
+                int(event.velocity),
+            )
+            if event_key in self._scheduled_model_event_keys:
+                skipped_duplicate += 1
+                continue
+
+            schedule_tick = int(event.tick) if int(event.tick) >= current_tick else current_tick
+            if int(event.tick) < current_tick:
+                late_event_count += 1
+
+            model_event = MusicalEvent(
+                tick=event.tick,
+                pitch=event.pitch,
+                event_type=event.event_type,
+                velocity=event.velocity,
+                channel=event.channel,
+                program=event.program,
+                is_placeholder=event.is_placeholder,
+                source="model",
+                backup_level=max(0, int(event.tick) - current_tick),
+            )
+            self._scheduler.schedule(model_event, schedule_tick)
+            self._scheduled_model_event_keys.add(event_key)
+            scheduled += 1
+
+        self._output.output_status(
+            "ready",
+            f"Scheduled {scheduled} playable accompaniment event(s); "
+            f"recovered {late_event_count} late event(s); "
+            f"skipped {skipped_duplicate} duplicate event(s); "
+            f"skipped {placeholder_count} placeholder event(s).",
+        )
+        self._trace(
+            "schedule_playable",
+            current_tick=current_tick,
+            mode="recover_late_events",
+            input_event_count=len(accompaniment),
+            scheduled_event_count=scheduled,
+            late_event_count=late_event_count,
+            skipped_duplicate=skipped_duplicate,
+            placeholder_count=placeholder_count,
         )
 
     @staticmethod
