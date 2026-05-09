@@ -261,12 +261,11 @@ class RealTimeMusicService:
             for ev in self._scheduler.get_events_at_tick(tick):
                 self._output.output_event(ev, source=ev.source)
 
-            # 8. Beat tail (tick 4n-1, n≥1): send buffered events for next beat.
+            # 8. Beat tail (tick 4n-1, n≥1): always send for next beat, even if no new events.
             ticks_per_beat = self._tempo.ticks_per_beat
             if tick > 0 and (tick % ticks_per_beat) == (ticks_per_beat - 1):
-                if notes_for_next_request:
-                    self._inference_request_queue.put((tick + 1, notes_for_next_request))
-                    notes_for_next_request = []
+                self._inference_request_queue.put((tick + 1, notes_for_next_request))
+                notes_for_next_request = []
 
             tick += 1
 
