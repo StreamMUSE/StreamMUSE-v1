@@ -92,14 +92,18 @@ def test_real_time_music_service_emits_ticks_and_user_events():
 
 
 @pytest.mark.parametrize(
-    ("generation_interval_ticks", "generation_length_frames", "should_raise"),
+    ("model_name", "generation_interval_ticks", "generation_length_frames", "should_raise"),
     [
-        (3, 16, False),
-        (2, 20, False),
-        (2, 17, True),
+        ("lekai", 3, 16, False),
+        ("lekai", 2, 20, False),
+        ("lekai", 2, 17, True),
+        ("lekai_prompt_continuation", 3, 16, False),
+        ("lekai_prompt_continuation", 2, 20, False),
+        ("lekai_prompt_continuation", 2, 17, True),
     ],
 )
 def test_http_lekai_validates_generation_length_only(
+    model_name,
     generation_interval_ticks,
     generation_length_frames,
     should_raise,
@@ -108,7 +112,7 @@ def test_http_lekai_validates_generation_length_only(
         inference=InferenceConfig(
             type="http",
             server_generate_url="http://x/generate_accompaniment",
-            model_name="lekai",
+            model_name=model_name,
             generation_interval_ticks=generation_interval_ticks,
             generation_length_frames=generation_length_frames,
         )
@@ -163,4 +167,3 @@ def test_output_factory_propagates_inference_log_detail(tmp_path, output_type):
 
     sink = OutputSinkFactory.create(cfg, session_manager=session_manager)
     assert getattr(sink, "inference_log_detail", "summary") == "full"
-

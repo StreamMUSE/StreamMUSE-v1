@@ -72,6 +72,79 @@ def test_non_lekai_skips_multiple_of_4_validation():
     assert resp.status_code == 200
 
 
+def test_prompt_continuation_model_routes_successfully():
+    payload = _base_generate_payload()
+    payload["model_name"] = "lekai_prompt_continuation"
+    resp = client.post("/generate_accompaniment", json=payload)
+    assert resp.status_code == 200
+    assert "accompaniment" in resp.json()
+
+
+def test_prompt_continuation_model_uses_lekai_length_validation():
+    payload = _base_generate_payload()
+    payload["model_name"] = "lekai_prompt_continuation"
+    payload["generation_length_frames"] = 10
+    resp = client.post("/generate_accompaniment", json=payload)
+    assert resp.status_code == 422
+    assert "multiple of 4" in resp.text
+
+
+def test_prompt_continuation_poll_endpoints_contract():
+    client.post("/clear_history")
+
+    start_resp = client.post(
+        "/prompt_continuation/start",
+        json={
+            "melody_notes": [{"type": "note_on", "pitch": 60, "tick": 0}],
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "observed_until_tick": 32,
+            "inference_mode": "sliding_window",
+            "model_name": "lekai_prompt_continuation",
+            "checkpoint_path": None,
+        },
+    )
+    assert start_resp.status_code == 200
+    start_data = start_resp.json()
+    assert start_data["phase"] in {"prompt_running", "catchup_running", "ready"}
+    assert start_data["prompt_length_ticks"] == 32
+    assert start_data["generation_interval_ticks"] == 4
+
+    append_resp = client.post(
+        "/prompt_continuation/append_melody",
+        json={
+            "melody_notes": [{"type": "note_on", "pitch": 62, "tick": 44}],
+            "observed_until_tick": 44,
+        },
+    )
+    assert append_resp.status_code == 200
+    assert append_resp.json()["melody_history_beats"] >= 8
+
+    status_resp = client.get("/prompt_continuation/status")
+    assert status_resp.status_code == 200
+    assert "beats_needed_for_playback" in status_resp.json()
+
+    playable_resp = client.get("/prompt_continuation/playable")
+    assert playable_resp.status_code == 200
+    playable_data = playable_resp.json()
+    assert "accompaniment" in playable_data
+    assert "status" in playable_data
+
+
+def test_prompt_continuation_start_rejects_wrong_model_name():
+    resp = client.post(
+        "/prompt_continuation/start",
+        json={
+            "melody_notes": [],
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "model_name": "lekai",
+        },
+    )
+    assert resp.status_code == 422
+    assert "lekai_prompt_continuation" in resp.text
+
+
 def test_inject_clear_and_status():
     inject_resp = client.post(
         "/inject_notes",

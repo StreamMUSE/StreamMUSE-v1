@@ -18,10 +18,10 @@ class InferenceEngineFactory:
         cfg = app_config.inference
 
         if cfg.type == "http":
-            if cfg.model_name == "lekai":
+            if cfg.model_name in {"lekai", "lekai_prompt_continuation"}:
                 if int(cfg.generation_length_frames) % 4 != 0:
                     raise ValueError(
-                        f"lekai model requires --generation-length-frames to be a multiple of 4 "
+                        f"{cfg.model_name} model requires --generation-length-frames to be a multiple of 4 "
                         f"(got {cfg.generation_length_frames}). "
                         f"Recommended: --generation-length-frames 20"
                     )
@@ -49,4 +49,3 @@ class InferenceEngineFactory:
             )
 
         raise ValueError(f"Unknown inference type: {cfg.type}")
-

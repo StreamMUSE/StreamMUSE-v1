@@ -171,9 +171,7 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
 
     class _DummyAdapter:
         BAR_TOKEN = 255
-
-        def generate_from_beats(self, *args, **kwargs):
-            return [[169]]
+        tokenizer = object()
 
     def _fake_from_checkpoint(checkpoint_path: str, device: str, dtype=None, use_cache: bool = True):
         _ = checkpoint_path, dtype, use_cache
@@ -183,7 +181,7 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
         return _DummyAdapter()
 
     monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.PianoLLaMAAdapter.from_checkpoint",
+        "streammuse.infrastructure.inference.lekai_continuation_model.inference_adapter.PianoContinuationAdapter.from_checkpoint",
         _fake_from_checkpoint,
     )
     monkeypatch.setattr(
@@ -191,8 +189,9 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
         lambda ticks_per_beat: object(),
     )
     monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.my_tokenizer.PianoRollTokenizer",
-        lambda patch_h, patch_w: object(),
+        LekaiHttpBackend,
+        "_warmup_model",
+        lambda self, warmup_steps: 1.0,
     )
 
     backend = LekaiHttpBackend()
@@ -267,6 +266,125 @@ def test_generate_recoverable_shape_mismatch_falls_back_to_rule_based(monkeypatc
 
     assert isinstance(accompaniment, list)
     assert accompaniment
+
+
+def test_interleaved_prompt_uses_standard_offline_schedule_tokens(monkeypatch):
+    backend = LekaiHttpBackend()
+
+    class _DummyAdapter:
+        model = object()
+        tokenizer = object()
+        device = "cpu"
+        use_cache = True
+
+    class _DummyConverter:
+        def events_to_pianoroll(self, events, start_tick, end_tick, active_pitches=None):
+            _ = events, start_tick, end_tick, active_pitches
+            return np.zeros((2, 88, 4), dtype=np.float32)
+
+        def pianoroll_to_events(self, pianoroll, start_tick, close_at_end=False, active_pitches=None):
+            _ = pianoroll, start_tick, close_at_end, active_pitches
+            return [], set()
+
+    class _DummyTokenizer:
+        def image_to_patch_tokens(self, beat_pr, strict_mode=True):
+            _ = beat_pr, strict_mode
+            return np.array([[1]], dtype=np.int64)
+
+        def compress_tokens(self, tokens_matrix, end_marker):
+            _ = tokens_matrix
+            return np.array([99, int(end_marker)], dtype=np.int64)
+
+    captured: list[list[int]] = []
+
+    def _capture_prompt(prompt_tokens, **kwargs):
+        _ = kwargs
+        captured.append([int(x) for x in prompt_tokens.tolist()])
+        return [170]
+
+    backend._model_adapter = _DummyAdapter()
+    backend._converter = _DummyConverter()
+    backend._tokenizer = _DummyTokenizer()
+    backend._melody_history = [_note_on(60, 0)]
+    backend._accompaniment_history = [_note_on(48, 0)]
+
+    monkeypatch.setattr(backend, "_generate_part1_tokens_from_prompt", _capture_prompt)
+    monkeypatch.setattr(
+        backend,
+        "_decode_acc_beat_tokens",
+        lambda beat_tokens: np.zeros((2, 88, 4), dtype=np.float32),
+    )
+    monkeypatch.setenv("LEKAI_DEFAULT_BPM", "120")
+    monkeypatch.setenv("LEKAI_TIME_SIGNATURE_INDEX", "4")
+
+    backend._generate_with_interleaved_prompt(
+        generation_start_tick=8,
+        generation_interval_ticks=4,
+        generation_length_frames=4,
+    )
+
+    assert captured
+    # Standard offline schedule:
+    # [BOS, TS, BPM] [bar] [beat] [acc...170] [mel...171] [beat] ... [target beat]
+    assert captured[0] == [
+        257,
+        263,
+        265,
+        255,
+        172,
+        99,
+        170,
+        99,
+        171,
+        172,
+        99,
+        170,
+        99,
+        171,
+        172,
+    ]
+
+
+def test_measure_beats_follow_time_signature_index(monkeypatch):
+    backend = LekaiHttpBackend()
+
+    assert backend._measure_beats_from_time_signature_idx(0) == 4
+    assert backend._measure_beats_from_time_signature_idx(2) == 2
+    assert backend._measure_beats_from_time_signature_idx(3) == 3
+    assert backend._measure_beats_from_time_signature_idx(9) == 4
+
+    monkeypatch.setenv("LEKAI_MEASURE_BEATS", "5")
+    assert backend._measure_beats_from_time_signature_idx(2) == 5
+
+
+def test_encode_beat_tokens_appends_track_marker_for_empty_beat():
+    backend = LekaiHttpBackend()
+
+    class _DummyConverter:
+        def events_to_pianoroll(self, events, start_tick, end_tick, active_pitches=None):
+            _ = events, start_tick, end_tick, active_pitches
+            return np.zeros((2, 88, 4), dtype=np.float32)
+
+    class _DummyTokenizer:
+        def image_to_patch_tokens(self, beat_pr, strict_mode=True):
+            _ = beat_pr, strict_mode
+            return np.zeros((1, 88), dtype=np.int64)
+
+        def compress_tokens(self, tokens_matrix, end_marker):
+            _ = tokens_matrix, end_marker
+            return np.array([169], dtype=np.int64)
+
+    backend._converter = _DummyConverter()
+    backend._tokenizer = _DummyTokenizer()
+
+    tokens, _ = backend._encode_beat_tokens(
+        events=[],
+        beat_start_tick=0,
+        active_pitches=set(),
+        end_marker=171,
+    )
+
+    assert tokens.tolist() == [169, 171]
 
 
 def test_clear_history_returns_previous_histories_before_clearing():

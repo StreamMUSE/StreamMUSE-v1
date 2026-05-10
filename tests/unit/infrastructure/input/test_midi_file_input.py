@@ -31,6 +31,33 @@ def test_midi_file_input_parses_and_emits_events(tmp_path):
     assert all(e.tick == 0 for e in events)
 
 
+def test_midi_file_input_preserves_overlapping_same_pitch_notes(tmp_path):
+    mid = mido.MidiFile(ticks_per_beat=220)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("note_on", note=74, velocity=64, time=55))
+    track.append(mido.Message("note_on", note=74, velocity=64, time=55))
+    track.append(mido.Message("note_off", note=74, velocity=0, time=55))
+    track.append(mido.Message("note_off", note=74, velocity=0, time=0))
+
+    path = tmp_path / "overlap_same_pitch.mid"
+    mid.save(str(path))
+
+    notes, _resolution, _max_tick = MidiFileInput._midi_to_notes(
+        str(path),
+        beat_div=220,
+        min_pitch=0,
+        max_pitch=127,
+        program=None,
+        max_tick=None,
+    )
+
+    assert notes == [
+        {"pitch": 74, "tick": 55, "duration": 110},
+        {"pitch": 74, "tick": 110, "duration": 55},
+    ]
+
+
 def test_midi_file_input_delay_ticks_sleeps(tmp_path):
     mid = mido.MidiFile(ticks_per_beat=480)
     track = mido.MidiTrack()
@@ -115,3 +142,33 @@ def test_midi_file_input_start_tick_uses_absolute_timing(tmp_path):
 
     assert sleeps
     assert sleeps[0] == pytest.approx(16 * cfg.seconds_per_tick())
+
+
+def test_midi_file_input_trim_leading_rest_starts_from_first_retained_note(tmp_path):
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+
+    # Output tick 16 note with a long leading rest.
+    track.append(mido.Message("note_on", note=64, velocity=64, time=1920))
+    track.append(mido.Message("note_off", note=64, velocity=0, time=120))
+
+    path = tmp_path / "leading_rest.mid"
+    mid.save(str(path))
+
+    sleeps = []
+
+    def fake_sleep(dt: float) -> None:
+        sleeps.append(dt)
+
+    cfg = MidiFileInputConfig(
+        bpm=120.0,
+        ticks_per_beat=4,
+        trim_leading_rest=True,
+    )
+    src = MidiFileInput(str(path), config=cfg, now=lambda: 0.0, sleep=fake_sleep)
+    events = list(src.read_events())
+
+    assert [e.pitch for e in events] == [64, 64]
+    assert sleeps
+    assert sleeps[0] == pytest.approx(1 * cfg.seconds_per_tick())

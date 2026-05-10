@@ -42,6 +42,7 @@ class InputSourceFactory:
                     ticks_per_beat=int(tempo.ticks_per_beat),
                     delay_ticks=int(cfg.midi_file_delay_ticks),
                     start_tick=(int(cfg.injection_length_ticks) if cfg.injection_file else 0),
+                    trim_leading_rest=bool(cfg.midi_file_trim_leading_rest),
                 ),
             )
 
@@ -52,4 +53,3 @@ class InputSourceFactory:
             return queue_input if queue_input is not None else QueueInput()
 
         raise ValueError(f"Unknown input type: {cfg.type}")
-

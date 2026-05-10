@@ -21,6 +21,7 @@ class MidiFileInputConfig:
     program: Optional[int] = None
     max_tick: Optional[int] = None
     start_tick: int = 0
+    trim_leading_rest: bool = False
 
     def seconds_per_tick(self) -> float:
         return (60.0 / float(self.bpm)) / float(self.ticks_per_beat)
@@ -74,7 +75,7 @@ class MidiFileInput:
         ticks_per_output_tick = resolution / float(beat_div)
 
         notes: List[Dict[str, int]] = []
-        active: Dict[Tuple[int, int], int] = {}
+        active: Dict[Tuple[int, int], List[int]] = {}
 
         for track in midi_file.tracks:
             current_tick = 0
@@ -91,14 +92,16 @@ class MidiFileInput:
                         continue
                     if min_pitch <= int(msg.note) <= max_pitch:
                         output_tick = int(round(current_tick / ticks_per_output_tick))
-                        active[(int(msg.channel), int(msg.note))] = output_tick
+                        active.setdefault((int(msg.channel), int(msg.note)), []).append(output_tick)
                     continue
 
                 if msg.type == "note_off" or (msg.type == "note_on" and int(msg.velocity) == 0):
                     key = (int(msg.channel), int(msg.note))
-                    if key not in active:
+                    if key not in active or not active[key]:
                         continue
-                    start_tick = active.pop(key)
+                    start_tick = active[key].pop(0)
+                    if not active[key]:
+                        active.pop(key, None)
                     output_tick = int(round(current_tick / ticks_per_output_tick))
                     duration = max(1, output_tick - start_tick)
                     notes.append(
@@ -125,12 +128,15 @@ class MidiFileInput:
 
         # Build schedule: tick -> list[MusicalEvent]
         schedule: Dict[int, List[MusicalEvent]] = {}
-        start_tick = int(self._config.start_tick)
+        configured_start_tick = int(self._config.start_tick)
+        first_note_tick = min((int(n["tick"]) for n in notes), default=0)
+        start_tick = max(configured_start_tick, first_note_tick) if self._config.trim_leading_rest else configured_start_tick
         start_offset = int(self._config.delay_ticks)
         effective_notes = [n for n in notes if int(n["tick"]) >= start_tick]
 
         for n in effective_notes:
-            onset = int(n["tick"]) + start_offset
+            relative_tick = int(n["tick"]) - start_tick if self._config.trim_leading_rest else int(n["tick"])
+            onset = relative_tick + start_offset
             offset = onset + int(n["duration"])
 
             schedule.setdefault(onset, []).append(
@@ -166,4 +172,3 @@ class MidiFileInput:
 
     def close(self) -> None:
         self._closed = True
-

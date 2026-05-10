@@ -4,6 +4,7 @@ import argparse
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 
 from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.infrastructure.inference.http_client import HttpInferenceClient, HttpInferenceClientConfig
@@ -101,6 +102,16 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Extract BPM from MIDI file for accurate model conditioning.
+    midi_bpm: Optional[int] = None
+    try:
+        from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
+        _pm, _meta = MidiConverter(ticks_per_beat=int(args.ticks_per_beat)).load_midi(str(midi_file))
+        if _meta is not None:
+            midi_bpm = int(round(float(_meta["bpm"])))
+    except Exception:
+        pass
+
     notes, _res, max_tick = MidiFileInput._midi_to_notes(
         str(midi_file),
         beat_div=int(args.ticks_per_beat),
@@ -130,8 +141,12 @@ def main() -> int:
             inference_mode="sliding_window",
             generation_interval_ticks=int(args.generation_interval_ticks),
             checkpoint_path=None,
+            bpm=midi_bpm,
+            input_file=str(midi_file),
         )
     )
+    if midi_bpm is not None:
+        print(f"[fake-rt] detected BPM={midi_bpm} from MIDI file")
 
     try:
         client.clear_history()
@@ -176,9 +191,12 @@ def main() -> int:
             last_generation_tick = tick
 
     combined_path = output_dir / f"{midi_file.stem}_fake_realtime_combined.mid"
+    # Use BPM extracted from MIDI file so that the exported melody timing matches ground truth.
+    # Falling back to args.tempo only when the MIDI has no tempo event.
+    export_bpm = float(midi_bpm if midi_bpm is not None else args.tempo)
     export_midi(
         combined_path,
-        bpm=float(args.tempo),
+        bpm=export_bpm,
         ticks_per_beat=int(args.ticks_per_beat),
         melody_events=[ev for ev in melody_events if start_tick <= ev.tick < max_ticks],
         model_events=model_events,
@@ -188,6 +206,7 @@ def main() -> int:
         "midi_file_path": str(midi_file),
         "server_url": str(args.server_url),
         "tempo": float(args.tempo),
+        "midi_bpm": midi_bpm,
         "ticks_per_beat": int(args.ticks_per_beat),
         "generation_interval_ticks": int(args.generation_interval_ticks),
         "generation_length_frames": int(args.generation_length_frames),

@@ -20,11 +20,11 @@ class PianoLLaMAAdapter:
     Takes beat tokens directly as input and generates accompaniment.
     """
     
-    # Token constants (from PianoDataset)
-    BOS_TOKEN = 1
+    # Token constants — must match config.py (PianoDatasetConfig defaults).
+    BOS_TOKEN = 257
     BAR_TOKEN = 255
-    BPM_OFFSET_ID = 5
-    TIME_SIG_OFFSET_ID = 0
+    BPM_OFFSET_ID = 264   # 259 + 5
+    TIME_SIG_OFFSET_ID = 259
     PAD_MARKER = 173
     
     def __init__(

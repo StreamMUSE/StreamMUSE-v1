@@ -19,6 +19,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "midi_device_name": None,
         "midi_file_path": None,
         "midi_file_delay_ticks": 0,
+        "midi_file_trim_leading_rest": False,
         "injection_file": None,
         "injection_length": 0,
         "inject_acc_file": None,
@@ -36,6 +37,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "model_max_seq_len_frames": 96,
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
+        "prompt_length_ticks": 32,
         "max_ticks": None,
     }
     base.update(overrides)
@@ -51,6 +53,7 @@ def test_parse_args_defaults() -> None:
     assert config.tempo.ticks_per_beat == 4
     assert config.tempo.beats_per_bar == 4
     assert config.input.type == "midi_device"
+    assert config.input.midi_file_trim_leading_rest is False
     assert config.input.injection_file is None
     assert config.input.injection_length_ticks == 0
     assert config.input.injection_acc_file is None
@@ -116,6 +119,7 @@ def test_args_to_config_midi_file() -> None:
         input_mode="midi_file",
         midi_file_path="/path/to/song.mid",
         midi_file_delay_ticks=8,
+        midi_file_trim_leading_rest=True,
         output_type="midi_file",
         midi_file_output_path="/path/to/output.mid",
         inference_log_detail="full",
@@ -126,6 +130,7 @@ def test_args_to_config_midi_file() -> None:
     assert config.input.type == "midi_file"
     assert config.input.midi_file_path == "/path/to/song.mid"
     assert config.input.midi_file_delay_ticks == 8
+    assert config.input.midi_file_trim_leading_rest is True
     assert config.output.type == "midi_file"
     assert config.output.midi_file_output_path == "/path/to/output.mid"
     assert config.output.inference_log_detail == "full"
@@ -160,3 +165,12 @@ def test_args_to_config_mode_matrix(input_mode: str, output_type: str) -> None:
     config = args_to_config(args)
     assert config.input.type == input_mode
     assert config.output.type == output_type
+
+
+def test_args_to_config_prompt_continuation_model_name() -> None:
+    args = _make_args(model_name="lekai_prompt_continuation", prompt_length_ticks=48)
+
+    config = args_to_config(args)
+
+    assert config.inference.model_name == "lekai_prompt_continuation"
+    assert config.inference.prompt_length_ticks == 48

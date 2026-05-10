@@ -19,6 +19,7 @@ class SessionLoggerOutputSink:
         inference_log_detail: str = "summary",
         bpm: float = 120.0,
         ticks_per_beat: int = 4,
+        beats_per_bar: int = 4,
     ) -> None:
         self.session_dir = Path(session_dir)
         self.include_midi = include_midi
@@ -35,6 +36,7 @@ class SessionLoggerOutputSink:
             midi_config = MidiFileOutputConfig(
                 bpm=float(bpm),
                 ticks_per_beat=int(ticks_per_beat),
+                beats_per_bar=int(beats_per_bar),
                 output_path=str(self.session_dir / "combined.mid"),
             )
             self.midi_sink = MidiFileOutputSink(midi_config)

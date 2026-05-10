@@ -39,7 +39,13 @@ def resolve_device(preference: str = "auto") -> str:
 def resolve_dtype(device: str, preference: str = "auto") -> torch.dtype:
     """Resolve dtype based on device and preference."""
     pref = (preference or "auto").strip().lower()
-    if pref not in {"auto", "float32", "float16"}:
+    aliases = {
+        "fp32": "float32",
+        "fp16": "float16",
+        "bf16": "bfloat16",
+    }
+    pref = aliases.get(pref, pref)
+    if pref not in {"auto", "float32", "float16", "bfloat16"}:
         raise ValueError(f"Unsupported dtype preference: {preference}")
 
     if pref == "float32":
@@ -48,6 +54,10 @@ def resolve_dtype(device: str, preference: str = "auto") -> torch.dtype:
         if device == "cpu":
             raise RuntimeError("float16 is not supported for CPU inference in this runtime policy")
         return torch.float16
+    if pref == "bfloat16":
+        if device != "cuda":
+            raise RuntimeError("bfloat16 is only supported for CUDA inference in this runtime policy")
+        return torch.bfloat16
 
     if device in {"cuda", "mps"}:
         return torch.float16
@@ -57,6 +67,8 @@ def resolve_dtype(device: str, preference: str = "auto") -> torch.dtype:
 def dtype_to_name(dtype: torch.dtype) -> str:
     if dtype == torch.float16:
         return "float16"
+    if dtype == torch.bfloat16:
+        return "bfloat16"
     if dtype == torch.float32:
         return "float32"
     return str(dtype)
