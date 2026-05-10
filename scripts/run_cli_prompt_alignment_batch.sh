@@ -28,6 +28,7 @@ RT_TOP_P=${RT_TOP_P:-$SAMPLING_TOP_P}
 RT_REPETITION_PENALTY=${RT_REPETITION_PENALTY:-1.0}
 RECOVER_LATE_EVENTS=${RECOVER_LATE_EVENTS:-1}
 RECOVER_LATE_MAX_TICKS=${RECOVER_LATE_MAX_TICKS:-}
+CONTINUATION_META_MODE=${CONTINUATION_META_MODE:-legacy}
 
 mkdir -p "$OUT_ROOT/server"
 
@@ -94,8 +95,34 @@ print(int(min(tempo, limit)))
 PY
 )
   fi
+  continuation_ts_idx=""
+  continuation_bpm=""
+  case "$CONTINUATION_META_MODE" in
+    legacy)
+      # Historical behavior: continuation falls back to LEKAI_TIME_SIGNATURE_INDEX=4
+      # and LEKAI_DEFAULT_BPM=120 inside the backend unless a request-level BPM is
+      # provided.
+      ;;
+    piece)
+      # Musical piece-facing metadata: use the meter numerator and the tempo
+      # seen by the realtime CLI after optional tempo clamping.
+      continuation_ts_idx="$beats_per_bar"
+      continuation_bpm="$cli_tempo"
+      ;;
+    offline)
+      # RT offline-compatible metadata: use the raw NPZ time_signature_idx and
+      # raw NPZ BPM so the continuation prefix starts with the same TS/BPM tokens
+      # as offline_model.prepare_generation.
+      continuation_ts_idx="$ts_idx"
+      continuation_bpm="$bpm"
+      ;;
+    *)
+      echo "Unknown CONTINUATION_META_MODE=$CONTINUATION_META_MODE (expected legacy|piece|offline)" >&2
+      exit 2
+      ;;
+  esac
 
-  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar prompt_beats=$prompt_beats cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} recover_late_events=$RECOVER_LATE_EVENTS recover_late_max_ticks=${RECOVER_LATE_MAX_TICKS:-none} ==="
+  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar prompt_beats=$prompt_beats cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} continuation_meta_mode=$CONTINUATION_META_MODE continuation_ts_idx=${continuation_ts_idx:-backend-default} continuation_bpm=${continuation_bpm:-backend-default} recover_late_events=$RECOVER_LATE_EVENTS recover_late_max_ticks=${RECOVER_LATE_MAX_TICKS:-none} ==="
   cleanup_server
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:$PORT | xargs -r kill || true
@@ -108,10 +135,8 @@ PY
     export LEKAI_CONTINUATION_CHECKPOINT_PATH="$CONT_CKPT"
     export LEKAI_DEVICE=cuda
     export LEKAI_PROMPT_DEVICE=cuda
-    export LEKAI_DTYPE=float16
-    # Keep prompt model precision aligned with the RT offline reference.
-    # FP16 changes sampled logits for some pieces even with the same seed.
-    export LEKAI_PROMPT_DTYPE=float32
+    export LEKAI_DTYPE="${LEKAI_DTYPE:-float16}"
+    export LEKAI_PROMPT_DTYPE="${LEKAI_PROMPT_DTYPE:-float16}"
     export LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1
     export LEKAI_DISABLE_FALLBACK=1
     export LEKAI_PROMPT_SEED=42
@@ -128,6 +153,12 @@ PY
     export LEKAI_PROMPT_MAX_NEW_TOKENS=1024
     export LEKAI_PROMPT_TIME_SIGNATURE_INDEX="$ts_idx"
     export LEKAI_PROMPT_BPM="$bpm"
+    if [[ -n "$continuation_ts_idx" ]]; then
+      export LEKAI_TIME_SIGNATURE_INDEX="$continuation_ts_idx"
+    fi
+    if [[ -n "$continuation_bpm" ]]; then
+      export LEKAI_DEFAULT_BPM="$continuation_bpm"
+    fi
     exec python -u -m streammuse.infrastructure.inference.server_lekai
   ) > "$server_log" 2>&1 &
   SERVER_PID=$!

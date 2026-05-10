@@ -390,6 +390,7 @@ RT_TOP_P=0.98 \
 RT_REPETITION_PENALTY=1.2 \
 RECOVER_LATE_EVENTS=1 \
 RECOVER_LATE_MAX_TICKS=4 \
+CONTINUATION_META_MODE=offline \
  scripts/run_cli_prompt_alignment_batch.sh
 ```
 
@@ -400,6 +401,30 @@ The script checks:
 - real continuation model loaded;
 - no fallback reason present;
 - prompt-stage CLI output equals offline reference by event SHA.
+
+Continuation metadata mode:
+
+```text
+CONTINUATION_META_MODE=legacy
+```
+
+Uses the historical backend defaults for continuation metadata
+(`LEKAI_TIME_SIGNATURE_INDEX=4`, `LEKAI_DEFAULT_BPM=120` unless overridden).
+
+```text
+CONTINUATION_META_MODE=piece
+```
+
+Uses piece-facing realtime metadata: time-signature numerator from the MIDI/NPZ
+beat count and the tempo used by the CLI after optional clamping.
+
+```text
+CONTINUATION_META_MODE=offline
+```
+
+Uses RT offline-compatible metadata: raw NPZ `time_signature_idx` and raw NPZ
+`bpm`. Use this mode when validating whether the first continuation prompt
+tokens match RT offline exactly.
 
 ## Session Output Files
 
