@@ -718,6 +718,7 @@ class LekaiHttpBackend:
                 start_tick=beat_start_tick,
                 close_at_end=False,
                 active_pitches=active_snapshot,
+                emit_boundary_retrigger_off=False,
             )
 
             self._active_pitches = set(next_active)
