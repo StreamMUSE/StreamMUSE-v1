@@ -228,15 +228,29 @@ KNOWN BUGS / TECH DEBT (surface-from-audit)
 -------------------------------------------------------------------------------
 NEXT (current session goal)
 -------------------------------------------------------------------------------
-Catch up to the old system at:
-  https://github.com/AHY123/StreamMUSE/tree/demo_lekai_fixed
+PAUSED 2026-05-09: catch-up plan (Phases 2–7) is on hold. The user is doing
+a merge with branch `merge-lekai-prompt-stanley-system` first.
 
-Plus any other features listed by the user during that work. Start by:
-  1. Cloning or fetching the demo_lekai_fixed branch for reference.
-  2. Diffing feature-for-feature against this branch (new_system_stanley).
-  3. Writing a plan in developing-logs/YYYY-M-D/catch-up-plan.md before coding.
-  4. Resolving the DRIFT item above (Lekai as default) as part of this catch-up,
-     since Lekai is the primary pathway going forward.
+Pre-merge state:
+  - Branch:    new_system_stanley
+  - HEAD:      c68b504 (Phase 1.2 web UI wiring)
+  - Tests:     194 pass / 0 fail / 0 xfail / 0 skip
+  - Working tree clean except FluidR3Mono_GM.sf3 (intentional local-only)
+
+Resuming the catch-up plan after the merge:
+  - Read this file again.
+  - Read `~/.claude/plans/lets-get-started-on-cozy-hickey.md` and decide
+    whether the merge invalidates any of Phases 2–7 (it might — Phase 5
+    MIDI rewrite and the Phase 3 Lekai engine fixes could collide with
+    whatever the merged branch brings in).
+  - Two known rough edges from Phase 1.2 to clean up before bigger work:
+      * [status] "stopped" double-emits on /api/restart (cosmetic).
+      * RealTimeMusicService.stop() closes the long-lived composite sink;
+        must be fixed before Phase 5.
+  - Open user asks still pending in KNOWN BUGS:
+      * INPUT-PATH AUDIT NEEDED (matrix per input mode).
+      * USER EXPERIENCE ISSUES (enumeration pending).
+  - DRIFT item (InferenceConfig.model_name default "stanley") still open.
 
 Write the plan first. Implement second. Report third. Keep this file honest.
 
