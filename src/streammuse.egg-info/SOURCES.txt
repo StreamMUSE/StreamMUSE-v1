@@ -36,6 +36,7 @@ src/streammuse/domain/timing/scheduler.py
 src/streammuse/domain/timing/tempo.py
 src/streammuse/infrastructure/__init__.py
 src/streammuse/infrastructure/inference/__init__.py
+src/streammuse/infrastructure/inference/generation_logger.py
 src/streammuse/infrastructure/inference/http_client.py
 src/streammuse/infrastructure/inference/lekai_http_backend.py
 src/streammuse/infrastructure/inference/runtime_device.py
