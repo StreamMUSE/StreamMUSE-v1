@@ -117,7 +117,7 @@ def test_beat_tail_sends_buffered_events():
     assert {e.pitch for e in sent_events} == {60, 64}
 
 
-def test_beat_tail_skips_when_buffer_empty():
+def test_beat_tail_sends_empty_request_when_buffer_empty():
     svc = _make_service()
     svc._melody_history = []
     svc._runtime = SimpleNamespace(session_start_time=0.0)
@@ -125,13 +125,14 @@ def test_beat_tail_skips_when_buffer_empty():
 
     svc._tick_loop(max_ticks=4)  # no events added
 
-    with pytest.raises(queue.Empty):
-        svc._inference_request_queue.get_nowait()
+    generation_start_tick, sent_events = svc._inference_request_queue.get_nowait()
+    assert generation_start_tick == 4
+    assert sent_events == []
 
 
-def test_beat_tail_only_one_trigger_across_two_beats_with_no_new_events():
+def test_beat_tail_triggers_every_beat_even_with_no_new_events():
     # Events arrive before tick=3; no new events between tick=4 and tick=7.
-    # Expect exactly one trigger (at tick=3) and nothing at tick=7.
+    # Expect one trigger with the buffered event, then an empty trigger at tick=7.
     svc = _make_service()
     svc._melody_history = []
     svc._runtime = SimpleNamespace(session_start_time=0.0)
@@ -145,7 +146,10 @@ def test_beat_tail_only_one_trigger_across_two_beats_with_no_new_events():
     assert first_tick == 4
     assert [e.pitch for e in first_events] == [60]
 
-    # No second trigger since buffer was cleared and no new events arrived.
+    second_tick, second_events = svc._inference_request_queue.get_nowait()
+    assert second_tick == 8
+    assert second_events == []
+
     with pytest.raises(queue.Empty):
         svc._inference_request_queue.get_nowait()
 

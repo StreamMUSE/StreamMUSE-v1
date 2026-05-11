@@ -298,6 +298,147 @@ export LEKAI_DISABLE_FALLBACK=1
 With these set, missing checkpoints or model-load failures fail loudly instead
 of silently producing rule-based fallback output.
 
+## Direct Server And CLI Commands
+
+This section is the minimal path for running the real realtime system without
+using the helper bash scripts.
+
+### 1. Download Checkpoints From Hugging Face
+
+The validated checkpoints are hosted at:
+
+```text
+https://huggingface.co/chenyuanxin/RT-accompanimentV2-checkpoints
+```
+
+Download the prompt model and the ordinary continuation model:
+
+```bash
+cd /data/home/yuanxin/StreamMUSE-v1
+source .venv/bin/activate
+
+mkdir -p models/hf
+
+hf download chenyuanxin/RT-accompanimentV2-checkpoints \
+  lekai_prompt_model/model.safetensors \
+  lekai_continuation_model/model.safetensors \
+  --local-dir models/hf
+```
+
+Expected local files:
+
+```text
+models/hf/lekai_prompt_model/model.safetensors
+models/hf/lekai_continuation_model/model.safetensors
+```
+
+Alternative continuation checkpoints in the same repo:
+
+```text
+models/hf/initdrop8p0p3/model.safetensors
+models/hf/initdrop8p0p3_melloss/model.safetensors
+```
+
+Those files are architecture-compatible with the continuation loader, but they
+are different weights. Use `lekai_continuation_model/model.safetensors` when
+reproducing the current reference realtime/offline validation.
+
+### 2. Start The Realtime Server
+
+```bash
+cd /data/home/yuanxin/StreamMUSE-v1
+source .venv/bin/activate
+
+# Starts the StreamMuse realtime Lekai server.
+# CONTINUATION_META_MODE=offline does NOT mean offline inference.
+# It only makes continuation meta tokens match Lekai's RT offline reference
+# code, which is useful for top-k=1 alignment checks. Requests still go through
+# the realtime server and streammuse-cli.
+CUDA_VISIBLE_DEVICES=0 \
+LEKAI_SERVER_PORT=8123 \
+LEKAI_PROMPT_CHECKPOINT_PATH=models/hf/lekai_prompt_model/model.safetensors \
+LEKAI_CONTINUATION_CHECKPOINT_PATH=models/hf/lekai_continuation_model/model.safetensors \
+LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1 \
+LEKAI_DISABLE_FALLBACK=1 \
+LEKAI_DTYPE=float16 \
+LEKAI_PROMPT_DTYPE=float16 \
+LEKAI_PROMPT_SEED=42 \
+LEKAI_SEED=42 \
+LEKAI_PROMPT_CONDITION_BEATS=8 \
+LEKAI_PROMPT_TEMPERATURE=1.1 \
+LEKAI_PROMPT_TOP_K=0 \
+LEKAI_PROMPT_TOP_P=0.95 \
+LEKAI_PROMPT_REPETITION_PENALTY=1.0 \
+LEKAI_PROMPT_MAX_NEW_TOKENS=1024 \
+LEKAI_RT_TEMPERATURE=0.8 \
+LEKAI_RT_TOP_K=1 \
+LEKAI_RT_TOP_P=0.95 \
+LEKAI_RT_REPETITION_PENALTY=1.2 \
+CONTINUATION_META_MODE=offline \
+uv run python -m streammuse.infrastructure.inference.server_lekai
+```
+
+Use `LEKAI_SERVER_PORT`, not `LEKAI_RT_PORT`.
+
+To use the initdrop continuation checkpoint instead:
+
+```bash
+LEKAI_CONTINUATION_CHECKPOINT_PATH=models/hf/initdrop8p0p3/model.safetensors
+```
+
+### 3. Run The Realtime CLI Client
+
+In a second terminal:
+
+```bash
+cd /data/home/yuanxin/StreamMUSE-v1
+source .venv/bin/activate
+
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1 \
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4 \
+uv run streammuse-cli \
+  --input-mode midi_file \
+  --midi-file-path user_samples_0419_match/0416_user_sys_test_gt/5472152/5472152_melody_input.mid \
+  --model-name lekai_prompt_continuation \
+  --inference-server-url http://127.0.0.1:8123 \
+  --output-type session \
+  --session-output-dir realtime_runs/manual_lekai_prompt_continuation_5472152
+```
+
+`--model-name lekai_prompt_continuation` is the switch that selects the
+prompt-continuation realtime path. The ordinary `lekai` model name does not run
+the two-stage prompt + continuation system.
+
+Session outputs will be written under the session directory. The most useful
+MIDI files are:
+
+```text
+combined.mid
+prompt_continuation_prompt_history.mid
+prompt_continuation_raw_history.mid
+```
+
+`combined.mid` is the audible scheduled realtime output. The prompt/raw history
+files are debug histories and may contain accompaniment from the first beat
+because they show what the backend generated internally, not what the frontend
+necessarily played immediately.
+
+### 4. Check Server Runtime Status
+
+With the server running:
+
+```bash
+curl -fsS http://127.0.0.1:8123/prompt_continuation/runtime_info | python -m json.tool
+```
+
+Expected important fields:
+
+```text
+prompt_engine.mode = real_model
+continuation_engine.mode = real_model
+fallback_reason = null
+```
+
 Important sampling knobs:
 
 ```bash
@@ -390,6 +531,7 @@ RT_TOP_P=0.98 \
 RT_REPETITION_PENALTY=1.2 \
 RECOVER_LATE_EVENTS=1 \
 RECOVER_LATE_MAX_TICKS=4 \
+CONTINUATION_META_MODE=offline \
  scripts/run_cli_prompt_alignment_batch.sh
 ```
 
@@ -400,6 +542,30 @@ The script checks:
 - real continuation model loaded;
 - no fallback reason present;
 - prompt-stage CLI output equals offline reference by event SHA.
+
+Continuation metadata mode:
+
+```text
+CONTINUATION_META_MODE=legacy
+```
+
+Uses the historical backend defaults for continuation metadata
+(`LEKAI_TIME_SIGNATURE_INDEX=4`, `LEKAI_DEFAULT_BPM=120` unless overridden).
+
+```text
+CONTINUATION_META_MODE=piece
+```
+
+Uses piece-facing realtime metadata: time-signature numerator from the MIDI/NPZ
+beat count and the tempo used by the CLI after optional clamping.
+
+```text
+CONTINUATION_META_MODE=offline
+```
+
+Uses RT offline-compatible metadata: raw NPZ `time_signature_idx` and raw NPZ
+`bpm`. Use this mode when validating whether the first continuation prompt
+tokens match RT offline exactly.
 
 ## Session Output Files
 

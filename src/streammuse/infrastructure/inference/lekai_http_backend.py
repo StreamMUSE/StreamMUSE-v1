@@ -383,6 +383,38 @@ class LekaiHttpBackend:
                 active.discard(pitch)
         return active
 
+    def _active_pitches_for_decode_boundary(self, events: List[EventPayload], cutoff_tick: int) -> Set[int]:
+        """Return notes that carry into a generated beat.
+
+        For prompt construction we intentionally use strict `< cutoff_tick`
+        semantics to match RT offline tokenization. For converting a generated
+        beat back to realtime events, however, existing prompt/raw history may
+        already contain note_off events exactly at `cutoff_tick`. Those note_offs
+        must be consumed before deciding which notes are still active, otherwise
+        the generated beat conversion emits duplicate boundary note_off events.
+        Note_on events at the boundary belong to the new beat, so they are not
+        treated as carry-in active notes.
+        """
+
+        active: Set[int] = set()
+        for event in sorted(events, key=self._event_sort_key):
+            tick = int(event.get("tick", 0))
+            if tick > cutoff_tick:
+                break
+            if "pitch" not in event:
+                continue
+            pitch = int(event["pitch"])
+            event_type = str(event.get("type", ""))
+            if tick == cutoff_tick:
+                if event_type == "note_off":
+                    active.discard(pitch)
+                continue
+            if event_type == "note_on":
+                active.add(pitch)
+            elif event_type == "note_off":
+                active.discard(pitch)
+        return active
+
     def _advance_active_pitches(
         self,
         events: List[EventPayload],
@@ -677,7 +709,7 @@ class LekaiHttpBackend:
                     f"Pianoroll shape mismatch: expected {expected_shape}, got {got_shape}."
                 )
 
-            active_snapshot = self._active_pitches_before_tick(
+            active_snapshot = self._active_pitches_for_decode_boundary(
                 accompaniment_context_events,
                 beat_start_tick,
             )
@@ -686,6 +718,7 @@ class LekaiHttpBackend:
                 start_tick=beat_start_tick,
                 close_at_end=False,
                 active_pitches=active_snapshot,
+                emit_boundary_retrigger_off=False,
             )
 
             self._active_pitches = set(next_active)

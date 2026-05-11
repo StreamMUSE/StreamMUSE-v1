@@ -277,7 +277,14 @@ class MidiConverter:
 
         return pianoroll
 
-    def pianoroll_to_events(self, pianoroll, start_tick=0, close_at_end=False, active_pitches=None):
+    def pianoroll_to_events(
+        self,
+        pianoroll,
+        start_tick=0,
+        close_at_end=False,
+        active_pitches=None,
+        emit_boundary_retrigger_off=True,
+    ):
         """Convert (2, 88, T) piano roll back to note_on/note_off events.
 
         We interpret:
@@ -336,7 +343,12 @@ class MidiConverter:
                 if t > 0 and sustain[pitch_idx, t - 1] > 0:
                     # Previous note ends at this tick, emit note_off before note_on
                     events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
-                elif t == 0 and pitch in active_pitches and sustain[pitch_idx, 0] > 0:
+                elif (
+                    emit_boundary_retrigger_off
+                    and t == 0
+                    and pitch in active_pitches
+                    and sustain[pitch_idx, 0] > 0
+                ):
                     # Special case: note continues from previous beat AND has new onset at tick 0
                     # This means retrigger - emit note_off at start_tick before note_on
                     events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick)})
