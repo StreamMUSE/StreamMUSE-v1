@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -43,14 +44,26 @@ class PromptContinuationHttpClient:
         return f"{self._base_url}{path}"
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        t0 = time.perf_counter()
         if method == "GET":
             response = requests.get(self._url(path), timeout=float(self._config.timeout_s))
         elif method == "POST":
             response = requests.post(self._url(path), json=payload, timeout=float(self._config.timeout_s))
         else:
             raise ValueError(f"unsupported method: {method}")
+        t_resp = time.perf_counter()
         response.raise_for_status()
-        return response.json()
+        body = response.json()
+        t_parse = time.perf_counter()
+        req_bytes = len(response.request.body or b"")
+        resp_bytes = len(response.content or b"")
+        print(
+            f"[TIMING client] {method} {path} "
+            f"rtt_ms={(t_resp-t0)*1000:.2f} parse_ms={(t_parse-t_resp)*1000:.2f} "
+            f"req_bytes={req_bytes} resp_bytes={resp_bytes} status={response.status_code}",
+            flush=True,
+        )
+        return body
 
     def clear_history(self) -> dict[str, Any]:
         return self._request_json("POST", "/clear_history", payload={})
@@ -93,6 +106,10 @@ class PromptContinuationHttpClient:
     def playable(self) -> tuple[list[MusicalEvent], dict[str, Any]]:
         data = self._request_json("GET", "/prompt_continuation/playable")
         accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
+        if os.environ.get("STREAMMUSE_EVT_TRACE") == "1":
+            _wall_t2 = time.time()
+            for _ev in accompaniment:
+                print(f"[EVT_T2] tick={int(_ev.tick)} pitch={int(_ev.pitch)} type={_ev.event_type.value} wall={_wall_t2:.6f}", flush=True)
         return accompaniment, dict(data.get("status", {}))
 
     def raw_history(self) -> tuple[list[MusicalEvent], dict[str, Any]]:

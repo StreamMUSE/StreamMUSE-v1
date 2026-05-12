@@ -7,6 +7,9 @@ the backend thread can continue accepting melody events.
 
 from __future__ import annotations
 
+import os
+import time
+
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
@@ -28,6 +31,14 @@ from streammuse.infrastructure.inference.lekai_prompt_continuation.token_convers
     copy_events,
 )
 
+
+
+
+def _evt_trace_emit(stage, tick, pitch, etype, **extra):
+    if os.environ.get("STREAMMUSE_EVT_TRACE") != "1":
+        return
+    suffix = (" " + " ".join(f"{k}={v}" for k, v in extra.items())) if extra else ""
+    print(f"[EVT_{stage}] tick={tick} pitch={pitch} type={etype} wall={time.time():.6f}{suffix}", flush=True)
 
 class LekaiPromptContinuationScheduler:
     """Coordinate prompt generation and continuation catch-up in one process."""
@@ -250,6 +261,8 @@ class LekaiPromptContinuationScheduler:
                     return
                 self._prompt_accompaniment_history = copy_events(prompt_accompaniment)
                 self._accompaniment_history = copy_events(prompt_accompaniment)
+                for _evt in prompt_accompaniment:
+                    _evt_trace_emit("T0", _evt.get("tick"), _evt.get("pitch"), _evt.get("type"), src="prompt")
                 self._catchup_state.accompaniment_history_beats = max(
                     self._catchup_state.accompaniment_history_beats,
                     self._ticks_to_beats(actual_prompt_length_ticks),
@@ -274,7 +287,10 @@ class LekaiPromptContinuationScheduler:
 
     def _run_catchup_loop(self, run_id: int) -> None:
         while True:
+            t_iter_start = time.perf_counter()
+            t_lock_wait_start = time.perf_counter()
             with self._lock:
+                t_lock_pre_acquired = time.perf_counter()
                 if not self._is_current_run(run_id):
                     return
                 beats_needed = int(self._catchup_state.beats_needed_for_playback())
@@ -292,7 +308,9 @@ class LekaiPromptContinuationScheduler:
                 inference_mode = str(self._inference_mode)
                 model_name = str(self._model_name)
                 checkpoint_path = self._checkpoint_path
+            t_lock_pre_released = time.perf_counter()
 
+            t_gen_start = time.perf_counter()
             accompaniment, _timings = self._continuation_engine.generate(
                 melody_events=melody_increment,
                 generation_start_tick=generation_start_tick,
@@ -303,14 +321,33 @@ class LekaiPromptContinuationScheduler:
                 model_name=model_name,
                 checkpoint_path=checkpoint_path,
             )
+            t_gen_end = time.perf_counter()
 
+            t_lock_post_start = time.perf_counter()
             with self._lock:
+                t_lock_post_acquired = time.perf_counter()
                 if not self._is_current_run(run_id):
                     return
                 self._accompaniment_history.extend(copy_events(accompaniment))
+                for _evt in accompaniment:
+                    _evt_trace_emit("T0", _evt.get("tick"), _evt.get("pitch"), _evt.get("type"), src="catchup")
                 self._catchup_state.accept_continuation_beats(chunk_beats)
                 self._continuation_sent_melody_event_count = max(
                     int(self._continuation_sent_melody_event_count),
                     int(next_sent_melody_event_count),
                 )
                 self._continuation_calls += 1
+            t_iter_end = time.perf_counter()
+
+            print(
+                f"[TIMING catchup] iter={self._continuation_calls} "
+                f"lock_pre_wait_ms={(t_lock_pre_acquired-t_lock_wait_start)*1000:.2f} "
+                f"lock_pre_held_ms={(t_lock_pre_released-t_lock_pre_acquired)*1000:.2f} "
+                f"generate_ms={(t_gen_end-t_gen_start)*1000:.2f} "
+                f"lock_post_wait_ms={(t_lock_post_acquired-t_lock_post_start)*1000:.2f} "
+                f"lock_post_held_ms={(t_iter_end-t_lock_post_acquired)*1000:.2f} "
+                f"total_ms={(t_iter_end-t_iter_start)*1000:.2f} "
+                f"chunk_beats={chunk_beats} n_mel_inc={len(melody_increment)} "
+                f"n_acc={len(accompaniment)} timings={_timings}",
+                flush=True,
+            )

@@ -60,7 +60,8 @@ class PromptContinuationRealtimeService:
     poll until catch-up is ready, then schedule playable accompaniment.
     """
 
-    _INPUT_BUFFER_RATIO = 0.1
+    _INPUT_BUFFER_RATIO = 0.1  # legacy; clamped to <= INPUT_BUFFER_MAX_S below
+    _INPUT_BUFFER_MAX_S = 0.010
 
     def __init__(
         self,
@@ -119,6 +120,7 @@ class PromptContinuationRealtimeService:
         self._recover_late_max_ticks = self._env_optional_int(
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS"
         )
+        self._pcrt_verbose = os.environ.get('STREAMMUSE_PCRT_VERBOSE', '').lower() in {'1', 'true', 'yes', 'on'}
 
     def _trace(self, kind: str, **payload: Any) -> None:
         if not self._trace_path:
@@ -130,6 +132,12 @@ class PromptContinuationRealtimeService:
         except Exception:
             # Tracing must never affect realtime playback.
             return
+
+    def _verbose(self, tag: str, **fields: Any) -> None:
+        if not getattr(self, '_pcrt_verbose', False):
+            return
+        parts = ' '.join(f'{k}={v}' for k, v in fields.items())
+        print(f'[PCRT {tag}] {parts}', flush=True)
 
     @staticmethod
     def _env_optional_int(name: str) -> int | None:
@@ -237,7 +245,20 @@ class PromptContinuationRealtimeService:
                             int(status.get("continuation_calls", 0) or 0),
                         )
                         if marker != self._last_playable_marker:
+                            t_pf0 = time.perf_counter()
                             accompaniment, playable_status = self._client.playable()
+                            t_pf1 = time.perf_counter()
+                            ticks = [int(e.tick) for e in accompaniment]
+                            self._verbose("playable_fetch",
+                                n_acc=len(accompaniment),
+                                min_tick=(min(ticks) if ticks else None),
+                                max_tick=(max(ticks) if ticks else None),
+                                fetch_ms=f"{(t_pf1-t_pf0)*1000:.2f}",
+                                acc_hist_beats=playable_status.get("accompaniment_history_beats"),
+                                mel_hist_beats=playable_status.get("melody_history_beats"),
+                                beats_needed=playable_status.get("beats_needed_for_playback"),
+                                cont_calls=playable_status.get("continuation_calls"),
+                            )
                             self._trace(
                                 "playable_fetch",
                                 accompaniment_event_count=len(accompaniment),
@@ -248,6 +269,10 @@ class PromptContinuationRealtimeService:
                                 status_continuation_calls=playable_status.get("continuation_calls"),
                             )
                             self._playable_q.put((accompaniment, playable_status))
+                            if os.environ.get("STREAMMUSE_EVT_TRACE") == "1":
+                                _wall_t3 = time.time()
+                                for _ev in accompaniment:
+                                    print(f"[EVT_T3] tick={int(_ev.tick)} pitch={int(_ev.pitch)} type={_ev.event_type.value} wall={_wall_t3:.6f}", flush=True)
                             self._last_playable_marker = marker
                             self._output.output_status("ready", "Prompt-continuation accompaniment is playable")
                 except Exception as exc:
@@ -263,10 +288,13 @@ class PromptContinuationRealtimeService:
                 break
             drained.append(event)
             self._output.output_event(event, source="user")
-            if int(event.tick) < self._prompt_length_ticks:
+            in_prompt = int(event.tick) < self._prompt_length_ticks
+            if in_prompt:
                 self._prompt_events.append(event)
             else:
                 self._pending_append_events.append(event)
+            self._verbose("user_event", tick=int(event.tick), type=event.event_type.value,
+                          pitch=int(event.pitch), vel=int(event.velocity), in_prompt=in_prompt)
         return drained
 
     def _maybe_enqueue_start(self, observed_until_tick: int) -> None:
@@ -303,6 +331,14 @@ class PromptContinuationRealtimeService:
         self._last_append_observed_tick = observed_until_tick
 
     def _schedule_playable(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
+        ticks = [int(e.tick) for e in accompaniment]
+        self._verbose("schedule_playable_in",
+            current_tick=int(current_tick),
+            n_input=len(accompaniment),
+            min_tick=(min(ticks) if ticks else None),
+            max_tick=(max(ticks) if ticks else None),
+            recover_late=self._recover_late_events,
+        )
         if self._recover_late_events:
             self._schedule_playable_recover_late(accompaniment, current_tick=int(current_tick))
             return
@@ -349,6 +385,8 @@ class PromptContinuationRealtimeService:
                     backup_level=max(0, int(event.tick) - int(current_tick)),
                 )
                 self._scheduler.schedule(model_event, int(event.tick))
+                if os.environ.get("STREAMMUSE_EVT_TRACE") == "1":
+                    print(f"[EVT_T5] tick={int(event.tick)} pitch={int(event.pitch)} type={event.event_type.value} wall={time.time():.6f} current_tick={int(current_tick)} mode=pair", flush=True)
                 self._scheduled_model_event_keys.add(event_key)
                 scheduled += 1
             self._scheduled_model_note_keys.add(note_key)
@@ -359,6 +397,14 @@ class PromptContinuationRealtimeService:
             f"clipped {clipped_sustains} sustaining note(s); "
             f"skipped {skipped_duplicate} duplicate note(s); "
             f"skipped {skipped_unpaired} unpaired event(s).",
+        )
+        self._verbose("schedule_playable_out",
+            current_tick=int(current_tick),
+            scheduled=scheduled,
+            dropped_past=dropped_past,
+            clipped_sustains=clipped_sustains,
+            skipped_duplicate=skipped_duplicate,
+            skipped_unpaired=skipped_unpaired,
         )
         self._trace(
             "schedule_playable",
@@ -428,6 +474,8 @@ class PromptContinuationRealtimeService:
                 backup_level=max(0, int(event.tick) - current_tick),
             )
             self._scheduler.schedule(model_event, schedule_tick)
+            if os.environ.get("STREAMMUSE_EVT_TRACE") == "1":
+                print(f"[EVT_T5] tick={int(event.tick)} pitch={int(event.pitch)} type={event.event_type.value} wall={time.time():.6f} current_tick={int(current_tick)} mode=recover schedule_tick={int(schedule_tick)}", flush=True)
             self._scheduled_model_event_keys.add(event_key)
             scheduled += 1
 
@@ -438,6 +486,14 @@ class PromptContinuationRealtimeService:
             f"dropped {dropped_too_late_note_on} too-late note_on event(s); "
             f"skipped {skipped_duplicate} duplicate event(s); "
             f"skipped {placeholder_count} placeholder event(s).",
+        )
+        self._verbose("schedule_playable_recover_out",
+            current_tick=int(current_tick),
+            scheduled=scheduled,
+            recovered=late_event_count,
+            dropped_too_late_on=dropped_too_late_note_on,
+            skipped_duplicate=skipped_duplicate,
+            placeholders=placeholder_count,
         )
         self._trace(
             "schedule_playable",
@@ -578,6 +634,8 @@ class PromptContinuationRealtimeService:
     def _tick_loop(self, *, max_ticks: int | None) -> None:
         assert self._runtime is not None
         start = self._runtime.session_start_time
+        if os.environ.get("STREAMMUSE_EVT_TRACE") == "1":
+            print(f"[SESSION_START] wall={start:.6f} bpm={self._tempo.bpm} ticks_per_beat={self._tempo.ticks_per_beat}", flush=True)
         tick = 0
         while self._running:
             if max_ticks is not None and tick >= max_ticks:
@@ -591,7 +649,7 @@ class PromptContinuationRealtimeService:
 
             mt = MusicalTime.from_tick(tick, self._tempo)
             self._output.output_tick(tick=tick, bar=mt.bar, beat=mt.beat)
-            self._sleep(self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO)
+            self._sleep(min(self._INPUT_BUFFER_MAX_S, self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO))
 
             self._drain_user_events()
             observed_until_tick = tick + 1
@@ -603,9 +661,21 @@ class PromptContinuationRealtimeService:
                     accompaniment, _status = self._playable_q.get_nowait()
                 except queue.Empty:
                     break
+                if os.environ.get("STREAMMUSE_EVT_TRACE") == "1":
+                    _wall_t4 = time.time()
+                    for _ev in accompaniment:
+                        print(f"[EVT_T4] tick={int(_ev.tick)} pitch={int(_ev.pitch)} type={_ev.event_type.value} wall={_wall_t4:.6f} current_tick={tick}", flush=True)
                 self._schedule_playable(accompaniment, current_tick=tick)
 
-            for event in self._scheduler.get_events_at_tick(tick):
+            events_this_tick = list(self._scheduler.get_events_at_tick(tick))
+            if events_this_tick or getattr(self, '_pcrt_verbose', False):
+                self._verbose("tick_play",
+                    tick=tick,
+                    bar=mt.bar,
+                    beat=mt.beat,
+                    n_play=len(events_this_tick),
+                )
+            for event in events_this_tick:
                 self._output.output_event(event, source=event.source)
 
             tick += 1
