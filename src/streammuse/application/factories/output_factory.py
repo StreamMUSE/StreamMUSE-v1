@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from streammuse.application.config import ApplicationConfig
@@ -29,7 +30,12 @@ class OutputSinkFactory:
         app_config: ApplicationConfig,
         session_manager: Optional[SessionManager],
     ) -> OutputSink:
+        verbose = os.environ.get('STREAMMUSE_VERBOSE', '').strip()
+        wrap_with_console = verbose not in ('', '0', 'false', 'False', 'no')
+
         if session_manager is None:
+            if wrap_with_console and not isinstance(base_sink, ConsoleOutputSink):
+                return CompositeOutputSink([base_sink, ConsoleOutputSink(ConsoleOutputConfig())])
             return base_sink
 
         tempo = app_config.tempo
@@ -41,7 +47,10 @@ class OutputSinkFactory:
                 output_path=str(session_manager.get_session_dir() / "combined.mid"),
             )
         )
-        return CompositeOutputSink([base_sink, auto_midi_sink])
+        sinks = [base_sink, auto_midi_sink]
+        if wrap_with_console and not isinstance(base_sink, ConsoleOutputSink):
+            sinks.append(ConsoleOutputSink(ConsoleOutputConfig()))
+        return CompositeOutputSink(sinks)
 
     @staticmethod
     def create(

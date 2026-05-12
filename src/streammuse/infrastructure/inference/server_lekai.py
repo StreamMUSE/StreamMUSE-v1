@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -158,6 +159,16 @@ def _validate_lekai_constraints(model_name: str, generation_length_frames: int) 
 
 
 app = FastAPI(title="StreamMUSE Lekai Inference Server")
+
+
+@app.middleware("http")
+async def _timing_middleware(request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    dt_ms = (time.perf_counter() - t0) * 1000.0
+    print(f"[TIMING server] {request.method} {request.url.path} total_ms={dt_ms:.2f}", flush=True)
+    return response
+
 _ENV_CHECKPOINT_PATH = os.environ.get("LEKAI_CHECKPOINT_PATH")
 _ENV_PROMPT_CONTINUATION_CHECKPOINT_PATH = os.environ.get("LEKAI_PROMPT_CONTINUATION_CHECKPOINT_PATH")
 _ENV_PROMPT_CHECKPOINT_PATH = os.environ.get("LEKAI_PROMPT_CHECKPOINT_PATH")
@@ -258,9 +269,12 @@ async def prompt_continuation_start(
             detail=f"model_name must be {LEKAI_PROMPT_CONTINUATION_MODEL_NAME}",
         )
 
+    t0 = time.perf_counter()
+    payload = _melody_payload(request.melody_notes)
+    t_payload = time.perf_counter()
     try:
         status = prompt_continuation_backend.start_prompt_catchup(
-            melody_events=_melody_payload(request.melody_notes),
+            melody_events=payload,
             prompt_length_ticks=int(request.prompt_length_ticks),
             generation_interval_ticks=int(request.generation_interval_ticks),
             inference_mode=request.inference_mode,
@@ -274,21 +288,42 @@ async def prompt_continuation_start(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    return _scheduler_status_response(status)
+    t_backend = time.perf_counter()
+    response = _scheduler_status_response(status)
+    t_end = time.perf_counter()
+    print(
+        f"[TIMING prompt_start] payload_ms={(t_payload-t0)*1000:.2f} "
+        f"backend_ms={(t_backend-t_payload)*1000:.2f} resp_ms={(t_end-t_backend)*1000:.2f} "
+        f"n_melody={len(payload)} prompt_len={request.prompt_length_ticks} "
+        f"phase={status.get('phase')} beats_needed={status.get('beats_needed_for_playback')}",
+        flush=True,
+    )
+    return response
 
 
 @app.post("/prompt_continuation/append_melody", response_model=PromptContinuationStatusResponse)
 async def prompt_continuation_append_melody(
     request: PromptContinuationAppendMelodyRequest,
 ) -> PromptContinuationStatusResponse:
+    t0 = time.perf_counter()
+    melody_payload = _melody_payload(request.melody_notes)
+    t_payload = time.perf_counter()
     status = prompt_continuation_backend.append_melody_events(
-        melody_events=_melody_payload(request.melody_notes),
+        melody_events=melody_payload,
         observed_until_tick=(
             int(request.observed_until_tick) if request.observed_until_tick is not None else None
         ),
     )
-    return _scheduler_status_response(status)
+    t_call = time.perf_counter()
+    response = _scheduler_status_response(status)
+    t_end = time.perf_counter()
+    print(
+        f"[TIMING append_melody] payload_ms={(t_payload-t0)*1000:.2f} "
+        f"backend_ms={(t_call-t_payload)*1000:.2f} resp_ms={(t_end-t_call)*1000:.2f} "
+        f"n_melody={len(melody_payload)}",
+        flush=True,
+    )
+    return response
 
 
 @app.get("/prompt_continuation/status", response_model=PromptContinuationStatusResponse)
@@ -303,13 +338,28 @@ async def prompt_continuation_runtime_info() -> dict[str, object]:
 
 @app.get("/prompt_continuation/playable", response_model=PromptContinuationPlayableResponse)
 async def prompt_continuation_playable() -> PromptContinuationPlayableResponse:
+    t0 = time.perf_counter()
     status = prompt_continuation_backend.scheduler_status()
-    return PromptContinuationPlayableResponse(
-        accompaniment=_accompaniment_response_events(
-            prompt_continuation_backend.playable_accompaniment()
-        ),
+    t_status = time.perf_counter()
+    playable = prompt_continuation_backend.playable_accompaniment()
+    t_play = time.perf_counter()
+    if os.environ.get("STREAMMUSE_EVT_TRACE") == "1":
+        _wall_t1 = time.time()
+        for _evt in playable:
+            print(f"[EVT_T1] tick={_evt.get('tick')} pitch={_evt.get('pitch')} type={_evt.get('type')} wall={_wall_t1:.6f}", flush=True)
+    response = PromptContinuationPlayableResponse(
+        accompaniment=_accompaniment_response_events(playable),
         status=_scheduler_status_response(status),
     )
+    t_end = time.perf_counter()
+    print(
+        f"[TIMING playable] status_ms={(t_status-t0)*1000:.2f} "
+        f"playable_ms={(t_play-t_status)*1000:.2f} resp_ms={(t_end-t_play)*1000:.2f} "
+        f"n_acc={len(playable)} phase={status.get('phase')} "
+        f"playback_ready={status.get('is_playback_ready')}",
+        flush=True,
+    )
+    return response
 
 
 @app.get("/prompt_continuation/raw_history", response_model=PromptContinuationRawHistoryResponse)

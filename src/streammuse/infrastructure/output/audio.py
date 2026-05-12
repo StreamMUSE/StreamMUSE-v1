@@ -1,6 +1,8 @@
 """Audio (MIDI out) OutputSink adapter."""
 
 from __future__ import annotations
+import os
+import time
 
 from dataclasses import dataclass
 from typing import Optional
@@ -43,11 +45,20 @@ class AudioOutputSink:
             return
 
         if event.event_type == EventType.NOTE_ON and event.velocity > 0:
+            vel = int(event.velocity)
+            if source == 'model':
+                try:
+                    scale = float(os.environ.get('ACC_VELOCITY_SCALE', '1.0'))
+                except ValueError:
+                    scale = 1.0
+                vel = max(1, min(127, int(round(vel * scale))))
+            if source == 'model' and os.environ.get('STREAMMUSE_EVT_TRACE') == '1':
+                print(f"[EVT_T6] tick={int(event.tick)} pitch={int(event.pitch)} type=note_on wall={time.time():.6f}", flush=True)
             self._port.send(
                 mido.Message(
                     "note_on",
                     note=int(event.pitch),
-                    velocity=int(event.velocity),
+                    velocity=vel,
                     channel=int(event.channel),
                 )
             )

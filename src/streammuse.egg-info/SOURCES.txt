@@ -14,8 +14,8 @@ src/streammuse/application/factories/__init__.py
 src/streammuse/application/factories/inference_factory.py
 src/streammuse/application/factories/input_factory.py
 src/streammuse/application/factories/output_factory.py
-src/streammuse/application/services/real_time_music_service.py
 src/streammuse/application/services/prompt_continuation_realtime_service.py
+src/streammuse/application/services/real_time_music_service.py
 src/streammuse/domain/__init__.py
 src/streammuse/domain/events/__init__.py
 src/streammuse/domain/events/generic.py
@@ -37,6 +37,7 @@ src/streammuse/domain/timing/scheduler.py
 src/streammuse/domain/timing/tempo.py
 src/streammuse/infrastructure/__init__.py
 src/streammuse/infrastructure/inference/__init__.py
+src/streammuse/infrastructure/inference/generation_logger.py
 src/streammuse/infrastructure/inference/http_client.py
 src/streammuse/infrastructure/inference/lekai_http_backend.py
 src/streammuse/infrastructure/inference/prompt_continuation_http_client.py
@@ -51,6 +52,13 @@ src/streammuse/infrastructure/inference/config/model_io_schema.py
 src/streammuse/infrastructure/inference/config/model_schema.py
 src/streammuse/infrastructure/inference/config/project_schema.py
 src/streammuse/infrastructure/inference/config/tokenizer_schema.py
+src/streammuse/infrastructure/inference/lekai_continuation_model/PianoDataset.py
+src/streammuse/infrastructure/inference/lekai_continuation_model/Token2Midi.py
+src/streammuse/infrastructure/inference/lekai_continuation_model/__init__.py
+src/streammuse/infrastructure/inference/lekai_continuation_model/config.py
+src/streammuse/infrastructure/inference/lekai_continuation_model/inference_adapter.py
+src/streammuse/infrastructure/inference/lekai_continuation_model/model.py
+src/streammuse/infrastructure/inference/lekai_continuation_model/my_tokenizer.py
 src/streammuse/infrastructure/inference/lekai_model/MidiConverter.py
 src/streammuse/infrastructure/inference/lekai_model/PianoDataset.py
 src/streammuse/infrastructure/inference/lekai_model/Token2Midi.py
@@ -68,6 +76,7 @@ src/streammuse/infrastructure/inference/lekai_prompt_continuation/catchup_state.
 src/streammuse/infrastructure/inference/lekai_prompt_continuation/continuation_engine.py
 src/streammuse/infrastructure/inference/lekai_prompt_continuation/engine.py
 src/streammuse/infrastructure/inference/lekai_prompt_continuation/prompt_engine.py
+src/streammuse/infrastructure/inference/lekai_prompt_continuation/scheduler.py
 src/streammuse/infrastructure/inference/lekai_prompt_continuation/token_conversion.py
 src/streammuse/infrastructure/inference/lekai_prompt_continuation/prompt_model/PianoDataset.py
 src/streammuse/infrastructure/inference/lekai_prompt_continuation/prompt_model/SOURCE.md
