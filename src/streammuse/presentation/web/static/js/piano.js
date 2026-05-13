@@ -139,26 +139,32 @@ const PianoVisualizer = (function() {
         
         for (const note of replacedNotes) {
             if (note.pitch < visibleMinPitch || note.pitch > visibleMaxPitch) continue;
-            
+
             const noteStartX = tickToX(note.startTick);
             const noteEndX = tickToX(note.startTick + note.duration);
-            
+
             if (noteEndX < KEYBOARD_WIDTH || noteStartX > canvas.width) continue;
-            
+
             const y = pianoStartY + getPitchY(note.pitch);
             const height = getNoteHeight(note.pitch);
-            const width = Math.max(4, noteEndX - noteStartX);
-            
+            // Clip BOTH edges to the visible region. Clamping only the left
+            // edge while keeping the original width pins the right edge in
+            // place once the note's left edge crosses the keyboard — the
+            // note then appears to drift right while everything else scrolls.
+            const drawX = Math.max(KEYBOARD_WIDTH, noteStartX);
+            const drawEndX = Math.min(canvas.width, noteEndX);
+            const drawW = Math.max(1, drawEndX - drawX);
+
             ctx.fillStyle = COLORS.replaced;
-            ctx.fillRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
-            
+            ctx.fillRect(drawX, y + 1, drawW, height);
+
             ctx.setLineDash([4, 4]);
             ctx.strokeStyle = 'rgba(158, 158, 158, 0.6)';
             ctx.lineWidth = 1;
-            ctx.strokeRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
+            ctx.strokeRect(drawX, y + 1, drawW, height);
             ctx.setLineDash([]);
         }
-        
+
         for (const note of noteHistory) {
             if (note.pitch < visibleMinPitch || note.pitch > visibleMaxPitch) continue;
 
@@ -174,22 +180,27 @@ const PianoVisualizer = (function() {
 
             const y = pianoStartY + getPitchY(note.pitch);
             const height = getNoteHeight(note.pitch);
-            const width = Math.max(4, noteEndX - noteStartX);
+            // See comment above on replacedNotes — clip both edges, not just
+            // the left, so the rendered width tracks (noteEndX - noteStartX)
+            // as the note scrolls past the keyboard.
+            const drawX = Math.max(KEYBOARD_WIDTH, noteStartX);
+            const drawEndX = Math.min(canvas.width, noteEndX);
+            const drawW = Math.max(1, drawEndX - drawX);
 
             const isPast = note.duration != null && note.startTick + note.duration < currentTick;
             let color = getNoteColor(note);
-            
+
             if (isPast) {
                 ctx.globalAlpha = 0.4;
             }
-            
+
             ctx.fillStyle = color;
-            ctx.fillRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
-            
+            ctx.fillRect(drawX, y + 1, drawW, height);
+
             ctx.strokeStyle = 'rgba(0,0,0,0.2)';
             ctx.lineWidth = 1;
-            ctx.strokeRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
-            
+            ctx.strokeRect(drawX, y + 1, drawW, height);
+
             ctx.globalAlpha = 1.0;
         }
         
