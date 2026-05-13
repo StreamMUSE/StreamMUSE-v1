@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamMUSE - Live Viewer</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>StreamMUSE</h1>
+            <span id="connection-status" class="status disconnected">Disconnected</span>
+        </header>
+
+        <main>
+            <div id="piano-container">
+                <canvas id="piano-canvas"></canvas>
+            </div>
+
+            <div id="sidebar">
+                <section id="stats">
+                    <h3>Statistics</h3>
+
+                    <div class="stat-row">
+                        <span class="stat-label">Position:</span>
+                        <span id="stat-position" class="stat-value">Bar 0, Beat 0</span>
+                    </div>
+
+                    <div class="stat-row">
+                        <span class="stat-label">Current Tick:</span>
+                        <span id="stat-tick" class="stat-value">0</span>
+                    </div>
+
+                    <div class="stat-row">
+                        <span class="stat-label">Hit Rate:</span>
+                        <span id="stat-hit-rate" class="stat-value">--%</span>
+                    </div>
+
+                    <div class="stat-row">
+                        <span class="stat-label">Avg Backup Level:</span>
+                        <span id="stat-backup-level" class="stat-value">--</span>
+                    </div>
+
+                    <h4>Latency</h4>
+
+                    <div class="stat-row">
+                        <span class="stat-label">Round Trip:</span>
+                        <span id="stat-round-trip" class="stat-value">-- ms</span>
+                    </div>
+
+                    <div class="stat-row">
+                        <span class="stat-label">Server Processing:</span>
+                        <span id="stat-server-time" class="stat-value">-- ms</span>
+                    </div>
+
+                    <div class="stat-row">
+                        <span class="stat-label">Network Latency:</span>
+                        <span id="stat-network" class="stat-value">-- ms</span>
+                    </div>
+                </section>
+
+                <section id="legend">
+                    <h3>Legend</h3>
+                    <div class="legend-item">
+                        <span class="legend-color user"></span>
+                        <span>User Melody</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color model"></span>
+                        <span>Model Accompaniment</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color replaced"></span>
+                        <span>Replaced (Backed Up)</span>
+                    </div>
+                </section>
+
+                <section id="session-info">
+                    <h3>Session</h3>
+                    <div class="stat-row">
+                        <span class="stat-label">Tempo:</span>
+                        <span id="info-tempo" class="stat-value">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Input:</span>
+                        <span id="info-input" class="stat-value">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Model:</span>
+                        <span id="info-model" class="stat-value">--</span>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="/js/piano.js"></script>
+    <script src="/js/stats.js"></script>
+    <script src="/js/main.js"></script>
+</body>
+</html>
