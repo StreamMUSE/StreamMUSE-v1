@@ -131,6 +131,10 @@ def main() -> int:
             "beats_per_bar": config.tempo.beats_per_bar,
             "input_type": config.input.type,
             "output_type": config.output.type,
+            "metronome_enabled": config.output.metronome_enabled,
+            "metronome_port": config.output.metronome_port,
+            "metronome_channel": config.output.metronome_channel,
+            "count_in_beats": config.count_in_beats,
             "inference_type": config.inference.type,
             "generation_interval_ticks": config.inference.generation_interval_ticks,
             "generation_length_frames": config.inference.generation_length_frames,
@@ -169,6 +173,7 @@ def main() -> int:
         scheduler=scheduler,
         generation_interval_ticks=config.inference.generation_interval_ticks,
         generation_length_frames=config.inference.generation_length_frames,
+        count_in_beats=config.count_in_beats,
     )
 
     def _save_history_logs(history_payload: object) -> None:
@@ -228,6 +233,12 @@ def main() -> int:
     print(f"  Tempo: {tempo.bpm} BPM, {tempo.ticks_per_beat} ticks/beat, {tempo.beats_per_bar} beats/bar")
     print(f"  Input: {config.input.type}")
     print(f"  Output: {config.output.type}")
+    print(
+        "  Metronome: "
+        f"{'enabled' if config.output.metronome_enabled else 'disabled'}"
+        + (f" ({config.output.metronome_port})" if config.output.metronome_port else "")
+    )
+    print(f"  Count-in: {config.count_in_beats} beat(s)")
     print(f"  Inference: {config.inference.type}")
     print(f"  Generation interval: {config.inference.generation_interval_ticks} ticks")
     print(f"  Generation length: {config.inference.generation_length_frames} frames")

@@ -14,6 +14,8 @@ from streammuse.infrastructure.output import (
     ConsoleOutputConfig,
     ConsoleOutputSink,
     JsonLoggerOutputSink,
+    MetronomeOutputConfig,
+    MetronomeOutputSink,
     MidiFileOutputConfig,
     MidiFileOutputSink,
     SessionLoggerOutputSink,
@@ -37,10 +39,36 @@ class OutputSinkFactory:
             MidiFileOutputConfig(
                 bpm=float(tempo.bpm),
                 ticks_per_beat=int(tempo.ticks_per_beat),
+                beats_per_bar=int(tempo.beats_per_bar),
                 output_path=str(session_manager.get_session_dir() / "combined.mid"),
+                record_metronome=bool(app_config.output.metronome_enabled),
             )
         )
         return CompositeOutputSink([base_sink, auto_midi_sink])
+
+    @staticmethod
+    def _attach_metronome_if_needed(
+        *,
+        base_sink: OutputSink,
+        app_config: ApplicationConfig,
+    ) -> OutputSink:
+        cfg = app_config.output
+        if not cfg.metronome_enabled:
+            return base_sink
+
+        tempo = app_config.tempo
+        metronome_sink = MetronomeOutputSink(
+            MetronomeOutputConfig(
+                port_name=cfg.metronome_port or cfg.midi_out_port,
+                ticks_per_beat=int(tempo.ticks_per_beat),
+                beats_per_bar=int(tempo.beats_per_bar),
+                channel=int(cfg.metronome_channel),
+            )
+        )
+
+        if isinstance(base_sink, CompositeOutputSink):
+            return CompositeOutputSink([*base_sink.sinks, metronome_sink])
+        return CompositeOutputSink([base_sink, metronome_sink])
 
     @staticmethod
     def create(
@@ -51,60 +79,70 @@ class OutputSinkFactory:
         tempo = app_config.tempo
 
         if cfg.type == "console":
-            return OutputSinkFactory._attach_auto_midi_if_needed(
+            sink = OutputSinkFactory._attach_auto_midi_if_needed(
                 base_sink=ConsoleOutputSink(ConsoleOutputConfig()),
                 app_config=app_config,
                 session_manager=session_manager,
             )
+            return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
         if cfg.type == "audio":
-            return OutputSinkFactory._attach_auto_midi_if_needed(
+            sink = OutputSinkFactory._attach_auto_midi_if_needed(
                 base_sink=AudioOutputSink(AudioOutputConfig(port_name=cfg.midi_out_port)),
                 app_config=app_config,
                 session_manager=session_manager,
             )
+            return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
         if cfg.type == "midi_file":
             if not cfg.midi_file_output_path:
                 raise ValueError("midi_file_output_path is required for midi_file output")
-            return MidiFileOutputSink(
+            sink = MidiFileOutputSink(
                 MidiFileOutputConfig(
                     bpm=float(tempo.bpm),
                     ticks_per_beat=int(tempo.ticks_per_beat),
+                    beats_per_bar=int(tempo.beats_per_bar),
                     output_path=cfg.midi_file_output_path,
+                    record_metronome=bool(cfg.metronome_enabled),
                 )
             )
+            return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
         if cfg.type == "websocket":
-            return OutputSinkFactory._attach_auto_midi_if_needed(
+            sink = OutputSinkFactory._attach_auto_midi_if_needed(
                 base_sink=WebSocketOutputSink(),
                 app_config=app_config,
                 session_manager=session_manager,
             )
+            return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
         if cfg.type == "json_log":
             if not session_manager:
                 raise ValueError("session_manager is required for json_log output")
-            return JsonLoggerOutputSink(
+            sink = JsonLoggerOutputSink(
                 session_manager.get_session_dir(),
                 inference_log_detail=cfg.inference_log_detail,
             )
+            return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
         if cfg.type == "session":
             if not session_manager:
                 raise ValueError("session_manager is required for session output")
-            return SessionLoggerOutputSink(
+            sink = SessionLoggerOutputSink(
                 session_dir=session_manager.get_session_dir(),
                 include_midi=True,
                 include_json=True,
                 inference_log_detail=cfg.inference_log_detail,
                 bpm=float(tempo.bpm),
                 ticks_per_beat=int(tempo.ticks_per_beat),
+                beats_per_bar=int(tempo.beats_per_bar),
+                record_metronome=bool(cfg.metronome_enabled),
             )
+            return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
         if cfg.type == "composite":
             if session_manager:
-                return CompositeOutputSink(
+                sink = CompositeOutputSink(
                     [
                         ConsoleOutputSink(ConsoleOutputConfig()),
                         SessionLoggerOutputSink(
@@ -112,12 +150,13 @@ class OutputSinkFactory:
                             inference_log_detail=cfg.inference_log_detail,
                             bpm=float(tempo.bpm),
                             ticks_per_beat=int(tempo.ticks_per_beat),
+                            beats_per_bar=int(tempo.beats_per_bar),
+                            record_metronome=bool(cfg.metronome_enabled),
                         ),
                     ]
                 )
-            return CompositeOutputSink(
-                [ConsoleOutputSink(ConsoleOutputConfig()), WebSocketOutputSink()]
-            )
+                return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
+            sink = CompositeOutputSink([ConsoleOutputSink(ConsoleOutputConfig()), WebSocketOutputSink()])
+            return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
         raise ValueError(f"Unknown output type: {cfg.type}")
-

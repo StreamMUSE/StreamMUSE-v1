@@ -25,6 +25,9 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "output_type": "console",
         "midi_out_port": None,
         "midi_file_output_path": None,
+        "enable_metronome": False,
+        "metronome_port": None,
+        "metronome_channel": 9,
         "inference_log_detail": "summary",
         "inference_type": "http",
         "server_url": "http://localhost:8000/generate_accompaniment",
@@ -36,6 +39,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "model_max_seq_len_frames": 96,
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
+        "count_in_beats": 0,
         "max_ticks": None,
     }
     base.update(overrides)
@@ -56,10 +60,14 @@ def test_parse_args_defaults() -> None:
     assert config.input.injection_acc_file is None
     assert config.output.type == "console"
     assert config.output.inference_log_detail == "summary"
+    assert config.output.metronome_enabled is False
+    assert config.output.metronome_port is None
+    assert config.output.metronome_channel == 9
     assert config.inference.type == "http"
     assert config.inference.server_generate_url == "http://localhost:8000/generate_accompaniment"
     assert config.inference.generation_interval_ticks == 2
     assert config.inference.generation_length_frames == 20
+    assert config.count_in_beats == 0
 
 
 def test_args_to_config_keyboard_input() -> None:
@@ -129,6 +137,30 @@ def test_args_to_config_midi_file() -> None:
     assert config.output.type == "midi_file"
     assert config.output.midi_file_output_path == "/path/to/output.mid"
     assert config.output.inference_log_detail == "full"
+
+
+def test_args_to_config_metronome_fields() -> None:
+    args = _make_args(
+        output_type="audio",
+        midi_out_port="Music Port",
+        enable_metronome=True,
+        metronome_port="Click Port",
+        metronome_channel=10,
+        count_in_beats=4,
+    )
+
+    config = args_to_config(args)
+
+    assert config.output.metronome_enabled is True
+    assert config.output.metronome_port == "Click Port"
+    assert config.output.metronome_channel == 10
+    assert config.count_in_beats == 4
+
+
+def test_args_to_config_clamps_negative_count_in() -> None:
+    args = _make_args(count_in_beats=-2)
+    config = args_to_config(args)
+    assert config.count_in_beats == 0
 
 
 def test_args_to_config_injection_fields() -> None:

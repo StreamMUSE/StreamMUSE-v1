@@ -15,11 +15,19 @@ from streammuse.domain.musical import EventType, MusicalEvent
 class MidiFileOutputConfig:
     bpm: float
     ticks_per_beat: int
+    beats_per_bar: int = 4
     output_path: Optional[str] = None
     user_program: int = 0
     model_program: int = 0
     user_track_name: str = "Melody"
     model_track_name: str = "Accompaniment"
+    record_metronome: bool = False
+    metronome_track_name: str = "Metronome"
+    metronome_beat_note: int = 77
+    metronome_downbeat_note: int = 76
+    metronome_velocity: int = 80
+    metronome_downbeat_velocity: int = 110
+    metronome_duration_ticks: int = 1
 
     def seconds_per_tick(self) -> float:
         return (60.0 / float(self.bpm)) / float(self.ticks_per_beat)
@@ -43,13 +51,26 @@ class MidiFileOutputSink:
         self._model = pretty_midi.Instrument(program=int(config.model_program), name=config.model_track_name)
         self._midi.instruments.append(self._user)
         self._midi.instruments.append(self._model)
+        self._metronome: pretty_midi.Instrument | None = None
+        if config.record_metronome:
+            self._metronome = pretty_midi.Instrument(
+                program=0,
+                is_drum=True,
+                name=config.metronome_track_name,
+            )
+            self._midi.instruments.append(self._metronome)
 
         self._active_user: Dict[int, Dict[str, float]] = {}
         self._active_model: Dict[int, Dict[str, float]] = {}
         self._max_time = 0.0
+        self._recording_tick_offset = 0
 
     def _time(self, tick: int) -> float:
-        return float(tick) * self._sp_tick
+        return float(int(tick) + int(self._recording_tick_offset)) * self._sp_tick
+
+    def _observe_recording_tick(self, tick: int) -> None:
+        if int(tick) < 0:
+            self._recording_tick_offset = max(self._recording_tick_offset, -int(tick))
 
     def _handle_event(
         self,
@@ -92,6 +113,34 @@ class MidiFileOutputSink:
 
     def output_tick(self, tick: int, bar: int, beat: int) -> None:
         return
+
+    def output_metronome_tick(self, tick: int, bar: int, beat: int) -> None:
+        _ = bar, beat
+        if self._metronome is None:
+            return
+        self._observe_recording_tick(int(tick))
+        if int(tick) % int(self._config.ticks_per_beat) != 0:
+            return
+
+        ticks_per_bar = int(self._config.ticks_per_beat) * int(self._config.beats_per_bar)
+        is_downbeat = ticks_per_bar > 0 and int(tick) % ticks_per_bar == 0
+        pitch = self._config.metronome_downbeat_note if is_downbeat else self._config.metronome_beat_note
+        velocity = (
+            self._config.metronome_downbeat_velocity
+            if is_downbeat
+            else self._config.metronome_velocity
+        )
+        start = self._time(int(tick))
+        end = self._time(int(tick) + max(1, int(self._config.metronome_duration_ticks)))
+        self._max_time = max(self._max_time, end)
+        self._metronome.notes.append(
+            pretty_midi.Note(
+                velocity=int(velocity),
+                pitch=int(pitch),
+                start=start,
+                end=end,
+            )
+        )
 
     def output_stats(
         self,
