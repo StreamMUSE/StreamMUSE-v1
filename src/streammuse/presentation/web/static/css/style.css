@@ -1,0 +1,253 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: #fafafa;
+    color: #333;
+    min-height: 100vh;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background: #ffffff;
+    border-bottom: 1px solid #e0e0e0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+header h1 {
+    font-size: 1.5rem;
+    color: #E91E63;
+    font-weight: 600;
+}
+
+.status {
+    padding: 5px 15px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.status.connected {
+    background: #4CAF50;
+    color: white;
+}
+
+.status.disconnected {
+    background: #f44336;
+    color: white;
+}
+
+main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+#piano-container {
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    background: #f5f5f5;
+    position: relative;
+}
+
+#piano-canvas {
+    width: 100%;
+    height: 100%;
+}
+
+#sidebar {
+    width: 280px;
+    background: #ffffff;
+    padding: 15px;
+    overflow-y: auto;
+    border-left: 1px solid #e0e0e0;
+    box-shadow: -2px 0 5px rgba(0,0,0,0.05);
+}
+
+#sidebar section {
+    margin-bottom: 20px;
+}
+
+#sidebar h3 {
+    color: #E91E63;
+    margin-bottom: 15px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #eee;
+    font-weight: 600;
+}
+
+#sidebar h4 {
+    color: #666;
+    margin: 15px 0 10px;
+    font-size: 0.9rem;
+}
+
+.button-group {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+    font-weight: 500;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background: #4CAF50;
+    color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #43a047;
+}
+
+.btn-danger {
+    background: #f44336;
+    color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+    background: #e53935;
+}
+
+.btn-secondary {
+    background: #78909c;
+    color: white;
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background: #607d8b;
+}
+
+.control-group {
+    margin-bottom: 12px;
+}
+
+.control-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 0.85rem;
+    color: #666;
+}
+
+.control-group input[type="range"] {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: #e0e0e0;
+    outline: none;
+    -webkit-appearance: none;
+}
+
+.control-group input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #E91E63;
+    cursor: pointer;
+}
+
+.control-group select {
+    width: 100%;
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    background: #fff;
+    color: #333;
+    font-size: 0.9rem;
+}
+
+.control-group input[type="checkbox"] {
+    margin-right: 8px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.stat-label {
+    color: #888;
+    font-size: 0.85rem;
+}
+
+.stat-value {
+    color: #333;
+    font-weight: 500;
+    font-family: 'Monaco', 'Consolas', monospace;
+}
+
+#legend {
+    margin-top: 20px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+}
+
+.legend-color {
+    width: 20px;
+    height: 20px;
+    border-radius: 3px;
+    margin-right: 10px;
+}
+
+.legend-color.user {
+    background: #2196F3;
+}
+
+.legend-color.model {
+    background: #4CAF50;
+}
+
+.legend-color.replaced {
+    background: repeating-linear-gradient(
+        45deg,
+        #9E9E9E,
+        #9E9E9E 2px,
+        transparent 2px,
+        transparent 6px
+    );
+    opacity: 0.5;
+}
+
+footer {
+    padding: 10px 20px;
+    background: #ffffff;
+    text-align: center;
+    font-size: 0.85rem;
+    color: #999;
+    border-top: 1px solid #e0e0e0;
+}
