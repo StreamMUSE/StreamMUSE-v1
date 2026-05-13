@@ -37,6 +37,9 @@ class OutputConfig:
     midi_out_port: Optional[str] = None
     midi_file_output_path: Optional[str] = None
     inference_log_detail: InferenceLogDetail = "summary"
+    metronome_enabled: bool = False
+    metronome_port: Optional[str] = None
+    metronome_channel: int = 9
 
 
 @dataclass(frozen=True)
@@ -59,4 +62,4 @@ class ApplicationConfig:
     input: InputConfig = InputConfig()
     output: OutputConfig = OutputConfig()
     inference: InferenceConfig = InferenceConfig()
-
+    count_in_beats: int = 4

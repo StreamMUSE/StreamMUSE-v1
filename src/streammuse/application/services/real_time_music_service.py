@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
@@ -67,6 +67,10 @@ class RealTimeMusicService:
     @property
     def running(self) -> bool:
         return self._running
+
+    def _output_metronome_tick(self, tick: int, bar: int, beat: int) -> None:
+        if hasattr(self._output, "output_metronome_tick"):
+            self._output.output_metronome_tick(tick, bar, beat)  # type: ignore[union-attr]
 
     def _event_to_log_dict(self, event: MusicalEvent) -> dict:
         return {
@@ -211,13 +215,14 @@ class RealTimeMusicService:
             #    boundary have time to arrive before we drain the queue.
             self._sleep(self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO)
 
-            # 5. Drain input events: emit immediately and buffer for next trigger.
+            # 5. Drain input events and buffer them for aligned playback.
+            user_events_to_play: List[MusicalEvent] = []
             while True:
                 try:
                     ev = self._event_q.get_nowait()
                 except queue.Empty:
                     break
-                self._output.output_event(ev, source="user")
+                user_events_to_play.append(ev)
                 notes_for_next_request.append(ev)
 
             # 6. Process inference responses.
@@ -257,7 +262,10 @@ class RealTimeMusicService:
                         ),
                     )
 
-            # 7. Play scheduled events.
+            # 7. Play metronome and musical events from the same post-buffer phase.
+            self._output_metronome_tick(tick=tick, bar=mt.bar, beat=mt.beat)
+            for ev in user_events_to_play:
+                self._output.output_event(ev, source="user")
             for ev in self._scheduler.get_events_at_tick(tick):
                 self._output.output_event(ev, source=ev.source)
 
@@ -401,4 +409,3 @@ class RealTimeMusicService:
             self._tick_thread.join(timeout=1.0)
         if self._input_thread is not None:
             self._input_thread.join(timeout=1.0)
-

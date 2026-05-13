@@ -70,6 +70,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--midi-out-port", type=str, default=None, help="MIDI output port name (for audio output)")
     parser.add_argument("--midi-file-output-path", type=str, default=None, help="Path to save MIDI file output")
+    parser.add_argument("--enable-metronome", action="store_true", help="Play MIDI metronome clicks aligned with playback")
+    parser.add_argument("--metronome-port", type=str, default=None, help="MIDI output port for metronome clicks")
+    parser.add_argument("--metronome-channel", type=int, default=9, help="MIDI channel for metronome clicks")
 
     # Logging configuration
     parser.add_argument("--log-dir", type=str, default="logs", help="Base directory for session logs")
@@ -149,6 +152,9 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         midi_out_port=args.midi_out_port,
         midi_file_output_path=args.midi_file_output_path,
         inference_log_detail=getattr(args, "inference_log_detail", "summary"),  # type: ignore
+        metronome_enabled=bool(getattr(args, "enable_metronome", False)),
+        metronome_port=getattr(args, "metronome_port", None),
+        metronome_channel=int(getattr(args, "metronome_channel", 9)),
     )
 
     # Inference config

@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 from streammuse.infrastructure.inference.lekai_http_backend import LekaiHttpBackend
 
@@ -166,6 +167,14 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
     monkeypatch.setenv("LEKAI_DTYPE", "auto")
     monkeypatch.setenv("LEKAI_ENABLE_MPS_FALLBACK", "true")
     monkeypatch.setenv("LEKAI_WARMUP_STEPS", "1")
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_http_backend.resolve_device",
+        lambda preference: "mps" if preference == "mps" else "cpu",
+    )
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_http_backend.resolve_dtype",
+        lambda device, preference: torch.float16 if device == "mps" else torch.float32,
+    )
 
     calls: list[str] = []
 

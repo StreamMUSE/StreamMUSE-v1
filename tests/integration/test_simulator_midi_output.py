@@ -96,7 +96,7 @@ def test_simulator_writes_combined_midi_with_two_named_tracks(tmp_path):
         generation_interval_ticks=1,
         generation_length_frames=4,
         now=now,
-        sleep=lambda _: None,
+        sleep=lambda _: time.sleep(0.001),
     )
 
     service.start(max_ticks=20)

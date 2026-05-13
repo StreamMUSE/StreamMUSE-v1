@@ -57,6 +57,11 @@ class CompositeOutputSink:
         for s in self.sinks:
             s.output_config(config)
 
+    def output_metronome_tick(self, tick: int, bar: int, beat: int) -> None:
+        for s in self.sinks:
+            if hasattr(s, "output_metronome_tick"):
+                s.output_metronome_tick(tick, bar, beat)
+
     def log_inference(
         self,
         request: Dict[str, Any],
@@ -71,4 +76,3 @@ class CompositeOutputSink:
     def close(self) -> None:
         for s in self.sinks:
             s.close()
-
