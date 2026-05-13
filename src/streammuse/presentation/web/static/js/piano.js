@@ -264,8 +264,24 @@ const PianoVisualizer = (function() {
         // Keep a small buffer past the visible-behind window so the edge
         // of the roll doesn't pop notes as it scrolls.
         const cutoffTick = currentTick - (visibleTicksBehind + 8);
+
+        // Force-close open notes whose START is already past the cutoff.
+        // Without this, an open note's right edge stays pinned to NOW
+        // forever and the note never scrolls off the left edge — visible
+        // as a long bar that won't disappear. This is the safety net for
+        // the common case: a note_off that never arrived because the
+        // model's response was replaced mid-flight.
+        for (const [key, note] of openNotes) {
+            if (note.startTick < cutoffTick) {
+                note.duration = Math.max(1, currentTick - note.startTick);
+                openNotes.delete(key);
+            }
+        }
+
         while (noteHistory.length > 0) {
             const n = noteHistory[0];
+            // After the force-close above, only notes whose start is recent
+            // can still be open. For those we keep them (still rendering).
             const endTick = n.duration == null ? currentTick : n.startTick + n.duration;
             if (endTick < cutoffTick) noteHistory.shift();
             else break;
@@ -282,16 +298,31 @@ const PianoVisualizer = (function() {
         // duration == 0 (or missing) means "unknown, grow until noteOff".
         // Positive values are honored verbatim.
         const hasKnownDuration = noteData.duration && noteData.duration > 0;
+        const source = noteData.source || 'model';
+        const startTick = noteData.tick;
+
+        // Close-at-horizon for same-pitch retriggers. If a previous note for
+        // this source+pitch is still open when a new note_on arrives, the
+        // missing note_off is implicit — close the prior note 1 tick before
+        // the new one starts. Mirrors the server-side converter policy
+        // (domain/musical/converters.py).
+        const key = `${source}:${noteData.pitch}`;
+        const prior = openNotes.get(key);
+        if (prior) {
+            prior.duration = Math.max(1, startTick - prior.startTick);
+            openNotes.delete(key);
+        }
+
         const note = {
             pitch: noteData.pitch,
-            startTick: noteData.tick,
+            startTick: startTick,
             duration: hasKnownDuration ? noteData.duration : null,
-            source: noteData.source || 'model',
+            source: source,
             id: noteData.id || null
         };
         noteHistory.push(note);
         if (!hasKnownDuration) {
-            openNotes.set(`${note.source}:${note.pitch}`, note);
+            openNotes.set(key, note);
         }
     }
 
