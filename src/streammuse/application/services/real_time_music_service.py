@@ -17,6 +17,7 @@ from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
 @dataclass(frozen=True)
 class RealTimeServiceRuntime:
     session_start_time: float
+    timeline_start_time: float
 
 
 class RealTimeMusicService:
@@ -40,9 +41,12 @@ class RealTimeMusicService:
         scheduler: PlaybackScheduler,
         generation_interval_ticks: int = 2,
         generation_length_frames: int = 20,
+        count_in_beats: int = 0,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if int(count_in_beats) < 0:
+            raise ValueError("count_in_beats must be >= 0")
         self._input = input_source
         self._engine = inference_engine
         self._output = output_sink
@@ -50,6 +54,8 @@ class RealTimeMusicService:
         self._scheduler = scheduler
         self._generation_interval_ticks = generation_interval_ticks
         self._generation_length_frames = generation_length_frames
+        self._count_in_beats = int(count_in_beats)
+        self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
         self._now = now
         self._sleep = sleep
 
@@ -71,6 +77,36 @@ class RealTimeMusicService:
     def _output_metronome_tick(self, tick: int, bar: int, beat: int) -> None:
         if hasattr(self._output, "output_metronome_tick"):
             self._output.output_metronome_tick(tick, bar, beat)  # type: ignore[union-attr]
+
+    def _timeline_start_time(self) -> float:
+        assert self._runtime is not None
+        return float(getattr(self._runtime, "timeline_start_time", self._runtime.session_start_time))
+
+    def _sleep_until(self, target_time: float) -> None:
+        delay = target_time - self._now()
+        if delay > 0:
+            self._sleep(delay)
+
+    def _run_count_in(self) -> None:
+        """Play metronome-only pre-roll before the musical timeline starts."""
+        if self._count_in_ticks <= 0:
+            return
+        assert self._runtime is not None
+        start = self._runtime.session_start_time
+        ticks_per_beat = max(1, int(self._tempo.ticks_per_beat))
+        beats_per_bar = max(1, int(self._tempo.beats_per_bar))
+
+        self._output.output_status("count_in", f"{self._count_in_beats} beat(s)")
+        for elapsed_tick in range(self._count_in_ticks):
+            if not self._running:
+                return
+            target_time = start + self._tempo.tick_to_seconds(elapsed_tick)
+            self._sleep_until(target_time)
+
+            count_tick = elapsed_tick - self._count_in_ticks
+            beat = (elapsed_tick // ticks_per_beat) % beats_per_bar
+            bar = elapsed_tick // (ticks_per_beat * beats_per_bar)
+            self._output_metronome_tick(tick=count_tick, bar=bar, beat=beat)
 
     def _event_to_log_dict(self, event: MusicalEvent) -> dict:
         return {
@@ -155,11 +191,12 @@ class RealTimeMusicService:
     def _input_worker(self) -> None:
         """Read events from input source and add to queues."""
         assert self._runtime is not None
-        start = self._runtime.session_start_time
+        start = self._timeline_start_time()
+        self._sleep_until(start)
         for ev in self._input.read_events():
             if not self._running:
                 break
-            elapsed = self._now() - start
+            elapsed = max(0.0, self._now() - start)
             tick = self._tempo.seconds_to_tick(elapsed)
             # Assign tick at dequeue time per timing design.
             stamped = MusicalEvent(
@@ -184,7 +221,8 @@ class RealTimeMusicService:
     def _tick_loop(self, *, max_ticks: Optional[int]) -> None:
         """Main tick loop: timing, event playback, and inference triggering."""
         assert self._runtime is not None
-        start = self._runtime.session_start_time
+        self._run_count_in()
+        start = self._timeline_start_time()
         tick = 0
         # Accumulates user events between beat-tail triggers.
         notes_for_next_request: List[MusicalEvent] = []
@@ -196,9 +234,7 @@ class RealTimeMusicService:
 
             # 1. Absolute time sync: sleep until this tick's wall-clock boundary.
             target_time = start + self._tempo.tick_to_seconds(tick)
-            delay = target_time - self._now()
-            if delay > 0:
-                self._sleep(delay)
+            self._sleep_until(target_time)
 
             # 2. Emit tick info.
             mt = MusicalTime.from_tick(tick, self._tempo)
@@ -369,7 +405,12 @@ class RealTimeMusicService:
         if self._running:
             return
         self._running = True
-        self._runtime = RealTimeServiceRuntime(session_start_time=self._now())
+        session_start_time = self._now()
+        timeline_start_time = session_start_time + self._tempo.tick_to_seconds(self._count_in_ticks)
+        self._runtime = RealTimeServiceRuntime(
+            session_start_time=session_start_time,
+            timeline_start_time=timeline_start_time,
+        )
         self._output.output_status("running", "")
 
         self._input_thread = threading.Thread(target=self._input_worker, daemon=True)

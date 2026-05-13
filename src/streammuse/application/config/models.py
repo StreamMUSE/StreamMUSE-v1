@@ -62,4 +62,4 @@ class ApplicationConfig:
     input: InputConfig = InputConfig()
     output: OutputConfig = OutputConfig()
     inference: InferenceConfig = InferenceConfig()
-    count_in_beats: int = 4
+    count_in_beats: int = 0

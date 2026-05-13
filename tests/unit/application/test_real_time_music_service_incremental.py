@@ -19,6 +19,14 @@ class _NoopInput:
         return None
 
 
+class _OneEventInput:
+    def read_events(self):
+        return iter([_note(60, 0)])
+
+    def close(self):
+        return None
+
+
 class _NoopOutput:
     def output_event(self, event, source):
         return None
@@ -107,6 +115,89 @@ def test_metronome_tick_is_emitted_in_playback_phase_before_music_events():
         ("event", "user", 60),
         ("event", "model", 48),
     ]
+
+
+def test_count_in_emits_metronome_only_before_timeline_starts():
+    calls = []
+
+    class _MetronomeOutput(_NoopOutput):
+        def output_tick(self, tick, bar, beat):
+            calls.append(("tick", tick))
+
+        def output_metronome_tick(self, tick, bar, beat):
+            calls.append(("metronome", tick))
+
+    svc = RealTimeMusicService(
+        input_source=_NoopInput(),
+        inference_engine=_NoopInference(),
+        output_sink=_MetronomeOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    svc._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    svc._running = True
+
+    svc._tick_loop(max_ticks=0)
+
+    assert calls == [
+        ("metronome", -4),
+        ("metronome", -3),
+        ("metronome", -2),
+        ("metronome", -1),
+    ]
+    with pytest.raises(queue.Empty):
+        svc._inference_request_queue.get_nowait()
+
+
+def test_count_in_keeps_formal_timeline_start_at_tick_zero():
+    calls = []
+
+    class _MetronomeOutput(_NoopOutput):
+        def output_tick(self, tick, bar, beat):
+            calls.append(("tick", tick))
+
+        def output_metronome_tick(self, tick, bar, beat):
+            calls.append(("metronome", tick))
+
+    svc = RealTimeMusicService(
+        input_source=_NoopInput(),
+        inference_engine=_NoopInference(),
+        output_sink=_MetronomeOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    svc._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    svc._running = True
+
+    svc._tick_loop(max_ticks=1)
+
+    assert calls[-2:] == [("tick", 0), ("metronome", 0)]
+
+
+def test_count_in_input_worker_stamps_first_accepted_event_at_tick_zero():
+    svc = RealTimeMusicService(
+        input_source=_OneEventInput(),
+        inference_engine=_NoopInference(),
+        output_sink=_NoopOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    svc._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=2.0)
+    svc._running = True
+
+    svc._input_worker()
+
+    stamped = svc._event_q.get_nowait()
+    assert stamped.tick == 0
 
 
 # --- tick=0 trigger ---

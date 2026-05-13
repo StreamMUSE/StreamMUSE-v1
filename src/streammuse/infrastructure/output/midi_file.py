@@ -63,9 +63,14 @@ class MidiFileOutputSink:
         self._active_user: Dict[int, Dict[str, float]] = {}
         self._active_model: Dict[int, Dict[str, float]] = {}
         self._max_time = 0.0
+        self._recording_tick_offset = 0
 
     def _time(self, tick: int) -> float:
-        return float(tick) * self._sp_tick
+        return float(int(tick) + int(self._recording_tick_offset)) * self._sp_tick
+
+    def _observe_recording_tick(self, tick: int) -> None:
+        if int(tick) < 0:
+            self._recording_tick_offset = max(self._recording_tick_offset, -int(tick))
 
     def _handle_event(
         self,
@@ -113,6 +118,7 @@ class MidiFileOutputSink:
         _ = bar, beat
         if self._metronome is None:
             return
+        self._observe_recording_tick(int(tick))
         if int(tick) % int(self._config.ticks_per_beat) != 0:
             return
 

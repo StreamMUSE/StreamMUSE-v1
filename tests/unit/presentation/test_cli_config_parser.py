@@ -39,6 +39,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "model_max_seq_len_frames": 96,
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
+        "count_in_beats": 0,
         "max_ticks": None,
     }
     base.update(overrides)
@@ -66,6 +67,7 @@ def test_parse_args_defaults() -> None:
     assert config.inference.server_generate_url == "http://localhost:8000/generate_accompaniment"
     assert config.inference.generation_interval_ticks == 2
     assert config.inference.generation_length_frames == 20
+    assert config.count_in_beats == 0
 
 
 def test_args_to_config_keyboard_input() -> None:
@@ -144,6 +146,7 @@ def test_args_to_config_metronome_fields() -> None:
         enable_metronome=True,
         metronome_port="Click Port",
         metronome_channel=10,
+        count_in_beats=4,
     )
 
     config = args_to_config(args)
@@ -151,6 +154,13 @@ def test_args_to_config_metronome_fields() -> None:
     assert config.output.metronome_enabled is True
     assert config.output.metronome_port == "Click Port"
     assert config.output.metronome_channel == 10
+    assert config.count_in_beats == 4
+
+
+def test_args_to_config_clamps_negative_count_in() -> None:
+    args = _make_args(count_in_beats=-2)
+    config = args_to_config(args)
+    assert config.count_in_beats == 0
 
 
 def test_args_to_config_injection_fields() -> None:

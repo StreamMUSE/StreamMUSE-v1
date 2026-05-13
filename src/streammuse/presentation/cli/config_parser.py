@@ -121,6 +121,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generation-interval-ticks", type=int, default=2, help="Ticks between generation requests")
 
     # Runtime options
+    parser.add_argument(
+        "--count-in-beats",
+        type=int,
+        default=0,
+        help="Number of beats to click before accepting input and sending inference requests",
+    )
     parser.add_argument("--max-ticks", type=int, default=None, help="Maximum ticks to run (for testing)")
 
     return parser.parse_args()
@@ -176,6 +182,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         input=input_config,
         output=output_config,
         inference=inference_config,
+        count_in_beats=max(0, int(getattr(args, "count_in_beats", 0) or 0)),
     )
 
 

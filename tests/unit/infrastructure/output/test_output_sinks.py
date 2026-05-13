@@ -61,6 +61,31 @@ def test_midi_file_output_sink_records_metronome_when_enabled(tmp_path):
     assert all(note.end > note.start for note in by_name["Metronome"].notes)
 
 
+def test_midi_file_output_sink_records_count_in_before_music(tmp_path):
+    out_path = tmp_path / "count_in.mid"
+    cfg = MidiFileOutputConfig(
+        bpm=120.0,
+        ticks_per_beat=4,
+        beats_per_bar=4,
+        output_path=str(out_path),
+        record_metronome=True,
+    )
+    sink = MidiFileOutputSink(cfg)
+
+    sink.output_metronome_tick(-4, bar=0, beat=0)
+    sink.output_metronome_tick(0, bar=0, beat=0)
+    sink.output_event(MusicalEvent(tick=0, pitch=60, event_type=EventType.NOTE_ON, velocity=100), source="user")
+    sink.output_event(MusicalEvent(tick=4, pitch=60, event_type=EventType.NOTE_OFF, velocity=0), source="user")
+    sink.close()
+
+    midi = pretty_midi.PrettyMIDI(str(out_path))
+    by_name = {inst.name: inst for inst in midi.instruments}
+    assert [round(note.start, 3) for note in by_name["Metronome"].notes] == [0.0, 0.5]
+    assert len(by_name["Melody"].notes) == 1
+    assert round(by_name["Melody"].notes[0].start, 3) == 0.5
+    assert round(by_name["Melody"].notes[0].end, 3) == 1.0
+
+
 def test_composite_output_sink_fans_out_calls():
     calls = []
 
