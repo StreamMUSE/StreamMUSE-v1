@@ -147,15 +147,17 @@ const PianoVisualizer = (function() {
             
             const y = pianoStartY + getPitchY(note.pitch);
             const height = getNoteHeight(note.pitch);
-            const width = Math.max(4, noteEndX - noteStartX);
-            
+            const drawX = Math.max(KEYBOARD_WIDTH, noteStartX);
+            const drawEndX = Math.min(canvas.width, noteEndX);
+            const drawW = Math.max(1, drawEndX - drawX);
+
             ctx.fillStyle = COLORS.replaced;
-            ctx.fillRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
-            
+            ctx.fillRect(drawX, y + 1, drawW, height);
+
             ctx.setLineDash([4, 4]);
             ctx.strokeStyle = 'rgba(158, 158, 158, 0.6)';
             ctx.lineWidth = 1;
-            ctx.strokeRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
+            ctx.strokeRect(drawX, y + 1, drawW, height);
             ctx.setLineDash([]);
         }
         
@@ -174,22 +176,24 @@ const PianoVisualizer = (function() {
 
             const y = pianoStartY + getPitchY(note.pitch);
             const height = getNoteHeight(note.pitch);
-            const width = Math.max(4, noteEndX - noteStartX);
+            const drawX = Math.max(KEYBOARD_WIDTH, noteStartX);
+            const drawEndX = Math.min(canvas.width, noteEndX);
+            const drawW = Math.max(1, drawEndX - drawX);
 
             const isPast = note.duration != null && note.startTick + note.duration < currentTick;
             let color = getNoteColor(note);
-            
+
             if (isPast) {
                 ctx.globalAlpha = 0.4;
             }
-            
+
             ctx.fillStyle = color;
-            ctx.fillRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
-            
+            ctx.fillRect(drawX, y + 1, drawW, height);
+
             ctx.strokeStyle = 'rgba(0,0,0,0.2)';
             ctx.lineWidth = 1;
-            ctx.strokeRect(Math.max(KEYBOARD_WIDTH, noteStartX), y + 1, width, height);
-            
+            ctx.strokeRect(drawX, y + 1, drawW, height);
+
             ctx.globalAlpha = 1.0;
         }
         
@@ -276,22 +280,39 @@ const PianoVisualizer = (function() {
             if (endTick < cutoffTick) replacedNotes.shift();
             else break;
         }
+        // Close out open notes whose start has scrolled past the cleanup
+        // horizon. Without this, a missed note_off would pin the right edge
+        // to NOW forever and the note would never scroll off.
+        for (const [key, note] of openNotes) {
+            if (note.startTick < cutoffTick) {
+                note.duration = Math.max(1, currentTick - note.startTick);
+                openNotes.delete(key);
+            }
+        }
     }
 
     function addNote(noteData) {
         // duration == 0 (or missing) means "unknown, grow until noteOff".
         // Positive values are honored verbatim.
         const hasKnownDuration = noteData.duration && noteData.duration > 0;
+        const source = noteData.source || 'model';
+        const startTick = noteData.tick;
+        const key = `${source}:${noteData.pitch}`;
+        const prior = openNotes.get(key);
+        if (prior) {
+            prior.duration = Math.max(1, startTick - prior.startTick);
+            openNotes.delete(key);
+        }
         const note = {
             pitch: noteData.pitch,
-            startTick: noteData.tick,
+            startTick: startTick,
             duration: hasKnownDuration ? noteData.duration : null,
-            source: noteData.source || 'model',
+            source: source,
             id: noteData.id || null
         };
         noteHistory.push(note);
         if (!hasKnownDuration) {
-            openNotes.set(`${note.source}:${note.pitch}`, note);
+            openNotes.set(key, note);
         }
     }
 
