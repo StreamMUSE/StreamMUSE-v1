@@ -18,6 +18,7 @@ OutputType = Literal["audio", "midi_file", "console", "websocket", "composite", 
 InferenceLogDetail = Literal["summary", "full"]
 InferenceType = Literal["http", "stanley"]
 ModelName = Literal["stanley", "lekai"]
+ContinuationMode = Literal["standard", "prompt_continuation"]
 
 
 @dataclass(frozen=True)
@@ -62,4 +63,5 @@ class ApplicationConfig:
     input: InputConfig = InputConfig()
     output: OutputConfig = OutputConfig()
     inference: InferenceConfig = InferenceConfig()
+    continuation_mode: ContinuationMode = "standard"
     count_in_beats: int = 0

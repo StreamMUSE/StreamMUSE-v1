@@ -221,6 +221,14 @@ def main() -> int:
 
     args = parse_args()
     config = args_to_config(args)
+    if config.continuation_mode != "standard":
+        print(
+            "Error: streammuse-web does not support continuation mode "
+            f"'{config.continuation_mode}' yet.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
 
     session_manager = SessionManager(args.log_dir)
     session_manager.create_session_directory()
@@ -229,6 +237,7 @@ def main() -> int:
         "ticks_per_beat": config.tempo.ticks_per_beat,
         "beats_per_bar": config.tempo.beats_per_bar,
         "input_type": config.input.type,
+        "continuation_mode": config.continuation_mode,
         "inference_type": config.inference.type,
         "generation_interval_ticks": config.inference.generation_interval_ticks,
         "generation_length_frames": config.inference.generation_length_frames,
@@ -287,6 +296,7 @@ def main() -> int:
     print(f"  http://{host}:{port}/", flush=True)
     print(f"  Tempo: {config.tempo.bpm} BPM", flush=True)
     print(f"  Input: {config.input.type}", flush=True)
+    print(f"  Continuation mode: {config.continuation_mode}", flush=True)
     print(f"  Inference: {config.inference.type} (model: {config.inference.model_name})", flush=True)
     print(f"  Logging: {session_manager.get_session_dir()}", flush=True)
 

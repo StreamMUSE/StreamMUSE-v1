@@ -182,6 +182,38 @@ def test_cli_injection_rejects_non_midi_input_mode(
     mock_input_factory.create.assert_not_called()
 
 
+@patch("streammuse.presentation.cli.cli.InputSourceFactory")
+@patch("streammuse.presentation.cli.cli.OutputSinkFactory")
+@patch("streammuse.presentation.cli.cli.InferenceEngineFactory")
+@patch("streammuse.presentation.cli.cli.parse_args")
+def test_cli_rejects_unwired_prompt_continuation_mode(
+    mock_parse_args,
+    mock_inference_factory,
+    mock_output_factory,
+    mock_input_factory,
+) -> None:
+    mock_args = MagicMock()
+    mock_args.max_ticks = 1
+    mock_args.log_dir = "logs"
+    mock_parse_args.return_value = mock_args
+
+    cfg = ApplicationConfig(
+        tempo=TempoConfig(),
+        input=InputConfig(),
+        output=OutputConfig(),
+        inference=InferenceConfig(),
+        continuation_mode="prompt_continuation",
+    )
+
+    with patch("streammuse.presentation.cli.cli.args_to_config", return_value=cfg):
+        result = main()
+
+    assert result == 1
+    mock_output_factory.create.assert_not_called()
+    mock_inference_factory.create.assert_not_called()
+    mock_input_factory.create.assert_not_called()
+
+
 @patch("streammuse.presentation.cli.cli.RealTimeMusicService")
 @patch("streammuse.presentation.cli.cli.InputSourceFactory")
 @patch("streammuse.presentation.cli.cli.OutputSinkFactory")

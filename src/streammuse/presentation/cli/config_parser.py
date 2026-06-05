@@ -122,6 +122,13 @@ def parse_args() -> argparse.Namespace:
 
     # Runtime options
     parser.add_argument(
+        "--continuation-mode",
+        type=str,
+        choices=["standard", "prompt_continuation"],
+        default="standard",
+        help="Realtime continuation flow to run",
+    )
+    parser.add_argument(
         "--count-in-beats",
         type=int,
         default=0,
@@ -182,6 +189,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         input=input_config,
         output=output_config,
         inference=inference_config,
+        continuation_mode=getattr(args, "continuation_mode", "standard"),  # type: ignore
         count_in_beats=max(0, int(getattr(args, "count_in_beats", 0) or 0)),
     )
 
