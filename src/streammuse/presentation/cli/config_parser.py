@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--midi-file-path", type=str, default=None, help="Path to MIDI file (for simulation)")
     parser.add_argument("--midi-file-delay-ticks", type=int, default=0, help="Delay before starting MIDI file playback")
     parser.add_argument(
+        "--midi-file-trim-leading-rest",
+        action="store_true",
+        help="Start MIDI-file playback from the first retained note instead of preserving leading silence",
+    )
+    parser.add_argument(
         "--injection-file",
         type=str,
         default=None,
@@ -160,6 +165,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         midi_device_name=args.midi_device_name,
         midi_file_path=args.midi_file_path,
         midi_file_delay_ticks=int(args.midi_file_delay_ticks),
+        midi_file_trim_leading_rest=bool(getattr(args, "midi_file_trim_leading_rest", False)),
         injection_file=getattr(args, "injection_file", None),
         injection_length_ticks=int(getattr(args, "injection_length", 0) or 0),
         injection_acc_file=getattr(args, "inject_acc_file", None),

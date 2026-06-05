@@ -19,6 +19,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "midi_device_name": None,
         "midi_file_path": None,
         "midi_file_delay_ticks": 0,
+        "midi_file_trim_leading_rest": False,
         "injection_file": None,
         "injection_length": 0,
         "inject_acc_file": None,
@@ -57,6 +58,7 @@ def test_parse_args_defaults() -> None:
     assert config.tempo.ticks_per_beat == 4
     assert config.tempo.beats_per_bar == 4
     assert config.input.type == "midi_device"
+    assert config.input.midi_file_trim_leading_rest is False
     assert config.input.injection_file is None
     assert config.input.injection_length_ticks == 0
     assert config.input.injection_acc_file is None
@@ -128,6 +130,7 @@ def test_args_to_config_midi_file() -> None:
         input_mode="midi_file",
         midi_file_path="/path/to/song.mid",
         midi_file_delay_ticks=8,
+        midi_file_trim_leading_rest=True,
         output_type="midi_file",
         midi_file_output_path="/path/to/output.mid",
         inference_log_detail="full",
@@ -138,6 +141,7 @@ def test_args_to_config_midi_file() -> None:
     assert config.input.type == "midi_file"
     assert config.input.midi_file_path == "/path/to/song.mid"
     assert config.input.midi_file_delay_ticks == 8
+    assert config.input.midi_file_trim_leading_rest is True
     assert config.output.type == "midi_file"
     assert config.output.midi_file_output_path == "/path/to/output.mid"
     assert config.output.inference_log_detail == "full"
