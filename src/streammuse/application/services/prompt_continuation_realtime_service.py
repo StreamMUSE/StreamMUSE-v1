@@ -119,6 +119,8 @@ class PromptContinuationRealtimeService:
         self._recover_late_max_ticks = self._env_optional_int(
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS"
         )
+        if self._recover_late_events and self._recover_late_max_ticks is None:
+            self._recover_late_max_ticks = self._generation_interval_ticks
 
     def _trace(self, kind: str, **payload: Any) -> None:
         if not self._trace_path:
@@ -375,11 +377,10 @@ class PromptContinuationRealtimeService:
     def _schedule_playable_recover_late(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
         """Schedule playable history event-by-event, recovering late events now.
 
-        This mirrors the ordinary realtime service behavior: if a model event
-        arrives after its musical tick, schedule it at the current tick instead
-        of discarding it. The pair-gated path is safer for strict MIDI note
-        pairing, but it can starve long notes whose note_off arrives after the
-        note_on has already passed.
+        This is a bounded version of the ordinary realtime service behavior.
+        The prompt-continuation backend returns full accompaniment history, so
+        unbounded recovery could replay old prompt/history events when a slow
+        GPU first reports readiness.
         """
         scheduled = 0
         skipped_duplicate = 0

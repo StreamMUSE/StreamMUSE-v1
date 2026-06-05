@@ -136,9 +136,10 @@ Two modes exist:
 
 - Default historical strict mode: pair `note_on/note_off`, drop events whose
   original ticks are already in the past.
-- Recover-late mode: schedule returned events event-by-event. If an event is late,
-  schedule it at the current tick. This mirrors the ordinary realtime service's
-  late-event behavior.
+- Recover-late mode: schedule returned events event-by-event. If a near-late
+  event is late, schedule it at the current tick. This is intentionally bounded
+  because `/prompt_continuation/playable` returns full accompaniment history,
+  unlike the ordinary realtime service's per-request future segment.
 
 Recover-late mode is enabled by:
 
@@ -147,15 +148,16 @@ export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 ```
 
 To avoid a burst of very old `note_on` events when the system first becomes
-ready, use:
+ready, recovery caps late `note_on` events. If this variable is unset, the
+client uses `generation_interval_ticks` as the cap:
 
 ```bash
 export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
 ```
 
-When this cap is set, too-old late `note_on` events are dropped from audible
-playback, but late `note_off` events are still allowed so already-sounding notes
-can be closed. Raw debug history is not affected.
+Too-old late `note_on` events are dropped from audible playback, but late
+`note_off` events are still allowed so already-sounding notes can be closed. Raw
+debug history is not affected.
 
 For demo-style runs, the current practical setting is:
 
