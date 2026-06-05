@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from streammuse.infrastructure.inference.lekai_http_backend import EventPayload
+EventPayload = dict[str, int | str]
 
 
 @dataclass(frozen=True)

@@ -201,7 +201,9 @@ def test_scheduler_uses_midi_converted_ticks_for_prompt_and_append_boundaries(tm
         program=None,
         max_tick=None,
     )
-    assert resolution == midi_ticks_per_beat
+    # Current MidiFileInput uses the shared MidiConverter path, whose returned
+    # resolution is the configured output beat division.
+    assert resolution == output_ticks_per_beat
     assert [note["tick"] for note in notes] == [0, 44]
     assert max_tick == 45
 

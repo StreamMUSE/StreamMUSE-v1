@@ -9,24 +9,25 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from streammuse.infrastructure.inference.lekai_http_backend import (
-    EventPayload,
-    TIMESTEPS_PER_BEAT,
-)
 from streammuse.infrastructure.inference.lekai_prompt_continuation.catchup_state import (
     CatchUpState,
-)
-from streammuse.infrastructure.inference.lekai_prompt_continuation.continuation_engine import (
-    LekaiContinuationEngine,
-)
-from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_engine import (
-    LekaiPromptEngine,
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.token_conversion import (
     copy_events,
 )
+
+if TYPE_CHECKING:
+    from streammuse.infrastructure.inference.lekai_prompt_continuation.continuation_engine import (
+        LekaiContinuationEngine,
+    )
+    from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_engine import (
+        LekaiPromptEngine,
+    )
+
+EventPayload = dict[str, int | str]
+TIMESTEPS_PER_BEAT = 4
 
 
 class LekaiPromptContinuationScheduler:
