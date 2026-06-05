@@ -28,13 +28,21 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from streammuse.application.config import ApplicationConfig
 from streammuse.application.factories import (
     InferenceEngineFactory,
     InputSourceFactory,
 )
+from streammuse.application.services.prompt_continuation_realtime_service import (
+    PromptContinuationRealtimeService,
+)
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
 from streammuse.domain.logging import SessionManager
 from streammuse.domain.timing import PlaybackScheduler, Tempo
+from streammuse.infrastructure.inference.prompt_continuation_http_client import (
+    PromptContinuationHttpClient,
+    PromptContinuationHttpClientConfig,
+)
 from streammuse.infrastructure.output import (
     AudioOutputConfig,
     AudioOutputSink,
@@ -55,7 +63,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # ---------------------------------------------------------------------------
 
 _ws_sink: Optional[WebSocketOutputSink] = None
-_service: Optional[RealTimeMusicService] = None
+_service: Optional[RealTimeMusicService | PromptContinuationRealtimeService] = None
 _composite_sink: Optional[CompositeOutputSink] = None
 _connections: List[WebSocket] = []
 _broadcaster_stop: Optional[asyncio.Event] = None
@@ -213,6 +221,51 @@ def _build_composite(
     return CompositeOutputSink(sinks), ws_sink
 
 
+def _build_realtime_service(
+    *,
+    config: ApplicationConfig,
+    output_sink: CompositeOutputSink,
+) -> RealTimeMusicService | PromptContinuationRealtimeService:
+    input_source = InputSourceFactory.create(config)
+    tempo = Tempo(
+        bpm=config.tempo.bpm,
+        ticks_per_beat=config.tempo.ticks_per_beat,
+        beats_per_bar=config.tempo.beats_per_bar,
+    )
+    scheduler = PlaybackScheduler()
+
+    if config.continuation_mode == "prompt_continuation":
+        prompt_client = PromptContinuationHttpClient(
+            PromptContinuationHttpClientConfig(
+                base_url=config.inference.server_generate_url,
+                timeout_s=float(config.inference.timeout_s),
+                model_name="lekai_prompt_continuation",
+                inference_mode=config.inference.inference_mode,
+                checkpoint_path=config.inference.checkpoint_path,
+            )
+        )
+        return PromptContinuationRealtimeService(
+            input_source=input_source,
+            prompt_client=prompt_client,
+            output_sink=output_sink,
+            tempo=tempo,
+            scheduler=scheduler,
+            prompt_length_ticks=config.inference.prompt_length_ticks,
+            generation_interval_ticks=config.inference.generation_interval_ticks,
+        )
+
+    inference_engine = InferenceEngineFactory.create(config)
+    return RealTimeMusicService(
+        input_source=input_source,
+        inference_engine=inference_engine,
+        output_sink=output_sink,
+        tempo=tempo,
+        scheduler=scheduler,
+        generation_interval_ticks=config.inference.generation_interval_ticks,
+        generation_length_frames=config.inference.generation_length_frames,
+    )
+
+
 def main() -> int:
     """Entry point for `streammuse-web`."""
     global _ws_sink, _service, _composite_sink
@@ -221,14 +274,6 @@ def main() -> int:
 
     args = parse_args()
     config = args_to_config(args)
-    if config.continuation_mode != "standard":
-        print(
-            "Error: streammuse-web does not support continuation mode "
-            f"'{config.continuation_mode}' yet.",
-            file=sys.stderr,
-            flush=True,
-        )
-        return 1
 
     session_manager = SessionManager(args.log_dir)
     session_manager.create_session_directory()
@@ -239,6 +284,7 @@ def main() -> int:
         "input_type": config.input.type,
         "continuation_mode": config.continuation_mode,
         "inference_type": config.inference.type,
+        "prompt_length_ticks": config.inference.prompt_length_ticks,
         "generation_interval_ticks": config.inference.generation_interval_ticks,
         "generation_length_frames": config.inference.generation_length_frames,
     }
@@ -251,23 +297,7 @@ def main() -> int:
         midi_out_port=config.output.midi_out_port,
     )
 
-    inference_engine = InferenceEngineFactory.create(config)
-    input_source = InputSourceFactory.create(config)
-    tempo = Tempo(
-        bpm=config.tempo.bpm,
-        ticks_per_beat=config.tempo.ticks_per_beat,
-        beats_per_bar=config.tempo.beats_per_bar,
-    )
-    scheduler = PlaybackScheduler()
-    service = RealTimeMusicService(
-        input_source=input_source,
-        inference_engine=inference_engine,
-        output_sink=composite,
-        tempo=tempo,
-        scheduler=scheduler,
-        generation_interval_ticks=config.inference.generation_interval_ticks,
-        generation_length_frames=config.inference.generation_length_frames,
-    )
+    service = _build_realtime_service(config=config, output_sink=composite)
 
     # Broadcast the session config so the UI's initial state matches the
     # service's actual configuration without waiting for the first tick.
@@ -297,6 +327,8 @@ def main() -> int:
     print(f"  Tempo: {config.tempo.bpm} BPM", flush=True)
     print(f"  Input: {config.input.type}", flush=True)
     print(f"  Continuation mode: {config.continuation_mode}", flush=True)
+    if config.continuation_mode == "prompt_continuation":
+        print(f"  Prompt length: {config.inference.prompt_length_ticks} ticks", flush=True)
     print(f"  Inference: {config.inference.type} (model: {config.inference.model_name})", flush=True)
     print(f"  Logging: {session_manager.get_session_dir()}", flush=True)
 
