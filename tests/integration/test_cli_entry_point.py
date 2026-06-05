@@ -182,36 +182,55 @@ def test_cli_injection_rejects_non_midi_input_mode(
     mock_input_factory.create.assert_not_called()
 
 
+@patch("streammuse.presentation.cli.cli.PromptContinuationRealtimeService")
 @patch("streammuse.presentation.cli.cli.InputSourceFactory")
 @patch("streammuse.presentation.cli.cli.OutputSinkFactory")
 @patch("streammuse.presentation.cli.cli.InferenceEngineFactory")
 @patch("streammuse.presentation.cli.cli.parse_args")
-def test_cli_rejects_unwired_prompt_continuation_mode(
+@patch("streammuse.presentation.cli.cli.atexit.register")
+def test_cli_wires_prompt_continuation_mode(
+    mock_atexit_register,
     mock_parse_args,
     mock_inference_factory,
     mock_output_factory,
     mock_input_factory,
+    mock_prompt_service_cls,
 ) -> None:
     mock_args = MagicMock()
     mock_args.max_ticks = 1
     mock_args.log_dir = "logs"
     mock_parse_args.return_value = mock_args
 
+    output_sink = MockOutputSink()
+    input_source = MockInputSource()
+    service = MagicMock()
+    service.running = False
+    mock_output_factory.create.return_value = output_sink
+    mock_input_factory.create.return_value = input_source
+    mock_prompt_service_cls.return_value = service
+
     cfg = ApplicationConfig(
         tempo=TempoConfig(),
         input=InputConfig(),
         output=OutputConfig(),
-        inference=InferenceConfig(),
+        inference=InferenceConfig(
+            server_generate_url="http://x/generate_accompaniment",
+            prompt_length_ticks=64,
+        ),
         continuation_mode="prompt_continuation",
     )
 
     with patch("streammuse.presentation.cli.cli.args_to_config", return_value=cfg):
         result = main()
 
-    assert result == 1
-    mock_output_factory.create.assert_not_called()
     mock_inference_factory.create.assert_not_called()
-    mock_input_factory.create.assert_not_called()
+    mock_prompt_service_cls.assert_called_once()
+    mock_atexit_register.assert_called_once()
+    kwargs = mock_prompt_service_cls.call_args.kwargs
+    assert kwargs["input_source"] is input_source
+    assert kwargs["output_sink"] is output_sink
+    assert kwargs["prompt_length_ticks"] == 64
+    assert result == 0
 
 
 @patch("streammuse.presentation.cli.cli.RealTimeMusicService")

@@ -119,6 +119,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-max-seq-len-frames", type=int, default=96, help="Model max sequence length (frames)")
     parser.add_argument("--generation-length-frames", type=int, default=20, help="Frames to generate per request")
     parser.add_argument("--generation-interval-ticks", type=int, default=2, help="Ticks between generation requests")
+    parser.add_argument(
+        "--prompt-length-ticks",
+        type=int,
+        default=32,
+        help="Prompt window length for prompt-continuation mode",
+    )
 
     # Runtime options
     parser.add_argument(
@@ -182,6 +188,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         model_max_seq_len_frames=int(args.model_max_seq_len_frames),
         generation_length_frames=int(args.generation_length_frames),
         generation_interval_ticks=int(args.generation_interval_ticks),
+        prompt_length_ticks=int(getattr(args, "prompt_length_ticks", 32)),
     )
 
     return ApplicationConfig(

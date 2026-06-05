@@ -39,6 +39,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "model_max_seq_len_frames": 96,
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
+        "prompt_length_ticks": 32,
         "continuation_mode": "standard",
         "count_in_beats": 0,
         "max_ticks": None,
@@ -68,6 +69,7 @@ def test_parse_args_defaults() -> None:
     assert config.inference.server_generate_url == "http://localhost:8000/generate_accompaniment"
     assert config.inference.generation_interval_ticks == 2
     assert config.inference.generation_length_frames == 20
+    assert config.inference.prompt_length_ticks == 32
     assert config.continuation_mode == "standard"
     assert config.count_in_beats == 0
 
@@ -166,9 +168,10 @@ def test_args_to_config_clamps_negative_count_in() -> None:
 
 
 def test_args_to_config_prompt_continuation_mode() -> None:
-    args = _make_args(continuation_mode="prompt_continuation")
+    args = _make_args(continuation_mode="prompt_continuation", prompt_length_ticks=64)
     config = args_to_config(args)
     assert config.continuation_mode == "prompt_continuation"
+    assert config.inference.prompt_length_ticks == 64
 
 
 def test_args_to_config_injection_fields() -> None:

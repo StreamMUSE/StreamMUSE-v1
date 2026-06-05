@@ -55,6 +55,7 @@ class InferenceConfig:
     model_max_seq_len_frames: int = 96
     generation_length_frames: int = 20
     generation_interval_ticks: int = 2  # How often to trigger generation
+    prompt_length_ticks: int = 32
 
 
 @dataclass(frozen=True)
