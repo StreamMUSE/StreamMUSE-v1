@@ -1,3 +1,6 @@
+import sys
+import types
+
 import numpy as np
 import torch
 
@@ -180,6 +183,7 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
 
     class _DummyAdapter:
         BAR_TOKEN = 255
+        tokenizer = object()
 
         def generate_from_beats(self, *args, **kwargs):
             return [[169]]
@@ -191,10 +195,18 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
             raise RuntimeError("mps unsupported op")
         return _DummyAdapter()
 
-    monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.PianoLLaMAAdapter.from_checkpoint",
-        _fake_from_checkpoint,
+    fake_continuation_adapter = types.ModuleType(
+        "streammuse.infrastructure.inference.lekai_continuation_model.inference_adapter"
     )
+    fake_continuation_adapter.PianoContinuationAdapter = types.SimpleNamespace(
+        from_checkpoint=staticmethod(_fake_from_checkpoint)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "streammuse.infrastructure.inference.lekai_continuation_model.inference_adapter",
+        fake_continuation_adapter,
+    )
+    monkeypatch.setattr(LekaiHttpBackend, "_warmup_model", lambda self, warmup_steps: 0.0)
     monkeypatch.setattr(
         "streammuse.infrastructure.inference.lekai_model.MidiConverter.MidiConverter",
         lambda ticks_per_beat: object(),
@@ -254,13 +266,23 @@ def test_generate_recoverable_shape_mismatch_falls_back_to_rule_based(monkeypatc
     backend._model_adapter = _DummyAdapter()
     backend._tokenizer = object()
 
-    monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.PianoDataset.process_measure_with_beat_interleaving",
-        lambda *args, **kwargs: ([np.array([255], dtype=np.int64)], []),
+    fake_dataset = types.ModuleType("streammuse.infrastructure.inference.lekai_model.PianoDataset")
+    fake_dataset.process_measure_with_beat_interleaving = (
+        lambda *args, **kwargs: ([np.array([255], dtype=np.int64)], [])
     )
-    monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.beats_to_pianoroll",
-        lambda *args, **kwargs: np.zeros((2, 88, 0), dtype=np.float32),
+    fake_adapter = types.ModuleType("streammuse.infrastructure.inference.lekai_model.inference_adapter")
+    fake_adapter.beats_to_pianoroll = (
+        lambda *args, **kwargs: np.zeros((2, 88, 0), dtype=np.float32)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "streammuse.infrastructure.inference.lekai_model.PianoDataset",
+        fake_dataset,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "streammuse.infrastructure.inference.lekai_model.inference_adapter",
+        fake_adapter,
     )
 
     accompaniment, _ = backend.generate(
