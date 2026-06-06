@@ -66,6 +66,86 @@ The frontend/client can be silent before playback is ready. The user does not
 need to hear prompt-model accompaniment immediately. Prompt accompaniment is
 still saved in debug history.
 
+## Computation Flow
+
+```text
+Client realtime clock
+  |
+  | each tick:
+  |   drain user melody events
+  |   split by prompt window
+  v
+PromptContinuationRealtimeService
+  |
+  | observed_until_tick < prompt_length_ticks
+  |   collect events into prompt_events
+  |
+  | observed_until_tick == prompt_length_ticks
+  |   POST /prompt_continuation/start
+  |   body:
+  |     melody_events = prompt_events
+  |     prompt_length_ticks
+  |     generation_interval_ticks
+  v
+LekaiPromptContinuationScheduler
+  |
+  | Prompt stage:
+  |   PromptEngine(prompt melody, prompt_length_ticks)
+  |     -> prompt_accompaniment_history
+  |
+  | Continuation seed:
+  |   ContinuationEngine.inject_history(
+  |     melody_history,
+  |     prompt_accompaniment_history,
+  |     injection_length_ticks = actual_prompt_length_ticks
+  |   )
+  v
+Catch-up loop
+  |
+  | while accompaniment_history_beats < melody_history_beats + lookahead_beats:
+  |   generation_start_tick = accompaniment_history_beats * ticks_per_beat
+  |   melody_increment = melody_history not yet sent to continuation
+  |   ContinuationEngine.generate(melody_increment, generation_start_tick)
+  |     -> append to accompaniment_history
+  v
+Playback readiness
+  |
+  | GET /prompt_continuation/status
+  | ready when:
+  |   accompaniment_history_beats >= melody_history_beats + 1
+  |
+  | GET /prompt_continuation/playable
+  | returns full accompaniment_history, not only the newest segment
+  v
+Local audible scheduling
+  |
+  | default:
+  |   pair note_on/note_off
+  |   drop notes fully in the past
+  |   clip sustaining notes to current_tick
+  |
+  | recover-late mode:
+  |   recover only bounded late events
+  |   late note_on older than recover_late_max_ticks is dropped
+  |   late note_off is allowed to close already-sounding notes
+  v
+PlaybackScheduler -> Output sinks
+```
+
+Important timing distinction:
+
+```text
+Standard realtime continuation:
+  request returns one future generation segment
+  -> late recovery can safely reschedule that segment at current_tick
+
+Prompt-continuation:
+  /playable returns full prompt + continuation history
+  -> unbounded late recovery would replay old history after slow prompt-model
+     inference, especially on small GPUs
+  -> recovery must be bounded, and strict paired scheduling remains the default
+```
+
 ## Catch-Up Rule
 
 The system is not playback-ready when accompaniment merely reaches the same beat
