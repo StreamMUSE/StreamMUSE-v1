@@ -380,6 +380,39 @@ export LEKAI_DISABLE_FALLBACK=1
 With these set, missing checkpoints or model-load failures fail loudly instead
 of silently producing rule-based fallback output.
 
+## Verification Matrix
+
+Lightweight tests do not import the full Lekai torch backend. They are suitable
+for checking switch wiring, client-side realtime scheduling, catch-up arithmetic,
+MIDI-file timing, and prompt-continuation HTTP client contracts in a minimal
+developer environment:
+
+```bash
+PYTHONPATH=src python -m pytest \
+  tests/unit/presentation/test_cli_config_parser.py \
+  tests/unit/presentation/web/test_server.py \
+  tests/integration/test_cli_entry_point.py \
+  tests/unit/application/test_factories_and_service.py \
+  tests/unit/application/test_prompt_continuation_realtime_service.py \
+  tests/unit/infrastructure/input/test_midi_file_input.py \
+  tests/unit/infrastructure/inference/test_prompt_continuation_http_client.py \
+  tests/unit/infrastructure/inference/test_lekai_prompt_continuation_catchup_state.py \
+  tests/unit/infrastructure/inference/test_lekai_prompt_continuation_scheduler.py \
+  tests/integration/test_lekai_prompt_continuation_rt_midi.py
+```
+
+Backend and server tests import `torch` directly through `lekai_http_backend.py`.
+That is intentional: the real server path depends on torch and should fail
+clearly if the full environment is incomplete. Run these only after `uv sync`
+or equivalent has installed the project dependencies:
+
+```bash
+PYTHONPATH=src python -m pytest \
+  tests/unit/infrastructure/inference/test_lekai_prompt_continuation_backend.py \
+  tests/unit/infrastructure/inference/test_server_lekai.py \
+  tests/unit/infrastructure/inference/test_lekai_http_backend.py
+```
+
 Important sampling knobs:
 
 ```bash
