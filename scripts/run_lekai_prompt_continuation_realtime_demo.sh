@@ -33,6 +33,7 @@ export RT_REPETITION_PENALTY=${RT_REPETITION_PENALTY:-1.2}
 
 # Realtime audible scheduling policy used in the current demo bundle.
 export RECOVER_LATE_EVENTS=${RECOVER_LATE_EVENTS:-1}
+export BOUND_LATE_RECOVERY=${BOUND_LATE_RECOVERY:-1}
 export RECOVER_LATE_MAX_TICKS=${RECOVER_LATE_MAX_TICKS:-4}
 
 exec scripts/run_cli_prompt_alignment_batch.sh

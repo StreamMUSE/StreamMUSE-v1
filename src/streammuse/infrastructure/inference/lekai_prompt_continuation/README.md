@@ -125,8 +125,8 @@ Local audible scheduling
   |   clip sustaining notes to current_tick
   |
   | recover-late mode:
-  |   recover only bounded late events
-  |   late note_on older than recover_late_max_ticks is dropped
+  |   recover late events at current_tick
+  |   optional bounded policy can drop very old late note_on events
   |   late note_off is allowed to close already-sounding notes
   v
 PlaybackScheduler -> Output sinks
@@ -143,7 +143,8 @@ Prompt-continuation:
   /playable returns full prompt + continuation history
   -> unbounded late recovery would replay old history after slow prompt-model
      inference, especially on small GPUs
-  -> recovery must be bounded, and strict paired scheduling remains the default
+  -> strict paired scheduling, unbounded recovery, and bounded recovery are
+     separate switchable policies for A/B diagnosis
 ```
 
 ## Catch-Up Rule
@@ -212,14 +213,15 @@ There are three histories to keep separate:
 The important realtime policy is in
 `PromptContinuationRealtimeService._schedule_playable`.
 
-Two modes exist:
+Three scheduling policies are useful for diagnosis:
 
 - Default historical strict mode: pair `note_on/note_off`, drop events whose
   original ticks are already in the past.
-- Recover-late mode: schedule returned events event-by-event. If a near-late
-  event is late, schedule it at the current tick. This is intentionally bounded
-  because `/prompt_continuation/playable` returns full accompaniment history,
-  unlike the ordinary realtime service's per-request future segment.
+- Unbounded recover-late mode: schedule returned events event-by-event. If an
+  event is late, schedule it at the current tick.
+- Bounded recover-late mode: same event-by-event recovery, but drop late
+  `note_on` events outside a configured recovery window. Late `note_off` events
+  are still allowed so already-sounding notes can be closed.
 
 Recover-late mode is enabled by:
 
@@ -227,22 +229,29 @@ Recover-late mode is enabled by:
 export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 ```
 
-To avoid a burst of very old `note_on` events when the system first becomes
-ready, recovery caps late `note_on` events. If this variable is unset, the
-client uses `generation_interval_ticks` as the cap:
+This switch alone is intentionally unbounded. To test the bounded policy, enable
+it separately:
+
+```bash
+export LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
+```
+
+If bounded recovery is enabled and no max is provided, the client uses
+`generation_interval_ticks` as the cap. To set the cap explicitly:
 
 ```bash
 export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
 ```
 
-Too-old late `note_on` events are dropped from audible playback, but late
-`note_off` events are still allowed so already-sounding notes can be closed. Raw
-debug history is not affected.
+Setting `LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS` also opts into the
+bounded policy unless `LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=0` is set
+explicitly. Raw debug history is not affected by either scheduling policy.
 
 For demo-style runs, the current practical setting is:
 
 ```bash
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
+LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
 ```
 
@@ -459,6 +468,7 @@ RT_TOP_K=50
 RT_TOP_P=0.98
 RT_REPETITION_PENALTY=1.2
 RECOVER_LATE_EVENTS=1
+BOUND_LATE_RECOVERY=1
 RECOVER_LATE_MAX_TICKS=4
 ```
 
@@ -504,6 +514,7 @@ RT_TOP_K=50 \
 RT_TOP_P=0.98 \
 RT_REPETITION_PENALTY=1.2 \
 RECOVER_LATE_EVENTS=1 \
+BOUND_LATE_RECOVERY=1 \
 RECOVER_LATE_MAX_TICKS=4 \
  scripts/run_cli_prompt_alignment_batch.sh
 ```
@@ -567,7 +578,7 @@ The current branch includes these key changes:
   after more melody arrives.
 - Preserved note pairs in MIDI output and closed same-pitch retriggers.
 - Added recover-late event scheduling for prompt-continuation audible playback.
-- Added `RECOVER_LATE_MAX_TICKS` policy for dropping very old audible `note_on`
+- Added switchable bounded late recovery for dropping very old audible `note_on`
   events while preserving raw history.
 - Added correct MIDI time-signature export through `beats_per_bar`.
 - Added local trace output for prompt-continuation client scheduling.
@@ -582,6 +593,7 @@ The current branch includes these key changes:
   jitter.
 - `midi_file` tests simulate user input under controlled timing. Real MIDI-device
   latency should still be tested before claiming live performance reliability.
-- `RECOVER_LATE_MAX_TICKS` is a policy knob, not a model fix. Tune it based on
-  listening tests.
+- `BOUND_LATE_RECOVERY` and `RECOVER_LATE_MAX_TICKS` are policy knobs, not a
+  model fix. Tune them based on listening tests and keep unbounded recovery as
+  an A/B condition.
 - Generated outputs under `realtime_runs/` are not tracked by git.

@@ -205,11 +205,39 @@ def test_prompt_continuation_recover_late_can_drop_too_old_note_on(monkeypatch):
     assert any("dropped 1 too-late note_on" in message for _state, message in output.statuses)
 
 
-def test_prompt_continuation_recover_late_defaults_to_generation_interval_cap(monkeypatch):
+def test_prompt_continuation_recover_late_is_unbounded_without_bound_switch(monkeypatch):
     monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS", "1")
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY", raising=False)
     monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS", raising=False)
     service = _make_service()
 
+    assert service._bound_late_recovery is False
+    assert service._recover_late_max_ticks is None
+    service._schedule_playable(
+        [
+            _note(48, 20),
+            _note_off(48, 24),
+            _note(50, 34),
+            _note_off(50, 40),
+        ],
+        current_tick=36,
+    )
+
+    tick_36 = service._scheduler.get_events_at_tick(36)
+    assert [(event.pitch, event.event_type) for event in tick_36] == [
+        (48, EventType.NOTE_ON),
+        (48, EventType.NOTE_OFF),
+        (50, EventType.NOTE_ON),
+    ]
+
+
+def test_prompt_continuation_recover_late_bound_switch_defaults_to_generation_interval_cap(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS", "1")
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY", "1")
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS", raising=False)
+    service = _make_service()
+
+    assert service._bound_late_recovery is True
     assert service._recover_late_max_ticks == 4
     service._schedule_playable(
         [

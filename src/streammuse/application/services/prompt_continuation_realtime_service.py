@@ -116,10 +116,16 @@ class PromptContinuationRealtimeService:
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS",
             "",
         ).lower() in {"1", "true", "yes", "on"}
+        self._bound_late_recovery_env = self._env_optional_bool(
+            "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY"
+        )
         self._recover_late_max_ticks = self._env_optional_int(
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS"
         )
-        if self._recover_late_events and self._recover_late_max_ticks is None:
+        self._bound_late_recovery = bool(self._recover_late_max_ticks is not None)
+        if self._bound_late_recovery_env is not None:
+            self._bound_late_recovery = self._bound_late_recovery_env
+        if self._recover_late_events and self._bound_late_recovery and self._recover_late_max_ticks is None:
             self._recover_late_max_ticks = self._generation_interval_ticks
 
     def _trace(self, kind: str, **payload: Any) -> None:
@@ -142,6 +148,18 @@ class PromptContinuationRealtimeService:
             return max(0, int(value))
         except ValueError:
             return None
+
+    @staticmethod
+    def _env_optional_bool(name: str) -> bool | None:
+        value = os.environ.get(name)
+        if value is None or str(value).strip() == "":
+            return None
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
 
     @property
     def running(self) -> bool:
@@ -375,13 +393,7 @@ class PromptContinuationRealtimeService:
         )
 
     def _schedule_playable_recover_late(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
-        """Schedule playable history event-by-event, recovering late events now.
-
-        This is a bounded version of the ordinary realtime service behavior.
-        The prompt-continuation backend returns full accompaniment history, so
-        unbounded recovery could replay old prompt/history events when a slow
-        GPU first reports readiness.
-        """
+        """Schedule playable history event-by-event, recovering late events now."""
         scheduled = 0
         skipped_duplicate = 0
         late_event_count = 0
@@ -408,7 +420,8 @@ class PromptContinuationRealtimeService:
             if event_tick < current_tick:
                 late_event_count += 1
                 if (
-                    self._recover_late_max_ticks is not None
+                    self._bound_late_recovery
+                    and self._recover_late_max_ticks is not None
                     and current_tick - event_tick > self._recover_late_max_ticks
                     and event.event_type == EventType.NOTE_ON
                     and int(event.velocity) > 0
@@ -448,6 +461,7 @@ class PromptContinuationRealtimeService:
             scheduled_event_count=scheduled,
             late_event_count=late_event_count,
             dropped_too_late_note_on=dropped_too_late_note_on,
+            bound_late_recovery=self._bound_late_recovery,
             recover_late_max_ticks=self._recover_late_max_ticks,
             skipped_duplicate=skipped_duplicate,
             placeholder_count=placeholder_count,
