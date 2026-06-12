@@ -1,6 +1,10 @@
 import numpy as np
-import StreamMUSE.preprocess.xf_midi as xf_midi
-from StreamMUSE.preprocess.settings import RWC_DATASET_PATH, LA_DATASET_PATH, NOTTINGHAM_DATASET_PATH
+from streammuse.infrastructure.inference.stanley_stack.preprocess import xf_midi
+from streammuse.infrastructure.inference.stanley_stack.preprocess.settings import (
+    LA_DATASET_PATH,
+    NOTTINGHAM_DATASET_PATH,
+    RWC_DATASET_PATH,
+)
 import os
 from joblib import Parallel, delayed
 import torch
