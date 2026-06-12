@@ -11,6 +11,8 @@ from typing import Any
 
 __all__ = [
     "LekaiContinuationEngine",
+    "LekaiPromptBridgeContinuationEngine",
+    "LekaiPromptBridgeContinuationScheduler",
     "LekaiPromptContinuationBackend",
     "LekaiPromptContinuationEngine",
     "LekaiPromptContinuationScheduler",
@@ -31,6 +33,18 @@ def __getattr__(name: str) -> Any:
         )
 
         return LekaiContinuationEngine
+    if name == "LekaiPromptBridgeContinuationEngine":
+        from streammuse.infrastructure.inference.lekai_prompt_continuation.bridge_engine import (
+            LekaiPromptBridgeContinuationEngine,
+        )
+
+        return LekaiPromptBridgeContinuationEngine
+    if name == "LekaiPromptBridgeContinuationScheduler":
+        from streammuse.infrastructure.inference.lekai_prompt_continuation.bridge_scheduler import (
+            LekaiPromptBridgeContinuationScheduler,
+        )
+
+        return LekaiPromptBridgeContinuationScheduler
     if name == "LekaiPromptContinuationEngine":
         from streammuse.infrastructure.inference.lekai_prompt_continuation.engine import (
             LekaiPromptContinuationEngine,

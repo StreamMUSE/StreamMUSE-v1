@@ -16,6 +16,7 @@ export CLI_TEMPO_MAX=${CLI_TEMPO_MAX:-120}
 
 # `auto` keeps 8 beats for 4/4 and 2/4, and uses 6 beats for 3/4.
 export PROMPT_BEATS=${PROMPT_BEATS:-auto}
+export PROMPT_CONTINUATION_ENGINE=${PROMPT_CONTINUATION_ENGINE:-standard}
 
 # Long enough for demo listening; reduce for smoke tests if needed.
 export MAX_TICKS=${MAX_TICKS:-432}

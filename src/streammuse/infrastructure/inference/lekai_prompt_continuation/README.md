@@ -66,6 +66,40 @@ The frontend/client can be silent before playback is ready. The user does not
 need to hear prompt-model accompaniment immediately. Prompt accompaniment is
 still saved in debug history.
 
+## Engine Variants
+
+Two server-side orchestration variants are available:
+
+```text
+standard:
+  PromptModel(M0, prompt_length_ticks)
+    -> A0 covering the prompt window
+  Continuation starts at prompt_length_ticks
+
+bridge:
+  PromptModel(M0, prompt_length_ticks + bridge_ticks)
+    -> A0 plus one blind prompt-generated bridge beat
+  Continuation starts after the generated bridge if the prompt model produced it
+```
+
+Select the variant when starting the server:
+
+```bash
+export LEKAI_PROMPT_CONTINUATION_ENGINE=standard
+```
+
+or:
+
+```bash
+export LEKAI_PROMPT_CONTINUATION_ENGINE=bridge
+export LEKAI_PROMPT_CONTINUATION_BRIDGE_TICKS=4
+```
+
+The bridge variant keeps the client protocol unchanged. The client still sends
+the same prompt melody window. The backend asks the prompt model to decode one
+extra beat of accompaniment and seeds continuation with that bridge before the
+catch-up loop starts.
+
 ## Computation Flow
 
 ```text
@@ -92,6 +126,10 @@ LekaiPromptContinuationScheduler
   | Prompt stage:
   |   PromptEngine(prompt melody, prompt_length_ticks)
   |     -> prompt_accompaniment_history
+  |
+  | Bridge variant:
+  |   PromptEngine(prompt melody, prompt_length_ticks + bridge_ticks)
+  |     -> prompt_accompaniment_history including blind bridge beat
   |
   | Continuation seed:
   |   ContinuationEngine.inject_history(
@@ -459,6 +497,7 @@ OUT_ROOT=realtime_runs/lekai_prompt_continuation_demo
 CLI_TEMPO=metadata
 CLI_TEMPO_MAX=120
 PROMPT_BEATS=auto
+PROMPT_CONTINUATION_ENGINE=standard
 MAX_TICKS=432
 PROMPT_TEMPERATURE=1.1
 PROMPT_TOP_K=0
@@ -502,6 +541,8 @@ DEVICE=0 \
 PORT=8102 \
 IDS='6217163' \
 OUT_ROOT=realtime_runs/example_prompt_continuation \
+PROMPT_CONTINUATION_ENGINE=bridge \
+PROMPT_CONTINUATION_BRIDGE_TICKS=4 \
 CLI_TEMPO=metadata \
 CLI_TEMPO_MAX=120 \
 PROMPT_BEATS=8 \
@@ -580,6 +621,8 @@ The current branch includes these key changes:
 - Added recover-late event scheduling for prompt-continuation audible playback.
 - Added switchable bounded late recovery for dropping very old audible `note_on`
   events while preserving raw history.
+- Added a switchable bridge engine variant where the prompt model can generate
+  one extra blind beat before continuation starts.
 - Added correct MIDI time-signature export through `beats_per_bar`.
 - Added local trace output for prompt-continuation client scheduling.
 - Ignored generated realtime/test-set/user-sample directories in `.gitignore`.

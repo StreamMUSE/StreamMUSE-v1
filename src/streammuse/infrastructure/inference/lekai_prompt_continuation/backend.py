@@ -11,6 +11,7 @@ model wrappers are wired in.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from streammuse.infrastructure.inference.lekai_http_backend import (
@@ -21,6 +22,30 @@ from streammuse.infrastructure.inference.lekai_http_backend import (
 from streammuse.infrastructure.inference.lekai_prompt_continuation.engine import (
     LekaiPromptContinuationEngine,
 )
+
+
+def _make_prompt_continuation_engine(
+    *,
+    checkpoint_path: Optional[str],
+    prompt_checkpoint_path: Optional[str],
+    continuation_checkpoint_path: Optional[str],
+) -> LekaiPromptContinuationEngine:
+    variant = os.environ.get("LEKAI_PROMPT_CONTINUATION_ENGINE", "standard").strip().lower()
+    if variant in {"bridge", "prompt_bridge", "extra_beat", "prompt_extra_beat"}:
+        from streammuse.infrastructure.inference.lekai_prompt_continuation.bridge_engine import (
+            LekaiPromptBridgeContinuationEngine,
+        )
+
+        return LekaiPromptBridgeContinuationEngine(
+            checkpoint_path=checkpoint_path,
+            prompt_checkpoint_path=prompt_checkpoint_path,
+            continuation_checkpoint_path=continuation_checkpoint_path,
+        )
+    return LekaiPromptContinuationEngine(
+        checkpoint_path=checkpoint_path,
+        prompt_checkpoint_path=prompt_checkpoint_path,
+        continuation_checkpoint_path=continuation_checkpoint_path,
+    )
 
 
 class LekaiPromptContinuationBackend:
@@ -35,7 +60,7 @@ class LekaiPromptContinuationBackend:
         continuation_checkpoint_path: Optional[str] = None,
         engine: Optional[LekaiPromptContinuationEngine] = None,
     ) -> None:
-        self._engine = engine or LekaiPromptContinuationEngine(
+        self._engine = engine or _make_prompt_continuation_engine(
             checkpoint_path=checkpoint_path,
             prompt_checkpoint_path=prompt_checkpoint_path,
             continuation_checkpoint_path=continuation_checkpoint_path,
