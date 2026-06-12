@@ -5,7 +5,7 @@ description: 七种输出 Sink（console、audio、midi_file、websocket、json_
 
 # 输出类型
 
-StreamMUSE 支持七种输出类型，通过 `--output-type` 参数指定。
+StreamMUSE 支持七种用户可选输出类型，通过 `--output-type` 参数指定。`--enable-metronome` 是一个额外开关，不是独立 output type。
 
 ---
 
@@ -17,30 +17,18 @@ StreamMUSE 支持七种输出类型，通过 `--output-type` 参数指定。
 uv run streammuse-cli --input-mode keyboard --output-type console
 ```
 
-输出示例：
-```
-[status] state=running message=
-[tick] tick=0 bar=1 beat=1
-[event] source=user tick=0 type=note_on pitch=60
-[stats] hit_rate=None round_trip_ms=42.3 server_process_ms=40.1 ...
-```
-
 ---
 
-## audio — 实时音频播放
+## audio — 实时 MIDI 播放
 
-将模型伴奏通过 MIDI 设备实时播放，需要系统中有 MIDI 输出端口。当前版本会自动附加 MIDI 录制，输出到 session 目录中的 `combined.mid`。
+将模型伴奏通过 MIDI 设备实时播放，需要系统中有 MIDI 输出端口。当前版本会自动附加 MIDI 录制。
 
 ```bash
-# 自动选择第一个 MIDI 输出端口
-uv run streammuse-cli --input-mode keyboard --output-type audio
-
-# 指定端口
-uv run streammuse-cli --input-mode keyboard --output-type audio \
-    --midi-out-port "My Synth"
+uv run streammuse-cli --input-mode keyboard --output-type audio --midi-out-port "My Synth"
 ```
 
 查看可用输出端口：
+
 ```python
 import mido
 print(mido.get_output_names())
@@ -50,20 +38,22 @@ print(mido.get_output_names())
 
 ## midi_file — MIDI 文件录制
 
-将演奏（用户旋律 + 模型伴奏）录制为 MIDI 文件。
+将演奏录制为单个 MIDI 文件。
 
 ```bash
-uv run streammuse-cli --input-mode keyboard --output-type midi_file \
-    --midi-file-output-path session.mid
+uv run streammuse-cli \
+  --input-mode keyboard \
+  --output-type midi_file \
+  --midi-file-output-path session.mid
 ```
 
-文件包含两个音轨：`Melody` 和 `Accompaniment`。
+默认包含 `Melody` 和 `Accompaniment` 两个音轨。开启 `--enable-metronome` 后会额外包含 `Metronome` 鼓轨。
 
 ---
 
 ## websocket — WebSocket 推送
 
-将事件序列化为 JSON 放入队列，供 WebSocket 服务器推送给前端。当前版本会自动附加 MIDI 录制，输出到 session 目录中的 `combined.mid`。
+将事件序列化为 JSON 放入队列，供 WebSocket 服务器推送给前端。当前版本会自动附加 MIDI 录制。
 
 ```bash
 uv run streammuse-cli --input-mode keyboard --output-type websocket
@@ -76,50 +66,75 @@ uv run streammuse-cli --input-mode keyboard --output-type websocket
 将事件和推理记录写入 JSON 文件，用于事后分析。
 
 ```bash
-uv run streammuse-cli --input-mode keyboard --output-type json_log \
-    --log-dir logs
+uv run streammuse-cli --input-mode keyboard --output-type json_log --log-dir logs
 ```
 
 输出文件：
-- `events.jsonl` — 每行一个事件
-- `inferences.json` — 所有推理记录
-- `session_config.json` — 会话配置快照
 
-说明：当前实现中，`json_log` 模式不会自动生成 `performance.json` 和 `statistics.csv`（这两项由 `SessionLoggerOutputSink.save_metrics()` 触发）。
+- `events.jsonl`：每行一个事件
+- `inferences.json`：推理记录
+- `session_config.json`：会话配置快照
+
+`json_log` 不自动写 `combined.mid`。
 
 ---
 
 ## session — 完整会话（MIDI + JSON）
 
-在 `json_log` 基础上增加 MIDI 录制。
+在 JSON 日志基础上增加 MIDI 录制。
 
 ```bash
-uv run streammuse-cli --input-mode keyboard --output-type session \
-    --log-dir logs
+uv run streammuse-cli --input-mode keyboard --output-type session --log-dir logs
 ```
 
-在 `json_log` 文件基础上额外输出：
-- `combined.mid` — 包含 Melody 和 Accompaniment 两个音轨的 MIDI 文件
-- `performance.json` — 延迟与事件统计
-- `statistics.csv` — 摘要指标 CSV
-- `session_summary.txt` — 会话完成摘要
+常见输出：
+
+- `combined.mid`：MIDI 录制
+- `events.jsonl`：事件日志
+- `inferences.json`：推理日志
+- `performance.json`：延迟与事件统计
+- `statistics.csv`：摘要指标 CSV
+- `session_summary.txt`：会话完成摘要
 
 ---
 
-## composite — 组合输出（推荐）
+## composite — 组合输出（推荐调试模式）
 
-同时激活**控制台输出**和**完整会话日志**，是最实用的模式。
+同时激活控制台输出和完整会话日志。
 
 ```bash
-uv run streammuse-cli --input-mode keyboard --output-type composite \
-    --log-dir logs
+uv run streammuse-cli --input-mode keyboard --output-type composite --log-dir logs
 ```
 
-等价于同时启用 `console` + `session`。运行时可看到实时输出，结束后有完整日志文件。
+CLI 中通常等价于 `ConsoleOutputSink + SessionLoggerOutputSink`。
 
-说明：在当前 CLI 实现中，`composite` 会创建 `ConsoleOutputSink + SessionLoggerOutputSink`，并在关闭时自动写入完整会话指标（含 `performance.json` 与 `statistics.csv`）。
+---
 
-说明：`OutputSinkFactory` 在无 `session_manager` 时会退化为 `console + websocket`。但在 CLI 中 `--log-dir` 默认是 `logs`，通常都会创建 `session_manager`。
+## metronome 输出
+
+开启：
+
+```bash
+uv run streammuse-cli \
+  --input-mode midi_file \
+  --midi-file-path prompts/inputs_lekai/mel/1.mid \
+  --output-type console \
+  --enable-metronome \
+  --count-in-beats 4
+```
+
+行为：
+
+1. 实时 MIDI click 由 `MetronomeOutputSink` 输出。
+2. 写 MIDI 的模式会额外记录 `Metronome` 鼓轨。
+3. count-in 阶段的 click 使用负 tick，MIDI 录制会把它平移到文件开头。
+
+默认 click 参数：
+
+| 类型 | note | velocity | channel |
+|---|---|---|---|
+| downbeat | 76 | 110 | 9 |
+| beat | 77 | 80 | 9 |
 
 ---
 
@@ -128,8 +143,8 @@ uv run streammuse-cli --input-mode keyboard --output-type composite \
 | 类型 | 实时反馈 | MIDI 录制 | JSON 日志 | 性能分析 |
 |---|---|---|---|---|
 | `console` | ✓ | ✓（自动 `combined.mid`） | – | – |
-| `audio` | 音符播放 | ✓（自动 `combined.mid`） | – | – |
-| `midi_file` | – | ✓ | – | – |
+| `audio` | MIDI 播放 | ✓（自动 `combined.mid`） | – | – |
+| `midi_file` | – | ✓（指定路径） | – | – |
 | `websocket` | JSON 推送 | ✓（自动 `combined.mid`） | – | – |
 | `json_log` | – | – | ✓ | – |
 | `session` | – | ✓ | ✓ | ✓ |

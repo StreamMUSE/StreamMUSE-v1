@@ -31,196 +31,112 @@ Requires-Dist: torchvision>=0.22.0
 Requires-Dist: transformers
 Requires-Dist: uvicorn>=0.35.0
 Requires-Dist: wandb>=0.20.1
+Requires-Dist: websockets>=12
+Requires-Dist: httpx>=0.27
 
-# StreamMUSE 🎹⏳
-This final goal of this task is to generate accompniament given melody by user input in a real-time streaming fashion. We use 'mel' as short for melody and 'acc' as short for accompaniment. 
+# StreamMUSE
 
-Below is a simple diagram showing the (1) model architecture and (2) how the encoder captures information from midi. 
-<!-- ![My Diagram](images/very_simple_architecture.png) -->
-<img src="images/very_simple_architecture.png" alt="My graph" width="400" />
-<img src="images/attn.png" alt="My graph" width="400" />
+StreamMUSE is a real-time accompaniment generation system. It reads melody input from keyboard, MIDI devices, or MIDI files, sends incremental melody context to an inference backend, and plays or records generated accompaniment.
 
+## Environment
 
-The model uses Roformer as its encoders and decoder. Check its documentation [here](https://huggingface.co/docs/transformers/en/model_doc/roformer). 
+```bash
+uv sync
+```
 
-
-## Environment 
-
-Install required packages before you start: 
-
-    uv sync
-
-This will create a virtual environment in your directory, under folder `.venv`.
-
-We adapted the transformers package for it to take care of the special positional encoding:
-    
-    cd transformers
-    pip install -e .
-    cd ..
+This creates a `.venv` environment in the repository.
 
 ## Real-time Application
 
-The real-time system is a CLI client that sends melody events to an inference server and plays back the generated accompaniment. It uses a Clean Architecture design (`src/streammuse/`).
+The real-time system is a CLI client plus an optional inference server. The main code lives under `src/streammuse/` and follows a Presentation / Application / Domain / Infrastructure structure.
 
 ### Quick Start
 
 ```bash
-# 1. Start the fake inference server (no model required, for development)
+# 1. Start the fake inference server (no model required)
 uv run python scripts/fake_inference_server.py
 
 # 2. In another terminal, run the CLI
 uv run streammuse-cli --input-mode keyboard
 ```
 
-### CLI Options
+### CLI Examples
 
 ```bash
 # Input modes
-uv run streammuse-cli --input-mode keyboard          # computer keyboard
-uv run streammuse-cli --input-mode midi              # MIDI device
-uv run streammuse-cli --input-mode midi_file --midi-file path/to/song.mid
+uv run streammuse-cli --input-mode keyboard
+uv run streammuse-cli --input-mode midi_device
+uv run streammuse-cli --input-mode midi_file --midi-file-path path/to/song.mid
 
 # Output types
-uv run streammuse-cli --output-type console          # default: print events
-uv run streammuse-cli --output-type audio            # real-time MIDI playback
-uv run streammuse-cli --output-type composite --log-dir logs  # console + session logs
+uv run streammuse-cli --output-type console
+uv run streammuse-cli --output-type audio --midi-out-port "My Synth"
+uv run streammuse-cli --output-type composite --log-dir logs
 
-# Music injection (pre-populate model history)
-uv run streammuse-cli --input-mode keyboard \
-    --injection-file prompts/C_major/pop909_216_mel.mid \
-    --injection-length 50
+# Metronome + count-in
+uv run streammuse-cli \
+    --input-mode midi_file \
+    --midi-file-path prompts/inputs_lekai/mel/1.mid \
+    --output-type console \
+    --enable-metronome \
+    --count-in-beats 4
+
+# Music injection with MIDI-file input
+uv run streammuse-cli \
+    --input-mode midi_file \
+    --midi-file-path prompts/inputs_lekai/mel/1.mid \
+    --injection-file prompts/inputs_lekai/mel/1.mid \
+    --injection-length 16
 ```
 
-### Real Inference Server
+### Lekai HTTP Server
 
 ```bash
-CHECKPOINT_PATH=path/to/model.ckpt \
-    uvicorn src.streammuse.infrastructure.inference.server:app \
-    --host 0.0.0.0 --port 8000
+LEKAI_CHECKPOINT_PATH=path/to/lekai_checkpoint.safetensors \
+LEKAI_DEVICE=auto \
+LEKAI_DTYPE=auto \
+uv run python -m streammuse.infrastructure.inference.server_lekai
+```
+
+Then run the client:
+
+```bash
+uv run streammuse-cli \
+    --input-mode keyboard \
+    --inference-type http \
+    --model-name lekai \
+    --server-url http://127.0.0.1:8000/generate_accompaniment
 ```
 
 ### Session Logging
 
 Using `--output-type composite --log-dir logs` creates a timestamped session directory:
 
-```
-logs/session_YYYYMMDD-HHMMSS/
-├── events.jsonl        # one JSON per musical event
-├── inferences.json     # all inference request/response pairs + latency
-├── performance.json    # latency percentiles (p95/p99), music analysis
-├── statistics.csv      # summary metrics
+```text
+logs/YYYY-MM-DD/session_HHMMSS/
+├── events.jsonl
+├── inferences.json
+├── performance.json
+├── statistics.csv
 ├── session_config.json
-└── combined.mid        # recorded MIDI (user + model)
+├── session_summary.txt
+├── melody_history.json
+├── accompaniment_history.json
+└── combined.mid
 ```
 
+`combined.mid` contains `Melody` and `Accompaniment` tracks. With `--enable-metronome`, it also contains a `Metronome` drum track. With `--count-in-beats`, count-in clicks are recorded at the beginning of the MIDI file.
 
-The whole data preparation workflow is like the figure here:
+## Documentation
 
-<img src="images/DateFlow.svg" alt="Dataflow" width="400" />
+Start from [`docs/index.md`](docs/index.md). Key pages:
 
-### Get the original dataset
+- [`docs/getting-started/configuration.md`](docs/getting-started/configuration.md)
+- [`docs/reference/cli-reference.md`](docs/reference/cli-reference.md)
+- [`docs/user-guide/running-realtime.md`](docs/user-guide/running-realtime.md)
+- [`docs/user-guide/music-injection.md`](docs/user-guide/music-injection.md)
+- [`docs/architecture/application/service.md`](docs/architecture/application/service.md)
 
-Download **POP909** dataset:
+## Dataset / Training Notes
 
-    git clone https://github.com/music-x-lab/POP909-Dataset.git
-
-+ you can use Garageband or other online DAW, such as [soundtrap](https://www.soundtrap.com/musicmakers), to visualize MIDI files. 
-
-Download **Aria** dataset, ths offical dateset is here(https://github.com/loubbrad/aria-midi), you can find the different version of the Aria dataset you want here.
-
-### Exact the mel and acc from the original dataset
-
-Run files under the `exact` folder to extract accompaniment and melody tracks in midi files, you should choose the **proper** one to do this exact job.
-
-- **/exact**
-    - aria_skyline.py
-    - aria_ugrip_concurrent.py
-    - aria_ugrip.py
-    - pop909_extract.py
-
-As the folder structure shows above, we have four different exact python files:
-+ `aria_skyline.py` is the file to extract from the Aria dataset using the skyline seperation algrithom:
-    ```
-    python aria_skyline.py --input_dir <the path of your original aira dataset> --output_dir <the path of your output dateset(the formeted dataset)> --workers <number of worker processes to use. Defaults to the number of CPU cores> --type <type of algorithm used to extract melody and accompanement> --k <Type of algorithm used to extract melody and accompanement.>
-    ```
-+ `aria_ugrip_concurrent.py` is the file to extract from the Aria dataset using the seperation algrithom we proposed, and it is a concurrent script. (We have't tested it yet!!!)
-+ `aria_ugrip.py` is the nonconcurrent version of the `aria_ugrip_concurrent.py`. 
-+ `pop909_extract.py` is the script for POP909 dataset.
-
-After you run the proper exact python file, you should have your MIDI dataset follow the below data structure and the same song shares same name in both folders:
-
-- **/name_of_dataset**
-    - **/mel**
-        - 001.mid
-        - 002.mid
-        - ...
-    - **/acc**
-        - 001.mid
-        - 002.mid
-        - ...
-
-### Make formated dataset into files our model can read
-All the preprocess files is under the `preprocess` folder:
-
-- **/preprocess**
-    - preprocess_midi2pt_dataset.py
-    - preprocess_midi2pt_filtered_dataset.py
-    - preprocess_midi2remi2json_dataset.py
-
-I don't show all the file in the `preprocess` folder, only those we'll use to convert our data to the tensor our model can read.
-
-+ `preprocess_midi2pt_dataset.py` is to convert mid files of the formated dataset into pt files.
-    ```
-    python preprocess_midi2pt_dataset.py --folders /path/to/folder1 /path/to/folder2 --name name_of_dataset --polyphony num_of_notes
-    ```
-    + `--folders` let you pass folder(s) together and combine them to one tensor. 
-    + `--name` just pass a name.
-    + `--polyphony` let you define how many notes are allowed to play simutaneously on one timestep. 
-+ `preprocess_midi2pt_filtered_dataset.py` has the same function as `preprocess_midi2pt_dataset.py`, but filters out the first 10% and last 10% of the songs to prevent the blank bar of the songs.
-+ `preprocess_midi2remi2json_dataset.py` is to convert mid files to remi files first, and then convert the remi files to the json files.
-
-The output tensor will be stored under `/data`, find it there.
-
-## Training 
-
-Yuo should set up all your model config in the yaml files under `schema\yaml` folder. We suggest you make a new config file when you change parameters.
-
-After that, change the path of the yaml you congifed in the `training_runner.py`, and then run the following command:
-
-```
-uv run training_runner.py
-```
-
-<!-- Train model with:
-
-    python m2a_transformer.py --batch_size 10 --model_size small --path_to_dataset xxx_acc.pt
-
-+ `--model_size` can be either 'large' or 'small'.
-+ `--path_to_dataset` passes tensor of the accompaniment (the model will automatically load the corresponding melody tensor at `xxx_mel.pt`).
-+ `--wandb` switch logging from Tensorboard(default) to wandb, configure your wandb inside the script.
-+ `--model_name` let you save the model with customized name, but make sure you include 'small' or 'large' in the model name as the indicator of its size. -->
-
-## Inference
-
-Download checkpoint from [here](https://huggingface.co/Jianshu001/music/blob/main/cp_transformer_909%2Bac%2B1k7_trackemb_interleavepos_v0.2_large_batch_40_schedule.epoch%3D00.val_loss%3D0.90296.ckpt) and place it under `/ckpt`
-(for faster download, use wget command)
-
-For inference, place all the melody and accompaniment midi under the `/input` folder:
-
-- **input**
-    - **/mel**
-        - 001.mid
-        - ...
-    - **/acc**
-        - 001.mid
-        - ...
-
-Run inferencen with:
-
-    python m2a_transformer_inference.py --model_path /path/to/ckpt --prompt_len 75 --n_samples 2 --temperature 1.0
-
-+ `--prompt_len` let you define the prompt_len.
-+ `--n_samples` let you generate multiple output on one input.
-+ `--temperature` let you define the temperature.
-
-The result will be saved in `\temp.`
+Legacy dataset preparation, preprocessing, training, and inference scripts remain in the repository. See the existing scripts and historical logs under `developing-logs/` for experiment-specific workflows.

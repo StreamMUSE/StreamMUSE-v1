@@ -1,13 +1,13 @@
 ---
 title: MidiFileOutputSink — MIDI 文件录制
-description: 将事件流录制为 MIDI 文件，使用 pretty_midi 重建音符
+description: 将事件流、可选 metronome 和 count-in 录制为 MIDI 文件
 ---
 
 # MidiFileOutputSink — MIDI 文件录制
 
 **源文件**：`src/streammuse/infrastructure/output/midi_file.py`
 
-将实时事件流录制为 MIDI 文件。使用 `pretty_midi` 库，将 `NOTE_ON`/`NOTE_OFF` 事件对重建为完整音符（含开始时间、结束时间、力度）。
+`MidiFileOutputSink` 使用 `pretty_midi` 将实时事件流录制为 MIDI 文件。它把 `NOTE_ON` / `NOTE_OFF` 事件对重建为完整音符，并可选记录 metronome 鼓轨。
 
 ---
 
@@ -18,61 +18,100 @@ description: 将事件流录制为 MIDI 文件，使用 pretty_midi 重建音符
 class MidiFileOutputConfig:
     bpm: float
     ticks_per_beat: int
+    beats_per_bar: int = 4
     output_path: Optional[str] = None
     user_program: int = 0
     model_program: int = 0
-    user_track_name: str = "User"
-    model_track_name: str = "Model"
+    user_track_name: str = "Melody"
+    model_track_name: str = "Accompaniment"
+    record_metronome: bool = False
+    metronome_track_name: str = "Metronome"
+    metronome_beat_note: int = 77
+    metronome_downbeat_note: int = 76
+    metronome_velocity: int = 80
+    metronome_downbeat_velocity: int = 110
+    metronome_duration_ticks: int = 1
 ```
 
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `bpm` | `float` | 必填 | 录制 BPM（决定 tick→秒的映射） |
-| `ticks_per_beat` | `int` | 必填 | 每拍 tick 数 |
-| `output_path` | `Optional[str]` | `None` | 输出文件路径；`None` 时 `close()` 不保存 |
-| `user_program` | `int` | `0` | 用户音轨的 MIDI 乐器编号 |
-| `model_program` | `int` | `0` | 模型音轨的 MIDI 乐器编号 |
-| `user_track_name` | `str` | `"User"` | 用户音轨名称 |
-| `model_track_name` | `str` | `"Model"` | 模型音轨名称 |
-
-`seconds_per_tick()` 方法：返回 `(60.0 / bpm) / ticks_per_beat`。
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `bpm` | 必填 | 录制 BPM |
+| `ticks_per_beat` | 必填 | 每拍 tick 数 |
+| `beats_per_bar` | `4` | 每小节拍数，用于 downbeat 判断 |
+| `output_path` | `None` | 输出文件路径；`None` 时不保存 |
+| `user_track_name` | `Melody` | 用户旋律音轨名 |
+| `model_track_name` | `Accompaniment` | 模型伴奏音轨名 |
+| `record_metronome` | `False` | 是否创建 `Metronome` 鼓轨 |
+| `metronome_beat_note` | `77` | 普通拍 MIDI note |
+| `metronome_downbeat_note` | `76` | 小节第一拍 MIDI note |
+| `metronome_velocity` | `80` | 普通拍力度 |
+| `metronome_downbeat_velocity` | `110` | 小节第一拍力度 |
 
 ---
 
-## `MidiFileOutputSink`
+## 音轨结构
 
-### 内部结构
+默认生成：
 
-MIDI 文件创建两个独立的 `pretty_midi.Instrument` 音轨：
-- `_user`：录制 `source="user"` 的事件
-- `_model`：录制 `source="model"` 的事件
+```text
+Track: Melody        # source="user"
+Track: Accompaniment # source="model"
+```
 
-各自维护活跃音符字典 `_active_user` / `_active_model`，格式为 `{pitch: {start, velocity}}`。
+若 `record_metronome=True`，额外生成：
 
-### `output_event(event, source)`
-
-根据 `source` 分发到对应的 `_handle_event()`：
-
-**`_handle_event()` 逻辑**：
-1. 跳过 `is_placeholder=True` 或 `pitch=-1` 的事件
-2. `NOTE_ON`（velocity > 0）：
-   - 若该音高已在 `active` 中（未关闭的音符），先关闭前一个音符（retrigger 处理）
-   - 将 `{start: t, velocity: v}` 加入 `active`
-3. `NOTE_OFF`：
-   - 从 `active` 移除该音高
-   - 创建 `pretty_midi.Note`（start=旧值, end=当前时间, velocity=旧 velocity）
-
-### `close()`
-
-遍历所有仍在 `_active_user`/`_active_model` 中的未关闭音符，将其在最大时间处关闭，然后调用 `pretty_midi.write(output_path)` 保存文件。
+```text
+Track: Metronome     # is_drum=True
+```
 
 ---
 
-## 音轨结构示例
+## `output_event(event, source)`
 
-生成的 MIDI 文件包含两个音轨：
+根据 `source` 分发到 `Melody` 或 `Accompaniment`：
 
+1. 跳过 `is_placeholder=True` 或 `pitch=-1` 的事件。
+2. `NOTE_ON` 且 velocity > 0：记录 active note；若同 pitch 已 active，则先关闭前一个音符。
+3. `NOTE_OFF`：关闭 active note 并创建 `pretty_midi.Note`。
+
+---
+
+## `output_metronome_tick(tick, bar, beat)`
+
+```python
+if self._metronome is None:
+    return
+self._observe_recording_tick(int(tick))
+if int(tick) % int(self._config.ticks_per_beat) != 0:
+    return
 ```
-Track 0: User  (乐器 user_program)
-Track 1: Model (乐器 model_program)
+
+只在 beat 边界记录 metronome note。downbeat 判断使用：
+
+```python
+ticks_per_bar = ticks_per_beat * beats_per_bar
+is_downbeat = ticks_per_bar > 0 and tick % ticks_per_bar == 0
 ```
+
+---
+
+## count-in 录制机制
+
+count-in 阶段 service 会输出负 tick，例如 4 拍 count-in、`ticks_per_beat=4` 时为 `-16..-1`。`MidiFileOutputSink` 会观察负 tick 并设置录制偏移：
+
+```python
+def _observe_recording_tick(self, tick: int) -> None:
+    if int(tick) < 0:
+        self._recording_tick_offset = max(self._recording_tick_offset, -int(tick))
+
+def _time(self, tick: int) -> float:
+    return float(int(tick) + int(self._recording_tick_offset)) * self._sp_tick
+```
+
+因此 MIDI 文件中 count-in click 会出现在开头，正式 tick=0 的音乐会向后平移。这个偏移只存在于 MIDI 录制层，不影响 service 内部 tick 和推理请求。
+
+---
+
+## `close()`
+
+关闭时会把未结束的 active notes 截断到 `_max_time`，然后写入 `output_path`。

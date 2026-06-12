@@ -1,359 +1,207 @@
-# Fake Realtime 工作流程详解
+---
+title: Fake Realtime 工作流程
+description: run_lekai_fake_realtime.py 的脚本流程、HTTP 请求和与实时 service 的差异
+---
 
-## 1. 系统架构概览
+# Fake Realtime 工作流程
 
+本文描述的是 `scripts/run_lekai_fake_realtime.py` 这个**离线驱动的 fake realtime 脚本**，不是 `streammuse-cli` 使用的真实 `RealTimeMusicService` 主循环。
+
+二者都通过 HTTP 调用 Lekai server，但调度语义不同：
+
+| 项目 | `run_lekai_fake_realtime.py` | `RealTimeMusicService` |
+|---|---|---|
+| 时间推进 | for-loop 扫 MIDI tick，无 wall-clock sleep | 真实 wall-clock tick loop |
+| 请求触发 | `generation_interval_ticks` 到期且 `pending_new_events` 非空 | tick=0 history + 每拍末尾，允许空增量请求 |
+| beat-tail 处理 | 如果触发点刚好是 beat tail，则把 `generation_start_tick` 改为下一拍 | 每拍末尾固定请求下一拍 |
+| 输入来源 | 单个 melody MIDI 文件 | keyboard / MIDI device / MIDI file / list |
+| 输出 | 合并 melody + model events 到 MIDI 文件 | 输出 sink 链路，可 console/audio/MIDI/session/metronome |
+
+---
+
+## 系统架构
+
+```text
+MIDI melody file
+    │
+    ▼
+run_lekai_fake_realtime.py
+    ├── MidiFileInput._midi_to_notes()
+    ├── notes_to_events()
+    ├── build_tick_index()
+    ├── HttpInferenceClient.generate_accompaniment()
+    └── MidiFileOutputSink → *_fake_realtime_combined.mid
+
+HTTP server
+    └── server_lekai.py / LekaiHttpBackend
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         FAKE REALTIME SYSTEM                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Client Side                            Server Side                     │
-│  ┌─────────────────────┐               ┌─────────────────────────────┐  │
-│  │ run_lekai_fake_     │  HTTP POST    │ server_lekai.py             │  │
-│  │ _realtime.py        │ ────────────> │  ┌───────────────────────┐  │  │
-│  │                     │  /generate    │  │ LekaiHttpBackend      │  │  │
-│  │ ┌───────────────┐   │  _accompaniment│  │  ┌─────────────────┐ │  │  │
-│  │ │ MidiFileInput │   │               │  │  │ _generate_with_ │ │  │  │
-│  │ └───────┬───────┘   │               │  │  │ interleaved_    │ │  │  │
-│  │         │           │               │  │  │ prompt()        │ │  │  │
-│  │         v           │               │  │  └────────┬────────┘ │  │  │
-│  │ ┌───────────────┐   │               │  │           v          │  │  │
-│  │ │ HttpInference │   │ <──────────── │  │  ┌─────────────────┐ │  │  │
-│  │ │ Client        │   │  JSON Response│  │  │ PianoLLaMA      │ │  │  │
-│  │ └───────┬───────┘   │               │  │  │ .generate()     │ │  │  │
-│  │         │           │               │  │  └─────────────────┘ │  │  │
-│  │         v           │               │  └───────────────────────┘  │  │
-│  │ ┌───────────────┐   │               └─────────────────────────────┘  │
-│  │ │ MidiFileOutput│   │                                                 │
-│  │ │ Sink          │   │                                                 │
-│  │ └───────────────┘   │                                                 │
-│  └─────────────────────┘                                                 │
-└─────────────────────────────────────────────────────────────────────────┘
-```
 
-## 2. 主要依赖文件
+---
 
-### 2.1 Client Side (Fake Realtime Runner)
+## 主要文件
 
 | 文件 | 职责 |
-|------|------|
-| `scripts/run_lekai_fake_realtime.py` | 主入口，协调输入处理和推理请求 |
-| `src/streammuse/infrastructure/input/midi_file.py` | MIDI 文件读取和解析 |
-| `src/streammuse/infrastructure/inference/http_client.py` | HTTP 客户端，与 Server 通信 |
-| `src/streammuse/infrastructure/output/midi_file.py` | MIDI 文件输出 |
+|---|---|
+| `scripts/run_lekai_fake_realtime.py` | 主入口，按 tick 扫描 MIDI 并增量调用 HTTP 推理 |
+| `src/streammuse/infrastructure/input/midi_file.py` | 读取 MIDI 并转换 notes |
+| `src/streammuse/infrastructure/inference/http_client.py` | HTTP client，调用 `/generate_accompaniment` 等端点 |
+| `src/streammuse/infrastructure/output/midi_file.py` | 输出合并 MIDI |
+| `src/streammuse/infrastructure/inference/server_lekai.py` | Lekai FastAPI server |
+| `src/streammuse/infrastructure/inference/lekai_http_backend.py` | Lekai HTTP 后端逻辑 |
 
-### 2.2 Server Side (Inference Engine)
+---
 
-| 文件 | 职责 |
-|------|------|
-| `src/streammuse/infrastructure/inference/server_lekai.py` | FastAPI HTTP Server |
-| `src/streammuse/infrastructure/inference/lekai_http_backend.py` | 核心业务逻辑，处理生成请求 |
-| `src/streammuse/infrastructure/inference/lekai_model/model.py` | PianoLLaMA 模型定义 |
-| `src/streammuse/infrastructure/inference/lekai_model/PianoDataset.py` | Tokenizer 和数据处理 |
+## 输入处理
 
-## 3. 数据流详解
-
-### 3.1 阶段 1: 输入处理 (Client)
-
-```
-MIDI File
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│ MidiFileInput._midi_to_notes()          │
-│                                         │
-│ 1. 读取 MIDI 文件                       │
-│ 2. 提取 note_on/note_off 事件          │
-│ 3. 转换为 ticks (beat_div=4)           │
-│ 4. 返回: List[{"pitch": X, "tick": Y}]  │
-└─────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│ notes_to_events()                       │
-│                                         │
-│ 将 notes 转换为 MusicalEvent 对象:      │
-│ - EventType.NOTE_ON                     │
-│ - EventType.NOTE_OFF                    │
-└─────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│ build_tick_index()                      │
-│                                         │
-│ 创建 tick -> events 的映射字典:         │
-│ {0: [ev1, ev2], 4: [ev3], ...}         │
-└─────────────────────────────────────────┘
-```
-
-### 3.2 阶段 2: Tick Loop (Client)
+脚本先把 MIDI 文件转为 note dict，再转成 `MusicalEvent`：
 
 ```python
-# 伪代码展示核心逻辑
-for tick in range(start_tick, max_ticks):
-    # 1. 收集当前 tick 的 melody 事件
-    tick_events = melody_by_tick.get(tick, [])
-    pending_new_events.extend(tick_events)
-    
-    # 2. 检查是否触发生成
-    if tick - last_generation_tick >= generation_interval_ticks:
-        # 发送 HTTP 请求到 Server
-        accompaniment = client.generate_accompaniment(
-            melody_events=pending_new_events,
-            generation_start_tick=tick,
-            generation_length_frames=4,
-        )
-        
-        # 3. 合并结果（替换旧的事件）
-        model_events = [ev for ev in model_events if ev.tick < generation_start_tick]
-        model_events.extend(accompaniment)
-        
-        pending_new_events = []
+notes, _res, max_tick = MidiFileInput._midi_to_notes(
+    str(midi_file),
+    beat_div=int(args.ticks_per_beat),
+    min_pitch=0,
+    max_pitch=127,
+    program=None,
+    max_tick=None,
+)
+melody_events = notes_to_events(notes)
+melody_by_tick = build_tick_index(melody_events)
 ```
 
-### 3.3 阶段 3: HTTP 请求/响应
+`build_tick_index()` 生成 `tick -> events` 映射：
 
-**Request (Client -> Server)**:
+```python
+def build_tick_index(events: list[MusicalEvent]) -> dict[int, list[MusicalEvent]]:
+    by_tick: dict[int, list[MusicalEvent]] = defaultdict(list)
+    for event in events:
+        by_tick[int(event.tick)].append(event)
+    return by_tick
+```
+
+---
+
+## Tick Loop 和请求触发
+
+当前脚本核心逻辑：
+
+```python
+last_generation_tick = -int(args.generation_interval_ticks)
+
+for tick in range(start_tick, max_ticks):
+    tick_events = melody_by_tick.get(tick, [])
+    if tick_events:
+        pending_new_events.extend(tick_events)
+
+    if tick - last_generation_tick >= int(args.generation_interval_ticks) and pending_new_events:
+        generation_start_tick = tick
+        if (tick % int(args.ticks_per_beat)) == (int(args.ticks_per_beat) - 1):
+            generation_start_tick = tick + 1
+
+        accompaniment, _timing = client.generate_accompaniment(
+            melody_events=list(pending_new_events),
+            generation_start_tick=int(generation_start_tick),
+            generation_length_frames=int(args.generation_length_frames),
+        )
+
+        model_events = [ev for ev in model_events if ev.tick < generation_start_tick]
+        model_events.extend(accompaniment)
+        pending_new_events = []
+        last_generation_tick = tick
+```
+
+关键点：
+
+1. `generation_interval_ticks` 在这个脚本里仍是触发间隔。
+2. 请求只有在 `pending_new_events` 非空时才会发送。
+3. 如果触发 tick 是 beat tail（默认 tick=3、7、11...），脚本会把 `generation_start_tick` 调整到下一拍。
+4. 新响应会替换 `generation_start_tick` 之后的旧 model events。
+
+---
+
+## HTTP 请求结构
+
+`HttpInferenceClient` 会发送类似 payload：
+
 ```json
 {
   "melody_notes": [
     {"type": "note_on", "pitch": 60, "tick": 0},
-    {"type": "note_off", "pitch": 60, "tick": 4},
-    ...
+    {"type": "note_off", "pitch": 60, "tick": 4}
   ],
   "generation_start_tick": 16,
+  "client_request_send_time": 1700000000.123,
   "generation_length_frames": 4,
   "generation_interval_ticks": 4,
   "model_name": "lekai",
-  "bpm": 120
+  "inference_mode": "sliding_window"
 }
 ```
 
-**Response (Server -> Client)**:
+server 返回：
+
 ```json
 {
   "accompaniment": [
     {"type": "note_on", "pitch": 48, "tick": 16, "velocity": 80},
-    {"type": "note_off", "pitch": 48, "tick": 20, "velocity": 0},
-    ...
+    {"type": "note_off", "pitch": 48, "tick": 20, "velocity": 0}
   ],
   "timings": {
-    "request_arrival_time": 1234567890.0,
-    "inference_start_time": 1234567890.1,
-    "inference_end_time": 1234567890.5,
-    ...
+    "request_arrival_time": 1700000000.124,
+    "inference_start_time": 1700000000.130,
+    "inference_end_time": 1700000000.180,
+    "response_output_time": 1700000000.181
   }
 }
 ```
 
-### 3.4 阶段 4: Server 端处理
+---
 
-```
-HTTP Request
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│ server_lekai.py                         │
-│ /generate_accompaniment endpoint        │
-└─────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│ LekaiHttpBackend.generate()             │
-│                                         │
-│ 1. 更新 melody_history                  │
-│ 2. 调用 _generate_with_model()          │
-└─────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│ _generate_with_interleaved_prompt()     │
-│                                         │
-│ 核心生成逻辑:                           │
-│ 1. 构建 prompt tokens                   │
-│ 2. 调用模型生成                         │
-│ 3. 转换 tokens -> events                │
-└─────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│ _generate_part1_tokens_from_prompt()    │
-│                                         │
-│ 调用 PianoLLaMA 模型逐 token 生成      │
-└─────────────────────────────────────────┘
+## 输出文件
+
+脚本输出两个主要文件：
+
+```text
+<output-dir>/
+├── <stem>_fake_realtime_combined.mid
+└── <stem>_fake_realtime_summary.json
 ```
 
-### 3.5 阶段 5: Token 构建流程 (Server)
+MIDI 输出使用 `MidiFileOutputSink`，默认包含：
 
-```python
-# Prompt 构建过程（简化版）
-
-# 1. 初始 tokens
-seq = [BOS, time_sig, bpm, pad]
-
-# 2. 生成 acc_{-1} (如果 start_beat == 0)
-if start_beat == 0 and not accompaniment_history:
-    acc_neg1_tokens = generate_from_prompt([BOS, ts, bpm, pad])
-    seq.append(acc_neg1_tokens)
-
-# 3. Context loop (历史 context)
-for beat in range(start_beat, current_beat):
-    if beat % 4 == 0:
-        seq.append(bar)
-        seq.append(bar)
-    
-    # Encode melody for this beat
-    mel_tokens = encode_beat_tokens(melody_history, beat)
-    seq.append(mel_tokens)
-    
-    # Encode accompaniment for this beat (from history)
-    acc_tokens = encode_beat_tokens(accompaniment_history, beat)
-    seq.append(acc_tokens)
-
-# 4. Generation loop (生成新伴奏)
-for beat in range(num_beats_to_generate):
-    if beat % 4 == 0:
-        seq.append(bar)
-        seq.append(bar)
-    
-    # Encode current melody
-    mel_tokens = encode_beat_tokens(melody_history, target_beat)
-    
-    # Generate accompaniment
-    prompt = concat(seq, mel_tokens)
-    acc_tokens = generate_from_prompt(prompt)
-    
-    # Convert tokens to MIDI events
-    events = tokens_to_midi(acc_tokens)
-    generated_events.extend(events)
+```text
+Track: Melody
+Track: Accompaniment
 ```
 
-### 3.6 阶段 6: 输出合并 (Client)
+summary JSON 包含输入文件、server URL、BPM、tick 参数、请求数量、返回事件数量和输出 MIDI 路径。
 
-```
-Melody Events (User)     Model Events (Generated)
-       │                         │
-       │    ┌─────────────┐      │
-       └───>│ MidiFile    │<─────┘
-            │ OutputSink  │
-            └──────┬──────┘
-                   │
-                   ▼
-            combined.mid
-            (Track 0: Melody)
-            (Track 1: Accompaniment)
-```
+---
 
-## 4. 关键数据结构
+## 与 Offline 模式的区别
 
-### 4.1 MusicalEvent
-```python
-@dataclass
-class MusicalEvent:
-    tick: int          # 时间位置 (ticks)
-    pitch: int         # 音高 (MIDI note number)
-    event_type: EventType  # NOTE_ON / NOTE_OFF
-    velocity: int = 64
-    channel: int = 0
-    source: str = "user"  # "user" or "model"
-```
+| 特性 | Fake Realtime 脚本 | Offline |
+|---|---|---|
+| 输入 | MIDI melody file | NPZ 或离线脚本指定格式 |
+| 生成方式 | 增量 HTTP 请求 | 通常一次性或按离线脚本策略生成 |
+| 上下文 | server 累积 history | 离线构造完整 prompt/context |
+| 输出 | `*_fake_realtime_combined.mid` | 离线脚本输出 MIDI / token log |
 
-### 4.2 Token Sequence 结构
-```
-[BOS, time_sig, bpm, pad, acc_{-1}, bar, bar, mel_0, acc_0, mel_1, acc_1, ...]
-  │     │        │    │     │       │    │    │      │      │      │
-  │     │        │    │     │       │    │    │      │      │      └── beat 1 acc
-  │     │        │    │     │       │    │    │      │      └───────── beat 1 melody
-  │     │        │    │     │       │    │    │      └──────────────── beat 0 acc
-  │     │        │    │     │       │    │    └─────────────────────── beat 0 melody
-  │     │        │    │     │       │    └──────────────────────────── bar tokens (measure start)
-  │     │        │    │     │       └───────────────────────────────── bar token
-  │     │        │    │     └───────────────────────────────────────── acc for beat -1
-  │     │        │    └─────────────────────────────────────────────── padding
-  │     │        └──────────────────────────────────────────────────── BPM token
-  │     └───────────────────────────────────────────────────────────── Time signature token
-  └─────────────────────────────────────────────────────────────────── Begin of sequence
-```
+---
 
-## 5. 工作流程时序图
+## 与真实 realtime service 的差异
 
-```
-Client                              Server
-  │                                    │
-  ├─ 1. POST /clear_history ────────>│
-  │<─ 200 OK ─────────────────────────┤
-  │                                    │
-  ├─ 2. POST /generate_accompaniment >│
-  │    melody_notes=[...]              │
-  │    generation_start_tick=0         │
-  │    generation_length_frames=4      │
-  │                                    │
-  │                                    ├─ 3. Update melody_history
-  │                                    ├─ 4. Build prompt tokens
-  │                                    ├─ 5. Call model.generate()
-  │                                    ├─ 6. Convert tokens to events
-  │                                    │
-  │<─ 7. JSON Response ───────────────┤
-  │    accompaniment=[...]             │
-  │                                    │
-  ├─ 8. Merge events (replace old)    │
-  │                                    │
-  ├─ 9. POST /generate_accompaniment >│
-  │    (next interval)                 │
-  │    ...                             │
-```
+`RealTimeMusicService` 当前更接近真实演奏环境：
 
-## 6. 与 Offline 模式的区别
+1. 有 wall-clock tick loop。
+2. 支持 count-in。
+3. 支持 metronome 输出和录制。
+4. 每拍末尾固定发下一拍请求，即使没有新 melody event。
+5. 推理线程采用 latest-only drain，慢请求不会无限堆积。
 
-| 特性 | Fake Realtime | Offline |
-|------|--------------|---------|
-| 输入 | MIDI 文件 (melody only) | NPZ 文件 (melody + GT acc) |
-| 生成方式 | 增量生成，分段请求 | 一次性完整生成 |
-| 推理触发 | 按 generation_interval_ticks | 一次性 |
-| Context | 累积 melody_history | 完整 prompt |
-| 输出 | 实时返回伴奏片段 | 完整伴奏 |
+如果要研究真实实时质量问题，应优先看：
 
-## 7. 常见问题调试
+- `docs/architecture/application/service.md`
+- `docs/user-guide/running-realtime.md`
+- `src/streammuse/application/services/real_time_music_service.py`
 
-### 7.1 检查数据流
-```bash
-# 查看 Client 发送的请求
-grep "melody_notes" logs/fakert.log | head -1
-
-# 查看 Server 接收的请求
-grep "generate_accompaniment" logs/server.log
-
-# 查看生成的 tokens
-grep "generated tokens" logs/server.log
-```
-
-### 7.2 验证 Prompt 结构
-在 `lekai_http_backend.py` 中添加 debug 输出:
-```python
-print(f"[DEBUG] Prompt tokens: {prompt_tokens.tolist()}")
-print(f"[DEBUG] Prompt length: {len(prompt_tokens)}")
-```
-
-### 7.3 检查 MIDI 输出
-```python
-import mido
-mid = mido.MidiFile("output.mid")
-for i, track in enumerate(mid.tracks):
-    notes = sum(1 for msg in track if msg.type == 'note_on')
-    print(f"Track {i}: {notes} notes")
-```
-
-## 8. 总结
-
-Fake Realtime 的核心工作流程:
-
-1. **输入**: MIDI 文件 → MusicalEvent 列表
-2. **循环**: 按 tick 遍历，累积 melody 事件
-3. **触发**: 到达 generation_interval 时发送 HTTP 请求
-4. **生成**: Server 构建 prompt，调用模型生成伴奏
-5. **合并**: Client 接收伴奏，替换旧的事件
-6. **输出**: 合并 melody 和 accompaniment 到 MIDI 文件
-
-数据流的关键转换:
-```
-MIDI → Events → HTTP Request → Prompt Tokens → Model → Tokens → Events → MIDI
-```
+Fake realtime 脚本更适合做可复现的 HTTP/token 对比实验。

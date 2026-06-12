@@ -1,27 +1,84 @@
 ---
 title: 音乐注入（music injection）
-description: 通过 HTTP API 注入历史上下文（/inject_notes、/injection_status、/clear_history）
+description: 通过 CLI 或 HTTP API 注入历史上下文
 ---
 
 # 音乐注入
 
-音乐注入用于在会话开始前预填充模型历史，使模型不必从空上下文启动。
+音乐注入用于在会话开始前预填充模型历史，使模型不必从空上下文启动。当前实现同时支持 CLI injection 和 HTTP API injection。
 
 ---
 
-## 当前实现状态
+## CLI injection
 
-1. CLI 当前**没有** `--injection-file` / `--injection-length` 参数。
-2. 注入能力仍然存在于推理接口层（`InferenceEngine.inject_history`）和 HTTP server API。
-3. 若要使用注入，请直接调用 HTTP API。
+推荐用法：
+
+```bash
+uv run streammuse-cli \
+    --input-mode midi_file \
+    --midi-file-path prompts/inputs_lekai/mel/1.mid \
+    --injection-file prompts/inputs_lekai/mel/1.mid \
+    --injection-length 16 \
+    --inference-type http \
+    --model-name lekai \
+    --server-url http://127.0.0.1:8000/generate_accompaniment
+```
+
+### 参数
+
+| 参数 | 说明 |
+|---|---|
+| `--injection-file` | 用作 prompt history 的 melody MIDI 文件 |
+| `--injection-length` | 从 injection 文件开头截取多少 ticks 注入 |
+| `--inject-acc-file` | 可选 accompaniment MIDI 文件；不传时尝试由 `/mel/` 替换为 `/acc/` 推导 |
+
+### 限制
+
+1. CLI injection 只支持 `--input-mode midi_file`。
+2. `--injection-length` 必须大于 0。
+3. `--injection-file` 必须存在。
+4. 当前 CLI 通过 `InferenceEngine` 接口执行注入；实际 HTTP 模式会调用 server 的 `/clear_history` 和 `/inject_notes`。
 
 ---
 
-## 适用服务
+## CLI 内部流程
+
+入口在 `src/streammuse/presentation/cli/cli.py::_perform_injection()`。
+
+```python
+mel_notes, _resolution, _max_tick = MidiFileInput._midi_to_notes(
+    midi_path=injection_file,
+    beat_div=config.tempo.ticks_per_beat,
+    min_pitch=0,
+    max_pitch=127,
+    program=None,
+    max_tick=injection_length,
+)
+mel_events = _notes_to_musical_events(mel_notes)
+
+inference_engine.clear_history()
+inference_engine.inject_history(
+    melody_events=mel_events,
+    accompaniment_events=acc_events,
+    injection_length_ticks=injection_length,
+)
+```
+
+随后 `InputSourceFactory` 创建 `MidiFileInput` 时会设置：
+
+```python
+start_tick=(int(cfg.injection_length_ticks) if cfg.injection_file else 0)
+```
+
+因此正式实时输入会从 `injection_length` 后开始，避免同一段旋律既被注入又被实时发送。
+
+---
+
+## HTTP API injection
 
 以下服务实现了注入相关端点：
 
-1. `scripts/fake_inference_server.py`（用于开发联调）
+1. `scripts/fake_inference_server.py`
 2. `src/streammuse/infrastructure/inference/server_lekai.py`
 
 端点：
@@ -29,10 +86,6 @@ description: 通过 HTTP API 注入历史上下文（/inject_notes、/injection_
 1. `POST /inject_notes`
 2. `GET /injection_status`
 3. `POST /clear_history`
-
----
-
-## API 用法示例
 
 ### 1) 注入历史
 
@@ -64,26 +117,11 @@ curl -s http://127.0.0.1:8000/injection_status
 curl -X POST http://127.0.0.1:8000/clear_history
 ```
 
-返回示例（server 先返回历史，再清空）：
-
-```json
-{
-    "success": true,
-    "message": "History cleared",
-    "melody_history": [
-        {"type": "note_on", "pitch": 60, "tick": 0},
-        {"type": "note_off", "pitch": 60, "tick": 4}
-    ],
-    "accompaniment_history": [
-        {"type": "note_on", "pitch": 48, "tick": 0, "velocity": 80},
-        {"type": "note_off", "pitch": 48, "tick": 4, "velocity": 0}
-    ]
-}
-```
+`clear_history` 通常会先返回 server 当前累积的 melody/accompaniment history，再清空内部状态。
 
 ---
 
-## 数据格式说明
+## 数据格式
 
 `/inject_notes` 请求体中的每个事件至少需要：
 
@@ -95,36 +133,10 @@ curl -X POST http://127.0.0.1:8000/clear_history
 
 ---
 
-## 与 CLI 的关系
+## 会话结束时的历史落盘
 
-如果你使用 `streammuse-cli --inference-type http`，CLI 本身不会自动发注入请求。
+CLI 退出时会自动调用一次 `clear_history()`：
 
-但 CLI 在会话结束时会自动调用一次 `/clear_history`：
-
-1. 将 server 返回的 `melody_history` 写入 `melody_history.json`
-2. 将 `accompaniment_history` 写入 `accompaniment_history.json`
-3. 清空 server 端历史，确保下一次会话从干净上下文开始
-
-常见做法：
-
-1. 先用 `curl` 调 `/inject_notes`
-2. 再启动或继续运行 CLI 进行实时推理
-
----
-
-## Python 调用示例
-
-```python
-import requests
-
-payload = {
-        "melody_notes": [{"type": "note_on", "pitch": 60, "tick": 0}, {"type": "note_off", "pitch": 60, "tick": 4}],
-        "accompaniment_notes": [{"type": "note_on", "pitch": 48, "tick": 0}, {"type": "note_off", "pitch": 48, "tick": 4}],
-        "injection_length_ticks": 16,
-}
-
-resp = requests.post("http://127.0.0.1:8000/inject_notes", json=payload, timeout=10)
-resp.raise_for_status()
-print(resp.json())
-```
-
+1. 将 server 返回的 `melody_history` 写入 `melody_history.json`。
+2. 将 `accompaniment_history` 写入 `accompaniment_history.json`。
+3. 清空 server 端历史，确保下一次会话从干净上下文开始。

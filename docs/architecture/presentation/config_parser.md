@@ -7,13 +7,11 @@ description: parse_args()、args_to_config()、env_to_config() 的完整参数�
 
 **源文件**：`src/streammuse/presentation/cli/config_parser.py`
 
-提供三个函数将 CLI 参数和环境变量转换为 `ApplicationConfig`。
+该模块负责把命令行参数转换为 `ApplicationConfig`。
 
 ---
 
 ## `parse_args() -> argparse.Namespace`
-
-解析所有 CLI 参数，返回 `argparse.Namespace`。
 
 ### 节奏参数
 
@@ -28,81 +26,88 @@ description: parse_args()、args_to_config()、env_to_config() 的完整参数�
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--input-mode` | `"midi_device"` | 输入类型：`midi_device`、`keyboard`、`midi_file`、`list` |
-| `--midi-device-name` | `None` | MIDI 设备名称（`midi_device` 模式） |
-| `--midi-file-path` | `None` | MIDI 文件路径（`midi_file` 模式） |
+| `--midi-device-name` | `None` | MIDI 设备名称 |
+| `--midi-file-path` | `None` | MIDI 文件路径 |
 | `--midi-file-delay-ticks` | `0` | MIDI 文件开始前的延迟 ticks |
+| `--injection-file` | `None` | 注入历史用 melody MIDI 文件 |
+| `--injection-length` | `0` | 注入历史长度 ticks |
+| `--inject-acc-file` | `None` | 可选 accompaniment MIDI 文件 |
 
 ### 输出参数
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--output-type` | `"console"` | 输出类型：`console`、`audio`、`midi_file`、`websocket`、`json_log`、`session`、`composite` |
-| `--midi-out-port` | `None` | MIDI 输出端口名称（`audio` 模式） |
-| `--midi-file-output-path` | `None` | MIDI 文件输出路径（`midi_file` 模式） |
+| `--midi-out-port` | `None` | MIDI 输出端口名称 |
+| `--midi-file-output-path` | `None` | MIDI 文件输出路径 |
+| `--enable-metronome` | `False` | 是否启用 MIDI click |
+| `--metronome-port` | `None` | metronome 专用 MIDI 输出端口 |
+| `--metronome-channel` | `9` | metronome MIDI channel |
 | `--log-dir` | `"logs"` | 日志目录 |
 | `--inference-log-detail` | `"summary"` | 推理日志粒度：`summary` / `full` |
-| `--enable-performance-tracking` | `False` | 预留参数（当前未接入额外逻辑） |
+| `--enable-performance-tracking` | `False` | 预留参数 |
 
 ### 推理参数
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--server-url` | `"http://localhost:8000/generate_accompaniment"` | 推理服务器 URL |
-| `--timeout-s` | `30.0` | HTTP 请求超时（秒） |
+| `--timeout-s` | `30.0` | HTTP 请求超时 |
 | `--inference-type` | `"http"` | 推理类型：`http`、`stanley` |
 | `--model-name` | `"stanley"` | HTTP server 端模型：`stanley` / `lekai` |
 | `--inference-mode` | `"sliding_window"` | 透传给 HTTP server 的推理模式提示 |
-| `--checkpoint-path` | `None` | 模型 checkpoint 路径（`stanley` 模式） |
-| `--model-size` | `"0.12B"` | 模型规模（`stanley` 模式） |
+| `--checkpoint-path` | `None` | 模型 checkpoint 路径 |
+| `--model-size` | `"0.12B"` | Stanley 模型规模 |
 | `--model-max-seq-len-frames` | `96` | 模型 context window 帧数 |
 | `--generation-length-frames` | `20` | 每次推理生成帧数 |
-| `--generation-interval-ticks` | `2` | 推理触发间隔 ticks |
+| `--generation-interval-ticks` | `2` | 透传给 server 和日志的间隔参数 |
 
-### 其他参数
+### 运行时参数
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--max-ticks` | `None` | 最大运行 ticks（`None` 表示不限） |
-
-说明：当前 CLI 未暴露 `--injection-file` / `--injection-length`。
+| `--count-in-beats` | `0` | 正式输入和推理前空转的拍数 |
+| `--max-ticks` | `None` | 最大运行 ticks |
 
 ---
 
 ## `args_to_config(args) -> ApplicationConfig`
 
-将 `parse_args()` 返回的 Namespace 转换为 `ApplicationConfig`：
+核心映射：
 
 ```python
-def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
-    return ApplicationConfig(
-        tempo=TempoConfig(bpm=args.tempo, ...),
-        input=InputConfig(type=args.input_mode, ...),
-        output=OutputConfig(type=args.output_type, ...),
-        inference=InferenceConfig(type=args.inference_type, ...),
-    )
+return ApplicationConfig(
+    tempo=TempoConfig(...),
+    input=InputConfig(
+        type=args.input_mode,
+        midi_file_path=args.midi_file_path,
+        injection_file=getattr(args, "injection_file", None),
+        injection_length_ticks=int(getattr(args, "injection_length", 0) or 0),
+        injection_acc_file=getattr(args, "inject_acc_file", None),
+    ),
+    output=OutputConfig(
+        type=args.output_type,
+        inference_log_detail=getattr(args, "inference_log_detail", "summary"),
+        metronome_enabled=bool(getattr(args, "enable_metronome", False)),
+        metronome_port=getattr(args, "metronome_port", None),
+        metronome_channel=int(getattr(args, "metronome_channel", 9)),
+    ),
+    inference=InferenceConfig(...),
+    count_in_beats=max(0, int(getattr(args, "count_in_beats", 0) or 0)),
+)
 ```
 
-`OutputConfig` 会接收：
-1. `midi_out_port`
-2. `midi_file_output_path`
-3. `inference_log_detail`
-
-`InferenceConfig` 会接收：
-1. `server_generate_url`
-2. `timeout_s`
-3. `model_name`
-4. `inference_mode`
-5. `generation_length_frames`
-6. `generation_interval_ticks`
+注意：`count_in_beats` 在解析到配置时会 clamp 到非负数；`RealTimeMusicService` 内部也会拒绝负值。
 
 ---
 
 ## `env_to_config() -> Optional[ApplicationConfig]`
 
-从环境变量读取配置。当前实现直接返回 `None`。
+当前实现直接返回 `None`：
 
-在 `main()` 中，当前逻辑仍会调用 `args_to_config(args)` 构建最终配置。
+```python
+def env_to_config() -> Optional[ApplicationConfig]:
+    return None
+```
 
-相关环境变量（推理服务器侧）请参考：
-1. `docs/user-guide/running-realtime.md`
-2. `docs/reference/cli-reference.md`
+CLI 侧不读取环境变量构建运行配置。`LEKAI_*` 等环境变量属于 server 侧配置，请看 [运行实时系统](../../user-guide/running-realtime.md)。

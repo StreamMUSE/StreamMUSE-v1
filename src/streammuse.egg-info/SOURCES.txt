@@ -80,6 +80,7 @@ src/streammuse/infrastructure/output/audio.py
 src/streammuse/infrastructure/output/composite.py
 src/streammuse/infrastructure/output/console.py
 src/streammuse/infrastructure/output/json_logger.py
+src/streammuse/infrastructure/output/metronome.py
 src/streammuse/infrastructure/output/midi_file.py
 src/streammuse/infrastructure/output/session_logger.py
 src/streammuse/infrastructure/output/websocket.py
@@ -89,3 +90,5 @@ src/streammuse/presentation/__init__.py
 src/streammuse/presentation/cli/__init__.py
 src/streammuse/presentation/cli/cli.py
 src/streammuse/presentation/cli/config_parser.py
+src/streammuse/presentation/web/__init__.py
+src/streammuse/presentation/web/server.py

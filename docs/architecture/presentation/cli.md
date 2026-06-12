@@ -1,100 +1,129 @@
 ---
 title: presentation/cli — 入口点与生命周期
-description: main() 函数、cleanup()、信号处理与会话保存
+description: main() 函数、injection、cleanup()、信号处理与会话保存
 ---
 
 # presentation/cli — 入口点与生命周期
 
-源文件：`src/streammuse/presentation/cli/cli.py`
+**源文件**：`src/streammuse/presentation/cli/cli.py`
 
-CLI 入口负责：参数解析、组件装配、会话日志初始化、信号处理和服务生命周期管理。
+CLI 入口负责参数解析、组件装配、可选 injection、会话日志初始化、信号处理和服务生命周期管理。
 
 ---
 
 ## `main() -> int`
 
-当前实现流程（简化）：
+当前实现流程：
 
 ```python
 def main() -> int:
     args = parse_args()
+    config = args_to_config(args)
 
-    config = env_to_config()
-    if config is None:
-        config = args_to_config(args)
-    else:
-        config = args_to_config(args)  # 当前实现仍以 CLI 参数为最终配置
+    if config.input.injection_file:
+        validate_injection_args(config)
 
-    session_manager = None
-    session_config = {}
-    if config.output.type in ["json_log", "session", "composite"]:
+    if config.output.type != "midi_file":
         session_manager = SessionManager(args.log_dir)
         session_manager.create_session_directory()
-        session_config = {...}
         session_manager.save_config(session_config)
 
-    input_source = InputSourceFactory.create(config)
     output_sink = OutputSinkFactory.create(config, session_manager)
     inference_engine = InferenceEngineFactory.create(config)
 
-    tempo = Tempo(...)
-    scheduler = PlaybackScheduler()
+    if config.input.injection_file:
+        injected = _perform_injection(inference_engine, config)
+        if injected == 0:
+            output_sink.close()
+            return 1
 
-    service = RealTimeMusicService(...)
-
-    def cleanup() -> None:
-        output_sink.close()
-        if session_manager and isinstance(output_sink, SessionLoggerOutputSink):
-            output_sink.save_metrics(session_config)
-            session_manager.save_summary({...})
-
-    def signal_handler(sig, frame):
-        print("\nShutting down...")
-        service.stop()
-        sys.exit(0)
-
-    atexit.register(cleanup)
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
+    input_source = InputSourceFactory.create(config)
+    service = RealTimeMusicService(..., count_in_beats=config.count_in_beats)
     service.start(max_ticks=args.max_ticks)
-    while service.running:
-        time.sleep(0.1)
-
-    return 0
 ```
 
-说明：
+关键顺序：
 
-1. 当前 CLI 没有 `--injection-file` / `--injection-length` 参数。
-2. `main()` 不会主动调用 `inference_engine.inject_history()`。
+1. 先创建 output sink 和 inference engine。
+2. 若指定 `--injection-file`，先执行 `_perform_injection()`。
+3. injection 成功后才创建 input source。`InputSourceFactory` 会让 `MidiFileInput` 从 `injection_length_ticks` 后开始。
+4. `RealTimeMusicService` 接收 `count_in_beats`，在正式时间线前执行 count-in。
+
+---
+
+## `_perform_injection(...) -> int`
+
+```python
+def _perform_injection(inference_engine: InferenceEngine, config: ApplicationConfig) -> int:
+    injection_file = config.input.injection_file
+    injection_length = int(config.input.injection_length_ticks)
+    acc_file = config.input.injection_acc_file
+    if acc_file is None:
+        acc_file = injection_file.replace("/mel/", "/acc/")
+
+    mel_notes = MidiFileInput._midi_to_notes(..., max_tick=injection_length)
+    acc_notes = MidiFileInput._midi_to_notes(..., max_tick=injection_length)
+    inference_engine.clear_history()
+    inference_engine.inject_history(
+        melody_events=mel_events,
+        accompaniment_events=acc_events,
+        injection_length_ticks=injection_length,
+    )
+    return injection_length
+```
+
+约束：
+
+- 仅支持 `--input-mode midi_file`。
+- `--injection-length` 必须大于 0。
+- `--injection-file` 必须存在。
+- 如果未传 `--inject-acc-file`，CLI 尝试把路径中的 `/mel/` 替换为 `/acc/` 推导伴奏文件；找不到时退化为 melody-only injection。
+
+---
+
+## Session 初始化
+
+当前 CLI 对除 `midi_file` 外的所有 output type 都创建 `SessionManager`：
+
+```python
+if config.output.type != "midi_file":
+    session_manager = SessionManager(args.log_dir)
+    session_manager.create_session_directory()
+    session_config = {
+        "tempo_bpm": config.tempo.bpm,
+        "ticks_per_beat": config.tempo.ticks_per_beat,
+        "beats_per_bar": config.tempo.beats_per_bar,
+        "metronome_enabled": config.output.metronome_enabled,
+        "metronome_port": config.output.metronome_port,
+        "metronome_channel": config.output.metronome_channel,
+        "count_in_beats": config.count_in_beats,
+        ...
+    }
+    session_manager.save_config(session_config)
+```
+
+因此 `console` / `audio` / `websocket` 也会有 session 目录和自动 `combined.mid`。
 
 ---
 
 ## `cleanup() -> None`
 
-`cleanup()` 是 `main()` 内部函数，并通过 `atexit.register(cleanup)` 注册。
+CLI 通过 `atexit.register(cleanup)` 注册清理逻辑：
 
-当前行为：
-
-1. 调用 `output_sink.close()`。
-2. 若 `session_manager` 存在且 `output_sink` 是 `SessionLoggerOutputSink`：
-   - 调用 `output_sink.save_metrics(session_config)`（写 `performance.json`、`statistics.csv`）
-   - 调用 `session_manager.save_summary(...)`（写 `session_summary.txt`）
-
-`session_config.json` 在服务启动前由 `session_manager.save_config(...)` 写入。
+1. 调用 `inference_engine.clear_history()`。
+2. 如果 server 返回历史，则写入 `melody_history.json` 和 `accompaniment_history.json`。
+3. 调用 `output_sink.close()`，触发 MIDI 和 JSON 文件落盘。
+4. 若有 `session_manager`，写 `session_summary.txt`。
 
 ---
 
 ## `signal_handler(sig, frame)`
 
-信号处理函数在 `main()` 内部定义，注册到 `SIGINT`（Ctrl+C）和 `SIGTERM`。
+SIGINT / SIGTERM 行为：
 
-行为：
-
-1. 打印 `Shutting down...`
-2. 调用 `service.stop()`
-3. 调用 `sys.exit(0)` 退出进程
+1. 打印 `Shutting down...`。
+2. 调用 `service.stop()`。
+3. `sys.exit(0)`。
 
 ---
 
@@ -106,5 +135,3 @@ def main() -> int:
 [project.scripts]
 streammuse-cli = "streammuse.presentation.cli.cli:main"
 ```
-
-安装后可通过 `uv run streammuse-cli` 或 `streammuse-cli` 直接调用。

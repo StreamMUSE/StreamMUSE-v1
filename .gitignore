@@ -78,3 +78,8 @@ models/
 *.npz
 *.safetensors
 # Note: analysis_results_local_server, analysis_results_local, analysis_results_remote are tracked
+
+# VitePress / Node
+node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
