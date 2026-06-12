@@ -11,11 +11,11 @@ from typing import Any
 
 __all__ = [
     "LekaiContinuationEngine",
-    "LekaiPromptBridgeContinuationEngine",
-    "LekaiPromptBridgeContinuationScheduler",
     "LekaiPromptContinuationBackend",
     "LekaiPromptContinuationEngine",
     "LekaiPromptContinuationScheduler",
+    "LekaiPromptExtensionContinuationEngine",
+    "LekaiPromptExtensionContinuationScheduler",
     "LekaiPromptEngine",
 ]
 
@@ -33,18 +33,18 @@ def __getattr__(name: str) -> Any:
         )
 
         return LekaiContinuationEngine
-    if name == "LekaiPromptBridgeContinuationEngine":
-        from streammuse.infrastructure.inference.lekai_prompt_continuation.bridge_engine import (
-            LekaiPromptBridgeContinuationEngine,
+    if name == "LekaiPromptExtensionContinuationEngine":
+        from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_extension_engine import (
+            LekaiPromptExtensionContinuationEngine,
         )
 
-        return LekaiPromptBridgeContinuationEngine
-    if name == "LekaiPromptBridgeContinuationScheduler":
-        from streammuse.infrastructure.inference.lekai_prompt_continuation.bridge_scheduler import (
-            LekaiPromptBridgeContinuationScheduler,
+        return LekaiPromptExtensionContinuationEngine
+    if name == "LekaiPromptExtensionContinuationScheduler":
+        from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_extension_scheduler import (
+            LekaiPromptExtensionContinuationScheduler,
         )
 
-        return LekaiPromptBridgeContinuationScheduler
+        return LekaiPromptExtensionContinuationScheduler
     if name == "LekaiPromptContinuationEngine":
         from streammuse.infrastructure.inference.lekai_prompt_continuation.engine import (
             LekaiPromptContinuationEngine,

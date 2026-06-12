@@ -31,12 +31,12 @@ def _make_prompt_continuation_engine(
     continuation_checkpoint_path: Optional[str],
 ) -> LekaiPromptContinuationEngine:
     variant = os.environ.get("LEKAI_PROMPT_CONTINUATION_ENGINE", "standard").strip().lower()
-    if variant in {"bridge", "prompt_bridge", "extra_beat", "prompt_extra_beat"}:
-        from streammuse.infrastructure.inference.lekai_prompt_continuation.bridge_engine import (
-            LekaiPromptBridgeContinuationEngine,
+    if variant in {"prompt_extension", "extension", "extend_prompt", "bridge", "prompt_bridge", "extra_beat", "prompt_extra_beat"}:
+        from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_extension_engine import (
+            LekaiPromptExtensionContinuationEngine,
         )
 
-        return LekaiPromptBridgeContinuationEngine(
+        return LekaiPromptExtensionContinuationEngine(
             checkpoint_path=checkpoint_path,
             prompt_checkpoint_path=prompt_checkpoint_path,
             continuation_checkpoint_path=continuation_checkpoint_path,

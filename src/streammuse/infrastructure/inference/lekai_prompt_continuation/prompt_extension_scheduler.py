@@ -1,10 +1,9 @@
-"""Bridge-beat scheduler variant for prompt-continuation catch-up.
+"""Prompt-extension scheduler variant for prompt-continuation catch-up.
 
-This variant asks the prompt model to generate a short accompaniment bridge
-beyond the observed prompt melody. Continuation then starts after that bridge,
-which lets us A/B test whether a prompt-model "blind guess" for the next beat
-creates a cleaner handoff than starting continuation immediately at the prompt
-boundary.
+This variant asks the prompt model to generate accompaniment beyond the observed
+prompt melody window. The extra prompt-model output is intentional: the prompt
+model was trained to produce that next beat, and this variant tests using that
+capacity instead of discarding it.
 """
 
 from __future__ import annotations
@@ -28,8 +27,8 @@ if TYPE_CHECKING:
     )
 
 
-class LekaiPromptBridgeContinuationScheduler(LekaiPromptContinuationScheduler):
-    """Prompt-continuation scheduler with one prompt-generated bridge beat."""
+class LekaiPromptExtensionContinuationScheduler(LekaiPromptContinuationScheduler):
+    """Prompt-continuation scheduler that keeps prompt-generated extension beats."""
 
     def __init__(
         self,
@@ -37,24 +36,24 @@ class LekaiPromptBridgeContinuationScheduler(LekaiPromptContinuationScheduler):
         prompt_engine: LekaiPromptEngine,
         continuation_engine: LekaiContinuationEngine,
         max_continuation_chunk_beats: int = 1,
-        bridge_ticks: int = TIMESTEPS_PER_BEAT,
+        prompt_extension_ticks: int = TIMESTEPS_PER_BEAT,
     ) -> None:
-        if int(bridge_ticks) < 0:
-            raise ValueError("bridge_ticks must be >= 0")
+        if int(prompt_extension_ticks) < 0:
+            raise ValueError("prompt_extension_ticks must be >= 0")
         super().__init__(
             prompt_engine=prompt_engine,
             continuation_engine=continuation_engine,
             max_continuation_chunk_beats=max_continuation_chunk_beats,
         )
-        self._bridge_ticks = int(bridge_ticks)
+        self._prompt_extension_ticks = int(prompt_extension_ticks)
 
     @property
-    def bridge_ticks(self) -> int:
-        return int(self._bridge_ticks)
+    def prompt_extension_ticks(self) -> int:
+        return int(self._prompt_extension_ticks)
 
     def status(self) -> dict[str, int | bool | str | None]:
         status = super().status()
-        status["prompt_bridge_ticks"] = int(self._bridge_ticks)
+        status["prompt_extension_ticks"] = int(self._prompt_extension_ticks)
         return status
 
     def _run_prompt_then_catchup(self, run_id: int) -> None:
@@ -64,7 +63,7 @@ class LekaiPromptBridgeContinuationScheduler(LekaiPromptContinuationScheduler):
                     return
                 prompt_melody_input = copy_events(self._prompt_melody_input)
                 prompt_length_ticks = int(self._prompt_length_ticks)
-                prompt_generation_length_ticks = prompt_length_ticks + int(self._bridge_ticks)
+                prompt_generation_length_ticks = prompt_length_ticks + int(self._prompt_extension_ticks)
 
             prompt_accompaniment = self._prompt_engine.generate_prompt_accompaniment(
                 melody_events=prompt_melody_input,

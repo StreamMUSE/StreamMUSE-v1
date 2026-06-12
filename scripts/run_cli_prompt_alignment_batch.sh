@@ -13,7 +13,7 @@ PROMPT_CKPT=/data/home/yuanxin/RT-accompanimentV2/external/lekai_real_time/promp
 CONT_CKPT=/data/home/yuanxin/RT-accompanimentV2/checkpoints-resume/epoch_15_0307_1858/model.safetensors
 DEVICE=${DEVICE:-0}
 PROMPT_CONTINUATION_ENGINE=${PROMPT_CONTINUATION_ENGINE:-standard}
-PROMPT_CONTINUATION_BRIDGE_TICKS=${PROMPT_CONTINUATION_BRIDGE_TICKS:-4}
+PROMPT_CONTINUATION_EXTENSION_TICKS=${PROMPT_CONTINUATION_EXTENSION_TICKS:-${PROMPT_CONTINUATION_BRIDGE_TICKS:-4}}
 MAX_TICKS=${MAX_TICKS:-96}
 PROMPT_BEATS=${PROMPT_BEATS:-8}
 CLI_TEMPO=${CLI_TEMPO:-240}
@@ -98,7 +98,7 @@ PY
 )
   fi
 
-  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar prompt_beats=$prompt_beats cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} prompt_continuation_engine=$PROMPT_CONTINUATION_ENGINE bridge_ticks=$PROMPT_CONTINUATION_BRIDGE_TICKS recover_late_events=$RECOVER_LATE_EVENTS bound_late_recovery=${BOUND_LATE_RECOVERY:-auto} recover_late_max_ticks=${RECOVER_LATE_MAX_TICKS:-none} ==="
+  echo "=== $id: start strict server bpm=$bpm ts_idx=$ts_idx beats_per_bar=$beats_per_bar prompt_beats=$prompt_beats cli_tempo=$cli_tempo tempo_max=${CLI_TEMPO_MAX:-none} prompt_continuation_engine=$PROMPT_CONTINUATION_ENGINE prompt_extension_ticks=$PROMPT_CONTINUATION_EXTENSION_TICKS recover_late_events=$RECOVER_LATE_EVENTS bound_late_recovery=${BOUND_LATE_RECOVERY:-auto} recover_late_max_ticks=${RECOVER_LATE_MAX_TICKS:-none} ==="
   cleanup_server
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:$PORT | xargs -r kill || true
@@ -117,7 +117,7 @@ PY
     export LEKAI_PROMPT_DTYPE=float32
     export LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS=1
     export LEKAI_PROMPT_CONTINUATION_ENGINE="$PROMPT_CONTINUATION_ENGINE"
-    export LEKAI_PROMPT_CONTINUATION_BRIDGE_TICKS="$PROMPT_CONTINUATION_BRIDGE_TICKS"
+    export LEKAI_PROMPT_CONTINUATION_EXTENSION_TICKS="$PROMPT_CONTINUATION_EXTENSION_TICKS"
     export LEKAI_DISABLE_FALLBACK=1
     export LEKAI_PROMPT_SEED=42
     export LEKAI_SEED=42
