@@ -19,6 +19,7 @@ from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.application.services.prompt_continuation_realtime_service import (
     PromptContinuationRealtimeService,
 )
+from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
 from streammuse.domain.logging import SessionManager
 from streammuse.domain.timing import PlaybackScheduler, Tempo
@@ -145,6 +146,7 @@ def main() -> int:
             "metronome_port": config.output.metronome_port,
             "metronome_channel": config.output.metronome_channel,
             "count_in_beats": config.count_in_beats,
+            "input_snap_forward_fraction": config.input_snap_forward_fraction,
             "continuation_mode": config.continuation_mode,
             "inference_type": config.inference.type,
             "prompt_length_ticks": config.inference.prompt_length_ticks,
@@ -189,6 +191,10 @@ def main() -> int:
         beats_per_bar=config.tempo.beats_per_bar,
     )
     scheduler = PlaybackScheduler()
+    input_snap_forward_fraction = effective_input_snap_forward_fraction(
+        config.input.type,
+        config.input_snap_forward_fraction,
+    )
 
     if config.continuation_mode == "prompt_continuation":
         assert prompt_client is not None
@@ -200,6 +206,7 @@ def main() -> int:
             scheduler=scheduler,
             prompt_length_ticks=config.inference.prompt_length_ticks,
             generation_interval_ticks=config.inference.generation_interval_ticks,
+            input_snap_forward_fraction=input_snap_forward_fraction,
         )
     else:
         assert inference_engine is not None
@@ -212,6 +219,7 @@ def main() -> int:
             generation_interval_ticks=config.inference.generation_interval_ticks,
             generation_length_frames=config.inference.generation_length_frames,
             count_in_beats=config.count_in_beats,
+            input_snap_forward_fraction=input_snap_forward_fraction,
         )
 
     def _save_history_logs(history_payload: object) -> None:
@@ -282,6 +290,7 @@ def main() -> int:
         + (f" ({config.output.metronome_port})" if config.output.metronome_port else "")
     )
     print(f"  Count-in: {config.count_in_beats} beat(s)")
+    print(f"  Input snap-forward: {input_snap_forward_fraction:.2f} tick fraction")
     print(f"  Continuation mode: {config.continuation_mode}")
     print(f"  Inference: {config.inference.type}")
     if config.continuation_mode == "prompt_continuation":

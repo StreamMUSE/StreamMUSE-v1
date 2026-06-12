@@ -43,6 +43,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "prompt_length_ticks": 32,
         "continuation_mode": "standard",
         "count_in_beats": 0,
+        "input_snap_forward_fraction": 0.4,
         "max_ticks": None,
     }
     base.update(overrides)
@@ -74,6 +75,7 @@ def test_parse_args_defaults() -> None:
     assert config.inference.prompt_length_ticks == 32
     assert config.continuation_mode == "standard"
     assert config.count_in_beats == 0
+    assert config.input_snap_forward_fraction == 0.4
 
 
 def test_args_to_config_keyboard_input() -> None:
@@ -169,6 +171,11 @@ def test_args_to_config_clamps_negative_count_in() -> None:
     args = _make_args(count_in_beats=-2)
     config = args_to_config(args)
     assert config.count_in_beats == 0
+
+
+def test_args_to_config_clamps_input_snap_forward_fraction() -> None:
+    assert args_to_config(_make_args(input_snap_forward_fraction=-0.5)).input_snap_forward_fraction == 0.0
+    assert args_to_config(_make_args(input_snap_forward_fraction=1.5)).input_snap_forward_fraction == 1.0
 
 
 def test_args_to_config_prompt_continuation_mode() -> None:

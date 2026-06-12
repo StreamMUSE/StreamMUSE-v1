@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from streammuse.application.services.input_timing import stamp_user_input_event
 from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
 from streammuse.domain.interfaces.timing_info import TimingInfo
 from streammuse.domain.musical import MusicalEvent
@@ -42,6 +43,7 @@ class RealTimeMusicService:
         generation_interval_ticks: int = 2,
         generation_length_frames: int = 20,
         count_in_beats: int = 0,
+        input_snap_forward_fraction: float = 0.0,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -56,6 +58,7 @@ class RealTimeMusicService:
         self._generation_length_frames = generation_length_frames
         self._count_in_beats = int(count_in_beats)
         self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
+        self._input_snap_forward_fraction = float(input_snap_forward_fraction)
         self._now = now
         self._sleep = sleep
 
@@ -197,17 +200,11 @@ class RealTimeMusicService:
             if not self._running:
                 break
             elapsed = max(0.0, self._now() - start)
-            tick = self._tempo.seconds_to_tick(elapsed)
-            # Assign tick at dequeue time per timing design.
-            stamped = MusicalEvent(
-                tick=tick,
-                pitch=ev.pitch,
-                event_type=ev.event_type,
-                velocity=ev.velocity,
-                channel=ev.channel,
-                program=ev.program,
-                is_placeholder=ev.is_placeholder,
-                source="user",  # Mark as user-generated event
+            stamped = stamp_user_input_event(
+                ev,
+                elapsed_seconds=elapsed,
+                tempo=self._tempo,
+                snap_forward_fraction=self._input_snap_forward_fraction,
             )
             self._event_q.put(stamped)
             # Add to melody history (only note_on/note_off events)

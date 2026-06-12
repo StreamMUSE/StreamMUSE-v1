@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from streammuse.application.services.input_timing import stamp_user_input_event
 from streammuse.domain.interfaces import InputSource, OutputSink
 from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
@@ -73,6 +74,7 @@ class PromptContinuationRealtimeService:
         prompt_length_ticks: int = 32,
         generation_interval_ticks: int = 4,
         protocol_poll_interval_s: float = 0.05,
+        input_snap_forward_fraction: float = 0.0,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -88,6 +90,7 @@ class PromptContinuationRealtimeService:
         self._prompt_length_ticks = int(prompt_length_ticks)
         self._generation_interval_ticks = int(generation_interval_ticks)
         self._protocol_poll_interval_s = float(protocol_poll_interval_s)
+        self._input_snap_forward_fraction = float(input_snap_forward_fraction)
         self._now = now
         self._sleep = sleep
 
@@ -172,16 +175,11 @@ class PromptContinuationRealtimeService:
             if not self._running:
                 break
             elapsed = self._now() - start
-            tick = self._tempo.seconds_to_tick(elapsed)
-            stamped = MusicalEvent(
-                tick=tick,
-                pitch=ev.pitch,
-                event_type=ev.event_type,
-                velocity=ev.velocity,
-                channel=ev.channel,
-                program=ev.program,
-                is_placeholder=ev.is_placeholder,
-                source="user",
+            stamped = stamp_user_input_event(
+                ev,
+                elapsed_seconds=elapsed,
+                tempo=self._tempo,
+                snap_forward_fraction=self._input_snap_forward_fraction,
             )
             self._event_q.put(stamped)
 

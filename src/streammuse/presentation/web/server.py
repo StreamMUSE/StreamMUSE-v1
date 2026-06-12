@@ -36,6 +36,7 @@ from streammuse.application.factories import (
 from streammuse.application.services.prompt_continuation_realtime_service import (
     PromptContinuationRealtimeService,
 )
+from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
 from streammuse.domain.logging import SessionManager
 from streammuse.domain.timing import PlaybackScheduler, Tempo
@@ -233,6 +234,10 @@ def _build_realtime_service(
         beats_per_bar=config.tempo.beats_per_bar,
     )
     scheduler = PlaybackScheduler()
+    input_snap_forward_fraction = effective_input_snap_forward_fraction(
+        config.input.type,
+        config.input_snap_forward_fraction,
+    )
 
     if config.continuation_mode == "prompt_continuation":
         prompt_client = PromptContinuationHttpClient(
@@ -252,6 +257,7 @@ def _build_realtime_service(
             scheduler=scheduler,
             prompt_length_ticks=config.inference.prompt_length_ticks,
             generation_interval_ticks=config.inference.generation_interval_ticks,
+            input_snap_forward_fraction=input_snap_forward_fraction,
         )
 
     inference_engine = InferenceEngineFactory.create(config)
@@ -263,6 +269,7 @@ def _build_realtime_service(
         scheduler=scheduler,
         generation_interval_ticks=config.inference.generation_interval_ticks,
         generation_length_frames=config.inference.generation_length_frames,
+        input_snap_forward_fraction=input_snap_forward_fraction,
     )
 
 
@@ -287,6 +294,10 @@ def main() -> int:
         "prompt_length_ticks": config.inference.prompt_length_ticks,
         "generation_interval_ticks": config.inference.generation_interval_ticks,
         "generation_length_frames": config.inference.generation_length_frames,
+        "input_snap_forward_fraction": effective_input_snap_forward_fraction(
+            config.input.type,
+            config.input_snap_forward_fraction,
+        ),
     }
     session_manager.save_config(session_config)
 

@@ -67,3 +67,4 @@ class ApplicationConfig:
     inference: InferenceConfig = InferenceConfig()
     continuation_mode: ContinuationMode = "standard"
     count_in_beats: int = 0
+    input_snap_forward_fraction: float = 0.4

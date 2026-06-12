@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from streammuse.application.config import ApplicationConfig, InferenceConfig
+from streammuse.application.config import ApplicationConfig, InferenceConfig, InputConfig
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 from streammuse.presentation.web import server as webserver
 
@@ -129,6 +129,7 @@ def test_build_realtime_service_standard_mode_uses_standard_engine(
     assert kwargs["inference_engine"] is inference_engine
     assert kwargs["output_sink"] is output_sink
     assert kwargs["generation_interval_ticks"] == 8
+    assert kwargs["input_snap_forward_fraction"] == 0.4
 
 
 @patch("streammuse.presentation.web.server.PromptContinuationRealtimeService")
@@ -178,3 +179,25 @@ def test_build_realtime_service_prompt_continuation_uses_prompt_client(
     assert kwargs["output_sink"] is output_sink
     assert kwargs["prompt_length_ticks"] == 64
     assert kwargs["generation_interval_ticks"] == 8
+    assert kwargs["input_snap_forward_fraction"] == 0.4
+
+
+@patch("streammuse.presentation.web.server.RealTimeMusicService")
+@patch("streammuse.presentation.web.server.InputSourceFactory")
+@patch("streammuse.presentation.web.server.InferenceEngineFactory")
+def test_build_realtime_service_disables_snap_forward_for_midi_file(
+    mock_inference_factory,
+    mock_input_factory,
+    mock_service_cls,
+):
+    config = ApplicationConfig(
+        input=InputConfig(type="midi_file", midi_file_path="/tmp/song.mid"),
+        input_snap_forward_fraction=0.4,
+    )
+    mock_input_factory.create.return_value = MagicMock()
+    mock_inference_factory.create.return_value = MagicMock()
+    mock_service_cls.return_value = MagicMock()
+
+    webserver._build_realtime_service(config=config, output_sink=MagicMock())
+
+    assert mock_service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.0

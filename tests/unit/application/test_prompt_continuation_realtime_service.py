@@ -19,6 +19,14 @@ class _NoopInput:
         return None
 
 
+class _OneEventInput:
+    def read_events(self):
+        return iter([_note(60, 0)])
+
+    def close(self):
+        return None
+
+
 class _RecordingOutput:
     def __init__(self):
         self.events = []
@@ -123,6 +131,28 @@ def test_prompt_continuation_append_keeps_empty_rest_chunks():
     service._maybe_enqueue_append(observed_until_tick=40)
     note_action = service._control_q.get_nowait()
     assert [event.pitch for event in note_action.melody_events] == [64]
+
+
+def test_prompt_continuation_input_worker_snaps_late_tick_phase_to_next_tick():
+    service = PromptContinuationRealtimeService(
+        input_source=_OneEventInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=60.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        input_snap_forward_fraction=0.4,
+        now=lambda: 0.150,
+        sleep=lambda _: None,
+    )
+    service._runtime = type("_Runtime", (), {"session_start_time": 0.0})()
+    service._running = True
+
+    service._input_worker()
+
+    stamped = service._event_q.get_nowait()
+    assert stamped.tick == 1
 
 
 def test_prompt_continuation_schedule_playable_drops_past_events():
