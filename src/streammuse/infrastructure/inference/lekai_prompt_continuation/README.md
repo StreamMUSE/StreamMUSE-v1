@@ -260,6 +260,10 @@ Three scheduling policies are useful for diagnosis:
 - Bounded recover-late mode: same event-by-event recovery, but drop late
   `note_on` events outside a configured recovery window. Late `note_off` events
   are still allowed so already-sounding notes can be closed.
+- Active-note rehydration: optional add-on for bounded recovery. If a late
+  `note_on` would be dropped but the matching `note_off` is still in the future,
+  synthesize a replacement `note_on` at the current tick so the client playback
+  state matches the backend accompaniment state.
 
 Recover-late mode is enabled by:
 
@@ -285,12 +289,19 @@ Setting `LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS` also opts into the
 bounded policy unless `LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=0` is set
 explicitly. Raw debug history is not affected by either scheduling policy.
 
+Active-note rehydration is controlled separately:
+
+```bash
+export LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
+```
+
 For demo-style runs, the current practical setting is:
 
 ```bash
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
+LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
 ```
 
 ## Main Files

@@ -127,6 +127,10 @@ class PromptContinuationRealtimeService:
             self._bound_late_recovery = self._bound_late_recovery_env
         if self._recover_late_events and self._bound_late_recovery and self._recover_late_max_ticks is None:
             self._recover_late_max_ticks = self._generation_interval_ticks
+        self._rehydrate_active_notes = os.environ.get(
+            "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES",
+            "",
+        ).lower() in {"1", "true", "yes", "on"}
 
     def _trace(self, kind: str, **payload: Any) -> None:
         if not self._trace_path:
@@ -419,8 +423,29 @@ class PromptContinuationRealtimeService:
         skipped_duplicate = 0
         late_event_count = 0
         dropped_too_late_note_on = 0
+        rehydrated_note_count = 0
         placeholder_count = 0
         current_tick = int(current_tick)
+        events_to_schedule: list[MusicalEvent] = []
+
+        if self._rehydrate_active_notes:
+            active_notes = self._active_notes_at_current_tick(
+                accompaniment,
+                current_tick=current_tick,
+            )
+            for note_on, note_off in active_notes:
+                if not self._would_drop_late_note_on(note_on, current_tick=current_tick):
+                    continue
+                note_key = self._note_span_key(note_on, note_off)
+                if note_key in self._scheduled_model_note_keys:
+                    continue
+                rehydrated = self._clone_event_at_tick(note_on, current_tick)
+                event_key = self._event_key(rehydrated)
+                if event_key in self._scheduled_model_event_keys:
+                    continue
+                events_to_schedule.append(rehydrated)
+                self._scheduled_model_note_keys.add(note_key)
+                rehydrated_note_count += 1
 
         for event in sorted(accompaniment, key=lambda ev: (int(ev.tick), str(ev.event_type.value), int(ev.pitch))):
             if event.is_placeholder or event.pitch == -1:
@@ -451,6 +476,15 @@ class PromptContinuationRealtimeService:
                     self._scheduled_model_event_keys.add(event_key)
                     continue
 
+            events_to_schedule.append(event)
+
+        for event in events_to_schedule:
+            event_key = self._event_key(event)
+            if event_key in self._scheduled_model_event_keys:
+                skipped_duplicate += 1
+                continue
+            event_tick = int(event.tick)
+            schedule_tick = event_tick if event_tick >= current_tick else current_tick
             model_event = MusicalEvent(
                 tick=event.tick,
                 pitch=event.pitch,
@@ -471,6 +505,7 @@ class PromptContinuationRealtimeService:
             f"Scheduled {scheduled} playable accompaniment event(s); "
             f"recovered {late_event_count} late event(s); "
             f"dropped {dropped_too_late_note_on} too-late note_on event(s); "
+            f"rehydrated {rehydrated_note_count} active note(s); "
             f"skipped {skipped_duplicate} duplicate event(s); "
             f"skipped {placeholder_count} placeholder event(s).",
         )
@@ -483,11 +518,86 @@ class PromptContinuationRealtimeService:
             scheduled_event_count=scheduled,
             late_event_count=late_event_count,
             dropped_too_late_note_on=dropped_too_late_note_on,
+            rehydrated_note_count=rehydrated_note_count,
+            rehydrate_active_notes=self._rehydrate_active_notes,
             bound_late_recovery=self._bound_late_recovery,
             recover_late_max_ticks=self._recover_late_max_ticks,
             skipped_duplicate=skipped_duplicate,
             placeholder_count=placeholder_count,
         )
+
+    def _would_drop_late_note_on(self, event: MusicalEvent, *, current_tick: int) -> bool:
+        return (
+            self._bound_late_recovery
+            and self._recover_late_max_ticks is not None
+            and int(event.tick) < int(current_tick)
+            and int(current_tick) - int(event.tick) > self._recover_late_max_ticks
+            and event.event_type == EventType.NOTE_ON
+            and int(event.velocity) > 0
+        )
+
+    @staticmethod
+    def _event_key(event: MusicalEvent) -> tuple[int, int, str, int]:
+        return (
+            int(event.tick),
+            int(event.pitch),
+            str(event.event_type.value),
+            int(event.velocity),
+        )
+
+    @staticmethod
+    def _note_identity(event: MusicalEvent) -> tuple[int, int, int]:
+        return (int(event.pitch), int(event.channel), int(event.program))
+
+    @staticmethod
+    def _note_span_key(
+        note_on: MusicalEvent,
+        note_off: MusicalEvent,
+    ) -> tuple[int, int, int, int, int]:
+        return (
+            int(note_on.tick),
+            int(note_off.tick),
+            int(note_on.pitch),
+            int(note_on.channel),
+            int(note_on.program),
+        )
+
+    def _active_notes_at_current_tick(
+        self,
+        accompaniment: list[MusicalEvent],
+        *,
+        current_tick: int,
+    ) -> list[tuple[MusicalEvent, MusicalEvent]]:
+        current_tick = int(current_tick)
+        sorted_events = sorted(
+            accompaniment,
+            key=lambda event: (
+                int(event.tick),
+                0 if event.event_type == EventType.NOTE_OFF else 1,
+            ),
+        )
+        active: dict[tuple[int, int, int], list[MusicalEvent]] = {}
+        rehydratable: list[tuple[MusicalEvent, MusicalEvent]] = []
+
+        for event in sorted_events:
+            if event.is_placeholder or event.pitch == -1:
+                continue
+            key = self._note_identity(event)
+            event_tick = int(event.tick)
+            if event.event_type == EventType.NOTE_ON and int(event.velocity) > 0:
+                active.setdefault(key, []).append(event)
+                continue
+            if event.event_type != EventType.NOTE_OFF:
+                continue
+            if not active.get(key):
+                continue
+            note_on = active[key].pop(0)
+            if not active[key]:
+                active.pop(key, None)
+            if int(note_on.tick) < current_tick < event_tick:
+                rehydratable.append((note_on, event))
+
+        return rehydratable
 
     @staticmethod
     def _event_tick_stats(events: list[MusicalEvent], *, current_tick: int) -> dict[str, int | None]:

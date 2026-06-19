@@ -53,15 +53,25 @@ prompt-continuation preset:
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
+LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
 ```
 
 This matters for public-client results. With strict scheduling, already-past
 prompt-continuation events can be dropped before they are heard. With bounded
 late recovery, late events inside the recovery window are scheduled at the
-current tick. If you intentionally need strict-mode data, run:
+current tick. Active-note rehydration rebuilds notes that should be sounding
+now when their original `note_on` was too old to recover but their `note_off`
+is still in the future. If you intentionally need strict-mode data, run:
 
 ```bash
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=0 \
+scripts/run_spark_lekai_benchmark.sh
+```
+
+To isolate bounded recovery without active-note rehydration:
+
+```bash
+LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=0 \
 scripts/run_spark_lekai_benchmark.sh
 ```
 

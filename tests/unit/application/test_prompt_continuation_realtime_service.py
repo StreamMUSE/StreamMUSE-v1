@@ -183,6 +183,7 @@ def test_prompt_continuation_schedule_playable_skips_duplicates():
 def test_prompt_continuation_recover_late_can_drop_too_old_note_on(monkeypatch):
     monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS", "1")
     monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS", "4")
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES", raising=False)
     service = _make_service()
     output = service._output
 
@@ -203,6 +204,47 @@ def test_prompt_continuation_recover_late_can_drop_too_old_note_on(monkeypatch):
     ]
     assert service._scheduler.get_events_at_tick(20) == []
     assert any("dropped 1 too-late note_on" in message for _state, message in output.statuses)
+
+
+def test_prompt_continuation_recover_late_can_rehydrate_active_notes(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS", "1")
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS", "4")
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES", "1")
+    service = _make_service()
+    output = service._output
+
+    service._schedule_playable(
+        [
+            _note(48, 20),
+            _note_off(48, 40),
+            _note(50, 34),
+            _note_off(50, 42),
+        ],
+        current_tick=36,
+    )
+
+    tick_36 = service._scheduler.get_events_at_tick(36)
+    assert [(event.pitch, event.event_type) for event in tick_36] == [
+        (48, EventType.NOTE_ON),
+        (50, EventType.NOTE_ON),
+    ]
+    assert [(event.pitch, event.event_type) for event in service._scheduler.get_events_at_tick(40)] == [
+        (48, EventType.NOTE_OFF),
+    ]
+    assert service._scheduler.get_events_at_tick(20) == []
+    assert any("rehydrated 1 active note" in message for _state, message in output.statuses)
+
+    service._schedule_playable(
+        [
+            _note(48, 20),
+            _note_off(48, 40),
+            _note(50, 34),
+            _note_off(50, 42),
+        ],
+        current_tick=37,
+    )
+
+    assert service._scheduler.get_events_at_tick(37) == []
 
 
 def test_prompt_continuation_recover_late_is_unbounded_without_bound_switch(monkeypatch):
