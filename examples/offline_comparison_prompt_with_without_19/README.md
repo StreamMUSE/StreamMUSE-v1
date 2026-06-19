@@ -29,6 +29,7 @@ examples/offline_comparison_prompt_with_without_19/
     ...
     case19_6175749_base_noprompt.mid
   manifest.csv
+  score_metadata.csv
 ```
 
 ## Pairing
@@ -45,3 +46,12 @@ For offline testing, compare new framework outputs against `gt/`, then compare
 the same case-level scores against `base_noprompt_zero/` as the previous
 no-prompt baseline.
 
+## Suitability Scores
+
+The source zip stores the task-suitability score in each source folder name.
+For example, `03-5` means folder `03` has score `5`, and `15-7` means folder
+`15` has score `7`.
+
+`score_metadata.csv` makes this explicit with one row per case. Scores ending
+with `?` come from source folder names that included a question mark-like suffix
+in the archive, so treat them as uncertain labels rather than clean integers.
