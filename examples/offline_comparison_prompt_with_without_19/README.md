@@ -21,13 +21,13 @@ first comparison stays paired and easy to interpret.
 ```text
 examples/offline_comparison_prompt_with_without_19/
   gt/
-    case01_6383897_GT.mid
+    case01_score0_6383897_GT.mid
     ...
-    case19_6175749_GT.mid
+    case19_score6q_6175749_GT.mid
   base_noprompt_zero/
-    case01_6383897_base_noprompt.mid
+    case01_score0_6383897_base_noprompt.mid
     ...
-    case19_6175749_base_noprompt.mid
+    case19_score6q_6175749_base_noprompt.mid
   manifest.csv
   score_metadata.csv
 ```
@@ -55,3 +55,5 @@ For example, `03-5` means folder `03` has score `5`, and `15-7` means folder
 `score_metadata.csv` makes this explicit with one row per case. Scores ending
 with `?` come from source folder names that included a question mark-like suffix
 in the archive, so treat them as uncertain labels rather than clean integers.
+MIDI filenames also include the score label; uncertain scores use `q` in the
+filename, e.g. `score6q` for `6?`.
