@@ -43,6 +43,7 @@ class GenerationLog:
     # 额外信息
     bpm: Optional[int] = None
     notes: str = ""
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -91,6 +92,7 @@ class GenerationLogger:
         accompaniment_events: List[Dict[str, Any]],
         bpm: Optional[int] = None,
         notes: str = "",
+        diagnostics: Optional[Dict[str, Any]] = None,
         suffix: str = "",
     ) -> str:
         """
@@ -117,6 +119,7 @@ class GenerationLogger:
             accompaniment_event_count=len(accompaniment_events),
             bpm=bpm,
             notes=notes,
+            diagnostics=dict(diagnostics or {}),
         )
         
         self.logs.append(log)
@@ -132,6 +135,8 @@ class GenerationLogger:
         print(f"[GEN_LOG] Prompt tokens ({len(prompt_tokens)}): {prompt_tokens[:50]}...")
         print(f"[GEN_LOG] Melody events: {len(melody_events)}")
         print(f"[GEN_LOG] Acc events: {len(accompaniment_events)}")
+        if diagnostics:
+            print(f"[GEN_LOG] Diagnostics: {diagnostics}")
         print(f"[GEN_LOG] Saved to: {filepath}")
         print(f"[GEN_LOG] {'='*60}\n")
         

@@ -247,6 +247,11 @@ class PromptContinuationRealtimeService:
                         beats_needed_for_playback=status.get("beats_needed_for_playback"),
                         continuation_calls=status.get("continuation_calls"),
                         accompaniment_event_count=status.get("accompaniment_event_count"),
+                        last_continuation_event_count=status.get("last_continuation_event_count"),
+                        last_continuation_note_on_count=status.get("last_continuation_note_on_count"),
+                        last_continuation_min_tick=status.get("last_continuation_min_tick"),
+                        last_continuation_max_tick=status.get("last_continuation_max_tick"),
+                        empty_continuation_output_streak=status.get("empty_continuation_output_streak"),
                     )
                     if status.get("is_failed"):
                         self._output.output_status("error", f"Prompt-continuation failed: {status.get('error')}")
@@ -266,6 +271,15 @@ class PromptContinuationRealtimeService:
                                 status_accompaniment_history_beats=playable_status.get("accompaniment_history_beats"),
                                 status_beats_needed_for_playback=playable_status.get("beats_needed_for_playback"),
                                 status_continuation_calls=playable_status.get("continuation_calls"),
+                                status_last_continuation_event_count=playable_status.get(
+                                    "last_continuation_event_count"
+                                ),
+                                status_last_continuation_note_on_count=playable_status.get(
+                                    "last_continuation_note_on_count"
+                                ),
+                                status_empty_continuation_output_streak=playable_status.get(
+                                    "empty_continuation_output_streak"
+                                ),
                             )
                             self._playable_q.put((accompaniment, playable_status))
                             self._last_playable_marker = marker

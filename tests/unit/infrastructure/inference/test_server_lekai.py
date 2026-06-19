@@ -122,7 +122,16 @@ def test_prompt_continuation_poll_endpoints_contract():
 
     status_resp = client.get("/prompt_continuation/status")
     assert status_resp.status_code == 200
-    assert "beats_needed_for_playback" in status_resp.json()
+    status_data = status_resp.json()
+    assert "beats_needed_for_playback" in status_data
+    for key in [
+        "last_continuation_event_count",
+        "last_continuation_note_on_count",
+        "last_continuation_min_tick",
+        "last_continuation_max_tick",
+        "empty_continuation_output_streak",
+    ]:
+        assert key in status_data
 
     playable_resp = client.get("/prompt_continuation/playable")
     assert playable_resp.status_code == 200

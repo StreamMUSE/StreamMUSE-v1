@@ -120,6 +120,11 @@ class PromptContinuationStatusResponse(BaseModel):
     prompt_length_ticks: int
     generation_interval_ticks: int
     continuation_calls: int
+    last_continuation_event_count: int = 0
+    last_continuation_note_on_count: int = 0
+    last_continuation_min_tick: Optional[int] = None
+    last_continuation_max_tick: Optional[int] = None
+    empty_continuation_output_streak: int = 0
     melody_history_beats: int
     accompaniment_history_beats: int
     playable_lookahead_beats: int
@@ -206,6 +211,25 @@ def _scheduler_status_response(status: dict[str, int | bool | str | None]) -> Pr
         prompt_length_ticks=int(status["prompt_length_ticks"]),
         generation_interval_ticks=int(status["generation_interval_ticks"]),
         continuation_calls=int(status["continuation_calls"]),
+        last_continuation_event_count=int(
+            status.get("last_continuation_event_count", 0) or 0
+        ),
+        last_continuation_note_on_count=int(
+            status.get("last_continuation_note_on_count", 0) or 0
+        ),
+        last_continuation_min_tick=(
+            int(status["last_continuation_min_tick"])
+            if status.get("last_continuation_min_tick") is not None
+            else None
+        ),
+        last_continuation_max_tick=(
+            int(status["last_continuation_max_tick"])
+            if status.get("last_continuation_max_tick") is not None
+            else None
+        ),
+        empty_continuation_output_streak=int(
+            status.get("empty_continuation_output_streak", 0) or 0
+        ),
         melody_history_beats=int(status["melody_history_beats"]),
         accompaniment_history_beats=int(status["accompaniment_history_beats"]),
         playable_lookahead_beats=int(status["playable_lookahead_beats"]),

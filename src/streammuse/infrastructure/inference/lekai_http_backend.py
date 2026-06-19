@@ -576,6 +576,7 @@ class LekaiHttpBackend:
         ]
         generated_events: List[EventPayload] = []
         last_prompt_tokens: List[int] = []
+        beat_diagnostics: list[dict[str, object]] = []
 
         # Match offline defaults by default; keep runtime override via env vars.
         try:
@@ -655,6 +656,7 @@ class LekaiHttpBackend:
             )
 
             beat_pianoroll = self._decode_acc_beat_tokens(generated_beat_tokens)
+            pianoroll_nonzero = int(np.count_nonzero(beat_pianoroll))
 
             expected_shape = (2, 88, TIMESTEPS_PER_BEAT)
             got_shape = tuple(int(dim) for dim in beat_pianoroll.shape)
@@ -704,6 +706,27 @@ class LekaiHttpBackend:
             generated_events.extend(normalized_beat_events)
             accompaniment_context_events.extend(normalized_beat_events)
 
+            note_on_events = [
+                event
+                for event in normalized_beat_events
+                if str(event.get("type", "")) == "note_on"
+            ]
+            event_ticks = [int(event.get("tick", 0)) for event in normalized_beat_events]
+            beat_diagnostics.append(
+                {
+                    "target_beat": int(target_beat),
+                    "beat_start_tick": int(beat_start_tick),
+                    "prompt_token_count": int(len(prompt_tokens)),
+                    "generated_tokens": [int(token) for token in generated_beat_tokens],
+                    "generated_token_count": int(len(generated_beat_tokens)),
+                    "pianoroll_nonzero": pianoroll_nonzero,
+                    "event_count": int(len(normalized_beat_events)),
+                    "note_on_count": int(len(note_on_events)),
+                    "min_event_tick": min(event_ticks) if event_ticks else None,
+                    "max_event_tick": max(event_ticks) if event_ticks else None,
+                }
+            )
+
         prompt_melody_events = [
             e for e in self._melody_history
             if context_start_tick <= int(e.get("tick", 0)) <= int(generation_start_tick)
@@ -723,6 +746,13 @@ class LekaiHttpBackend:
             accompaniment_events=generated_events,
             bpm=int(effective_bpm),
             notes=f"context_start_tick={context_start_tick}, current_beat={current_beat}",
+            diagnostics={
+                "context_start_tick": int(context_start_tick),
+                "current_beat": int(current_beat),
+                "start_beat": int(start_beat),
+                "num_beats_to_generate": int(num_beats_to_generate),
+                "beat_diagnostics": beat_diagnostics,
+            },
             suffix="",
         )
 

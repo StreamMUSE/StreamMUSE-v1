@@ -112,6 +112,11 @@ def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
     assert ready_status["melody_history_beats"] == 11
     assert ready_status["accompaniment_history_beats"] == 12
     assert ready_status["continuation_calls"] == 4
+    assert ready_status["last_continuation_event_count"] == 1
+    assert ready_status["last_continuation_note_on_count"] == 1
+    assert ready_status["last_continuation_min_tick"] == 44
+    assert ready_status["last_continuation_max_tick"] == 44
+    assert ready_status["empty_continuation_output_streak"] == 0
     assert [call["generation_start_tick"] for call in continuation_engine.generate_calls] == [
         32,
         36,

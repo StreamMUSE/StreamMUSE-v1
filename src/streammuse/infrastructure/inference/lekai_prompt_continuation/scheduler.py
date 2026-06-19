@@ -65,6 +65,11 @@ class LekaiPromptContinuationScheduler:
         self._model_name = "lekai_prompt_continuation"
         self._checkpoint_path: Optional[str] = None
         self._continuation_calls = 0
+        self._last_continuation_event_count = 0
+        self._last_continuation_note_on_count = 0
+        self._last_continuation_min_tick: Optional[int] = None
+        self._last_continuation_max_tick: Optional[int] = None
+        self._empty_continuation_output_streak = 0
         self._run_id = 0
 
     @staticmethod
@@ -124,6 +129,11 @@ class LekaiPromptContinuationScheduler:
             self._model_name = str(model_name)
             self._checkpoint_path = checkpoint_path
             self._continuation_calls = 0
+            self._last_continuation_event_count = 0
+            self._last_continuation_note_on_count = 0
+            self._last_continuation_min_tick = None
+            self._last_continuation_max_tick = None
+            self._empty_continuation_output_streak = 0
             self._run_id += 1
             run_id = self._run_id
 
@@ -184,6 +194,11 @@ class LekaiPromptContinuationScheduler:
             self._continuation_sent_melody_event_count = 0
             self._catchup_state.reset()
             self._continuation_calls = 0
+            self._last_continuation_event_count = 0
+            self._last_continuation_note_on_count = 0
+            self._last_continuation_min_tick = None
+            self._last_continuation_max_tick = None
+            self._empty_continuation_output_streak = 0
             return self.status()
 
     def shutdown(self) -> None:
@@ -203,6 +218,13 @@ class LekaiPromptContinuationScheduler:
                 "prompt_length_ticks": int(self._prompt_length_ticks),
                 "generation_interval_ticks": int(self._generation_interval_ticks),
                 "continuation_calls": int(self._continuation_calls),
+                "last_continuation_event_count": int(self._last_continuation_event_count),
+                "last_continuation_note_on_count": int(self._last_continuation_note_on_count),
+                "last_continuation_min_tick": self._last_continuation_min_tick,
+                "last_continuation_max_tick": self._last_continuation_max_tick,
+                "empty_continuation_output_streak": int(
+                    self._empty_continuation_output_streak
+                ),
                 **snapshot,
             }
 
@@ -308,6 +330,14 @@ class LekaiPromptContinuationScheduler:
             with self._lock:
                 if not self._is_current_run(run_id):
                     return
+                continuation_event_ticks = [
+                    int(event.get("tick", 0)) for event in accompaniment
+                ]
+                continuation_note_on_count = sum(
+                    1
+                    for event in accompaniment
+                    if str(event.get("type", "")) == "note_on"
+                )
                 self._accompaniment_history.extend(copy_events(accompaniment))
                 self._catchup_state.accept_continuation_beats(chunk_beats)
                 self._continuation_sent_melody_event_count = max(
@@ -315,3 +345,15 @@ class LekaiPromptContinuationScheduler:
                     int(next_sent_melody_event_count),
                 )
                 self._continuation_calls += 1
+                self._last_continuation_event_count = int(len(accompaniment))
+                self._last_continuation_note_on_count = int(continuation_note_on_count)
+                self._last_continuation_min_tick = (
+                    min(continuation_event_ticks) if continuation_event_ticks else None
+                )
+                self._last_continuation_max_tick = (
+                    max(continuation_event_ticks) if continuation_event_ticks else None
+                )
+                if accompaniment:
+                    self._empty_continuation_output_streak = 0
+                else:
+                    self._empty_continuation_output_streak += 1
