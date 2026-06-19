@@ -284,6 +284,15 @@ class PromptContinuationRealtimeService:
                                 status_empty_continuation_output_streak=playable_status.get(
                                     "empty_continuation_output_streak"
                                 ),
+                                playable_representation_match=playable_status.get(
+                                    "playable_representation_match"
+                                ),
+                                server_playable_representation=playable_status.get(
+                                    "server_playable_representation"
+                                ),
+                                client_playable_representation=playable_status.get(
+                                    "client_playable_representation"
+                                ),
                             )
                             self._playable_q.put((accompaniment, playable_status))
                             self._last_playable_marker = marker

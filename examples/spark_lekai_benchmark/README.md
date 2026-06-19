@@ -42,6 +42,8 @@ LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
 LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
+LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP=1
+LEKAI_PROMPT_CONTINUATION_REPRESENTATION_TRACE_KEYS=0
 ```
 
 This matches the H200 preset and tests bounded late recovery, not strict
@@ -49,6 +51,10 @@ drop-past scheduling. To intentionally test strict mode, set
 `LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=0`.
 To ablate active-note state recovery, set
 `LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=0`.
+The representation loop checks that the server's decoded playable events and
+the public client's decoded playable events have the same canonical digest.
+Set `LEKAI_PROMPT_CONTINUATION_REPRESENTATION_TRACE_KEYS=1` only when you need
+full event-key traces for debugging.
 
 ## Example 2: Custom Checkpoint Paths
 

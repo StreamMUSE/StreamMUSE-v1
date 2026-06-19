@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 
 from streammuse.infrastructure.inference.lekai_http_backend import EventPayload, LekaiHttpBackend
 from streammuse.infrastructure.inference.lekai_prompt_continuation import LekaiPromptContinuationBackend
+from streammuse.infrastructure.inference.lekai_prompt_continuation.token_conversion import (
+    event_representation_summary,
+)
 
 
 class MelodyNoteEvent(BaseModel):
@@ -137,11 +140,13 @@ class PromptContinuationStatusResponse(BaseModel):
 class PromptContinuationPlayableResponse(BaseModel):
     accompaniment: List[AccompanimentNoteEvent]
     status: PromptContinuationStatusResponse
+    representation: dict[str, Any] = Field(default_factory=dict)
 
 
 class PromptContinuationRawHistoryResponse(BaseModel):
     accompaniment: List[AccompanimentNoteEvent]
     status: PromptContinuationStatusResponse
+    representation: dict[str, Any] = Field(default_factory=dict)
 
 
 LEKAI_MODEL_NAME = "lekai"
@@ -194,10 +199,27 @@ def _accompaniment_response_events(events: list[EventPayload]) -> list[Accompani
             type=str(event["type"]),
             pitch=int(event["pitch"]),
             tick=int(event["tick"]),
-            velocity=(int(event["velocity"]) if "velocity" in event else None),
+            velocity=(
+                int(event["velocity"])
+                if "velocity" in event and event["velocity"] is not None
+                else (0 if str(event.get("type", "")) == "note_off" else 100)
+            ),
         )
         for event in events
     ]
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _event_representation(events: list[EventPayload]) -> dict[str, Any]:
+    return dict(
+        event_representation_summary(
+            events,
+            include_keys=_env_truthy("LEKAI_PROMPT_CONTINUATION_REPRESENTATION_TRACE_KEYS"),
+        )
+    )
 
 
 def _scheduler_status_response(status: dict[str, int | bool | str | None]) -> PromptContinuationStatusResponse:
@@ -340,33 +362,33 @@ async def prompt_continuation_runtime_info() -> dict[str, object]:
 @app.get("/prompt_continuation/playable", response_model=PromptContinuationPlayableResponse)
 async def prompt_continuation_playable() -> PromptContinuationPlayableResponse:
     status = prompt_continuation_backend.scheduler_status()
+    accompaniment = prompt_continuation_backend.playable_accompaniment()
     return PromptContinuationPlayableResponse(
-        accompaniment=_accompaniment_response_events(
-            prompt_continuation_backend.playable_accompaniment()
-        ),
+        accompaniment=_accompaniment_response_events(accompaniment),
         status=_scheduler_status_response(status),
+        representation=_event_representation(accompaniment),
     )
 
 
 @app.get("/prompt_continuation/raw_history", response_model=PromptContinuationRawHistoryResponse)
 async def prompt_continuation_raw_history() -> PromptContinuationRawHistoryResponse:
     status = prompt_continuation_backend.scheduler_status()
+    accompaniment = prompt_continuation_backend.raw_accompaniment_history()
     return PromptContinuationRawHistoryResponse(
-        accompaniment=_accompaniment_response_events(
-            prompt_continuation_backend.raw_accompaniment_history()
-        ),
+        accompaniment=_accompaniment_response_events(accompaniment),
         status=_scheduler_status_response(status),
+        representation=_event_representation(accompaniment),
     )
 
 
 @app.get("/prompt_continuation/prompt_history", response_model=PromptContinuationRawHistoryResponse)
 async def prompt_continuation_prompt_history() -> PromptContinuationRawHistoryResponse:
     status = prompt_continuation_backend.scheduler_status()
+    accompaniment = prompt_continuation_backend.prompt_accompaniment_history()
     return PromptContinuationRawHistoryResponse(
-        accompaniment=_accompaniment_response_events(
-            prompt_continuation_backend.prompt_accompaniment_history()
-        ),
+        accompaniment=_accompaniment_response_events(accompaniment),
         status=_scheduler_status_response(status),
+        representation=_event_representation(accompaniment),
     )
 
 

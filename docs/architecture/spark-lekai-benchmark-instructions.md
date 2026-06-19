@@ -54,6 +54,8 @@ LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
 LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
+LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP=1
+LEKAI_PROMPT_CONTINUATION_REPRESENTATION_TRACE_KEYS=0
 ```
 
 This matters for public-client results. With strict scheduling, already-past
@@ -74,6 +76,14 @@ To isolate bounded recovery without active-note rehydration:
 LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=0 \
 scripts/run_spark_lekai_benchmark.sh
 ```
+
+The representation loop is separate from late recovery. The server returns a
+canonical digest for the decoded playable accompaniment, and the public client
+recomputes the digest after HTTP JSON decoding. With
+`LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP=1`, any mismatch fails the
+public-client run. Use `LEKAI_PROMPT_CONTINUATION_REPRESENTATION_TRACE_KEYS=1`
+only for detailed debugging because it writes every canonical event key into
+the trace payloads.
 
 ## Output layout
 

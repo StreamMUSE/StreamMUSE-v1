@@ -138,6 +138,9 @@ def test_prompt_continuation_poll_endpoints_contract():
     playable_data = playable_resp.json()
     assert "accompaniment" in playable_data
     assert "status" in playable_data
+    assert "representation" in playable_data
+    assert playable_data["representation"]["event_count"] == len(playable_data["accompaniment"])
+    assert playable_data["representation"]["digest"]
 
 
 def test_prompt_continuation_start_rejects_wrong_model_name():

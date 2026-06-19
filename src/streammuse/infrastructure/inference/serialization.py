@@ -32,12 +32,14 @@ def event_from_dict(d: Dict[str, Any]) -> MusicalEvent:
     raw_velocity = d.get("velocity")
     raw_channel = d.get("channel")
     raw_program = d.get("program")
+    event_type = EventType(str(d.get("type")))
+    default_velocity = 0 if event_type == EventType.NOTE_OFF else 100
 
     return MusicalEvent(
         tick=int(d.get("tick", 0)),
         pitch=int(d.get("pitch", -1)),
-        event_type=EventType(str(d.get("type"))),
-        velocity=int(raw_velocity) if raw_velocity is not None else 100,
+        event_type=event_type,
+        velocity=int(raw_velocity) if raw_velocity is not None else default_velocity,
         channel=int(raw_channel) if raw_channel is not None else 0,
         program=int(raw_program) if raw_program is not None else 0,
         is_placeholder=bool(d.get("is_placeholder", False)),
@@ -60,4 +62,3 @@ def timing_info_from_dict(d: Dict[str, Any]) -> TimingInfo:
         ),
         total_network_latency=(float(d["total_network_latency"]) if "total_network_latency" in d else None),
     )
-

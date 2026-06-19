@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -10,6 +11,9 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 
 from streammuse.domain.musical import MusicalEvent
+from streammuse.infrastructure.inference.lekai_prompt_continuation.token_conversion import (
+    event_representation_summary,
+)
 from streammuse.infrastructure.inference.serialization import event_from_dict, event_to_dict
 
 
@@ -93,17 +97,61 @@ class PromptContinuationHttpClient:
     def playable(self) -> tuple[list[MusicalEvent], dict[str, Any]]:
         data = self._request_json("GET", "/prompt_continuation/playable")
         accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
-        return accompaniment, dict(data.get("status", {}))
+        status = dict(data.get("status", {}))
+        self._attach_representation_loop_status(
+            status,
+            server_representation=data.get("representation", {}),
+            events=accompaniment,
+        )
+        return accompaniment, status
 
     def raw_history(self) -> tuple[list[MusicalEvent], dict[str, Any]]:
         data = self._request_json("GET", "/prompt_continuation/raw_history")
         accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
-        return accompaniment, dict(data.get("status", {}))
+        status = dict(data.get("status", {}))
+        self._attach_representation_loop_status(
+            status,
+            server_representation=data.get("representation", {}),
+            events=accompaniment,
+        )
+        return accompaniment, status
 
     def prompt_history(self) -> tuple[list[MusicalEvent], dict[str, Any]]:
         data = self._request_json("GET", "/prompt_continuation/prompt_history")
         accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
-        return accompaniment, dict(data.get("status", {}))
+        status = dict(data.get("status", {}))
+        self._attach_representation_loop_status(
+            status,
+            server_representation=data.get("representation", {}),
+            events=accompaniment,
+        )
+        return accompaniment, status
+
+    def _attach_representation_loop_status(
+        self,
+        status: dict[str, Any],
+        *,
+        server_representation: Any,
+        events: list[MusicalEvent],
+    ) -> None:
+        client_representation = event_representation_summary(
+            [event_to_dict(event) for event in events],
+            include_keys=_env_truthy("LEKAI_PROMPT_CONTINUATION_REPRESENTATION_TRACE_KEYS"),
+        )
+        server_representation = dict(server_representation or {})
+        match = (
+            bool(server_representation)
+            and server_representation.get("digest") == client_representation.get("digest")
+            and server_representation.get("event_count") == client_representation.get("event_count")
+        )
+        status["server_playable_representation"] = server_representation
+        status["client_playable_representation"] = client_representation
+        status["playable_representation_match"] = bool(match)
+        if _env_truthy("LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP") and not match:
+            raise RuntimeError(
+                "prompt-continuation representation mismatch: "
+                f"server={server_representation} client={client_representation}"
+            )
 
     def wait_until_terminal(
         self,
@@ -142,3 +190,7 @@ def normalize_prompt_continuation_base_url(server_url: str) -> str:
             path = path[: -len(suffix)]
             break
     return urlunsplit((parsed.scheme, parsed.netloc, path.rstrip("/"), "", ""))
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
