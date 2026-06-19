@@ -112,6 +112,7 @@ class PromptContinuationRealtimeService:
         self._protocol_started = False
         self._append_sent_after_prompt = False
         self._trace_path = os.environ.get("LEKAI_PROMPT_CONTINUATION_TRACE_PATH")
+        self._trace_lock = threading.Lock()
         self._recover_late_events = os.environ.get(
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS",
             "",
@@ -137,8 +138,9 @@ class PromptContinuationRealtimeService:
             return
         row = {"timestamp": self._now(), "kind": kind, **payload}
         try:
-            with open(self._trace_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(row, sort_keys=True) + "\n")
+            with self._trace_lock:
+                with open(self._trace_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, sort_keys=True) + "\n")
         except Exception:
             # Tracing must never affect realtime playback.
             return
