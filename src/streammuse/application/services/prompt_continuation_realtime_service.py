@@ -327,7 +327,9 @@ class PromptContinuationRealtimeService:
             self._schedule_playable_recover_late(accompaniment, current_tick=int(current_tick))
             return
 
+        input_tick_stats = self._event_tick_stats(accompaniment, current_tick=int(current_tick))
         scheduled = 0
+        scheduled_notes = 0
         dropped_past = 0
         skipped_duplicate = 0
         clipped_sustains = 0
@@ -350,6 +352,7 @@ class PromptContinuationRealtimeService:
             if note_key in self._scheduled_model_note_keys:
                 skipped_duplicate += 1
                 continue
+            scheduled_notes += 1
             for event in (note_on, note_off):
                 event_key = (
                     int(event.tick),
@@ -385,6 +388,9 @@ class PromptContinuationRealtimeService:
             current_tick=int(current_tick),
             mode="paired_future_only",
             input_event_count=len(accompaniment),
+            **input_tick_stats,
+            pair_count=len(note_pairs),
+            scheduled_note_count=scheduled_notes,
             scheduled_event_count=scheduled,
             dropped_past=dropped_past,
             clipped_sustains=clipped_sustains,
@@ -394,6 +400,7 @@ class PromptContinuationRealtimeService:
 
     def _schedule_playable_recover_late(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
         """Schedule playable history event-by-event, recovering late events now."""
+        input_tick_stats = self._event_tick_stats(accompaniment, current_tick=int(current_tick))
         scheduled = 0
         skipped_duplicate = 0
         late_event_count = 0
@@ -458,6 +465,7 @@ class PromptContinuationRealtimeService:
             current_tick=current_tick,
             mode="recover_late_events",
             input_event_count=len(accompaniment),
+            **input_tick_stats,
             scheduled_event_count=scheduled,
             late_event_count=late_event_count,
             dropped_too_late_note_on=dropped_too_late_note_on,
@@ -466,6 +474,36 @@ class PromptContinuationRealtimeService:
             skipped_duplicate=skipped_duplicate,
             placeholder_count=placeholder_count,
         )
+
+    @staticmethod
+    def _event_tick_stats(events: list[MusicalEvent], *, current_tick: int) -> dict[str, int | None]:
+        usable_events = [
+            event
+            for event in events
+            if not event.is_placeholder and event.pitch != -1
+        ]
+        if not usable_events:
+            return {
+                "input_min_tick": None,
+                "input_max_tick": None,
+                "future_event_count": 0,
+                "future_note_on_count": 0,
+                "past_event_count": 0,
+            }
+        current_tick = int(current_tick)
+        return {
+            "input_min_tick": min(int(event.tick) for event in usable_events),
+            "input_max_tick": max(int(event.tick) for event in usable_events),
+            "future_event_count": sum(1 for event in usable_events if int(event.tick) >= current_tick),
+            "future_note_on_count": sum(
+                1
+                for event in usable_events
+                if int(event.tick) >= current_tick
+                and event.event_type == EventType.NOTE_ON
+                and int(event.velocity) > 0
+            ),
+            "past_event_count": sum(1 for event in usable_events if int(event.tick) < current_tick),
+        }
 
     @staticmethod
     def _clone_event_at_tick(event: MusicalEvent, tick: int) -> MusicalEvent:
