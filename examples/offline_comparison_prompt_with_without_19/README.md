@@ -30,6 +30,7 @@ examples/offline_comparison_prompt_with_without_19/
     case19_score6q_6175749_base_noprompt.mid
   manifest.csv
   score_metadata.csv
+  top4_cases.csv
 ```
 
 ## Pairing
@@ -57,3 +58,17 @@ with `?` come from source folder names that included a question mark-like suffix
 in the archive, so treat them as uncertain labels rather than clean integers.
 MIDI filenames also include the score label; uncertain scores use `q` in the
 filename, e.g. `score6q` for `6?`.
+
+## Top 4 Cases
+
+`top4_cases.csv` selects the four highest-scored cases for focused offline
+comparison:
+
+- `case09_score7_5889045`
+- `case15_score7_5472153`
+- `case17_score7_3410421`
+- `case18_score7q_2581346`
+
+The first three are clean score-7 cases. `case18` is included as the fourth
+highest case because its source score is `7?`; keep the uncertainty flag when
+reporting results.

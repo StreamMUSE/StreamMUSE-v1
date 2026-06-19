@@ -1,0 +1,5 @@
+rank,case,task_suitability_score,score_is_uncertain,stem,gt_file,base_noprompt_zero_file
+1,case09,7,false,5889045,gt/case09_score7_5889045_GT.mid,base_noprompt_zero/case09_score7_5889045_base_noprompt.mid
+2,case15,7,false,5472153,gt/case15_score7_5472153_GT.mid,base_noprompt_zero/case15_score7_5472153_base_noprompt.mid
+3,case17,7,false,3410421,gt/case17_score7_3410421_GT.mid,base_noprompt_zero/case17_score7_3410421_base_noprompt.mid
+4,case18,7?,true,2581346,gt/case18_score7q_2581346_GT.mid,base_noprompt_zero/case18_score7q_2581346_base_noprompt.mid
