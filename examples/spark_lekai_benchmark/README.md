@@ -8,6 +8,14 @@ Main docs:
 - `scripts/run_spark_lekai_benchmark.sh`
 - `scripts/benchmark_lekai_spark.py`
 
+Included music examples:
+
+- `music_examples/pop909_291_mel.mid`
+- `music_examples/pop909_013_mel.mid`
+- `music_examples/pop909_007_mel.mid`
+
+Each melody has a matching reference accompaniment in the same folder.
+
 ## Example 1: Default Paths
 
 Use this if the checkpoints are already at the repository defaults:
@@ -54,7 +62,18 @@ RUN_PUBLIC_CLIENT=0 \
 bash scripts/run_spark_lekai_benchmark.sh
 ```
 
-## Example 4: More Samples
+## Example 4: Use Included Music Example
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+export PYTHON_BIN=python
+export OUT_ROOT=spark_runs/lekai_h200_music_$(date +%Y%m%d_%H%M%S)
+
+MIDI_FILE=examples/spark_lekai_benchmark/music_examples/pop909_291_mel.mid \
+bash scripts/run_spark_lekai_benchmark.sh
+```
+
+## Example 5: More Samples
 
 Use this for a more stable latency estimate:
 
@@ -84,4 +103,3 @@ If public-client runs are skipped, send only:
 ```text
 <OUT_ROOT>/micro/direct_micro_and_scheduler.json
 ```
-
