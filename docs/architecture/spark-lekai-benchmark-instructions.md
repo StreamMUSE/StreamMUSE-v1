@@ -44,6 +44,27 @@ If the script is not executable:
 bash scripts/run_spark_lekai_benchmark.sh
 ```
 
+## Late-Recovery Preset
+
+The benchmark defaults to the same bounded late-recovery policy used by the H200
+prompt-continuation preset:
+
+```bash
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
+LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
+```
+
+This matters for public-client results. With strict scheduling, already-past
+prompt-continuation events can be dropped before they are heard. With bounded
+late recovery, late events inside the recovery window are scheduled at the
+current tick. If you intentionally need strict-mode data, run:
+
+```bash
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=0 \
+scripts/run_spark_lekai_benchmark.sh
+```
+
 ## Output layout
 
 The output root is split intentionally:

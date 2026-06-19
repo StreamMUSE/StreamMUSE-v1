@@ -35,6 +35,18 @@ models/hf/RT-accompanimentV2-checkpoints/lekai_prompt_model/model.safetensors
 models/hf/RT-accompanimentV2-checkpoints/lekai_continuation_model/model.safetensors
 ```
 
+Default prompt-continuation public-client playback policy:
+
+```bash
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
+LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
+```
+
+This matches the H200 preset and tests bounded late recovery, not strict
+drop-past scheduling. To intentionally test strict mode, set
+`LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=0`.
+
 ## Example 2: Custom Checkpoint Paths
 
 Use this if Spark stores the downloaded safetensors elsewhere:
