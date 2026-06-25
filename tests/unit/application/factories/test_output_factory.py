@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from streammuse.application.config import ApplicationConfig, OutputConfig, TempoConfig
+import pytest
+
+from streammuse.application.config import ApplicationConfig, InferenceConfig, OutputConfig, TempoConfig
 from streammuse.application.factories.output_factory import OutputSinkFactory
 from streammuse.domain.logging import SessionManager
 from streammuse.infrastructure.output import (
@@ -104,6 +106,20 @@ def test_output_factory_attaches_metronome_and_enables_recording(tmp_path):
     assert sink.sinks[2]._config.beats_per_bar == 3
     assert sink.sinks[2]._config.channel == 10
     sink.close()
+
+
+@pytest.mark.parametrize("output_type", ["json_log", "composite"])
+def test_output_factory_propagates_inference_log_detail(tmp_path, output_type):
+    session_manager = SessionManager(base_log_dir=str(tmp_path))
+    session_manager.create_session_directory()
+
+    cfg = ApplicationConfig(
+        output=OutputConfig(type=output_type, inference_log_detail="full"),
+        inference=InferenceConfig(type="http", server_generate_url="http://x/generate_accompaniment"),
+    )
+
+    sink = OutputSinkFactory.create(cfg, session_manager=session_manager)
+    assert getattr(sink, "inference_log_detail", "summary") == "full"
 
 
 def test_session_logger_uses_passed_bpm_and_ticks(tmp_path):

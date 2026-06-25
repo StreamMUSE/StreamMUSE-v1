@@ -33,24 +33,19 @@ def test_note_full() -> None:
     assert n.program == 2
 
 
-def test_note_invalid_tick() -> None:
-    with pytest.raises(ValueError, match="Invalid tick"):
-        Note(pitch=60, tick=-1, duration=4)
-
-
-def test_note_invalid_duration_zero() -> None:
-    with pytest.raises(ValueError, match="Invalid duration"):
-        Note(pitch=60, tick=0, duration=0)
-
-
-def test_note_invalid_duration_negative() -> None:
-    with pytest.raises(ValueError, match="Invalid duration"):
-        Note(pitch=60, tick=0, duration=-1)
-
-
-def test_note_invalid_pitch() -> None:
-    with pytest.raises(ValueError, match="Invalid pitch"):
-        Note(pitch=128, tick=0, duration=4)
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"tick": -1}, "Invalid tick"),
+        ({"duration": 0}, "Invalid duration"),
+        ({"duration": -1}, "Invalid duration"),
+        ({"pitch": 128}, "Invalid pitch"),
+    ],
+)
+def test_note_invalid_fields(kwargs, match) -> None:
+    base = {"pitch": 60, "tick": 0, "duration": 4}
+    with pytest.raises(ValueError, match=match):
+        Note(**{**base, **kwargs})
 
 
 def test_note_placeholder_valid() -> None:

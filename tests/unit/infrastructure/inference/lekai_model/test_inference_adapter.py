@@ -26,22 +26,16 @@ def test_beats_to_pianoroll_empty_list_returns_empty_time_axis():
     assert out.shape == (2, 88, 0)
 
 
-def test_beats_to_pianoroll_handles_empty_inner_list():
+def test_beats_to_pianoroll_handles_mixed_empty_beats_without_crashing():
     tokenizer = _build_tokenizer()
 
-    out = beats_to_pianoroll([[]], tokenizer, timesteps_per_beat=4)
+    # Includes: bar-only beat, sparse beat, and malformed empty beat list.
+    beat_tokens = [[255], [250, 171], []]
 
-    assert out.shape == (2, 88, 4)
-    assert np.count_nonzero(out) == 0
+    out = beats_to_pianoroll(beat_tokens, tokenizer, timesteps_per_beat=4)
 
-
-def test_beats_to_pianoroll_bar_token_produces_empty_beat():
-    tokenizer = _build_tokenizer()
-
-    out = beats_to_pianoroll([[255]], tokenizer, timesteps_per_beat=4)
-
-    assert out.shape == (2, 88, 4)
-    assert np.count_nonzero(out) == 0
+    assert out.shape == (2, 88, 12)
+    assert np.isfinite(out).all()
 
 
 def test_beats_to_pianoroll_empty_marker_produces_empty_beat():

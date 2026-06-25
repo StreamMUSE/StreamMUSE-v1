@@ -43,40 +43,21 @@ def test_musical_event_immutable() -> None:
         e.pitch = 61  # type: ignore[misc]
 
 
-def test_musical_event_invalid_tick() -> None:
-    with pytest.raises(ValueError, match="Invalid tick"):
-        MusicalEvent(tick=-1, pitch=60, event_type=EventType.NOTE_ON)
-
-
-def test_musical_event_invalid_pitch_low() -> None:
-    with pytest.raises(ValueError, match="Invalid pitch"):
-        MusicalEvent(tick=0, pitch=-1, event_type=EventType.NOTE_ON)
-
-
-def test_musical_event_invalid_pitch_high() -> None:
-    with pytest.raises(ValueError, match="Invalid pitch"):
-        MusicalEvent(tick=0, pitch=128, event_type=EventType.NOTE_ON)
-
-
-def test_musical_event_invalid_velocity() -> None:
-    with pytest.raises(ValueError, match="Invalid velocity"):
-        MusicalEvent(
-            tick=0, pitch=60, event_type=EventType.NOTE_ON, velocity=200
-        )
-
-
-def test_musical_event_invalid_channel() -> None:
-    with pytest.raises(ValueError, match="Invalid channel"):
-        MusicalEvent(
-            tick=0, pitch=60, event_type=EventType.NOTE_ON, channel=16
-        )
-
-
-def test_musical_event_invalid_program() -> None:
-    with pytest.raises(ValueError, match="Invalid program"):
-        MusicalEvent(
-            tick=0, pitch=60, event_type=EventType.NOTE_ON, program=128
-        )
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"tick": -1}, "Invalid tick"),
+        ({"pitch": -1}, "Invalid pitch"),
+        ({"pitch": 128}, "Invalid pitch"),
+        ({"velocity": 200}, "Invalid velocity"),
+        ({"channel": 16}, "Invalid channel"),
+        ({"program": 128}, "Invalid program"),
+    ],
+)
+def test_musical_event_invalid_fields(kwargs, match) -> None:
+    base = {"tick": 0, "pitch": 60, "event_type": EventType.NOTE_ON}
+    with pytest.raises(ValueError, match=match):
+        MusicalEvent(**{**base, **kwargs})
 
 
 def test_musical_event_placeholder_valid() -> None:

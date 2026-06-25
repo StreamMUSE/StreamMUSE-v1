@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from streammuse.domain.events import AudioFramePayload, Event, EventKind, MusicalEventPayload, TextChunkPayload
+from streammuse.domain.events import Event, EventKind, MusicalEventPayload, TextChunkPayload
 from streammuse.domain.musical import MusicalEvent
 from streammuse.domain.musical.converters import generic_event_to_musical_event, musical_event_to_generic_event
 from streammuse.domain.musical.events import EventType
@@ -33,22 +33,6 @@ def test_musical_event_payload_validation() -> None:
     # Placeholder must have pitch=-1
     with pytest.raises(ValueError, match="Placeholder events must have pitch=-1"):
         MusicalEventPayload(pitch=60, event_type=EventType.NOTE_ON, is_placeholder=True)
-
-
-def test_text_chunk_payload() -> None:
-    """Test TextChunkPayload."""
-    payload = TextChunkPayload(text="Hello", token_count=2, is_complete=True)
-    assert payload.text == "Hello"
-    assert payload.token_count == 2
-    assert payload.is_complete is True
-
-
-def test_audio_frame_payload() -> None:
-    """Test AudioFramePayload."""
-    payload = AudioFramePayload(samples=b"audio_data", sample_rate=44100, channels=2)
-    assert payload.samples == b"audio_data"
-    assert payload.sample_rate == 44100
-    assert payload.channels == 2
 
 
 def test_generic_event() -> None:

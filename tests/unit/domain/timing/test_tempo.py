@@ -32,21 +32,19 @@ def test_tempo_seconds_to_tick() -> None:
     assert t.seconds_to_tick(2.5) == 10
 
 
-def test_tempo_invalid_bpm() -> None:
-    with pytest.raises(ValueError, match="BPM must be positive"):
-        Tempo(bpm=0, ticks_per_beat=4, beats_per_bar=4)
-    with pytest.raises(ValueError, match="BPM must be positive"):
-        Tempo(bpm=-1, ticks_per_beat=4, beats_per_bar=4)
-
-
-def test_tempo_invalid_ticks_per_beat() -> None:
-    with pytest.raises(ValueError, match="Ticks per beat must be positive"):
-        Tempo(bpm=120, ticks_per_beat=0, beats_per_bar=4)
-
-
-def test_tempo_invalid_beats_per_bar() -> None:
-    with pytest.raises(ValueError, match="Beats per bar must be positive"):
-        Tempo(bpm=120, ticks_per_beat=4, beats_per_bar=0)
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"bpm": 0}, "BPM must be positive"),
+        ({"bpm": -1}, "BPM must be positive"),
+        ({"ticks_per_beat": 0}, "Ticks per beat must be positive"),
+        ({"beats_per_bar": 0}, "Beats per bar must be positive"),
+    ],
+)
+def test_tempo_invalid_fields(kwargs, match) -> None:
+    base = {"bpm": 120.0, "ticks_per_beat": 4, "beats_per_bar": 4}
+    with pytest.raises(ValueError, match=match):
+        Tempo(**{**base, **kwargs})
 
 
 def test_musical_time_from_tick_zero() -> None:

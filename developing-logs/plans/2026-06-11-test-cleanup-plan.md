@@ -91,6 +91,66 @@
 - 消除 4 份重复的 service fakes、3 份重复的 `_build_tokenizer`。
 - `tests/unit/application/` 下 factory 测试归位到 `factories/` 子目录，结构与 src 对齐。
 
+## 五、执行 Todo List（2026-06-12，决策已定）
+
+**决策结果**：删 `MusicalSequence`（源码+测试）；保留 `domain/events/generic.py`（源码+测试），但按本计划第一节，删掉其中两个纯 dataclass 赋值断言测试。
+
+### Step 0：基线
+- [x] `uv run pytest tests/ -q` 记录基线（应为 190 passed）
+
+### Step 1：MusicalSequence 删除 + generic 测试瘦身
+- [x] 删除 `src/streammuse/domain/musical/sequence.py`
+- [x] 从 `src/streammuse/domain/musical/__init__.py` 移除 `MusicalSequence` 的 import 和 `__all__` 条目
+- [x] 删除 `tests/unit/domain/musical/test_sequence.py`（6 个测试）
+- [x] 从 `tests/unit/domain/events/test_generic_events.py` 删除 `test_text_chunk_payload`、`test_audio_frame_payload`（纯构造赋值断言，2 个测试）
+- [x] 全仓 grep 确认无残留引用 → pytest 验证
+
+### Step 2：删除 4 个低价值测试文件
+- [x] 删除 `tests/integration/test_lekai_runtime_info_integration.py`（1 个测试，unit 版严格超集）
+- [x] 删除 `tests/unit/infrastructure/test_config_imports.py`（目录搬迁遗留）
+- [x] 删除 `tests/unit/infrastructure/test_tokenization_imports.py`（同上）
+- [x] 删除 `tests/unit/infrastructure/input/test_input_source_protocol.py`（hasattr-only）
+- [x] pytest 验证
+
+### Step 3：Lekai 重复测试清理
+- [x] 删除 `tests/unit/infrastructure/inference/test_lekai_inference_adapter.py::test_tokenizer_roundtrip_preserves_time_length`（shape-only，弱于 lekai_model 的 array-equality 版本）
+- [x] 把混合空 beat 场景 `[[255], [250, 171], []]` 并入 `tests/unit/infrastructure/inference/lekai_model/test_inference_adapter.py`，同时删掉被它覆盖的 `[[255]]`、`[[]]` 两条细粒度测试（保留 `[[169]]` 和空 list 两条）
+- [x] 删除 `test_lekai_inference_adapter.py::test_beats_to_pianoroll_handles_empty_beats_without_crashing`（已被上一条合并替代）
+- [x] pytest 验证
+
+### Step 4：拆 `test_factories_and_service.py`
+- [x] `test_output_factory_propagates_inference_log_detail` → 移入 `tests/unit/application/factories/test_output_factory.py`
+- [x] 4 个 inference factory 测试 → 新建 `tests/unit/application/factories/test_inference_factory.py`
+- [x] `test_real_time_music_service_emits_ticks_and_user_events` → 移入 service 测试文件
+- [x] 删除 `tests/unit/application/test_factories_and_service.py`
+- [x] pytest 验证
+
+### Step 5：共享 fakes + service 测试整合
+- [x] 新建 `tests/unit/application/conftest.py`，提取共享的 `_NoopInput` / `_NoopOutput` / `_NoopInference` fixtures/类
+- [x] `test_real_time_music_service_incremental.py` 改名为 `test_real_time_music_service.py`，去重 fakes
+- [x] `test_real_time_music_service_logging.py`（2 个测试）并入上述文件后删除
+- [x] `integration/test_cli_entry_point.py` 的 fakes 视 import 可达性决定是否共享（unit 的 conftest 对 integration 不可见，若不便共享则保留其本地 fakes，不动逻辑）
+- [x] pytest 验证
+
+### Step 6：输入 adapter 小文件合并
+- [x] `test_midi_device.py`（1 测试）+ `test_list_input.py`（2 测试）→ 合并为 `tests/unit/infrastructure/input/test_simple_inputs.py`，删除原两文件
+- [x] pytest 验证
+
+### Step 7：参数化收紧
+- [x] `test_events.py` 6 个 invalid-field 测试 → 1 个 `@pytest.mark.parametrize`
+- [x] `test_notes.py` 5 个 invalid-field 测试 → 同上
+- [x] `test_tempo.py` 3 个 invalid 测试 → 同上
+- [x] pytest 验证
+
+### Step 8：收尾
+- [x] 最终全量 pytest，统计文件数 / 测试数变化
+- [x] 写执行 report 到 `developing-logs/`
+
+> **执行完成（2026-06-12）**：全部步骤已完成，173 passed。两处与计划的偏差：
+> ① 共享 fakes 放在 `tests/unit/application/fakes.py`（conftest.py 无法干净地导出供子类化的类），并补了 `application/`、`factories/` 的 `__init__.py`；
+> ② `integration/test_cli_entry_point.py` 保留本地 mocks（其签名更全且被 MagicMock 动态替换，与 unit fakes 形态不同，强行共享得不偿失）。
+> 详见 `developing-logs/reports/2026-06-12-test-cleanup-report.md`。
+
 ## 附：顺手发现的覆盖缺口（本次不处理，仅记录)
 
 - `ConsoleOutputSink`、`AudioOutputSink` 完全没有测试（输出 sink 里只有这两个裸奔）。

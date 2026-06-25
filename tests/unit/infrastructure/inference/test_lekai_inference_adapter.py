@@ -22,34 +22,6 @@ def _build_tokenizer() -> PianoRollTokenizer:
     )
 
 
-def test_tokenizer_roundtrip_preserves_time_length():
-    tokenizer = _build_tokenizer()
-
-    # Two beats (8 timesteps) accompaniment pianoroll.
-    pianoroll = np.zeros((2, 88, 8), dtype=np.float32)
-    pianoroll[0, 60, 0:4] = 1.0
-    pianoroll[1, 60, 0] = 1.0
-    pianoroll[0, 64, 4:8] = 1.0
-    pianoroll[1, 64, 4] = 1.0
-
-    encoded = tokenizer.encode(pianoroll)
-    decoded = tokenizer.decode(encoded)
-
-    assert decoded.shape == pianoroll.shape
-
-
-def test_beats_to_pianoroll_handles_empty_beats_without_crashing():
-    tokenizer = _build_tokenizer()
-
-    # Includes: bar-only beat, sparse beat, and malformed empty beat list.
-    beat_tokens = [[255], [250, 171], []]
-
-    pianoroll = beats_to_pianoroll(beat_tokens, tokenizer, timesteps_per_beat=4)
-
-    assert pianoroll.shape == (2, 88, 12)
-    assert np.isfinite(pianoroll).all()
-
-
 def test_process_and_decode_beats_preserve_total_length():
     tokenizer = _build_tokenizer()
 
