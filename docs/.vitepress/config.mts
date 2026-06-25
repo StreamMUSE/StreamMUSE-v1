@@ -129,6 +129,7 @@ export default defineConfig({
             { text: 'Fake 推理服务器', link: '/developer-guide/fake-inference-server' },
             { text: '生成日志', link: '/developer-guide/generation-logging' },
             { text: '测试策略', link: '/developer-guide/testing-strategy' },
+            { text: '一致性测试', link: '/developer-guide/consistency-test' },
           ],
         },
       ],

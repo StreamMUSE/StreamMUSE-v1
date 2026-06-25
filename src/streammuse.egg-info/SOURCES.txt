@@ -30,7 +30,6 @@ src/streammuse/domain/logging/session_manager.py
 src/streammuse/domain/musical/__init__.py
 src/streammuse/domain/musical/converters.py
 src/streammuse/domain/musical/events.py
-src/streammuse/domain/musical/sequence.py
 src/streammuse/domain/timing/__init__.py
 src/streammuse/domain/timing/scheduler.py
 src/streammuse/domain/timing/tempo.py

@@ -151,10 +151,73 @@ LEKAI_CHECKPOINT_PATH=models/ModelLekai/epoch_4_1104_1204/model.safetensors \
 
 ## 执行 Todo List
 
+> ✅ **全部执行完成（2026-06-25）**。完整结果、与计划的偏差、判别力证据见
+> `developing-logs/reports/2026-06-12-consistency-final-test-report.md`。
+> 默认配置（song 4 × tempo 15+120）真跑 PASSED（6m25s），日常套件 173 passed + 1 skipped。
+>
+> 下方各 Phase 子项的勾选状态**仅作历史参考**——实现中三处实质偏离计划原描述，以 report 为准：
+> ① 对比改为 **pianoroll 归一化**（非计划写的 raw note 对比），落 `tests/consistency/midi_pianoroll.py`，未改 debug 脚本；
+> ② 默认歌从 **song 1 改为 song 4**（song 1 贪心全空）；
+> ③ server 与 offline **同卡共存**（143GB 显存够），省去"先停 server"编排。
+
+### 附录 A：BPM 对照表（Phase 0.1 实测，2026-06-12）
+
+| song | NPZ bpm | mel MIDI bpm | encode_bpm 桶 |
+|---|---|---|---|
+| 1 | 110 | 110.0 | 中 (90–200) |
+| 2 | 74 | 74.0 | 慢 (<90) |
+| 3 | 120 | 120.0 | 中 (90–200) |
+| 4 | 57 | 57.0 | 慢 (<90) |
+| 5 | 92 | 92.0 | 中 (90–200) |
+
+NPZ 与 mel MIDI 两条数据源 BPM 完全一致。测试两侧统一钉 `120`（中桶），realtime 与 offline 用同一个 BPM token，与各歌原生桶无关——一致性只要求两侧相同。
+
+### 附录 B：贪心下各歌伴奏非空程度（Phase 0 实测，2026-06-25）
+
+贪心（top_k=1, temp=0, bpm=120）下 offline 生成的 part1 伴奏，多数歌塌缩为空，少数非空。**测试必须用非空的歌**：
+
+| song | condition_idx | total beats | 非空拍数 | 真实 acc token | 适合做测试 |
+|---|---|---|---|---|---|
+| 4 | 4 | 76 | **56** | 112 | ✅ 最佳默认 |
+| 5 | 1 | 116 | 19 | 76 | ✅ |
+| 2 | 0 | 96 | 9 | 12 | ✅ |
+| 3 | 2 | 151 | 1 | 1 | ⚠️ 几乎空 |
+| 1 | 3 | 141 | 0 | 0 | ❌ 全空，勿用 |
+
+→ **默认测试歌改为 song 4**（最初 plan 写的 song 1 恰好是全空的，不能用）。condition_idx 映射：song N → idx，见映射表 `{2:0, 5:1, 3:2, 1:3, 4:4}`。
+
+### ✅ Phase 0 验证成功（2026-06-25）—— 前提成立，附正确对比方法
+
+**song 4 实测：realtime 与 offline 伴奏在 pianoroll(beat,pitch)层 100% 一致**（截断到歌曲实际长度后，`只在 realtime=[]`、`只在 offline=[]`）。前提完全成立。三条必须遵守的方法论（都是踩坑换来的）：
+
+1. **必须用非空歌**：贪心下 song 1 全空、song 3 几乎空；默认用 **song 4**（56/76 非空拍），辅以 song 5/2。见附录 B。
+2. **必须在 pianoroll(beat,pitch active)层对比，不能用 raw MIDI note(tick,pitch,type)**：realtime 把持续音按拍**重触发**（每 4 拍 off+on），offline 保持**持续音**（一个长 note）。两者底层 pianoroll 相同，但 raw note 对比只有 **77.8%**（假性 mismatch）。归一化方法：把每个 note 区间展开成它覆盖的 `(beat, pitch)` 集合再比。→ **这推翻了 plan 原定的"复用 debug_inference_consistency.py 的 raw note 对比"，改为 pianoroll 归一化对比。**
+3. **必须截断到公共窗口 = 歌曲实际内容长度**：melody MIDI（如 4.mid 旋律止于 beat 57）比 `--max-ticks` 短；realtime 跑过头后在无旋律区间继续挂音（pitch 43 持续到 beat 76），offline 在数据末尾就停。截断到 beat<58 → 100%。所以 realtime 的 `--max-ticks` 应贴合歌曲长度，且对比窗口取两侧公共部分。
+
+> 注：context window 不是分叉源——`LEKAI_PROMPT_CONTEXT_BEATS=200`（全 context）与默认 32 结果完全相同，排除滑窗。分叉纯粹是"跑过头"。
+
+### ⚠️ Phase 0 早期误判更正（2026-06-25）
+
+> 最初用 song 1 验证，发现 offline/realtime 伴奏都空 → 一度误判"前提不成立"。**实为选歌问题**：song 1 在贪心下全空（很常见），而 song 2/4/5 非空。用户确认"有的歌全空很常见，有一两首正常"，与附录 B 实测吻合。前提成立，继续。那个到处出现的"263"是 GT（`save_gt_midi`）而非生成结果，注意别再被误导。
+
+### ⚠️ Phase 0 阻塞记录（已解除，保留供参考）（2026-06-25）
+
+手动验证撞上 plan 预设的"0.4 不到 100% 就停下排查"红线。核心前提（**当前单阶段 sliding-window realtime CLI 的输出 == offline**）在贪心参数下**不成立**：
+
+- **realtime CLI（song 1, tempo 60, greedy, BPM=120）**：63 次推理**全部返回 0 个伴奏音符**，`combined.mid` 的 Accompaniment track 为空。
+- **offline（song 1 = condition_idx=3, greedy, BPM=120）**：生成 **263 个音符**。BPM token 两侧一致（都是 265 = 中桶），排除 BPM 坑。
+- **根因**：sliding-window 把自己生成的伴奏反馈进下一拍 context；第 0 拍贪心选了 empty marker(169)，之后每拍 context 里伴奏槽全是 169 → **自我强化的空循环**。offline 则一次性 condition 整个 part0(melody) 自回归生成整个 part1，二者是**架构上不等价的算法**。
+- **历史佐证**：`developing-logs/2026-4-23/.../final_summary_report.md` 实测 offline vs fake-rt 总体 match rate **1.0%–1.15%**，"一致性未达标"，当年从未解决。报告原话："greedy decoding favors empty tokens... 模型行为问题，非代码 bug"。
+- **真正达成一致的机制（晚于4月）**：commit `8250298` 的 `scripts/compare_lekai_offline_realtime_raw.py`（5/10）显示一致性是在**两阶段 prompt+continuation 架构**上、比对 streammuse-cli 存的 **`prompt_continuation_raw_history.json`**（raw acc 事件，非 audible MIDI）达成的，且依赖外部路径 `/data/home/yuanxin/RT-accompanimentV2/...`。该外部路径**在本机不存在**，`prompt_continuation_raw_history.json` 当前 streammuse-cli **不产出**，当前 server 只有单一 `sliding_window` mode。
+
+**结论**：plan 假设的 setup（单 checkpoint / sliding-window / 比 combined.mid）与历史上真正验证过一致性的 setup（两阶段 / raw history JSON / 外部 codebase）不是同一套。需用户决策后才能继续（见与用户的对话）。
+
+**已完成且保留的产物**：0.0 的 offline `--bpm` 口子（向后兼容，173 passed）、0.1 的 BPM 对照表（附录 A）、condition_idx→歌曲映射 `[2,5,3,1,4]`（idx 0→2.npz, 1→5, 2→3, 3→1, 4→4）。
+
 ### Phase 0：链路手动验证（写测试代码之前，把所有未知数消掉）
 
-- [ ] **0.0 给 offline 加 BPM 直传口子**（后续手动验证就要用）：`model.generate_accompaniment` 加 `bpm_override: int | None = None`（一行：`bpm_value = bpm_override if bpm_override is not None else metadata["bpm"]`），`run_lekai_offline.py` 加 `--bpm` 透传；不传时行为完全不变，`uv run pytest tests/ -q` 确认无破坏。
-- [ ] **0.1 留档原生 BPM**：读 `prompts/inputs_lekai/npz/{1..5}.npz` 的 `metadata["bpm"]`，并用项目自己的 `MidiConverter.load_midi()`（pretty_midi 路径，**与 server 端取条件 BPM 是同一段代码**，不要用 mido 另起炉灶以免 float/整数微秒换算的语义漂移）读 `mel/{1..5}.mid`，记录每首的原生 BPM 及其所在 encode_bpm 桶（写进本文件附录）。注意：测试正确性已不依赖此项（两侧显式钉 120），这一步只为留档和异常排查。
+- [x] **0.0 给 offline 加 BPM 直传口子**（后续手动验证就要用）：`model.generate_accompaniment` 加 `bpm_override: int | None = None`（一行：`bpm_value = bpm_override if bpm_override is not None else metadata["bpm"]`），`run_lekai_offline.py` 加 `--bpm` 透传；不传时行为完全不变，`uv run pytest tests/ -q` 确认无破坏。
+- [x] **0.1 留档原生 BPM**：见附录 A。NPZ 与 mel MIDI 两条数据源 BPM 完全一致（110/74/120/57/92），跨慢/中两桶；测试钉 120 不依赖此项。
 - [ ] **0.2 手动跑一次 realtime 链路**：空闲端口起 server（确定性 env + `LEKAI_DEFAULT_BPM=120`），先发一次预热请求，然后 `streammuse-cli --input-mode midi_file ... --tempo 60 --max-ticks 256 --output-type session`，确认：
   - [ ] session 目录产出 `combined.mid` / `events.jsonl` / `inferences.json`；
   - [ ] `combined.mid` 的 Accompaniment track 事件数与 `inferences.json` 中各次响应合并后的事件数一致（即录制不受回放调度影响）；若不一致 → 改用 `inferences.json` 重建事件序列，并在本文件记录该决定；
