@@ -477,3 +477,182 @@ Two-stage consistency test 现在守护的是 **server-side inference context**�
 `git status` 里还会看到 `uv.lock` 和 `src/streammuse.egg-info/*` 的变化。这些是 `uv run` 同步项目环境时带出的生成/锁文件变化，核心 consistency 实现不依赖这些文件。
 
 另外当前 workspace 本来就有一些 untracked 目录，例如 `docs/.vitepress/`、`node_modules/`、`output/`、`outputs/`。本轮没有清理这些目录，避免误删用户已有状态。
+
+## 8. Realtime Scheduling 修复实现（2026-06-26 追加）
+
+本轮根据 `developing-logs/plans/2026-06-26-prompt-continuation-streaming-scheduling-fix-plan.md` 完成了 prompt+continuation realtime playback scheduler 修复。核心结论更新为：之前 `combined.mid` 空/缺拍主要不是 server inference context 问题，而是 client scheduling 层把 streaming event history 强行配成 note pair，导致边界事件和跨 chunk note 被跳过。
+
+### 8.1 核心代码改动
+
+修改文件：`src/streammuse/application/services/prompt_continuation_realtime_service.py`。
+
+新增默认 scheduler mode：
+
+```python
+raw_scheduling_mode = os.environ.get(
+    "LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE",
+    "streaming_events",
+).strip().lower()
+if raw_scheduling_mode not in {"streaming_events", "paired_future_only"}:
+    raw_scheduling_mode = "streaming_events"
+self._scheduling_mode = raw_scheduling_mode
+```
+
+`_schedule_playable()` 现在默认走 streaming event scheduler，旧 pair path 只保留为显式诊断模式：
+
+```python
+def _schedule_playable(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
+    if self._scheduling_mode == "paired_future_only":
+        self._schedule_playable_paired_future_only(accompaniment, current_tick=int(current_tick))
+        return
+    self._schedule_playable_streaming_events(accompaniment, current_tick=int(current_tick))
+```
+
+streaming scheduler 的关键语义：
+
+```python
+for event in [*rehydrated_events, *usable_events]:
+    event_key = self._event_key(event)
+    seen_in_payload[event_key] += 1
+    occurrence = seen_in_payload[event_key]
+    if self._handled_model_event_counts[event_key] >= occurrence:
+        skipped_duplicate += 1
+        continue
+
+    event_tick = int(event.tick)
+    schedule_tick = event_tick
+    if event_tick < current_tick:
+        late_event_count += 1
+        if not self._recover_late_events:
+            dropped_past += 1
+            self._ensure_event_count(self._handled_model_event_counts, event_key, occurrence)
+            continue
+        if self._would_drop_late_note_on(event, current_tick=current_tick):
+            dropped_too_late_note_on += 1
+            self._ensure_event_count(self._handled_model_event_counts, event_key, occurrence)
+            continue
+        schedule_tick = current_tick
+
+    model_event = self._to_model_event(event, current_tick=current_tick)
+    self._scheduler.schedule(model_event, schedule_tick)
+```
+
+这带来几个行为变化：
+
+- 不再要求 `note_on` / `note_off` 在同一次 playable response 内形成完整 pair。
+- 同 tick 的 `note_off -> note_on` 可以按 event stream 顺序 schedule。
+- 跨 chunk 的 `note_on` 会先播放，后续 `note_off` 到来时再独立 schedule。
+- `/playable` 重复返回 full history 时，用 `Counter[EventKey]` 做 occurrence-level 去重。
+- event key 扩展为 `(tick, pitch, event_type, velocity, channel, program)`，避免不同 channel/program 被误判重复。
+
+### 8.2 Sustain note rehydrate
+
+新增 `_rehydrate_sustaining_notes()`，处理 `note_on.tick < current_tick < note_off.tick` 的 active span：
+
+```python
+if not (note_on_tick < current_tick < note_off_tick):
+    continue
+span_key = self._note_span_key(note_on, event)
+if span_key in self._rehydrated_model_note_span_keys:
+    continue
+note_on_key = self._event_key(note_on)
+if self._played_model_event_counts[note_on_key] >= note_on_occurrence:
+    continue
+rehydrated.append(self._clone_event_at_tick(note_on, current_tick))
+```
+
+实现上区分了两个概念：
+
+- `handled_model_event_counts`：用于 full history duplicate skip。
+- `played_model_event_counts`：表示原始 note_on 已经实际播放或被 rehydrated clone 代表。
+
+这个区分很重要：如果一个 late note_on 先被看到但当时还没有 future note_off，不能因为它被 drop/handled 过，就永久禁止后续 sustain rehydrate。
+
+### 8.3 Consistency runner 更新
+
+修改文件：
+
+```text
+tests/consistency/two_stage_runners.py
+tests/consistency/conftest.py
+tests/consistency/test_two_stage_prompt_continuation_consistency.py
+```
+
+runner 现在显式设置：
+
+```text
+LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE=streaming_events
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=0
+LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
+```
+
+并且 consistency test 会检查 trace：
+
+```python
+assert schedule_counts["paired_future_only_rows"] == 0
+if schedule_counts["schedule_rows"]:
+    assert schedule_counts["streaming_event_rows"] == schedule_counts["schedule_rows"]
+```
+
+这样可以防止测试 silent 跑回旧 pair path。
+
+### 8.4 文档更新
+
+更新文件：`src/streammuse/infrastructure/inference/lekai_prompt_continuation/README.md`。
+
+文档里的 scheduling policy 已改成：
+
+- 默认 `streaming_events`；
+- `RECOVER_LATE_EVENTS` 只控制 late event recovery，不再控制 pair/streaming 分支；
+- sustain rehydrate 默认开启；
+- `paired_future_only` 只作为 legacy/diagnostic mode。
+
+### 8.5 验证结果
+
+Unit tests：
+
+```text
+uv run pytest tests/unit/application/test_prompt_continuation_realtime_service.py -q
+结果：16 passed in 0.31s
+```
+
+Two-stage consistency 真模型验证：
+
+```text
+STREAMMUSE_CONSISTENCY_USE_DEFAULT_MODELS=1 \
+STREAMMUSE_TWO_STAGE_CONSISTENCY_SONGS=4 \
+STREAMMUSE_TWO_STAGE_CONSISTENCY_TEMPOS=15,120 \
+uv run pytest tests/consistency/test_two_stage_prompt_continuation_consistency.py -q -s
+
+结果：1 passed in 395.11s (0:06:35)
+```
+
+Prompt-extension realtime sweep：
+
+```text
+output/prompt_extension_sweep/20260626-105843/summary.json
+```
+
+配置：song 4、tempo 120、prompt extension 1/2/3/4 beats、`max_ticks=128`、`SCHEDULING_MODE=streaming_events`、`RECOVER_LATE_EVENTS=0`。
+
+结果汇总：
+
+| extension | schedule_rows | streaming_rows | paired_rows | scheduled_events | rehydrated | skipped_unpaired | Accompaniment note_on |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 beat | 23 | 23 | 0 | 158 | 0 | 0 | 79 |
+| 2 beats | 23 | 23 | 0 | 96 | 7 | 0 | 49 |
+| 3 beats | 23 | 23 | 0 | 140 | 15 | 0 | 76 |
+| 4 beats | 23 | 23 | 0 | 147 | 24 | 0 | 81 |
+
+四组 sweep 的 `combined.mid` 都包含非空 `Accompaniment` 轨，不再出现旧版本里 `skipped_unpaired` 持续累积且 accompaniment 全空的问题。
+
+### 8.6 剩余注意点
+
+这次验证完成的是事件级 scheduling 和 MIDI artifact 非空验证。我没有做主观听感确认；建议后续人工播放下面这些文件至少一组：
+
+```text
+output/prompt_extension_sweep/20260626-105843/ext1_beats/cli/2026-06-26/session_105855/combined.mid
+output/prompt_extension_sweep/20260626-105843/ext2_beats/cli/2026-06-26/session_105924/combined.mid
+output/prompt_extension_sweep/20260626-105843/ext3_beats/cli/2026-06-26/session_105953/combined.mid
+output/prompt_extension_sweep/20260626-105843/ext4_beats/cli/2026-06-26/session_110021/combined.mid
+```

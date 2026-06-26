@@ -79,8 +79,9 @@ def run_two_stage_realtime(
     env.update(
         {
             "LEKAI_PROMPT_CONTINUATION_TRACE_PATH": str(trace_path),
+            "LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE": "streaming_events",
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
-            "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
+            "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "1",
             "LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP": "1",
         }
     )
@@ -211,6 +212,9 @@ def count_dropped_and_clipped(trace_path: Path) -> dict[str, int]:
     dropped_too_late = 0
     skipped_unpaired = 0
     scheduled_events = 0
+    rehydrated_notes = 0
+    streaming_event_rows = 0
+    paired_future_only_rows = 0
     schedule_rows = 0
     if not trace_path.exists():
         raise FileNotFoundError(f"trace file not found: {trace_path}")
@@ -226,12 +230,21 @@ def count_dropped_and_clipped(trace_path: Path) -> dict[str, int]:
         dropped_too_late += int(row.get("dropped_too_late_note_on", 0) or 0)
         skipped_unpaired += int(row.get("skipped_unpaired", 0) or 0)
         scheduled_events += int(row.get("scheduled_event_count", 0) or 0)
+        rehydrated_notes += int(row.get("rehydrated_note_count", 0) or 0)
+        mode = row.get("mode")
+        if mode == "streaming_events":
+            streaming_event_rows += 1
+        elif mode == "paired_future_only":
+            paired_future_only_rows += 1
     return {
         "dropped_past": dropped_past,
         "clipped_sustains": clipped,
         "dropped_too_late_note_on": dropped_too_late,
         "skipped_unpaired": skipped_unpaired,
         "scheduled_events": scheduled_events,
+        "rehydrated_notes": rehydrated_notes,
+        "streaming_event_rows": streaming_event_rows,
+        "paired_future_only_rows": paired_future_only_rows,
         "schedule_rows": schedule_rows,
     }
 

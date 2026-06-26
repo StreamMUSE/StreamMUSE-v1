@@ -251,28 +251,34 @@ There are three histories to keep separate:
 The important realtime policy is in
 `PromptContinuationRealtimeService._schedule_playable`.
 
-Three scheduling policies are useful for diagnosis:
+The current default scheduler is `streaming_events`:
 
-- Default historical strict mode: pair `note_on/note_off`, drop events whose
-  original ticks are already in the past.
-- Unbounded recover-late mode: schedule returned events event-by-event. If an
-  event is late, schedule it at the current tick.
-- Bounded recover-late mode: same event-by-event recovery, but drop late
-  `note_on` events outside a configured recovery window. Late `note_off` events
-  are still allowed so already-sounding notes can be closed.
-- Active-note rehydration: optional add-on for bounded recovery. If a late
-  `note_on` would be dropped but the matching `note_off` is still in the future,
-  synthesize a replacement `note_on` at the current tick so the client playback
-  state matches the backend accompaniment state.
+```bash
+export LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE=streaming_events
+```
 
-Recover-late mode is enabled by:
+This mode treats `/prompt_continuation/playable` as a monotonic full-history
+event stream. It schedules events independently, without requiring a complete
+`note_on`/`note_off` pair in the current response. This is important because a
+streaming response can expose a `note_on` before the matching `note_off`, and
+same-tick `note_off -> note_on` re-articulation is valid playback information.
+
+`LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS` now controls only what happens to
+late events inside `streaming_events`; it no longer switches the client back to
+pair-based scheduling.
+
+Late recovery is enabled by:
 
 ```bash
 export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 ```
 
-This switch alone is intentionally unbounded. To test the bounded policy, enable
-it separately:
+With recovery disabled, past events are marked handled and not scheduled, while
+future/current events are still scheduled event-by-event. With recovery enabled,
+late events are scheduled at the current tick unless bounded recovery drops a
+late `NOTE_ON`.
+
+To test the bounded policy, enable it separately:
 
 ```bash
 export LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
@@ -289,19 +295,28 @@ Setting `LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS` also opts into the
 bounded policy unless `LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=0` is set
 explicitly. Raw debug history is not affected by either scheduling policy.
 
-Active-note rehydration is controlled separately:
+Active-note rehydration is enabled by default in streaming mode. If the backend
+history contains `note_on.tick < current_tick < note_off.tick`, the client clones
+a replacement `note_on` at `current_tick` and preserves the original future
+`note_off`. The service tracks note spans so repeated full-history polling does
+not retrigger the same sustain note.
+
+For legacy diagnosis only, the old pair-based path can still be requested:
 
 ```bash
-export LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
+export LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE=paired_future_only
 ```
 
-For demo-style runs, the current practical setting is:
+That mode requires complete future note pairs and can drop streaming boundary
+notes, so it should not be used for normal prompt-continuation realtime playback.
+
+For demo-style runs, the practical setting is:
 
 ```bash
+LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE=streaming_events
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
 LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
 LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
-LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
 ```
 
 ## Main Files

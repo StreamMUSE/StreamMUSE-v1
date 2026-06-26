@@ -125,6 +125,17 @@ def test_prompt_continuation_append_keeps_empty_rest_chunks():
     assert [event.pitch for event in note_action.melody_events] == [64]
 
 
+def _event_signature(events):
+    return [(event.pitch, event.event_type) for event in events]
+
+
+def test_prompt_continuation_default_scheduling_mode_is_streaming(monkeypatch):
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE", raising=False)
+    service = _make_service()
+
+    assert service._scheduling_mode == "streaming_events"
+
+
 def test_prompt_continuation_schedule_playable_drops_past_events():
     service = _make_service()
     output = service._output
@@ -135,12 +146,12 @@ def test_prompt_continuation_schedule_playable_drops_past_events():
     )
 
     assert service._scheduler.get_events_at_tick(12) == []
-    scheduled = service._scheduler.get_events_at_tick(36)
-    assert [event.pitch for event in scheduled] == [50]
-    assert any("dropped 2 past" in message for _state, message in output.statuses)
+    assert _event_signature(service._scheduler.get_events_at_tick(36)) == [(50, EventType.NOTE_ON)]
+    assert _event_signature(service._scheduler.get_events_at_tick(40)) == [(50, EventType.NOTE_OFF)]
+    assert any("dropped 2 past event" in message for _state, message in output.statuses)
 
 
-def test_prompt_continuation_schedule_playable_clips_sustaining_notes():
+def test_prompt_continuation_schedule_playable_rehydrates_sustaining_notes():
     service = _make_service()
     output = service._output
 
@@ -149,16 +160,41 @@ def test_prompt_continuation_schedule_playable_clips_sustaining_notes():
         current_tick=32,
     )
 
-    clipped_on = service._scheduler.get_events_at_tick(32)
-    future_on = service._scheduler.get_events_at_tick(36)
-    note_offs = service._scheduler.get_events_at_tick(40) + service._scheduler.get_events_at_tick(44)
-    assert [(event.pitch, event.event_type) for event in clipped_on] == [(48, EventType.NOTE_ON)]
-    assert [(event.pitch, event.event_type) for event in future_on] == [(50, EventType.NOTE_ON)]
-    assert [(event.pitch, event.event_type) for event in note_offs] == [
+    assert _event_signature(service._scheduler.get_events_at_tick(32)) == [(48, EventType.NOTE_ON)]
+    assert _event_signature(service._scheduler.get_events_at_tick(36)) == [(50, EventType.NOTE_ON)]
+    assert _event_signature(
+        service._scheduler.get_events_at_tick(40) + service._scheduler.get_events_at_tick(44)
+    ) == [
         (48, EventType.NOTE_OFF),
         (50, EventType.NOTE_OFF),
     ]
-    assert any("clipped 1 sustaining" in message for _state, message in output.statuses)
+    assert any("rehydrated 1 active note" in message for _state, message in output.statuses)
+
+
+def test_prompt_continuation_schedule_playable_schedules_same_tick_retrigger_without_pair():
+    service = _make_service()
+
+    service._schedule_playable(
+        [_note_off(60, 52), _note(60, 52)],
+        current_tick=52,
+    )
+
+    assert _event_signature(service._scheduler.get_events_at_tick(52)) == [
+        (60, EventType.NOTE_OFF),
+        (60, EventType.NOTE_ON),
+    ]
+
+
+def test_prompt_continuation_schedule_playable_keeps_cross_chunk_note_on_before_note_off_arrives():
+    service = _make_service()
+
+    service._schedule_playable([_note(60, 52)], current_tick=52)
+    assert _event_signature(service._scheduler.get_events_at_tick(52)) == [(60, EventType.NOTE_ON)]
+
+    service._schedule_playable([_note(60, 52), _note_off(60, 56)], current_tick=53)
+
+    assert service._scheduler.get_events_at_tick(53) == []
+    assert _event_signature(service._scheduler.get_events_at_tick(56)) == [(60, EventType.NOTE_OFF)]
 
 
 def test_prompt_continuation_schedule_playable_skips_duplicates():
@@ -171,13 +207,25 @@ def test_prompt_continuation_schedule_playable_skips_duplicates():
         current_tick=32,
     )
 
-    assert [event.pitch for event in service._scheduler.get_events_at_tick(36)] == [50]
-    tick_40 = service._scheduler.get_events_at_tick(40)
-    assert [(event.pitch, event.event_type) for event in tick_40] == [
+    assert _event_signature(service._scheduler.get_events_at_tick(36)) == [(50, EventType.NOTE_ON)]
+    assert _event_signature(service._scheduler.get_events_at_tick(40)) == [
         (50, EventType.NOTE_OFF),
         (52, EventType.NOTE_ON),
     ]
-    assert any("skipped 1 duplicate note" in message for _state, message in output.statuses)
+    assert _event_signature(service._scheduler.get_events_at_tick(44)) == [(52, EventType.NOTE_OFF)]
+    assert any("skipped 2 duplicate event" in message for _state, message in output.statuses)
+
+
+def test_prompt_continuation_schedule_playable_rehydrate_does_not_repeat_for_full_history():
+    service = _make_service()
+    history = [_note(60, 48), _note_off(60, 56)]
+
+    service._schedule_playable(history, current_tick=52)
+    service._schedule_playable(history, current_tick=53)
+
+    assert _event_signature(service._scheduler.get_events_at_tick(52)) == [(60, EventType.NOTE_ON)]
+    assert service._scheduler.get_events_at_tick(53) == []
+    assert _event_signature(service._scheduler.get_events_at_tick(56)) == [(60, EventType.NOTE_OFF)]
 
 
 def test_prompt_continuation_recover_late_can_drop_too_old_note_on(monkeypatch):
@@ -197,13 +245,13 @@ def test_prompt_continuation_recover_late_can_drop_too_old_note_on(monkeypatch):
         current_tick=36,
     )
 
-    tick_36 = service._scheduler.get_events_at_tick(36)
-    assert [(event.pitch, event.event_type) for event in tick_36] == [
-        (48, EventType.NOTE_OFF),
+    assert _event_signature(service._scheduler.get_events_at_tick(36)) == [
         (50, EventType.NOTE_ON),
+        (48, EventType.NOTE_OFF),
     ]
     assert service._scheduler.get_events_at_tick(20) == []
     assert any("dropped 1 too-late note_on" in message for _state, message in output.statuses)
+    assert any("rehydrated 1 active note" in message for _state, message in output.statuses)
 
 
 def test_prompt_continuation_recover_late_can_rehydrate_active_notes(monkeypatch):
@@ -213,36 +261,23 @@ def test_prompt_continuation_recover_late_can_rehydrate_active_notes(monkeypatch
     service = _make_service()
     output = service._output
 
-    service._schedule_playable(
-        [
-            _note(48, 20),
-            _note_off(48, 40),
-            _note(50, 34),
-            _note_off(50, 42),
-        ],
-        current_tick=36,
-    )
+    history = [
+        _note(48, 20),
+        _note_off(48, 40),
+        _note(50, 34),
+        _note_off(50, 42),
+    ]
+    service._schedule_playable(history, current_tick=36)
 
-    tick_36 = service._scheduler.get_events_at_tick(36)
-    assert [(event.pitch, event.event_type) for event in tick_36] == [
+    assert _event_signature(service._scheduler.get_events_at_tick(36)) == [
         (48, EventType.NOTE_ON),
         (50, EventType.NOTE_ON),
     ]
-    assert [(event.pitch, event.event_type) for event in service._scheduler.get_events_at_tick(40)] == [
-        (48, EventType.NOTE_OFF),
-    ]
+    assert _event_signature(service._scheduler.get_events_at_tick(40)) == [(48, EventType.NOTE_OFF)]
     assert service._scheduler.get_events_at_tick(20) == []
-    assert any("rehydrated 1 active note" in message for _state, message in output.statuses)
+    assert any("rehydrated 2 active note" in message for _state, message in output.statuses)
 
-    service._schedule_playable(
-        [
-            _note(48, 20),
-            _note_off(48, 40),
-            _note(50, 34),
-            _note_off(50, 42),
-        ],
-        current_tick=37,
-    )
+    service._schedule_playable(history, current_tick=37)
 
     assert service._scheduler.get_events_at_tick(37) == []
 
@@ -265,11 +300,10 @@ def test_prompt_continuation_recover_late_is_unbounded_without_bound_switch(monk
         current_tick=36,
     )
 
-    tick_36 = service._scheduler.get_events_at_tick(36)
-    assert [(event.pitch, event.event_type) for event in tick_36] == [
+    assert _event_signature(service._scheduler.get_events_at_tick(36)) == [
+        (50, EventType.NOTE_ON),
         (48, EventType.NOTE_ON),
         (48, EventType.NOTE_OFF),
-        (50, EventType.NOTE_ON),
     ]
 
 
@@ -291,10 +325,9 @@ def test_prompt_continuation_recover_late_bound_switch_defaults_to_generation_in
         current_tick=36,
     )
 
-    tick_36 = service._scheduler.get_events_at_tick(36)
-    assert [(event.pitch, event.event_type) for event in tick_36] == [
-        (48, EventType.NOTE_OFF),
+    assert _event_signature(service._scheduler.get_events_at_tick(36)) == [
         (50, EventType.NOTE_ON),
+        (48, EventType.NOTE_OFF),
     ]
     assert service._scheduler.get_events_at_tick(20) == []
 

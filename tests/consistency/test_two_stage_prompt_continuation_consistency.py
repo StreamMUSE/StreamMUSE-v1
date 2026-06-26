@@ -84,6 +84,15 @@ def test_two_stage_realtime_matches_offline(
             out_dir=out_dir,
         )
         schedule_counts = count_dropped_and_clipped(realtime.trace_path)
+        assert schedule_counts["paired_future_only_rows"] == 0, (
+            f"two-stage realtime unexpectedly used paired_future_only scheduling at tempo {tempo}: "
+            f"{schedule_counts}. trace={realtime.trace_path}"
+        )
+        if schedule_counts["schedule_rows"]:
+            assert schedule_counts["streaming_event_rows"] == schedule_counts["schedule_rows"], (
+                f"two-stage realtime did not use streaming_events for every schedule row at tempo {tempo}: "
+                f"{schedule_counts}. trace={realtime.trace_path}"
+            )
         status_payload = json.loads(realtime.history_status_path.read_text())
         raw_status = dict(status_payload.get("raw_status", {}))
         assert not raw_status.get("is_failed"), (
