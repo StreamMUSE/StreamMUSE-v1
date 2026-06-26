@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -50,6 +50,10 @@ class LekaiPromptEngine:
         self._warmup_error: Optional[str] = None
         self._is_warmed_up = False
         self._last_generated_acc_beats = 0
+        self._last_prompt_token_ids: list[int] = []
+        self._last_generated_token_ids: list[int] = []
+        self._last_new_token_ids: list[int] = []
+        self._last_generation_metadata: dict[str, Any] = {}
 
         if checkpoint_path:
             self._load_model(checkpoint_path)
@@ -344,6 +348,20 @@ class LekaiPromptEngine:
 
         return int(self._last_generated_acc_beats)
 
+    def last_generation_log(self) -> dict[str, Any]:
+        """Return token-level diagnostics for the latest prompt generation."""
+
+        return {
+            "prompt_tokens": list(self._last_prompt_token_ids),
+            "prompt_token_count": len(self._last_prompt_token_ids),
+            "generated_tokens": list(self._last_generated_token_ids),
+            "generated_token_count": len(self._last_generated_token_ids),
+            "new_tokens": list(self._last_new_token_ids),
+            "new_token_count": len(self._last_new_token_ids),
+            "generated_acc_beats": int(self._last_generated_acc_beats),
+            **dict(self._last_generation_metadata),
+        }
+
     def _generation_max_length(self, prompt_token_count: int, max_new_tokens: Optional[int] = None) -> int:
         if max_new_tokens is None:
             max_new_tokens = self._env_positive_int("LEKAI_PROMPT_MAX_NEW_TOKENS") or 2048
@@ -437,12 +455,28 @@ class LekaiPromptEngine:
             return []
 
         condition_length_ticks = self._prompt_condition_length_ticks(prompt_length_ticks)
-        prompt_tokens, _bpm, window_ticks = self._build_melody_prompt_tokens(
+        prompt_tokens, bpm, window_ticks = self._build_melody_prompt_tokens(
             melody_events=copied_melody,
             prompt_start_tick=prompt_start_tick,
             prompt_length_ticks=condition_length_ticks,
         )
+        prompt_token_ids = [int(token) for token in prompt_tokens.detach().cpu().flatten().tolist()]
+        self._last_prompt_token_ids = prompt_token_ids
+        self._last_generation_metadata = {
+            "bpm": int(bpm),
+            "prompt_start_tick": int(prompt_start_tick),
+            "requested_prompt_length_ticks": int(prompt_length_ticks),
+            "condition_length_ticks": int(condition_length_ticks),
+            "window_ticks": int(window_ticks),
+            "temperature": self._env_float("LEKAI_PROMPT_TEMPERATURE", 1.1),
+            "top_k": max(0, self._env_int("LEKAI_PROMPT_TOP_K", 0)),
+            "top_p": self._env_float("LEKAI_PROMPT_TOP_P", 0.95),
+            "repetition_penalty": self._env_float("LEKAI_PROMPT_REPETITION_PENALTY", 1.0),
+        }
         generated = self._generate_tokens(prompt_tokens)
+        generated_token_ids = [int(token) for token in generated.detach().cpu().flatten().tolist()]
+        self._last_generated_token_ids = generated_token_ids
+        self._last_new_token_ids = generated_token_ids[len(prompt_token_ids):]
         return self._decode_accompaniment_events(
             generated_tokens=generated,
             prompt_start_tick=prompt_start_tick,

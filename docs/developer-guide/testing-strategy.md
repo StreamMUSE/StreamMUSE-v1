@@ -102,6 +102,33 @@ def test_service_starts_and_stops():
     assert not service.running
 ```
 
+
+---
+
+## Consistency Tests（真实模型，默认跳过）
+
+`tests/consistency/` 是 opt-in 的端到端回归测试，会启动本地 Lekai server、加载真实 checkpoint，并用 MIDI file 输入模拟 realtime。默认不设置 checkpoint env 时会 skip，不影响日常 `uv run pytest tests/`。
+
+单阶段 consistency：
+
+```bash
+LEKAI_CHECKPOINT_PATH=<single-stage-checkpoint.safetensors> \
+STREAMMUSE_CONSISTENCY_SONGS=4 \
+STREAMMUSE_CONSISTENCY_TEMPOS=15,120 \
+uv run pytest tests/consistency/test_realtime_offline_consistency.py -q -s
+```
+
+Two-stage prompt+continuation consistency：
+
+```bash
+STREAMMUSE_CONSISTENCY_USE_DEFAULT_MODELS=1 \
+STREAMMUSE_TWO_STAGE_CONSISTENCY_SONGS=4 \
+STREAMMUSE_TWO_STAGE_CONSISTENCY_TEMPOS=15,120 \
+uv run pytest tests/consistency/test_two_stage_prompt_continuation_consistency.py -q -s
+```
+
+Two-stage consistency 比较的是 server 端保存的 `prompt_continuation_raw_history.json` / `prompt_continuation_prompt_history.json`，也就是实际用于 continuation 的 inference context；`combined.mid` playback/recording 另有已知调度问题，详见 `developing-logs/reports/2026-06-26-two-stage-consistency-implementation-report.md`。
+
 ---
 
 ## 集成测试

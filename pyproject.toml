@@ -49,6 +49,9 @@ streammuse-web = "streammuse.presentation.web.server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "consistency: realtime/offline end-to-end consistency test (needs GPU + checkpoint; opt-in via checkpoint env)",
+]
 
 [tool.uv.sources]
 torch = [

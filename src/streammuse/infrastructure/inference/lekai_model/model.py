@@ -72,6 +72,7 @@ class PianoLLaMA(PreTrainedModel):
         repetition_penalty: float = 1.2,
         device: str = "cuda",
         verbose: bool = True,
+        bpm_override: Optional[int] = None,
     ):
         """
         基于条件（part0）生成伴奏（part1）
@@ -115,7 +116,10 @@ class PianoLLaMA(PreTrainedModel):
         idx_value = metadata["time_signature_idx"]
         if idx_value == 9:
             idx_value = 4
-        bpm_value = metadata["bpm"]
+        # bpm_override lets callers pin the conditioning BPM independently of the
+        # NPZ metadata (used by the realtime/offline consistency test to keep both
+        # sides on the same encode_bpm bucket). None preserves original behavior.
+        bpm_value = bpm_override if bpm_override is not None else metadata["bpm"]
         num_measures = metadata["num_measures"]
 
         # 提取所有part0的beat tokens（条件）和part1的beat tokens（GT）

@@ -66,7 +66,11 @@ class _ContinuationEngine:
 
 
 def test_prompt_continuation_scheduler_starts_from_real_rt_midi_sample():
-    if not RT_PERIODIC_GT_MELODY.exists():
+    try:
+        sample_exists = RT_PERIODIC_GT_MELODY.exists()
+    except PermissionError as exc:
+        pytest.skip(f"external RT MIDI sample is not readable: {RT_PERIODIC_GT_MELODY} ({exc})")
+    if not sample_exists:
         pytest.skip(f"external RT MIDI sample not found: {RT_PERIODIC_GT_MELODY}")
 
     notes, resolution, max_tick = MidiFileInput._midi_to_notes(

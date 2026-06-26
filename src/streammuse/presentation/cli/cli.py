@@ -26,6 +26,7 @@ from streammuse.infrastructure.inference.prompt_continuation_http_client import 
     PromptContinuationHttpClient,
     PromptContinuationHttpClientConfig,
 )
+from streammuse.infrastructure.inference.serialization import event_to_dict
 from streammuse.infrastructure.input.midi_file import MidiFileInput
 from streammuse.presentation.cli.config_parser import args_to_config, env_to_config, parse_args
 
@@ -233,11 +234,35 @@ def main() -> int:
         with open(accompaniment_path, "w") as f:
             json.dump(accompaniment_history if isinstance(accompaniment_history, list) else [], f, indent=2)
 
+    def _save_prompt_continuation_history_logs(client: PromptContinuationHttpClient) -> None:
+        if session_manager is None:
+            return
+        session_dir = session_manager.get_session_dir()
+        try:
+            prompt_events, prompt_status = client.prompt_history()
+            raw_events, raw_status = client.raw_history()
+        except Exception as exc:
+            print(f"Warning: Failed to fetch prompt-continuation history before clear: {exc}")
+            return
+
+        with open(session_dir / "prompt_continuation_prompt_history.json", "w") as f:
+            json.dump([event_to_dict(event) for event in prompt_events], f, indent=2)
+        with open(session_dir / "prompt_continuation_raw_history.json", "w") as f:
+            json.dump([event_to_dict(event) for event in raw_events], f, indent=2)
+        with open(session_dir / "prompt_continuation_history_status.json", "w") as f:
+            json.dump(
+                {"prompt_status": prompt_status, "raw_status": raw_status},
+                f,
+                indent=2,
+                sort_keys=True,
+            )
+
     def cleanup() -> None:
         try:
             if inference_engine is not None:
                 history_payload = inference_engine.clear_history()
             elif prompt_client is not None:
+                _save_prompt_continuation_history_logs(prompt_client)
                 history_payload = prompt_client.clear_history()
             else:
                 history_payload = {}

@@ -24,6 +24,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--repetition-penalty", type=float, default=1.2)
+    parser.add_argument(
+        "--bpm",
+        type=int,
+        default=None,
+        help="Override conditioning BPM (default: read from NPZ metadata). "
+        "Used to pin BPM token identical to the realtime side.",
+    )
     parser.add_argument("--cache-lengths", action="store_true", help="Use dataset length cache if available")
     return parser.parse_args()
 
@@ -91,6 +98,7 @@ def main() -> None:
             repetition_penalty=float(args.repetition_penalty),
             device=device,
             verbose=False,
+            bpm_override=args.bpm,
         )
         elapsed_ms = (time.perf_counter() - song_start) * 1000
         per_song_ms.append(elapsed_ms)

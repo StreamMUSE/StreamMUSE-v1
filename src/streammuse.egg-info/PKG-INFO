@@ -31,6 +31,8 @@ Requires-Dist: torchvision>=0.22.0
 Requires-Dist: transformers
 Requires-Dist: uvicorn>=0.35.0
 Requires-Dist: wandb>=0.20.1
+Requires-Dist: websockets>=12
+Requires-Dist: httpx>=0.27
 
 # StreamMUSE 🎹⏳
 This final goal of this task is to generate accompniament given melody by user input in a real-time streaming fashion. We use 'mel' as short for melody and 'acc' as short for accompaniment. 
