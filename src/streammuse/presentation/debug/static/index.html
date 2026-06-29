@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamMUSE Replay Debugger</title>
+    <link rel="stylesheet" href="/css/debug.css">
+</head>
+<body>
+    <div id="app">
+        <header class="topbar">
+            <div>
+                <p class="eyebrow">Replay debugger</p>
+                <h1 id="page-title">Did realtime playback match the offline reference?</h1>
+                <p id="run-summary">Same melody, two execution paths. The first red boundary is where debugging begins.</p>
+            </div>
+            <div class="controls" aria-label="Stage navigation">
+                <button id="prev-event" type="button" title="Previous stage">Previous stage</button>
+                <button id="next-event" type="button" title="Next stage">Next stage</button>
+                <button id="first-mismatch" type="button" title="Jump to first difference">First difference</button>
+            </div>
+        </header>
+
+        <main class="workspace">
+            <aside class="stage-rail" aria-label="Replay stages">
+                <section class="how-to-read">
+                    <h2>How to read this</h2>
+                    <ol>
+                        <li><strong>Check the result.</strong> Did both paths match?</li>
+                        <li><strong>Find the first red stage.</strong> That is the first boundary that diverged.</li>
+                        <li><strong>Compare the two paths.</strong> Use Events, Tokens, or Scheduler for the selected stage.</li>
+                    </ol>
+                </section>
+                <div class="rail-heading">
+                    <h2>Replay Stages</h2>
+                    <p>Each row is a checkpoint where offline and realtime-sim are compared.</p>
+                </div>
+                <div class="rail-filters" aria-label="Stage filters">
+                    <button class="filter active" data-filter="all" type="button">All</button>
+                    <button class="filter" data-filter="diff" type="button">Diffs</button>
+                    <button class="filter" data-filter="tokens" type="button">Tokens</button>
+                    <button class="filter" data-filter="scheduler" type="button">Scheduler</button>
+                </div>
+                <ol id="timeline-list"></ol>
+            </aside>
+
+                <section class="main-panel">
+                <section class="proof-panel" aria-label="What this screen is proving">
+                    <div>
+                        <h2>What this screen is proving</h2>
+                        <p><strong>Same melody</strong> goes through <strong>Offline direct</strong> and <strong>Realtime simulation</strong>. The debugger checks each boundary where realtime bugs usually appear.</p>
+                        <p><strong>If a stage turns red</strong>, start there. Then inspect Events, Tokens, Scheduler, and Raw to decide whether the problem came from conversion, model generation, decoding, scheduling, or rendering.</p>
+                    </div>
+                    <div class="pipeline-map" id="pipeline-map" aria-label="Replay pipeline map"></div>
+                </section>
+
+                <section class="overview-grid" aria-label="Run overview">
+                    <article class="status-card primary">
+                        <span class="card-label">Result</span>
+                        <strong id="result-title">Loading</strong>
+                        <p id="result-copy">Waiting for comparison data.</p>
+                    </article>
+                    <article class="status-card">
+                        <span class="card-label">Compared</span>
+                        <strong id="runner-count">--</strong>
+                        <p id="runner-copy">Offline reference vs realtime simulation</p>
+                    </article>
+                    <article class="status-card">
+                        <span class="card-label">Progress</span>
+                        <strong id="stage-progress">--</strong>
+                        <p id="stage-copy">Matched stage checkpoints</p>
+                    </article>
+                    <article class="status-card">
+                        <span class="card-label">Run facts</span>
+                        <strong id="run-fact-title">--</strong>
+                        <p id="run-facts">Reading replay metadata</p>
+                    </article>
+                </section>
+
+                <section class="selected-stage">
+                    <div class="section-title-row">
+                        <div>
+                            <h2>Selected Stage</h2>
+                            <h3 id="selected-stage-title">No stage selected</h3>
+                        </div>
+                        <span id="selected-stage-status" class="badge">Waiting</span>
+                    </div>
+                    <p id="selected-stage-explanation" class="stage-explanation"></p>
+                    <div id="diagnosis-panel" class="diagnosis-panel"></div>
+
+                    <div class="runner-grid">
+                        <article class="runner-card">
+                            <div class="runner-card-header">
+                                <div>
+                                    <span class="runner-name">Offline reference</span>
+                                    <p>Batch-style path used as the expected result.</p>
+                                </div>
+                                <span id="offline-hash" class="hash-chip">--</span>
+                            </div>
+                            <div id="offline-summary" class="summary-block"></div>
+                        </article>
+                        <article class="runner-card">
+                            <div class="runner-card-header">
+                                <div>
+                                    <span class="runner-name">Realtime simulation</span>
+                                    <p>Streaming-style path that should produce the same checkpoints.</p>
+                                </div>
+                                <span id="sim-hash" class="hash-chip">--</span>
+                            </div>
+                            <div id="sim-summary" class="summary-block"></div>
+                        </article>
+                    </div>
+                </section>
+
+                <section class="detail-panel">
+                    <div class="tabs" role="tablist" aria-label="Stage detail views">
+                        <button class="tab active" data-tab="meaning" type="button">Stage guide</button>
+                        <button class="tab" data-tab="events" type="button">Events</button>
+                        <button class="tab" data-tab="tokens" type="button">Tokens</button>
+                        <button class="tab" data-tab="scheduler" type="button">Scheduler</button>
+                        <button class="tab" data-tab="raw" type="button">Raw</button>
+                    </div>
+                    <div id="stage-data" class="detail-body"></div>
+                </section>
+            </section>
+        </main>
+    </div>
+    <script src="/js/debug.js"></script>
+</body>
+</html>

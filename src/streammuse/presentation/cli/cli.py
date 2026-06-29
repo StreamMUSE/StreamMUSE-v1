@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import atexit
-import json
 import os
 import signal
 import sys
@@ -14,21 +13,23 @@ from streammuse.application.factories import (
     InputSourceFactory,
     OutputSinkFactory,
 )
-from streammuse.domain.interfaces import InferenceEngine
-from streammuse.domain.musical import EventType, MusicalEvent, Note
+from streammuse.application.runtime import RuntimeSessionBuilder
+from streammuse.application.runtime import builder as runtime_builder_module
 from streammuse.application.services.prompt_continuation_realtime_service import (
     PromptContinuationRealtimeService,
 )
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
-from streammuse.domain.logging import SessionManager
-from streammuse.domain.timing import PlaybackScheduler, Tempo
+from streammuse.domain.interfaces import InferenceEngine
+from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.infrastructure.inference.prompt_continuation_http_client import (
     PromptContinuationHttpClient,
-    PromptContinuationHttpClientConfig,
 )
-from streammuse.infrastructure.inference.serialization import event_to_dict
 from streammuse.infrastructure.input.midi_file import MidiFileInput
 from streammuse.presentation.cli.config_parser import args_to_config, env_to_config, parse_args
+
+
+class _CliInjectionFailed(RuntimeError):
+    pass
 
 
 def _notes_to_musical_events(notes: list[dict[str, int]], velocity: int = 80) -> list[MusicalEvent]:
@@ -131,174 +132,48 @@ def main() -> int:
             print(f"Error: Injection file not found: {config.input.injection_file}")
             return 1
 
-    session_manager = None
-    session_config: dict[str, object] = {}
-    if config.output.type != "midi_file":
-        session_manager = SessionManager(args.log_dir)
-        session_manager.create_session_directory()
-        session_config = {
-            "tempo_bpm": config.tempo.bpm,
-            "ticks_per_beat": config.tempo.ticks_per_beat,
-            "beats_per_bar": config.tempo.beats_per_bar,
-            "input_type": config.input.type,
-            "output_type": config.output.type,
-            "metronome_enabled": config.output.metronome_enabled,
-            "metronome_port": config.output.metronome_port,
-            "metronome_channel": config.output.metronome_channel,
-            "count_in_beats": config.count_in_beats,
-            "continuation_mode": config.continuation_mode,
-            "inference_type": config.inference.type,
-            "prompt_length_ticks": config.inference.prompt_length_ticks,
-            "generation_interval_ticks": config.inference.generation_interval_ticks,
-            "generation_length_frames": config.inference.generation_length_frames,
-        }
-        session_manager.save_config(session_config)
+    def _before_input_create(inference_engine, _prompt_client, output_sink) -> None:
+        if config.input.injection_file and inference_engine is not None:
+            injected = _perform_injection(inference_engine, config)
+            if injected == 0:
+                try:
+                    output_sink.close()
+                except Exception:
+                    pass
+                raise _CliInjectionFailed()
 
-    output_sink = OutputSinkFactory.create(config, session_manager)
-    inference_engine: InferenceEngine | None = None
-    prompt_client: PromptContinuationHttpClient | None = None
-    if config.continuation_mode == "standard":
-        inference_engine = InferenceEngineFactory.create(config)
-    else:
-        prompt_client = PromptContinuationHttpClient(
-            PromptContinuationHttpClientConfig(
-                base_url=config.inference.server_generate_url,
-                timeout_s=float(config.inference.timeout_s),
-                model_name="lekai_prompt_continuation",
-                inference_mode=config.inference.inference_mode,
-                checkpoint_path=config.inference.checkpoint_path,
-            )
-        )
-
-    if config.input.injection_file and inference_engine is not None:
-        injected = _perform_injection(inference_engine, config)
-        if injected == 0:
-            try:
-                output_sink.close()
-            except Exception:
-                pass
-            return 1
-
-    input_source = InputSourceFactory.create(config)
-
-    if session_manager:
-        output_sink.output_config(session_config)
-
-    tempo = Tempo(
-        bpm=config.tempo.bpm,
-        ticks_per_beat=config.tempo.ticks_per_beat,
-        beats_per_bar=config.tempo.beats_per_bar,
-    )
-    scheduler = PlaybackScheduler()
-
-    if config.continuation_mode == "prompt_continuation":
-        assert prompt_client is not None
-        service = PromptContinuationRealtimeService(
-            input_source=input_source,
-            prompt_client=prompt_client,
-            output_sink=output_sink,
-            tempo=tempo,
-            scheduler=scheduler,
-            prompt_length_ticks=config.inference.prompt_length_ticks,
-            generation_interval_ticks=config.inference.generation_interval_ticks,
-        )
-    else:
-        assert inference_engine is not None
-        service = RealTimeMusicService(
-            input_source=input_source,
-            inference_engine=inference_engine,
-            output_sink=output_sink,
-            tempo=tempo,
-            scheduler=scheduler,
-            generation_interval_ticks=config.inference.generation_interval_ticks,
-            generation_length_frames=config.inference.generation_length_frames,
-            count_in_beats=config.count_in_beats,
-        )
-
-    def _save_history_logs(history_payload: object) -> None:
-        if session_manager is None:
-            return
-        if not isinstance(history_payload, dict):
-            print("Warning: clear_history returned unexpected payload; skipping history log files")
-            return
-
-        melody_history = history_payload.get("melody_history", [])
-        accompaniment_history = history_payload.get("accompaniment_history", [])
-
-        session_dir = session_manager.get_session_dir()
-        melody_path = session_dir / "melody_history.json"
-        accompaniment_path = session_dir / "accompaniment_history.json"
-
-        with open(melody_path, "w") as f:
-            json.dump(melody_history if isinstance(melody_history, list) else [], f, indent=2)
-        with open(accompaniment_path, "w") as f:
-            json.dump(accompaniment_history if isinstance(accompaniment_history, list) else [], f, indent=2)
-
-    def _save_prompt_continuation_history_logs(client: PromptContinuationHttpClient) -> None:
-        if session_manager is None:
-            return
-        session_dir = session_manager.get_session_dir()
-        try:
-            prompt_events, prompt_status = client.prompt_history()
-            raw_events, raw_status = client.raw_history()
-        except Exception as exc:
-            print(f"Warning: Failed to fetch prompt-continuation history before clear: {exc}")
-            return
-
-        with open(session_dir / "prompt_continuation_prompt_history.json", "w") as f:
-            json.dump([event_to_dict(event) for event in prompt_events], f, indent=2)
-        with open(session_dir / "prompt_continuation_raw_history.json", "w") as f:
-            json.dump([event_to_dict(event) for event in raw_events], f, indent=2)
-        with open(session_dir / "prompt_continuation_history_status.json", "w") as f:
-            json.dump(
-                {"prompt_status": prompt_status, "raw_status": raw_status},
-                f,
-                indent=2,
-                sort_keys=True,
-            )
+    _sync_runtime_builder_patch_surface()
+    try:
+        runtime = RuntimeSessionBuilder(
+            config=config,
+            log_dir=args.log_dir,
+            before_input_create=_before_input_create,
+        ).build_cli()
+    except _CliInjectionFailed:
+        return 1
 
     def cleanup() -> None:
         try:
-            if inference_engine is not None:
-                history_payload = inference_engine.clear_history()
-            elif prompt_client is not None:
-                _save_prompt_continuation_history_logs(prompt_client)
-                history_payload = prompt_client.clear_history()
-            else:
-                history_payload = {}
-            if session_manager:
-                _save_history_logs(history_payload)
+            runtime.cleanup()
         except Exception as exc:
-            print(f"Warning: Failed to clear inference history: {exc}")
-
-        try:
-            output_sink.close()
-        except Exception as exc:
-            print(f"Warning: Failed to close output sink cleanly: {exc}")
-
-        if session_manager:
-            try:
-                session_manager.save_summary(
-                    {
-                        "status": "completed",
-                        "session_id": session_manager.get_session_id(),
-                    }
-                )
-            except Exception as exc:
-                print(f"Warning: Failed to save session summary: {exc}")
+            print(f"Warning: Failed to clean runtime session: {exc}")
 
     atexit.register(cleanup)
 
     def signal_handler(sig, frame):
         print("\nShutting down...")
-        service.stop()
+        runtime.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     print("Starting StreamMUSE...")
-    print(f"  Tempo: {tempo.bpm} BPM, {tempo.ticks_per_beat} ticks/beat, {tempo.beats_per_bar} beats/bar")
+    print(
+        "  Tempo: "
+        f"{config.tempo.bpm} BPM, {config.tempo.ticks_per_beat} ticks/beat, "
+        f"{config.tempo.beats_per_bar} beats/bar"
+    )
     print(f"  Input: {config.input.type}")
     print(f"  Output: {config.output.type}")
     print(
@@ -313,21 +188,30 @@ def main() -> int:
         print(f"  Prompt length: {config.inference.prompt_length_ticks} ticks")
     print(f"  Generation interval: {config.inference.generation_interval_ticks} ticks")
     print(f"  Generation length: {config.inference.generation_length_frames} frames")
-    if session_manager:
-        print(f"  Logging: {session_manager.get_session_dir()}")
+    print(f"  Logging: {runtime.session_dir}")
     print("\nPress Ctrl+C to stop\n")
 
     try:
-        service.start(max_ticks=args.max_ticks)
-        while service.running:
+        runtime.start(max_ticks=args.max_ticks)
+        while runtime.running:
             import time
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:
-        service.stop()
+        runtime.stop()
 
     return 0
+
+
+def _sync_runtime_builder_patch_surface() -> None:
+    """Preserve CLI-level monkeypatch seams while delegating assembly to runtime."""
+    runtime_builder_module.InputSourceFactory = InputSourceFactory
+    runtime_builder_module.OutputSinkFactory = OutputSinkFactory
+    runtime_builder_module.InferenceEngineFactory = InferenceEngineFactory
+    runtime_builder_module.RealTimeMusicService = RealTimeMusicService
+    runtime_builder_module.PromptContinuationRealtimeService = PromptContinuationRealtimeService
+    runtime_builder_module.PromptContinuationHttpClient = PromptContinuationHttpClient
 
 
 if __name__ == "__main__":

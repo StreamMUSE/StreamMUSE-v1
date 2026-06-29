@@ -33,6 +33,7 @@ from streammuse.application.factories import (
     InferenceEngineFactory,
     InputSourceFactory,
 )
+from streammuse.application.runtime import RuntimeSessionBuilder
 from streammuse.application.services.prompt_continuation_realtime_service import (
     PromptContinuationRealtimeService,
 )
@@ -275,37 +276,11 @@ def main() -> int:
     args = parse_args()
     config = args_to_config(args)
 
-    session_manager = SessionManager(args.log_dir)
-    session_manager.create_session_directory()
-    session_config = {
-        "tempo_bpm": config.tempo.bpm,
-        "ticks_per_beat": config.tempo.ticks_per_beat,
-        "beats_per_bar": config.tempo.beats_per_bar,
-        "input_type": config.input.type,
-        "continuation_mode": config.continuation_mode,
-        "inference_type": config.inference.type,
-        "prompt_length_ticks": config.inference.prompt_length_ticks,
-        "generation_interval_ticks": config.inference.generation_interval_ticks,
-        "generation_length_frames": config.inference.generation_length_frames,
-    }
-    session_manager.save_config(session_config)
+    runtime = RuntimeSessionBuilder(config=config, log_dir=args.log_dir).build_web()
 
-    composite, ws_sink = _build_composite(
-        session_manager=session_manager,
-        bpm=config.tempo.bpm,
-        ticks_per_beat=config.tempo.ticks_per_beat,
-        midi_out_port=config.output.midi_out_port,
-    )
-
-    service = _build_realtime_service(config=config, output_sink=composite)
-
-    # Broadcast the session config so the UI's initial state matches the
-    # service's actual configuration without waiting for the first tick.
-    composite.output_config(session_config)
-
-    _composite_sink = composite
-    _ws_sink = ws_sink
-    _service = service
+    _composite_sink = runtime.output_sink
+    _ws_sink = runtime.websocket_sink
+    _service = runtime.service
 
     host = getattr(args, "web_host", "127.0.0.1")
     port = int(getattr(args, "web_port", 8001))
@@ -320,7 +295,7 @@ def main() -> int:
         sys.exit(0)
     signal.signal(signal.SIGINT, _sigint)
 
-    service.start(max_ticks=None)
+    runtime.start(max_ticks=None)
 
     print("Starting StreamMUSE Viewer...", flush=True)
     print(f"  http://{host}:{port}/", flush=True)
@@ -330,7 +305,7 @@ def main() -> int:
     if config.continuation_mode == "prompt_continuation":
         print(f"  Prompt length: {config.inference.prompt_length_ticks} ticks", flush=True)
     print(f"  Inference: {config.inference.type} (model: {config.inference.model_name})", flush=True)
-    print(f"  Logging: {session_manager.get_session_dir()}", flush=True)
+    print(f"  Logging: {runtime.session_dir}", flush=True)
 
     uvicorn.run(app, host=host, port=port, log_level="info")
     return 0
