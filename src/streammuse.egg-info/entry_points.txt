@@ -1,3 +1,4 @@
 [console_scripts]
 streammuse-cli = streammuse.presentation.cli.cli:main
+streammuse-task = streammuse.presentation.task.cli:main
 streammuse-web = streammuse.presentation.web.server:main

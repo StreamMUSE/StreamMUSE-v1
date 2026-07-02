@@ -46,6 +46,7 @@ dependencies = [
 [project.scripts]
 streammuse-cli = "streammuse.presentation.cli.cli:main"
 streammuse-web = "streammuse.presentation.web.server:main"
+streammuse-task = "streammuse.presentation.task.cli:main"
 
 [tool.pytest.ini_options]
 markers = [
