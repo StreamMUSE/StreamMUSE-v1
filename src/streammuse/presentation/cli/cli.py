@@ -15,6 +15,7 @@ from streammuse.application.factories import (
     OutputSinkFactory,
 )
 from streammuse.domain.interfaces import InferenceEngine
+from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
 from streammuse.domain.logging import SessionManager
@@ -109,6 +110,11 @@ def main() -> int:
     else:
         config = args_to_config(args)
 
+    input_snap_forward_fraction = effective_input_snap_forward_fraction(
+        config.input.type,
+        config.input_snap_forward_fraction,
+    )
+
     if config.input.injection_file:
         if config.input.type != "midi_file":
             print("Error: --injection-file is only supported with --input-mode midi_file")
@@ -135,6 +141,7 @@ def main() -> int:
             "metronome_port": config.output.metronome_port,
             "metronome_channel": config.output.metronome_channel,
             "count_in_beats": config.count_in_beats,
+            "input_snap_forward_fraction": input_snap_forward_fraction,
             "inference_type": config.inference.type,
             "generation_interval_ticks": config.inference.generation_interval_ticks,
             "generation_length_frames": config.inference.generation_length_frames,
@@ -176,6 +183,7 @@ def main() -> int:
         generation_interval_ticks=config.inference.generation_interval_ticks,
         generation_length_frames=config.inference.generation_length_frames,
         count_in_beats=config.count_in_beats,
+        input_snap_forward_fraction=input_snap_forward_fraction,
     )
 
     def _save_history_logs(history_payload: object) -> None:
@@ -241,6 +249,7 @@ def main() -> int:
         + (f" ({config.output.metronome_port})" if config.output.metronome_port else "")
     )
     print(f"  Count-in: {config.count_in_beats} beat(s)")
+    print(f"  Input snap-forward: {input_snap_forward_fraction:.2f} tick fraction")
     print(f"  Inference: {config.inference.type}")
     print(f"  Generation interval: {config.inference.generation_interval_ticks} ticks")
     print(f"  Generation length: {config.inference.generation_length_frames} frames")

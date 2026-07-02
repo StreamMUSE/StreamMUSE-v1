@@ -158,6 +158,27 @@ def test_count_in_input_worker_stamps_first_accepted_event_at_tick_zero():
     assert stamped.tick == 0
 
 
+def test_input_worker_snaps_late_tick_phase_to_next_tick():
+    now_values = iter([0.0, 0.150])
+    svc = RealTimeMusicService(
+        input_source=_OneEventInput(),
+        inference_engine=NoopInference(),
+        output_sink=NoopOutput(),
+        tempo=Tempo(bpm=60.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        input_snap_forward_fraction=0.4,
+        now=lambda: next(now_values),
+        sleep=lambda _: None,
+    )
+    svc._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    svc._running = True
+
+    svc._input_worker()
+
+    stamped = svc._event_q.get_nowait()
+    assert stamped.tick == 1
+
+
 # --- tick=0 trigger ---
 
 def test_tick0_sends_full_melody_history():

@@ -28,6 +28,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.application.factories import (
     InferenceEngineFactory,
     InputSourceFactory,
@@ -222,6 +223,11 @@ def main() -> int:
     args = parse_args()
     config = args_to_config(args)
 
+    input_snap_forward_fraction = effective_input_snap_forward_fraction(
+        config.input.type,
+        config.input_snap_forward_fraction,
+    )
+
     session_manager = SessionManager(args.log_dir)
     session_manager.create_session_directory()
     session_config = {
@@ -232,6 +238,7 @@ def main() -> int:
         "inference_type": config.inference.type,
         "generation_interval_ticks": config.inference.generation_interval_ticks,
         "generation_length_frames": config.inference.generation_length_frames,
+        "input_snap_forward_fraction": input_snap_forward_fraction,
     }
     session_manager.save_config(session_config)
 
@@ -258,6 +265,7 @@ def main() -> int:
         scheduler=scheduler,
         generation_interval_ticks=config.inference.generation_interval_ticks,
         generation_length_frames=config.inference.generation_length_frames,
+        input_snap_forward_fraction=input_snap_forward_fraction,
     )
 
     # Broadcast the session config so the UI's initial state matches the

@@ -6,6 +6,7 @@ import argparse
 import os
 from typing import Optional
 
+from streammuse.application.services.input_timing import clamp_snap_forward_fraction
 from streammuse.application.config import (
     ApplicationConfig,
     InferenceConfig,
@@ -134,6 +135,15 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Number of beats to click before accepting input and sending inference requests",
     )
+    parser.add_argument(
+        "--input-snap-forward-fraction",
+        type=float,
+        default=0.4,
+        help=(
+            "Fraction of a tick near the end of each tick that realtime input "
+            "snaps forward to the next tick"
+        ),
+    )
     parser.add_argument("--max-ticks", type=int, default=None, help="Maximum ticks to run (for testing)")
 
     return parser.parse_args()
@@ -191,6 +201,9 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         output=output_config,
         inference=inference_config,
         count_in_beats=max(0, int(getattr(args, "count_in_beats", 0) or 0)),
+        input_snap_forward_fraction=clamp_snap_forward_fraction(
+            float(getattr(args, "input_snap_forward_fraction", 0.4))
+        ),
     )
 
 

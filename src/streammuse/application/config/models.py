@@ -65,3 +65,4 @@ class ApplicationConfig:
     output: OutputConfig = OutputConfig()
     inference: InferenceConfig = InferenceConfig()
     count_in_beats: int = 0
+    input_snap_forward_fraction: float = 0.4
