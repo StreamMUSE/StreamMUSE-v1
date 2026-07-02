@@ -30,6 +30,7 @@ Scale up before a release::
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -43,6 +44,16 @@ pytestmark = pytest.mark.consistency
 
 DEFAULT_SONGS = "4"
 DEFAULT_TEMPOS = "15,120"
+LATE_SCHEDULE_POLICIES = {
+    "clamped_partial_note",
+    "clamped_partial_note_off",
+    "clamped_open_note",
+    "dropped_past_note",
+    "dropped_past_placeholder",
+    "late_isolated_note_off",
+    "late_placeholder",
+    "forced_note_off",
+}
 
 
 def _parse_int_list(env_name: str, default: str) -> list[int]:
@@ -56,6 +67,33 @@ def _songs() -> list[int]:
 
 def _tempos() -> list[int]:
     return _parse_int_list("STREAMMUSE_CONSISTENCY_TEMPOS", DEFAULT_TEMPOS)
+
+
+def _late_schedule_policy_rows(session_dir: Path) -> list[tuple[int, dict[str, object]]]:
+    trace_path = session_dir / "model_schedule_trace.jsonl"
+    assert trace_path.exists(), f"missing model schedule trace: {trace_path}"
+
+    rows: list[tuple[int, dict[str, object]]] = []
+    for line_no, line in enumerate(trace_path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("policy") in LATE_SCHEDULE_POLICIES:
+            rows.append((line_no, row))
+    return rows
+
+
+def _format_trace_rows(rows: list[tuple[int, dict[str, object]]], *, limit: int = 5) -> str:
+    formatted = []
+    for line_no, row in rows[:limit]:
+        formatted.append(
+            f"line {line_no}: policy={row.get('policy')} "
+            f"logical={row.get('logical_tick')} scheduled={row.get('scheduled_tick')} "
+            f"pitch={row.get('pitch')} action={row.get('action')}"
+        )
+    if len(rows) > limit:
+        formatted.append(f"... {len(rows) - limit} more")
+    return "\n".join(formatted)
 
 
 @pytest.mark.parametrize("song_number", _songs())
@@ -86,6 +124,15 @@ def test_realtime_matches_offline(
             f"run invalid: inference too slow at tempo {tempo} for song {song_number} "
             f"({dropped} stale request(s) dropped). This is a performance issue, not a "
             f"consistency regression — rerun on an idle GPU or at a slower tempo. "
+            f"Session: {session_dir}"
+        )
+
+        late_rows = _late_schedule_policy_rows(session_dir)
+        assert not late_rows, (
+            f"run invalid: inference responses arrived after their target playback ticks at "
+            f"tempo {tempo} for song {song_number}. This triggered late scheduling policy, "
+            f"so this is a performance issue, not a consistency regression.\n"
+            f"{_format_trace_rows(late_rows)}\n"
             f"Session: {session_dir}"
         )
 

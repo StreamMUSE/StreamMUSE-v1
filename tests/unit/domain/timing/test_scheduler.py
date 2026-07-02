@@ -53,6 +53,23 @@ def test_clear_future_events_from_tick_inclusive() -> None:
     assert s.get_events_at_tick(8) == []
 
 
+def test_pop_future_events_returns_removed_source_events_in_tick_order() -> None:
+    s = PlaybackScheduler()
+    model_10 = MusicalEvent(tick=10, pitch=60, event_type=EventType.NOTE_ON, source="model")
+    user_11 = MusicalEvent(tick=11, pitch=62, event_type=EventType.NOTE_ON, source="user")
+    model_12 = MusicalEvent(tick=12, pitch=64, event_type=EventType.NOTE_OFF, source="model")
+    s.schedule(model_12, 12)
+    s.schedule(model_10, 10)
+    s.schedule(user_11, 11)
+
+    removed = s.pop_future_events(from_tick=10, source="model")
+
+    assert removed == [model_10, model_12]
+    assert s.get_events_at_tick(10) == []
+    assert s.get_events_at_tick(11) == [user_11]
+    assert s.get_events_at_tick(12) == []
+
+
 def test_thread_safety() -> None:
     s = PlaybackScheduler()
     events = [

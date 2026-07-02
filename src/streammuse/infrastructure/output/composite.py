@@ -73,6 +73,11 @@ class CompositeOutputSink:
             if hasattr(s, "log_inference"):
                 s.log_inference(request, response, latency_ms, server_process_ms)
 
+    def log_model_schedule(self, rows: List[Dict[str, Any]]) -> None:
+        for s in self.sinks:
+            if hasattr(s, "log_model_schedule"):
+                s.log_model_schedule(rows)
+
     def close(self) -> None:
         for s in self.sinks:
             s.close()

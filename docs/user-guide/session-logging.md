@@ -32,10 +32,13 @@ logs/
         ├── session_summary.txt
         ├── melody_history.json
         ├── accompaniment_history.json
+        ├── model_schedule_trace.jsonl
+        ├── theoretical_model.mid
         └── combined.mid
 ```
 
 `melody_history.json` 和 `accompaniment_history.json` 来自 CLI 退出时调用 server `clear_history()` 返回的历史。
+`model_schedule_trace.jsonl` 记录模型事件的 logical tick、实际 scheduled tick 和调度 policy；`theoretical_model.mid` 从这个 trace 重建，表示模型理论输出。
 
 ---
 
@@ -76,7 +79,7 @@ JSON 数组，记录每次推理请求和响应。`--inference-log-detail summar
 
 ### `combined.mid`
 
-MIDI 录制文件。默认包含：
+MIDI 录制文件，表示**实际播放/录制**的结果。默认包含：
 
 - `Melody`：用户输入旋律
 - `Accompaniment`：模型伴奏
@@ -86,6 +89,26 @@ MIDI 录制文件。默认包含：
 - `Metronome`：鼓轨，记录 beat/downbeat click
 
 如果同时启用 `--count-in-beats`，count-in click 会出现在 MIDI 文件开头；正式音乐 tick=0 会在录制时间线上向后平移。这个平移只影响 MIDI 录制，不改变服务层推理 tick。
+
+### `model_schedule_trace.jsonl` 和 `theoretical_model.mid`
+
+实时推理响应可能晚于目标播放 tick。新的调度 trace 会逐事件记录：
+
+- `logical_tick`：模型理论上生成的 tick；
+- `scheduled_tick`：实际排进 playback scheduler 的 tick，若事件被丢弃则为 `null`；
+- `policy`：例如 `future_note`、`clamped_partial_note`、`dropped_past_note`、`forced_note_off`。
+
+`combined.mid` 使用 `scheduled_tick`，用于听真实播放结果；`theoretical_model.mid` 从 trace 的 `logical_tick` 重建，用于诊断模型原始时间线。
+
+### `--session-artifact-tier`
+
+CLI 默认是 `debug`，保留完整 session JSON、server history 和 summary。批量 sweep 脚本默认传 `normal`，只保留更适合批量听感筛选的核心文件：
+
+- `combined.mid`
+- `theoretical_model.mid`
+- `model_schedule_trace.jsonl`
+
+需要完整诊断文件时，显式使用 `--session-artifact-tier debug`。
 
 ---
 

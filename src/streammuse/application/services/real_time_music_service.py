@@ -5,12 +5,12 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
 from streammuse.domain.interfaces.timing_info import TimingInfo
-from streammuse.domain.musical import MusicalEvent
+from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
 
 
@@ -18,6 +18,31 @@ from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
 class RealTimeServiceRuntime:
     session_start_time: float
     timeline_start_time: float
+
+
+EventKey = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class ScheduledModelEvent:
+    event: MusicalEvent
+    scheduled_tick: int
+    logical_tick: int
+    policy: str
+
+
+@dataclass
+class ModelSchedulePlan:
+    scheduled_events: list[ScheduledModelEvent] = field(default_factory=list)
+    trace_rows: list[dict[str, object]] = field(default_factory=list)
+    clamped_onset_count: int = 0
+    dropped_past_note_count: int = 0
+    orphan_note_off_count: int = 0
+    forced_note_off_count: int = 0
+
+    @property
+    def scheduled_actual_event_count(self) -> int:
+        return len(self.scheduled_events)
 
 
 class RealTimeMusicService:
@@ -69,6 +94,7 @@ class RealTimeMusicService:
         self._melody_history_lock = threading.Lock()
         self._inference_request_queue: queue.Queue[tuple[int, List[MusicalEvent]]] = queue.Queue()
         self._inference_response_queue: queue.Queue[tuple[List[MusicalEvent], int]] = queue.Queue()
+        self._active_model_note_keys: set[EventKey] = set()
 
     @property
     def running(self) -> bool:
@@ -120,6 +146,322 @@ class RealTimeMusicService:
             "is_placeholder": bool(event.is_placeholder),
             "backup_level": int(event.backup_level),
         }
+
+    @staticmethod
+    def _model_event_key(event: MusicalEvent) -> EventKey:
+        return (int(event.pitch), int(event.channel), int(event.program))
+
+    @staticmethod
+    def _event_order_key(event: MusicalEvent) -> tuple[int, int, int, int, int]:
+        # MIDI-safe ordering: close an active note before opening the same key.
+        event_priority = 0 if event.event_type == EventType.NOTE_OFF else 1
+        return (int(event.tick), event_priority, int(event.pitch), int(event.channel), int(event.program))
+
+    def _copy_model_event(
+        self,
+        event: MusicalEvent,
+        *,
+        tick: int,
+        generation_start_tick: int,
+        logical_tick: int | None = None,
+    ) -> MusicalEvent:
+        logical = int(event.tick if logical_tick is None else logical_tick)
+        return MusicalEvent(
+            tick=int(tick),
+            pitch=int(event.pitch),
+            event_type=event.event_type,
+            velocity=int(event.velocity),
+            channel=int(event.channel),
+            program=int(event.program),
+            is_placeholder=bool(event.is_placeholder),
+            source="model",
+            backup_level=max(0, logical - int(generation_start_tick)),
+        )
+
+    def _make_trace_row(
+        self,
+        *,
+        event: MusicalEvent,
+        logical_tick: int,
+        scheduled_tick: int | None,
+        policy: str,
+        generation_start_tick: int,
+        current_tick: int,
+        action: str,
+    ) -> dict[str, object]:
+        return {
+            "type": event.event_type.value,
+            "pitch": int(event.pitch),
+            "channel": int(event.channel),
+            "program": int(event.program),
+            "velocity": int(event.velocity),
+            "logical_tick": int(logical_tick),
+            "scheduled_tick": (int(scheduled_tick) if scheduled_tick is not None else None),
+            "policy": str(policy),
+            "action": str(action),
+            "generation_start_tick": int(generation_start_tick),
+            "current_tick": int(current_tick),
+            "key": [int(event.pitch), int(event.channel), int(event.program)],
+        }
+
+    def _append_scheduled_model_event(
+        self,
+        plan: ModelSchedulePlan,
+        event: MusicalEvent,
+        *,
+        scheduled_tick: int,
+        logical_tick: int,
+        policy: str,
+        generation_start_tick: int,
+        current_tick: int,
+    ) -> None:
+        scheduled = self._copy_model_event(
+            event,
+            tick=scheduled_tick,
+            generation_start_tick=generation_start_tick,
+            logical_tick=logical_tick,
+        )
+        plan.scheduled_events.append(
+            ScheduledModelEvent(
+                event=scheduled,
+                scheduled_tick=int(scheduled_tick),
+                logical_tick=int(logical_tick),
+                policy=str(policy),
+            )
+        )
+        plan.trace_rows.append(
+            self._make_trace_row(
+                event=event,
+                logical_tick=logical_tick,
+                scheduled_tick=scheduled_tick,
+                policy=policy,
+                generation_start_tick=generation_start_tick,
+                current_tick=current_tick,
+                action="scheduled",
+            )
+        )
+
+    def _append_dropped_model_event(
+        self,
+        plan: ModelSchedulePlan,
+        event: MusicalEvent,
+        *,
+        logical_tick: int,
+        policy: str,
+        generation_start_tick: int,
+        current_tick: int,
+    ) -> None:
+        plan.trace_rows.append(
+            self._make_trace_row(
+                event=event,
+                logical_tick=logical_tick,
+                scheduled_tick=None,
+                policy=policy,
+                generation_start_tick=generation_start_tick,
+                current_tick=current_tick,
+                action="dropped",
+            )
+        )
+
+    def _plan_model_events_for_playback(
+        self,
+        acc_events: List[MusicalEvent],
+        *,
+        current_tick: int,
+        generation_start_tick: int,
+        active_model_keys: set[EventKey],
+    ) -> ModelSchedulePlan:
+        plan = ModelSchedulePlan()
+        open_by_key: dict[EventKey, list[MusicalEvent]] = {}
+        paired_notes: list[tuple[MusicalEvent, MusicalEvent]] = []
+        orphan_note_offs: list[MusicalEvent] = []
+
+        events = sorted(acc_events, key=self._event_order_key)
+        for event in events:
+            if event.is_placeholder or event.pitch == -1:
+                if int(event.tick) < int(current_tick):
+                    self._append_dropped_model_event(
+                        plan,
+                        event,
+                        logical_tick=int(event.tick),
+                        policy="dropped_late_placeholder",
+                        generation_start_tick=generation_start_tick,
+                        current_tick=current_tick,
+                    )
+                else:
+                    self._append_scheduled_model_event(
+                        plan,
+                        event,
+                        scheduled_tick=int(event.tick),
+                        logical_tick=int(event.tick),
+                        policy="future_placeholder",
+                        generation_start_tick=generation_start_tick,
+                        current_tick=current_tick,
+                    )
+                continue
+
+            key = self._model_event_key(event)
+            if event.event_type == EventType.NOTE_ON and int(event.velocity) > 0:
+                open_by_key.setdefault(key, []).append(event)
+                continue
+
+            if event.event_type == EventType.NOTE_OFF:
+                opened = open_by_key.get(key)
+                if opened:
+                    note_on = opened.pop(0)
+                    if not opened:
+                        open_by_key.pop(key, None)
+                    paired_notes.append((note_on, event))
+                else:
+                    orphan_note_offs.append(event)
+
+        open_note_ons = [event for events_for_key in open_by_key.values() for event in events_for_key]
+
+        for note_on, note_off in paired_notes:
+            on_tick = int(note_on.tick)
+            off_tick = int(note_off.tick)
+            if off_tick <= int(current_tick):
+                plan.dropped_past_note_count += 1
+                self._append_dropped_model_event(
+                    plan,
+                    note_on,
+                    logical_tick=on_tick,
+                    policy="dropped_past_note",
+                    generation_start_tick=generation_start_tick,
+                    current_tick=current_tick,
+                )
+                self._append_dropped_model_event(
+                    plan,
+                    note_off,
+                    logical_tick=off_tick,
+                    policy="dropped_past_note",
+                    generation_start_tick=generation_start_tick,
+                    current_tick=current_tick,
+                )
+                continue
+
+            if on_tick < int(current_tick):
+                plan.clamped_onset_count += 1
+                self._append_scheduled_model_event(
+                    plan,
+                    note_on,
+                    scheduled_tick=int(current_tick),
+                    logical_tick=on_tick,
+                    policy="clamped_partial_note",
+                    generation_start_tick=generation_start_tick,
+                    current_tick=current_tick,
+                )
+                self._append_scheduled_model_event(
+                    plan,
+                    note_off,
+                    scheduled_tick=off_tick,
+                    logical_tick=off_tick,
+                    policy="clamped_partial_note_off",
+                    generation_start_tick=generation_start_tick,
+                    current_tick=current_tick,
+                )
+                continue
+
+            self._append_scheduled_model_event(
+                plan,
+                note_on,
+                scheduled_tick=on_tick,
+                logical_tick=on_tick,
+                policy="future_note",
+                generation_start_tick=generation_start_tick,
+                current_tick=current_tick,
+            )
+            self._append_scheduled_model_event(
+                plan,
+                note_off,
+                scheduled_tick=off_tick,
+                logical_tick=off_tick,
+                policy="future_note",
+                generation_start_tick=generation_start_tick,
+                current_tick=current_tick,
+            )
+
+        for note_on in open_note_ons:
+            on_tick = int(note_on.tick)
+            if on_tick < int(current_tick):
+                plan.clamped_onset_count += 1
+                scheduled_tick = int(current_tick)
+                policy = "clamped_open_note"
+            else:
+                scheduled_tick = on_tick
+                policy = "future_open_note"
+            self._append_scheduled_model_event(
+                plan,
+                note_on,
+                scheduled_tick=scheduled_tick,
+                logical_tick=on_tick,
+                policy=policy,
+                generation_start_tick=generation_start_tick,
+                current_tick=current_tick,
+            )
+
+        for note_off in orphan_note_offs:
+            off_tick = int(note_off.tick)
+            key = self._model_event_key(note_off)
+            if key not in active_model_keys:
+                plan.orphan_note_off_count += 1
+                self._append_dropped_model_event(
+                    plan,
+                    note_off,
+                    logical_tick=off_tick,
+                    policy="orphan_note_off",
+                    generation_start_tick=generation_start_tick,
+                    current_tick=current_tick,
+                )
+                continue
+
+            if off_tick < int(current_tick):
+                scheduled_tick = int(current_tick)
+                policy = "late_isolated_note_off"
+            elif off_tick == int(current_tick):
+                scheduled_tick = off_tick
+                policy = "current_isolated_note_off"
+            else:
+                scheduled_tick = off_tick
+                policy = "future_isolated_note_off"
+            self._append_scheduled_model_event(
+                plan,
+                note_off,
+                scheduled_tick=scheduled_tick,
+                logical_tick=off_tick,
+                policy=policy,
+                generation_start_tick=generation_start_tick,
+                current_tick=current_tick,
+            )
+
+        plan.scheduled_events.sort(
+            key=lambda scheduled: (
+                int(scheduled.scheduled_tick),
+                0 if scheduled.event.event_type == EventType.NOTE_OFF else 1,
+                int(scheduled.event.pitch),
+                int(scheduled.event.channel),
+                int(scheduled.event.program),
+            )
+        )
+        return plan
+
+    def _emit_model_schedule_trace(self, rows: list[dict[str, object]]) -> None:
+        if not rows or not hasattr(self._output, "log_model_schedule"):
+            return
+        self._output.log_model_schedule(rows)  # type: ignore[union-attr]
+
+    def _observe_model_output_event(self, event: MusicalEvent) -> None:
+        if event.is_placeholder or event.pitch == -1:
+            return
+        key = self._model_event_key(event)
+        if event.event_type == EventType.NOTE_ON and int(event.velocity) > 0:
+            self._active_model_note_keys.add(key)
+        elif event.event_type == EventType.NOTE_OFF:
+            self._active_model_note_keys.discard(key)
+
+    def _output_model_event(self, event: MusicalEvent) -> None:
+        self._output.output_event(event, source=event.source)
+        self._observe_model_output_event(event)
 
     def _timing_to_log_dict(self, timing: TimingInfo) -> dict:
         return {
@@ -268,33 +610,73 @@ class RealTimeMusicService:
                 except queue.Empty:
                     break
 
-                self._scheduler.clear_future_events(from_tick=generation_start_tick, source="model")
+                removed_future = self._scheduler.pop_future_events(
+                    from_tick=generation_start_tick,
+                    source="model",
+                )
 
-                late_event_count = 0
-                for ev in acc_events:
-                    backup_level = max(0, ev.tick - generation_start_tick)
-                    ev_model = MusicalEvent(
-                        tick=ev.tick,
-                        pitch=ev.pitch,
-                        event_type=ev.event_type,
-                        velocity=ev.velocity,
-                        channel=ev.channel,
-                        program=ev.program,
-                        is_placeholder=ev.is_placeholder,
-                        source="model",
-                        backup_level=backup_level,
+                plan = self._plan_model_events_for_playback(
+                    acc_events,
+                    current_tick=tick,
+                    generation_start_tick=generation_start_tick,
+                    active_model_keys=set(self._active_model_note_keys),
+                )
+
+                forced_events: list[ScheduledModelEvent] = []
+                for removed in removed_future:
+                    if removed.event_type != EventType.NOTE_OFF:
+                        continue
+                    if removed.is_placeholder or removed.pitch == -1:
+                        continue
+                    if self._model_event_key(removed) not in self._active_model_note_keys:
+                        continue
+                    forced = self._copy_model_event(
+                        removed,
+                        tick=tick,
+                        generation_start_tick=generation_start_tick,
+                        logical_tick=int(removed.tick),
                     )
-                    schedule_tick = ev.tick if ev.tick >= tick else tick
-                    if ev.tick < tick:
-                        late_event_count += 1
-                    self._scheduler.schedule(ev_model, schedule_tick)
+                    forced_events.append(
+                        ScheduledModelEvent(
+                            event=forced,
+                            scheduled_tick=int(tick),
+                            logical_tick=int(removed.tick),
+                            policy="forced_note_off",
+                        )
+                    )
+                    plan.forced_note_off_count += 1
+                    plan.trace_rows.append(
+                        self._make_trace_row(
+                            event=removed,
+                            logical_tick=int(removed.tick),
+                            scheduled_tick=int(tick),
+                            policy="forced_note_off",
+                            generation_start_tick=generation_start_tick,
+                            current_tick=tick,
+                            action="scheduled",
+                        )
+                    )
 
-                if late_event_count > 0:
+                self._emit_model_schedule_trace(plan.trace_rows)
+
+                for scheduled in forced_events + plan.scheduled_events:
+                    self._scheduler.schedule(scheduled.event, scheduled.scheduled_tick)
+
+                if (
+                    plan.clamped_onset_count
+                    or plan.dropped_past_note_count
+                    or plan.orphan_note_off_count
+                    or plan.forced_note_off_count
+                ):
                     self._output.output_status(
                         "debug",
                         (
-                            f"Recovered {late_event_count} late model event(s) "
-                            f"at tick={tick} (generation_start_tick={generation_start_tick})."
+                            "Model scheduling adjusted "
+                            f"at tick={tick} (generation_start_tick={generation_start_tick}): "
+                            f"clamped={plan.clamped_onset_count}, "
+                            f"dropped_past={plan.dropped_past_note_count}, "
+                            f"orphan_off={plan.orphan_note_off_count}, "
+                            f"forced_off={plan.forced_note_off_count}."
                         ),
                     )
 
@@ -302,8 +684,11 @@ class RealTimeMusicService:
             self._output_metronome_tick(tick=tick, bar=mt.bar, beat=mt.beat)
             for ev in user_events_to_play:
                 self._output.output_event(ev, source="user")
-            for ev in self._scheduler.get_events_at_tick(tick):
-                self._output.output_event(ev, source=ev.source)
+            for ev in sorted(self._scheduler.get_events_at_tick(tick), key=self._event_order_key):
+                if ev.source == "model":
+                    self._output_model_event(ev)
+                else:
+                    self._output.output_event(ev, source=ev.source)
 
             # 8. Beat tail (tick 4n-1, n≥1): always send for next beat, even if no new events.
             ticks_per_beat = self._tempo.ticks_per_beat

@@ -138,8 +138,10 @@ def main() -> int:
             "inference_type": config.inference.type,
             "generation_interval_ticks": config.inference.generation_interval_ticks,
             "generation_length_frames": config.inference.generation_length_frames,
+            "session_artifact_tier": config.output.session_artifact_tier,
         }
-        session_manager.save_config(session_config)
+        if config.output.session_artifact_tier == "debug":
+            session_manager.save_config(session_config)
 
     output_sink = OutputSinkFactory.create(config, session_manager)
     inference_engine = InferenceEngineFactory.create(config)
@@ -177,7 +179,7 @@ def main() -> int:
     )
 
     def _save_history_logs(history_payload: object) -> None:
-        if session_manager is None:
+        if session_manager is None or config.output.session_artifact_tier != "debug":
             return
         if not isinstance(history_payload, dict):
             print("Warning: clear_history returned unexpected payload; skipping history log files")
@@ -208,7 +210,7 @@ def main() -> int:
         except Exception as exc:
             print(f"Warning: Failed to close output sink cleanly: {exc}")
 
-        if session_manager:
+        if session_manager and config.output.session_artifact_tier == "debug":
             try:
                 session_manager.save_summary(
                     {
@@ -244,6 +246,7 @@ def main() -> int:
     print(f"  Generation length: {config.inference.generation_length_frames} frames")
     if session_manager:
         print(f"  Logging: {session_manager.get_session_dir()}")
+        print(f"  Session artifact tier: {config.output.session_artifact_tier}")
     print("\nPress Ctrl+C to stop\n")
 
     try:

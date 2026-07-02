@@ -280,3 +280,71 @@ def test_composite_close_auto_saves_session_metrics(tmp_path):
 
     assert (tmp_path / "performance.json").exists()
     assert (tmp_path / "statistics.csv").exists()
+
+
+def test_session_logger_writes_model_schedule_trace_and_theoretical_midi(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=True,
+        include_json=False,
+        bpm=120.0,
+        ticks_per_beat=4,
+        artifact_tier="normal",
+    )
+    sink.output_event(MusicalEvent(tick=2, pitch=60, event_type=EventType.NOTE_ON, velocity=80), "model")
+    sink.output_event(MusicalEvent(tick=4, pitch=60, event_type=EventType.NOTE_OFF, velocity=0), "model")
+    sink.log_model_schedule(
+        [
+            {
+                "type": "note_on",
+                "pitch": 60,
+                "channel": 0,
+                "program": 0,
+                "velocity": 80,
+                "logical_tick": 0,
+                "scheduled_tick": 2,
+                "policy": "clamped_partial_note",
+                "action": "scheduled",
+            },
+            {
+                "type": "note_off",
+                "pitch": 60,
+                "channel": 0,
+                "program": 0,
+                "velocity": 0,
+                "logical_tick": 4,
+                "scheduled_tick": 4,
+                "policy": "clamped_partial_note_off",
+                "action": "scheduled",
+            },
+        ]
+    )
+
+    sink.close()
+
+    assert (tmp_path / "combined.mid").exists()
+    assert (tmp_path / "model_schedule_trace.jsonl").exists()
+    assert (tmp_path / "theoretical_model.mid").exists()
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / "inferences.json").exists()
+
+    theoretical = pretty_midi.PrettyMIDI(str(tmp_path / "theoretical_model.mid"))
+    by_name = {inst.name: inst for inst in theoretical.instruments}
+    note = by_name["Theoretical Accompaniment"].notes[0]
+    assert round(note.start, 3) == 0.0
+    assert round(note.end, 3) == 0.5
+
+
+def test_composite_output_sink_fans_out_model_schedule_trace(tmp_path):
+    rows = [{"type": "note_on", "pitch": 60, "logical_tick": 0, "scheduled_tick": 0}]
+    session_sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+    composite = CompositeOutputSink([session_sink])
+
+    composite.log_model_schedule(rows)
+    composite.close()
+
+    assert json.loads((tmp_path / "model_schedule_trace.jsonl").read_text().splitlines()[0])["pitch"] == 60

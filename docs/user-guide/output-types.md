@@ -89,12 +89,16 @@ uv run streammuse-cli --input-mode keyboard --output-type session --log-dir logs
 
 常见输出：
 
-- `combined.mid`：MIDI 录制
-- `events.jsonl`：事件日志
-- `inferences.json`：推理日志
-- `performance.json`：延迟与事件统计
-- `statistics.csv`：摘要指标 CSV
-- `session_summary.txt`：会话完成摘要
+- `combined.mid`：实际播放/录制的 MIDI
+- `theoretical_model.mid`：从调度 trace 的 logical tick 重建的模型理论 MIDI
+- `model_schedule_trace.jsonl`：逐模型事件记录 logical tick、scheduled tick 和 policy
+- `events.jsonl`：事件日志（debug 档）
+- `inferences.json`：推理日志（debug 档）
+- `performance.json`：延迟与事件统计（debug 档）
+- `statistics.csv`：摘要指标 CSV（debug 档）
+- `session_summary.txt`：会话完成摘要（debug 档）
+
+`streammuse-cli` 默认 `--session-artifact-tier debug`；批量 sweep 脚本默认使用 `normal`，只保留 `combined.mid`、`theoretical_model.mid` 和 `model_schedule_trace.jsonl` 等核心产物。
 
 ---
 
@@ -106,7 +110,7 @@ uv run streammuse-cli --input-mode keyboard --output-type session --log-dir logs
 uv run streammuse-cli --input-mode keyboard --output-type composite --log-dir logs
 ```
 
-CLI 中通常等价于 `ConsoleOutputSink + SessionLoggerOutputSink`。
+CLI 中通常等价于 `ConsoleOutputSink + SessionLoggerOutputSink`。`--session-artifact-tier` 对其中的 session 产物同样生效。
 
 ---
 

@@ -53,13 +53,14 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `--metronome-channel` | `int` | `9` | metronome MIDI channel，默认 percussion channel |
 | `--log-dir` | `str` | `logs` | session 根目录；除 `midi_file` 外都会创建日期/session 子目录 |
 | `--inference-log-detail` | `str` | `summary` | 推理日志粒度：`summary` 或 `full` |
+| `--session-artifact-tier` | `str` | `debug` | session artifact 档位：`debug` 保留完整日志，`normal` 只保留核心 MIDI/trace |
 | `--enable-performance-tracking` | flag | `False` | 预留参数；当前版本未接入额外逻辑 |
 
 退出行为说明（除 `midi_file` 外）：
 
 1. CLI 结束时会调用一次 `InferenceEngine.clear_history()`。
-2. 若输出目录可用，会将返回的历史落盘为 `melody_history.json` 与 `accompaniment_history.json`。
-3. `session/composite` 会在关闭阶段生成 `performance.json` 与 `statistics.csv`。
+2. `--session-artifact-tier debug` 时，若输出目录可用，会将返回的历史落盘为 `melody_history.json` 与 `accompaniment_history.json`。
+3. `session/composite` 在 debug 档会生成 `performance.json` 与 `statistics.csv`；normal 档跳过完整 JSON 诊断文件。
 
 ### 输出类型与 MIDI 产物
 
@@ -74,6 +75,8 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `midi_file` | 否（不写 `combined.mid`） | 仅写 `--midi-file-output-path` |
 
 开启 `--enable-metronome` 后，所有写 MIDI 的模式都会额外写一个 `Metronome` 鼓轨。若同时设置 `--count-in-beats`，count-in click 也会被记录在 MIDI 文件开头。
+
+`session/composite` 还会写 `model_schedule_trace.jsonl`；如果 trace 中有模型事件，关闭时会从 logical tick 重建 `theoretical_model.mid`。`combined.mid` 始终表示 actual scheduled playback。
 
 ---
 

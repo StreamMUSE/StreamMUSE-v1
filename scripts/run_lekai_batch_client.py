@@ -83,6 +83,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-type", type=str, choices=CLI_OUTPUT_TYPES, default="composite")
     parser.add_argument("--midi-out-port", type=str, default=None)
     parser.add_argument("--inference-log-detail", type=str, choices=["summary", "full"], default="summary")
+    parser.add_argument(
+        "--session-artifact-tier",
+        type=str,
+        choices=["normal", "debug"],
+        default="normal",
+        help="Session artifact tier passed to streammuse-cli; batch sweeps default to normal",
+    )
 
     parser.add_argument("--injection-mode", type=str, choices=CLI_INJECTION_MODES, default="none")
     parser.add_argument("--injection-file", type=str, default=None, help="Used when --injection-mode fixed")
@@ -242,6 +249,8 @@ def build_cli_command(
         str(args.output_type),
         "--inference-log-detail",
         str(args.inference_log_detail),
+        "--session-artifact-tier",
+        str(args.session_artifact_tier),
     ]
 
     if args.inference_type == "http":

@@ -34,6 +34,39 @@ class PlaybackScheduler:
         with self._lock:
             return self._schedule.pop(tick, [])
 
+    def pop_future_events(
+        self,
+        from_tick: int,
+        source: str | None = None,
+    ) -> List[MusicalEvent]:
+        """Remove and return events from from_tick onward.
+
+        If source is provided, only events with matching source are removed.
+        Returned events are ordered by scheduled tick and insertion order within
+        each tick, matching normal playback order before any caller-side sorting.
+        """
+        removed: List[MusicalEvent] = []
+        with self._lock:
+            ticks_to_consider = sorted(t for t in self._schedule.keys() if t >= from_tick)
+            for tick in ticks_to_consider:
+                events = self._schedule.get(tick, [])
+                if source is None:
+                    removed.extend(events)
+                    del self._schedule[tick]
+                    continue
+
+                kept: List[MusicalEvent] = []
+                for event in events:
+                    if event.source == source:
+                        removed.append(event)
+                    else:
+                        kept.append(event)
+                if kept:
+                    self._schedule[tick] = kept
+                else:
+                    self._schedule.pop(tick, None)
+        return removed
+
     def clear_future_events(
         self,
         from_tick: int,
@@ -45,15 +78,4 @@ class PlaybackScheduler:
         If source is provided, only remove events with matching source
         (e.g. "model"). If source is None, clear all events in the range.
         """
-        with self._lock:
-            ticks_to_consider = [t for t in self._schedule.keys() if t >= from_tick]
-            for tick in ticks_to_consider:
-                if source is None:
-                    del self._schedule[tick]
-                else:
-                    self._schedule[tick] = [
-                        e for e in self._schedule[tick]
-                        if e.source != source
-                    ]
-                    if not self._schedule[tick]:
-                        del self._schedule[tick]
+        self.pop_future_events(from_tick=from_tick, source=source)

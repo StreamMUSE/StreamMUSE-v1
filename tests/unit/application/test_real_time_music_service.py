@@ -437,3 +437,177 @@ def test_build_inference_log_payload_full():
     assert request_data["melody_notes"][0]["pitch"] == 60
     assert response_data["accompaniment"][0]["source"] == "model"
     assert response_data["timings"]["inference_end_time"] == 1.3
+
+
+def _model_event(
+    pitch: int,
+    tick: int,
+    event_type: EventType,
+    *,
+    velocity: int | None = None,
+    channel: int = 0,
+    program: int = 0,
+) -> MusicalEvent:
+    return MusicalEvent(
+        tick=tick,
+        pitch=pitch,
+        event_type=event_type,
+        velocity=(0 if event_type == EventType.NOTE_OFF else 80) if velocity is None else velocity,
+        channel=channel,
+        program=program,
+        source="model",
+    )
+
+
+def test_plan_model_events_partial_note_clamps_onset_and_keeps_note_off() -> None:
+    svc = _make_service()
+
+    plan = svc._plan_model_events_for_playback(
+        [
+            _model_event(48, 2, EventType.NOTE_ON),
+            _model_event(48, 6, EventType.NOTE_OFF),
+        ],
+        current_tick=4,
+        generation_start_tick=0,
+        active_model_keys=set(),
+    )
+
+    assert [(e.event.event_type, e.event.tick, e.logical_tick, e.policy) for e in plan.scheduled_events] == [
+        (EventType.NOTE_ON, 4, 2, "clamped_partial_note"),
+        (EventType.NOTE_OFF, 6, 6, "clamped_partial_note_off"),
+    ]
+    assert plan.clamped_onset_count == 1
+    assert any(row["logical_tick"] == 2 and row["scheduled_tick"] == 4 for row in plan.trace_rows)
+
+
+def test_plan_model_events_drops_fully_past_note() -> None:
+    svc = _make_service()
+
+    plan = svc._plan_model_events_for_playback(
+        [
+            _model_event(48, 1, EventType.NOTE_ON),
+            _model_event(48, 3, EventType.NOTE_OFF),
+        ],
+        current_tick=4,
+        generation_start_tick=0,
+        active_model_keys=set(),
+    )
+
+    assert plan.scheduled_events == []
+    assert plan.dropped_past_note_count == 1
+    assert [row["policy"] for row in plan.trace_rows] == ["dropped_past_note", "dropped_past_note"]
+
+
+def test_plan_model_events_keeps_future_note_unchanged() -> None:
+    svc = _make_service()
+
+    plan = svc._plan_model_events_for_playback(
+        [
+            _model_event(48, 5, EventType.NOTE_ON),
+            _model_event(48, 8, EventType.NOTE_OFF),
+        ],
+        current_tick=4,
+        generation_start_tick=4,
+        active_model_keys=set(),
+    )
+
+    assert [(e.event.event_type, e.event.tick, e.logical_tick, e.policy) for e in plan.scheduled_events] == [
+        (EventType.NOTE_ON, 5, 5, "future_note"),
+        (EventType.NOTE_OFF, 8, 8, "future_note"),
+    ]
+
+
+def test_plan_model_events_supports_open_note_and_active_isolated_note_off() -> None:
+    svc = _make_service()
+    key = (48, 0, 0)
+
+    open_plan = svc._plan_model_events_for_playback(
+        [_model_event(48, 2, EventType.NOTE_ON)],
+        current_tick=4,
+        generation_start_tick=0,
+        active_model_keys=set(),
+    )
+    assert [(e.event.event_type, e.event.tick, e.policy) for e in open_plan.scheduled_events] == [
+        (EventType.NOTE_ON, 4, "clamped_open_note"),
+    ]
+
+    late_off_plan = svc._plan_model_events_for_playback(
+        [_model_event(48, 3, EventType.NOTE_OFF)],
+        current_tick=4,
+        generation_start_tick=0,
+        active_model_keys={key},
+    )
+    assert [(e.event.event_type, e.event.tick, e.policy) for e in late_off_plan.scheduled_events] == [
+        (EventType.NOTE_OFF, 4, "late_isolated_note_off"),
+    ]
+
+    current_off_plan = svc._plan_model_events_for_playback(
+        [_model_event(48, 4, EventType.NOTE_OFF)],
+        current_tick=4,
+        generation_start_tick=0,
+        active_model_keys={key},
+    )
+    assert [(e.event.event_type, e.event.tick, e.policy) for e in current_off_plan.scheduled_events] == [
+        (EventType.NOTE_OFF, 4, "current_isolated_note_off"),
+    ]
+
+
+def test_plan_model_events_drops_orphan_note_off_and_does_not_cross_pair_channels() -> None:
+    svc = _make_service()
+
+    plan = svc._plan_model_events_for_playback(
+        [
+            _model_event(48, 2, EventType.NOTE_ON, channel=0),
+            _model_event(48, 5, EventType.NOTE_OFF, channel=1),
+        ],
+        current_tick=4,
+        generation_start_tick=0,
+        active_model_keys=set(),
+    )
+
+    assert [(e.event.event_type, e.event.channel, e.event.tick, e.policy) for e in plan.scheduled_events] == [
+        (EventType.NOTE_ON, 0, 4, "clamped_open_note"),
+    ]
+    assert plan.orphan_note_off_count == 1
+    assert any(row["policy"] == "orphan_note_off" for row in plan.trace_rows)
+
+
+def test_tick_loop_forces_note_off_when_clear_removes_active_future_off() -> None:
+    calls = []
+    trace_rows = []
+
+    class _TraceOutput(NoopOutput):
+        def output_event(self, event, source):
+            calls.append((source, event.event_type, event.pitch, event.tick))
+
+        def log_model_schedule(self, rows):
+            trace_rows.extend(rows)
+
+    svc = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=_TraceOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    svc._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    svc._running = True
+    svc._active_model_note_keys = {(48, 0, 0)}
+    svc._scheduler.schedule(_model_event(48, 8, EventType.NOTE_OFF), tick=8)
+    svc._inference_response_queue.put(
+        (
+            [_model_event(48, 0, EventType.NOTE_ON), _model_event(48, 4, EventType.NOTE_OFF)],
+            0,
+        )
+    )
+
+    svc._tick_loop(max_ticks=1)
+
+    assert calls[:2] == [
+        ("model", EventType.NOTE_OFF, 48, 0),
+        ("model", EventType.NOTE_ON, 48, 0),
+    ]
+    assert any(row["policy"] == "forced_note_off" and row["scheduled_tick"] == 0 for row in trace_rows)
+    assert any(row["policy"] == "future_note" for row in trace_rows)

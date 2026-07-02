@@ -24,6 +24,7 @@ def __init__(
     ticks_per_beat: int = 4,
     beats_per_bar: int = 4,
     record_metronome: bool = False,
+    artifact_tier: str = "debug",
 ) -> None:
 ```
 
@@ -37,11 +38,13 @@ def __init__(
 | `ticks_per_beat` | `4` | MIDI 录制 tick 分辨率 |
 | `beats_per_bar` | `4` | downbeat 判断 |
 | `record_metronome` | `False` | 是否记录 `Metronome` 鼓轨 |
+| `artifact_tier` | `debug` | session artifact 档位：`debug` 或 `normal` |
 
 初始化时：
 
-- `MidiFileOutputSink` 写 `session_dir/combined.mid`。
-- `JsonLoggerOutputSink` 写 JSON 日志。
+- `MidiFileOutputSink` 写 `session_dir/combined.mid`，表示 actual scheduled playback。
+- `JsonLoggerOutputSink` 在 `include_json=True` 时写 JSON 日志。
+- `model_schedule_trace.jsonl` 记录模型事件的 logical/scheduled tick；关闭时会从 trace 重建 `theoretical_model.mid`。
 
 ---
 
@@ -56,6 +59,7 @@ def __init__(
 | `output_status` | MIDI + JSON |
 | `output_config` | MIDI + JSON |
 | `log_inference` | JSON |
+| `log_model_schedule` | `model_schedule_trace.jsonl` |
 
 `output_metronome_tick` 只委托给 `midi_sink`，因此 session 日志中 metronome 体现为 MIDI 鼓轨，不进入 `events.jsonl`。
 
@@ -65,14 +69,18 @@ def __init__(
 
 ```text
 session_HHMMSS/
-├── combined.mid       # Melody + Accompaniment，可选 Metronome
-├── events.jsonl       # 每行一个事件
-├── inferences.json    # 推理记录
-├── performance.json   # 性能报告
-└── statistics.csv     # 摘要 CSV
+├── combined.mid                # actual playback：Melody + Accompaniment，可选 Metronome
+├── theoretical_model.mid       # model logical timeline，从 schedule trace 重建
+├── model_schedule_trace.jsonl  # logical_tick / scheduled_tick / policy
+├── events.jsonl                # debug tier：每行一个事件
+├── inferences.json             # debug tier：推理记录
+├── performance.json            # debug tier：性能报告
+└── statistics.csv              # debug tier：摘要 CSV
 ```
 
 `combined.mid` 默认包含 `Melody` 和 `Accompaniment` 两轨。开启 `--enable-metronome` 后额外包含 `Metronome` 鼓轨；如果启用了 `--count-in-beats`，count-in click 会出现在 MIDI 开头。
+
+`theoretical_model.mid` 不参与 live playback，只用于对照模型原始 logical tick；真实听感以 `combined.mid` 为准。
 
 ---
 

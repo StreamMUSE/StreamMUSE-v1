@@ -16,6 +16,7 @@ class TempoConfig:
 InputType = Literal["midi_device", "keyboard", "midi_file", "list"]
 OutputType = Literal["audio", "midi_file", "console", "websocket", "composite", "json_log", "session"]
 InferenceLogDetail = Literal["summary", "full"]
+SessionArtifactTier = Literal["normal", "debug"]
 InferenceType = Literal["http", "stanley"]
 ModelName = Literal["stanley", "lekai"]
 
@@ -37,6 +38,7 @@ class OutputConfig:
     midi_out_port: Optional[str] = None
     midi_file_output_path: Optional[str] = None
     inference_log_detail: InferenceLogDetail = "summary"
+    session_artifact_tier: SessionArtifactTier = "debug"
     metronome_enabled: bool = False
     metronome_port: Optional[str] = None
     metronome_channel: int = 9

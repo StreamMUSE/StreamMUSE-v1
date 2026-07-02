@@ -31,8 +31,9 @@ STREAMMUSE_CONSISTENCY_SONGS=4,5,2 STREAMMUSE_CONSISTENCY_TEMPOS=120,90,60,15 \
 对每个 `(歌, tempo)`：
 
 1. **零丢弃前置**：实时推理没有因为跟不上调度而丢请求（从 `inferences.json` 的 `generation_start_tick` 是否连续步进检测）。违反即报 *run invalid: inference too slow*，是性能问题不是一致性回归。
-2. **断言一**：实时输出 == 离线输出，在 pianoroll `(beat, pitch)` 层、截断到旋律窗口内，完全相等。
-3. **断言二**：同一首歌不同 tempo 的实时输出两两相同——证明时钟速度不会泄漏进生成内容。
+2. **零迟到调度前置**：读取 `model_schedule_trace.jsonl`，确认没有 `clamped_partial_note`、`dropped_past_note`、`forced_note_off` 等 late scheduling policy。准点的跨 batch `current_isolated_note_off` 允许出现。
+3. **断言一**：实时输出 == 离线输出，在 pianoroll `(beat, pitch)` 层、截断到旋律窗口内，完全相等。
+4. **断言二**：同一首歌不同 tempo 的实时输出两两相同——证明时钟速度不会泄漏进生成内容。
 
 ## 三个必须遵守的设计约束（踩坑换来的）
 
@@ -70,14 +71,15 @@ BPM 是模型的条件 token（prompt 开头）。两侧必须落在同一个 `e
 
 `--tempo` 只控制 wall-clock 节奏，不影响生成内容，所以可以放慢时钟消除"推理赶不上"的干扰：
 
-- **tempo 15 红** → 真一致性回归；
+- **tempo 15 红** → 真一致性回归，或当前机器连慢速金标准都触发了 late scheduling；
 - **tempo 15 绿、tempo 120 红** → 推理速度跟不上实时（环境/性能），非系统 bug；
 - 全绿 → 一致 且 当前机器能跑满 120 BPM 实时。
 
 ## 红了怎么查
 
-1. 先看是不是 *run invalid: inference too slow* → 换空闲 GPU 或只跑 tempo 15。
-2. 看断言一的 `cmp.summary()`：`only_in_realtime` / `only_in_offline` 哪边多了/少了，落在哪些 `(beat, pitch)`。
-3. 若差异在尾部 → 检查旋律窗口截断是否正确。
-4. 若差异在开头 → 大概率 BPM token 不一致，核对两侧 `[PROMPT_DEBUG]` 的第 3 个 initial token。
-5. 工件都在 `output/consistency/<timestamp>/`（server.log、各 session 目录、offline 输出），可直接复盘。
+1. 先看是不是 *run invalid: inference too slow* 或 late scheduling policy → 换空闲 GPU 或只跑 tempo 15。
+2. 若是 late scheduling，打开 session 目录下的 `model_schedule_trace.jsonl`，看 `logical_tick`、`scheduled_tick` 和 `policy`。
+3. 看断言一的 `cmp.summary()`：`only_in_realtime` / `only_in_offline` 哪边多了/少了，落在哪些 `(beat, pitch)`。
+4. 若差异在尾部 → 检查旋律窗口截断是否正确。
+5. 若差异在开头 → 大概率 BPM token 不一致，核对两侧 `[PROMPT_DEBUG]` 的第 3 个 initial token。
+6. 工件都在 `output/consistency/<timestamp>/`（server.log、各 session 目录、offline 输出），可直接复盘。

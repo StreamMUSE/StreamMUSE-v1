@@ -83,6 +83,13 @@ def parse_args() -> argparse.Namespace:
         default="summary",
         help="Inference logging detail level (full can significantly increase log size)",
     )
+    parser.add_argument(
+        "--session-artifact-tier",
+        type=str,
+        choices=["normal", "debug"],
+        default="debug",
+        help="Session artifact tier: normal keeps core MIDI/trace files; debug keeps full JSON/log diagnostics",
+    )
     parser.add_argument("--enable-performance-tracking", action="store_true", help="Enable detailed performance metrics calculation")
 
     # Inference configuration
@@ -158,6 +165,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         midi_out_port=args.midi_out_port,
         midi_file_output_path=args.midi_file_output_path,
         inference_log_detail=getattr(args, "inference_log_detail", "summary"),  # type: ignore
+        session_artifact_tier=getattr(args, "session_artifact_tier", "debug"),  # type: ignore
         metronome_enabled=bool(getattr(args, "enable_metronome", False)),
         metronome_port=getattr(args, "metronome_port", None),
         metronome_channel=int(getattr(args, "metronome_channel", 9)),

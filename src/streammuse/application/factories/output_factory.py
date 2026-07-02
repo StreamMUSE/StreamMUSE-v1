@@ -131,12 +131,13 @@ class OutputSinkFactory:
             sink = SessionLoggerOutputSink(
                 session_dir=session_manager.get_session_dir(),
                 include_midi=True,
-                include_json=True,
+                include_json=(cfg.session_artifact_tier == "debug"),
                 inference_log_detail=cfg.inference_log_detail,
                 bpm=float(tempo.bpm),
                 ticks_per_beat=int(tempo.ticks_per_beat),
                 beats_per_bar=int(tempo.beats_per_bar),
                 record_metronome=bool(cfg.metronome_enabled),
+                artifact_tier=cfg.session_artifact_tier,
             )
             return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
 
@@ -147,11 +148,13 @@ class OutputSinkFactory:
                         ConsoleOutputSink(ConsoleOutputConfig()),
                         SessionLoggerOutputSink(
                             session_manager.get_session_dir(),
+                            include_json=(cfg.session_artifact_tier == "debug"),
                             inference_log_detail=cfg.inference_log_detail,
                             bpm=float(tempo.bpm),
                             ticks_per_beat=int(tempo.ticks_per_beat),
                             beats_per_bar=int(tempo.beats_per_bar),
                             record_metronome=bool(cfg.metronome_enabled),
+                            artifact_tier=cfg.session_artifact_tier,
                         ),
                     ]
                 )

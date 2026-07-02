@@ -29,6 +29,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "metronome_port": None,
         "metronome_channel": 9,
         "inference_log_detail": "summary",
+        "session_artifact_tier": "debug",
         "inference_type": "http",
         "server_url": "http://localhost:8000/generate_accompaniment",
         "model_name": "stanley",
@@ -60,6 +61,7 @@ def test_parse_args_defaults() -> None:
     assert config.input.injection_acc_file is None
     assert config.output.type == "console"
     assert config.output.inference_log_detail == "summary"
+    assert config.output.session_artifact_tier == "debug"
     assert config.output.metronome_enabled is False
     assert config.output.metronome_port is None
     assert config.output.metronome_channel == 9
@@ -80,6 +82,7 @@ def test_args_to_config_keyboard_input() -> None:
         output_type="audio",
         midi_out_port="Virtual MIDI Port",
         inference_log_detail="full",
+        session_artifact_tier="normal",
         server_url="http://example.com/generate",
         timeout_s=60.0,
     )
