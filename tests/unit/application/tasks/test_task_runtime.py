@@ -45,6 +45,14 @@ def _read_trace(trace_dir: Path) -> list[dict[str, object]]:
     ]
 
 
+def _read_response_trace(trace_dir: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in (trace_dir / "response_trace.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def test_offline_benchmark_records_one_trace_event_per_turn(tmp_path) -> None:
     task = ZipZapZopTask(start_number=1)
     runtime = TaskRuntime(
@@ -64,7 +72,21 @@ def test_offline_benchmark_records_one_trace_event_per_turn(tmp_path) -> None:
     assert [row["stage"] for row in trace] == ["task_turn", "task_turn", "task_turn"]
     assert trace[0]["summary"]["turn_id"] == 0
     assert trace[0]["summary"]["deadline_missed"] is False
-    assert (Path(result.output_dir) / "manifest.json").exists()
+
+    response_trace = _read_response_trace(Path(result.output_dir))
+    assert len(response_trace) == 3
+    assert all(set(row) == {"turn_id", "prompt", "response"} for row in response_trace)
+    assert response_trace[0]["turn_id"] == 0
+    assert response_trace[0]["prompt"][-1]["content"] == "1:"
+    assert response_trace[0]["response"] == "1"
+    assert response_trace[2]["turn_id"] == 2
+    assert response_trace[2]["prompt"][-1]["content"] == "3:"
+    assert response_trace[2]["response"] == "Zip"
+
+    manifest_path = Path(result.output_dir) / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["response_trace_path"] == "response_trace.jsonl"
 
 
 def test_realtime_runner_marks_deadline_miss_with_fake_clock(tmp_path) -> None:

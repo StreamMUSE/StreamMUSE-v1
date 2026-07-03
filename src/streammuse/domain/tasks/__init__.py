@@ -3,6 +3,9 @@
 from streammuse.domain.tasks.models import (
     ChatMessage,
     ChatModelResponse,
+    InteractiveActor,
+    InteractiveTask,
+    InteractiveTurnRecord,
     LocalChatModel,
     RealtimeTask,
     TaskRefereeResult,
@@ -14,6 +17,9 @@ from streammuse.domain.tasks.zip_zap_zop import ZipZapZopTask
 __all__ = [
     "ChatMessage",
     "ChatModelResponse",
+    "InteractiveActor",
+    "InteractiveTask",
+    "InteractiveTurnRecord",
     "LocalChatModel",
     "RealtimeTask",
     "TaskRefereeResult",

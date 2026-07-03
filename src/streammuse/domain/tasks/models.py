@@ -1,12 +1,13 @@
-"""Domain contracts for realtime and benchmark tasks."""
+"""Domain contracts for realtime, benchmark, and interactive tasks."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 
 ChatMessage = dict[str, str]
+InteractiveActor = Literal["human", "llm"]
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,20 @@ class ChatModelResponse:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class InteractiveTurnRecord:
+    turn_id: int
+    actor: InteractiveActor
+    number: int | None = None
+    prompt: str | list[ChatMessage] | None = None
+    response: str = ""
+    expected: str | None = None
+    is_valid: bool = False
+    latency_ms: float | None = None
+    deadline_missed: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 class LocalChatModel(Protocol):
     def generate(
         self,
@@ -70,3 +85,52 @@ class RealtimeTask(Protocol):
         referee_result: TaskRefereeResult,
         response_text: str,
     ) -> TaskState: ...
+
+
+class InteractiveTask(Protocol):
+    name: str
+
+    def initial_state(self) -> TaskState: ...
+
+    def build_human_prompt(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> str: ...
+
+    def build_llm_messages(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> list[ChatMessage]: ...
+
+    def validate_response(
+        self,
+        state: TaskState,
+        response_text: str,
+        *,
+        actor: InteractiveActor | None = None,
+        transcript: list[InteractiveTurnRecord] | None = None,
+    ) -> TaskRefereeResult: ...
+
+    def advance_state(
+        self,
+        state: TaskState,
+        referee_result: TaskRefereeResult,
+        response_text: str,
+        *,
+        actor: InteractiveActor | None = None,
+        transcript: list[InteractiveTurnRecord] | None = None,
+    ) -> TaskState: ...
+
+    def expected_for_state(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> str | None: ...
+
+    def build_hint(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> str | None: ...

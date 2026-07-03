@@ -104,6 +104,11 @@ class TaskRuntime:
                     prompt_tokens=model_response.prompt_tokens,
                     completion_tokens=model_response.completion_tokens,
                 )
+                self._append_response_trace(
+                    run_dir=run_dir,
+                    turn=turn,
+                    response_text=model_response.text,
+                )
                 state = next_state
                 next_deadline_s += self._interval_s()
 
@@ -123,6 +128,15 @@ class TaskRuntime:
 
     def _interval_s(self) -> float:
         return 1.0 / max(float(self.config.tick_rate_hz), 0.0001)
+
+    def _append_response_trace(self, *, run_dir: Path, turn: TaskTurn, response_text: str) -> None:
+        row = {
+            "turn_id": int(turn.turn_id),
+            "prompt": turn.messages,
+            "response": response_text,
+        }
+        with (run_dir / "response_trace.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     def _record_turn(
         self,
@@ -204,6 +218,7 @@ class TaskRuntime:
                 "valid_count": result.valid_count,
                 "invalid_count": result.invalid_count,
                 "deadline_miss_count": result.deadline_miss_count,
+                "response_trace_path": "response_trace.jsonl",
             }
         )
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from streammuse.domain.tasks import ZipZapZopTask
+from streammuse.domain.tasks import InteractiveTurnRecord, ZipZapZopTask
 
 
 def test_zip_zap_zop_task_progresses_state_on_valid_response() -> None:
@@ -32,3 +32,38 @@ def test_zip_zap_zop_task_referee_reports_expected_output() -> None:
     assert result.failure_reason == "EXPECTED_MISMATCH"
     assert next_state.turn_index == 1
     assert next_state.data["current_number"] == 3
+
+
+def test_zip_zap_zop_interactive_messages_can_include_bounded_transcript() -> None:
+    task = ZipZapZopTask(start_number=1, history_limit=1)
+    state = task.initial_state()
+    first_result = task.validate_response(state, "1", actor="human", transcript=[])
+    next_state = task.advance_state(state, first_result, "1", actor="human", transcript=[])
+    transcript = [
+        InteractiveTurnRecord(
+            turn_id=0,
+            actor="human",
+            number=1,
+            prompt="1:",
+            response="1",
+            expected="1",
+            is_valid=True,
+        )
+    ]
+
+    messages = task.build_llm_messages(next_state, transcript)
+
+    assert task.build_human_prompt(state, []) == "1:"
+    assert "with a human" in messages[0]["content"]
+    assert "Human at 1: 1" in messages[-1]["content"]
+    assert "Your turn. 2:" in messages[-1]["content"]
+    assert next_state.history[-1]["role"] == "human"
+    assert next_state.history[-1]["number"] == "1"
+
+
+def test_zip_zap_zop_interactive_hint_and_expected_are_task_specific() -> None:
+    task = ZipZapZopTask(start_number=15)
+    state = task.initial_state()
+
+    assert task.expected_for_state(state, []) == "ZipZop"
+    assert task.build_hint(state, []) == "Check divisibility by: 3, 5."
