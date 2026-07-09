@@ -134,3 +134,22 @@ def test_realtime_runner_marks_deadline_miss_with_fake_clock(tmp_path) -> None:
     trace = _read_trace(Path(result.output_dir))
     assert trace[0]["summary"]["deadline_missed"] is True
     assert trace[0]["summary"]["runner_kind"] == "realtime_loop"
+
+
+def test_runtime_can_print_live_turn_output(tmp_path, capsys) -> None:
+    task = ZipZapZopTask(start_number=1)
+    runtime = TaskRuntime(
+        config=TaskRuntimeConfig(
+            runner_kind="offline_benchmark",
+            output_dir=str(tmp_path),
+            live_output=True,
+        ),
+        model_client=StaticModelClient(["1", "bad"]),
+    )
+
+    runtime.run(task, max_turns=2)
+
+    output = capsys.readouterr().out
+    assert "[turn 000] OK response='1' expected='1'" in output
+    assert "[turn 001] BAD response='bad' expected='2' reason=EXPECTED_MISMATCH" in output
+    assert "latency_ms=25.0" in output

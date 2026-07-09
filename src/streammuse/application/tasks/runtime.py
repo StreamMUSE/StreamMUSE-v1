@@ -25,6 +25,7 @@ class TaskRuntimeConfig:
     deadline_ms: float = 1000.0
     max_tokens: int = 32
     temperature: float = 0.0
+    live_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,15 @@ class TaskRuntime:
                 if deadline_missed:
                     deadline_miss_count += 1
 
+                if self.config.live_output:
+                    self._print_live_turn(
+                        turn=turn,
+                        response_text=model_response.text,
+                        referee=referee,
+                        elapsed_ms=elapsed_ms,
+                        deadline_missed=deadline_missed,
+                    )
+
                 self._record_turn(
                     recorder=recorder,
                     turn=turn,
@@ -129,6 +139,29 @@ class TaskRuntime:
 
     def _interval_s(self) -> float:
         return 1.0 / max(float(self.config.tick_rate_hz), 0.0001)
+
+    def _print_live_turn(
+        self,
+        *,
+        turn: TaskTurn,
+        response_text: str,
+        referee: TaskRefereeResult,
+        elapsed_ms: float,
+        deadline_missed: bool,
+    ) -> None:
+        status = "OK" if referee.is_valid else "BAD"
+        parts = [
+            f"[turn {turn.turn_id:03d}]",
+            status,
+            f"response={response_text!r}",
+        ]
+        if referee.expected_output is not None:
+            parts.append(f"expected={referee.expected_output!r}")
+        parts.append(f"reason={referee.failure_reason}")
+        parts.append(f"latency_ms={elapsed_ms:.1f}")
+        if deadline_missed:
+            parts.append("deadline=MISS")
+        print(" ".join(parts), flush=True)
 
     def _append_response_trace(self, *, run_dir: Path, turn: TaskTurn, response_text: str) -> None:
         row = {
@@ -207,6 +240,7 @@ class TaskRuntime:
                     "deadline_ms": self.config.deadline_ms,
                     "max_tokens": self.config.max_tokens,
                     "temperature": self.config.temperature,
+                    "live_output": self.config.live_output,
                 },
             )
         )

@@ -36,6 +36,7 @@ def test_task_cli_runs_zip_zap_zop_benchmark(tmp_path, capsys) -> None:
                 "gemma",
                 "--top-p",
                 "0.8",
+                "--live-output",
                 "--output-dir",
                 str(tmp_path),
             ]
@@ -46,6 +47,40 @@ def test_task_cli_runs_zip_zap_zop_benchmark(tmp_path, capsys) -> None:
     assert run_task.call_args.kwargs["runner_kind"] == "offline_benchmark"
     assert run_task.call_args.kwargs["max_turns"] == 2
     assert run_task.call_args.kwargs["top_p"] == 0.8
+    assert run_task.call_args.kwargs["live_output"] is True
+    assert "offline_benchmark completed: 2 turns" in capsys.readouterr().out
+
+
+def test_task_cli_runs_animal_naming_benchmark(tmp_path, capsys) -> None:
+    result = TaskRunResult(
+        output_dir=str(tmp_path / "run"),
+        runner_kind="offline_benchmark",
+        task_name="animal_naming",
+        turn_count=2,
+        valid_count=2,
+        invalid_count=0,
+        deadline_miss_count=0,
+    )
+
+    with patch("streammuse.presentation.task.cli.run_task", return_value=result) as run_task:
+        exit_code = main(
+            [
+                "run",
+                "--task",
+                "animal_naming",
+                "--runner",
+                "offline_benchmark",
+                "--max-turns",
+                "2",
+                "--output-dir",
+                str(tmp_path),
+            ]
+        )
+
+    assert exit_code == 0
+    assert run_task.call_args.kwargs["task_name"] == "animal_naming"
+    assert run_task.call_args.kwargs["runner_kind"] == "offline_benchmark"
+    assert run_task.call_args.kwargs["live_output"] is False
     assert "offline_benchmark completed: 2 turns" in capsys.readouterr().out
 
 
@@ -158,6 +193,13 @@ def test_task_cli_run_keeps_batch_max_tokens_default() -> None:
     assert args.command == "run"
     assert args.max_tokens == 32
     assert args.top_p is None
+
+
+def test_task_cli_rejects_noninteractive_task_for_play(capsys) -> None:
+    exit_code = main(["play", "--task", "animal_naming"])
+
+    assert exit_code == 2
+    assert "unsupported interactive task: animal_naming" in capsys.readouterr().out
 
 
 def test_task_cli_play_rejects_conflicting_first_actor_flags() -> None:

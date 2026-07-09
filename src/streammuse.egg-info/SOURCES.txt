@@ -38,6 +38,7 @@ src/streammuse/domain/musical/__init__.py
 src/streammuse/domain/musical/converters.py
 src/streammuse/domain/musical/events.py
 src/streammuse/domain/tasks/__init__.py
+src/streammuse/domain/tasks/animal_naming.py
 src/streammuse/domain/tasks/models.py
 src/streammuse/domain/tasks/zip_zap_zop.py
 src/streammuse/domain/timing/__init__.py

@@ -15,14 +15,15 @@ from streammuse.application.tasks import (
     TaskRuntimeConfig,
     TerminalIO,
 )
-from streammuse.domain.tasks import DeadlineMode, InteractiveTask, RealtimeTask, ZipZapZopTask
+from streammuse.domain.tasks import AnimalNamingTask, DeadlineMode, InteractiveTask, RealtimeTask, ZipZapZopTask
 from streammuse.infrastructure.inference.local_chat_client import (
     LocalChatModelClient,
     LocalChatModelClientConfig,
 )
 
 
-TASKS = {"zip_zap_zop": ZipZapZopTask}
+TASKS = {"animal_naming": AnimalNamingTask, "zip_zap_zop": ZipZapZopTask}
+INTERACTIVE_TASKS = {"zip_zap_zop"}
 RUNNERS = {"offline_benchmark", "realtime_loop"}
 
 
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional nucleus sampling value sent to the OpenAI-compatible server",
     )
+    run.add_argument("--live-output", action="store_true", help="Print each completed task turn to stdout")
 
     play = subcommands.add_parser("play", help="Play an interactive task with a local model server")
     _add_common_task_args(play, max_tokens_default=8)
@@ -86,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.task not in TASKS:
         print(f"unsupported task: {args.task}")
         return 2
+    if args.command == "play" and args.task not in INTERACTIVE_TASKS:
+        print(f"unsupported interactive task: {args.task}")
+        return 2
 
     if args.command == "run":
         result = run_task(
@@ -103,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             start_number=int(args.start_number),
             history_limit=int(args.history_limit),
             top_p=args.top_p,
+            live_output=bool(args.live_output),
         )
         print(
             f"{result.runner_kind} completed: {result.turn_count} turns, "
@@ -153,6 +159,7 @@ def run_task(
     top_p: float | None = None,
     extra_payload: dict[str, object] | None = None,
     oracle_history: bool = False,
+    live_output: bool = False,
 ) -> TaskRunResult:
     task = create_task(
         task_name,
@@ -176,6 +183,7 @@ def run_task(
             deadline_ms=deadline_ms,
             max_tokens=max_tokens,
             temperature=temperature,
+            live_output=live_output,
         ),
         model_client=client,
     )
@@ -236,6 +244,8 @@ def create_task(
     history_limit: int = 8,
     oracle_history: bool = False,
 ) -> RealtimeTask | InteractiveTask:
+    if task_name == "animal_naming":
+        return AnimalNamingTask()
     if task_name == "zip_zap_zop":
         return ZipZapZopTask(
             start_number=start_number,
