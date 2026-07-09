@@ -17,6 +17,7 @@ src/streammuse/application/factories/output_factory.py
 src/streammuse/application/services/input_timing.py
 src/streammuse/application/services/real_time_music_service.py
 src/streammuse/application/tasks/__init__.py
+src/streammuse/application/tasks/interactive_runtime.py
 src/streammuse/application/tasks/runtime.py
 src/streammuse/domain/__init__.py
 src/streammuse/domain/debug/__init__.py
