@@ -34,6 +34,8 @@ def test_task_cli_runs_zip_zap_zop_benchmark(tmp_path, capsys) -> None:
                 "http://localhost:8000/v1",
                 "--model",
                 "gemma",
+                "--top-p",
+                "0.8",
                 "--output-dir",
                 str(tmp_path),
             ]
@@ -43,6 +45,7 @@ def test_task_cli_runs_zip_zap_zop_benchmark(tmp_path, capsys) -> None:
     assert run_task.call_args.kwargs["task_name"] == "zip_zap_zop"
     assert run_task.call_args.kwargs["runner_kind"] == "offline_benchmark"
     assert run_task.call_args.kwargs["max_turns"] == 2
+    assert run_task.call_args.kwargs["top_p"] == 0.8
     assert "offline_benchmark completed: 2 turns" in capsys.readouterr().out
 
 
@@ -68,6 +71,12 @@ def test_task_cli_plays_zip_zap_zop_interactive(tmp_path, capsys) -> None:
                 "--show-expected",
                 "--history-limit",
                 "3",
+                "--deadline-mode",
+                "challenge",
+                "--challenge-stage-turns",
+                "4",
+                "--challenge-deadline-ms-list",
+                "1000,500",
                 "--max-turns",
                 "2",
                 "--model-url",
@@ -87,6 +96,9 @@ def test_task_cli_plays_zip_zap_zop_interactive(tmp_path, capsys) -> None:
     assert play_task.call_args.kwargs["show_expected"] is True
     assert play_task.call_args.kwargs["history_limit"] == 3
     assert play_task.call_args.kwargs["timeout_s"] == 5.0
+    assert play_task.call_args.kwargs["deadline_mode"] == "challenge"
+    assert play_task.call_args.kwargs["challenge_stage_turns"] == 4
+    assert play_task.call_args.kwargs["challenge_deadline_ms_list"] == (1000.0, 500.0)
     assert "interactive completed: 2 turns" in capsys.readouterr().out
 
 
@@ -99,6 +111,12 @@ def test_task_cli_play_parser_has_common_args_and_actor_switch(tmp_path) -> None
             "--llm-first",
             "--max-turns",
             "7",
+            "--deadline-mode",
+            "hard",
+            "--challenge-stage-turns",
+            "9",
+            "--challenge-deadline-ms-list",
+            "9000,3000",
             "--temperature",
             "0.1",
             "--deadline-ms",
@@ -117,10 +135,21 @@ def test_task_cli_play_parser_has_common_args_and_actor_switch(tmp_path) -> None
     assert args.human_first is False
     assert args.max_turns == 7
     assert args.max_tokens == 8
+    assert args.deadline_mode == "hard"
+    assert args.challenge_stage_turns == 9
+    assert args.challenge_deadline_ms_list == (9000.0, 3000.0)
     assert args.temperature == 0.1
     assert args.deadline_ms == 3000.0
     assert args.timeout_s == 9.0
     assert args.start_number == 3
+
+
+def test_task_cli_play_defaults_to_menu_deadline_mode() -> None:
+    args = build_parser().parse_args(["play", "--task", "zip_zap_zop"])
+
+    assert args.deadline_mode == "menu"
+    assert args.challenge_stage_turns == 20
+    assert args.challenge_deadline_ms_list == (10000.0, 5000.0, 3000.0, 2000.0, 1000.0)
 
 
 def test_task_cli_run_keeps_batch_max_tokens_default() -> None:
@@ -128,6 +157,7 @@ def test_task_cli_run_keeps_batch_max_tokens_default() -> None:
 
     assert args.command == "run"
     assert args.max_tokens == 32
+    assert args.top_p is None
 
 
 def test_task_cli_play_rejects_conflicting_first_actor_flags() -> None:

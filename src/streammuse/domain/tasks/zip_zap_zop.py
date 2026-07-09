@@ -15,10 +15,20 @@ from streammuse.domain.tasks.models import (
 class ZipZapZopTask:
     name = "zip_zap_zop"
 
-    def __init__(self, *, start_number: int = 1, max_history: int = 50, history_limit: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        start_number: int = 1,
+        max_history: int = 50,
+        history_limit: int = 8,
+        oracle_history: bool = False,
+    ) -> None:
         self.start_number = int(start_number)
-        self.max_history = int(max_history)
         self.history_limit = max(0, int(history_limit))
+        self.oracle_history = bool(oracle_history)
+        # state.history is what build_turn (run mode) reads back, so it must retain at least
+        # history_limit entries — otherwise a large window would be silently truncated.
+        self.max_history = max(int(max_history), self.history_limit)
 
     def initial_state(self) -> TaskState:
         return TaskState(
@@ -30,6 +40,16 @@ class ZipZapZopTask:
     def build_turn(self, state: TaskState) -> TaskTurn:
         next_number = self.current_number(state)
         expected = self.expected_response(next_number)
+        if self.history_limit <= 0 or not state.history:
+            user_content = f"{next_number}:"
+        else:
+            recent = state.history[-self.history_limit :]
+            history_lines = []
+            for record in recent:
+                label = "Human" if record.get("role") == "human" else "Assistant"
+                turn_number = record.get("number", "?")
+                history_lines.append(f"{label} at {turn_number}: {record.get('content', '')}")
+            user_content = "Recent turns:\n" + "\n".join(history_lines) + f"\nYour turn. {next_number}:"
         return TaskTurn(
             task_name=self.name,
             turn_id=state.turn_index,
@@ -37,7 +57,7 @@ class ZipZapZopTask:
             expected_output=expected,
             messages=[
                 {"role": "system", "content": self.rules_prompt()},
-                {"role": "user", "content": f"{next_number}:"},
+                {"role": "user", "content": user_content},
             ],
             metadata={"number": next_number},
         )
@@ -112,11 +132,14 @@ class ZipZapZopTask:
         _ = transcript
         next_number = self.current_number(state)
         role = "human" if actor == "human" else "assistant"
+        history_content = str(response_text or "").strip()
+        if self.oracle_history and referee_result.expected_output is not None:
+            history_content = str(referee_result.expected_output).strip()
         history = list(state.history)
         history.append(
             {
                 "role": role,
-                "content": str(response_text or "").strip(),
+                "content": history_content,
                 "valid": str(bool(referee_result.is_valid)),
                 "expected": referee_result.expected_output or "",
                 "number": str(next_number),

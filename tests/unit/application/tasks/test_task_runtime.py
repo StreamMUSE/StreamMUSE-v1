@@ -54,7 +54,7 @@ def _read_response_trace(trace_dir: Path) -> list[dict[str, object]]:
 
 
 def test_offline_benchmark_records_one_trace_event_per_turn(tmp_path) -> None:
-    task = ZipZapZopTask(start_number=1)
+    task = ZipZapZopTask(start_number=1, history_limit=0)  # memoryless, matches run CLI default
     runtime = TaskRuntime(
         config=TaskRuntimeConfig(
             runner_kind="offline_benchmark",
@@ -87,6 +87,30 @@ def test_offline_benchmark_records_one_trace_event_per_turn(tmp_path) -> None:
     assert manifest_path.exists()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["response_trace_path"] == "response_trace.jsonl"
+
+
+def test_offline_benchmark_includes_recent_history_when_enabled(tmp_path) -> None:
+    task = ZipZapZopTask(start_number=1, history_limit=2)
+    runtime = TaskRuntime(
+        config=TaskRuntimeConfig(
+            runner_kind="offline_benchmark",
+            output_dir=str(tmp_path),
+        ),
+        model_client=StaticModelClient(["1", "2", "Zip", "Zap"]),
+    )
+
+    result = runtime.run(task, max_turns=4)
+
+    response_trace = _read_response_trace(Path(result.output_dir))
+    # Turn 0 has no history yet.
+    assert response_trace[0]["prompt"][-1]["content"] == "1:"
+    # Turn 3 (number 4) sees the last 2 turns (numbers 2 and 3), not turn 1.
+    prompt = response_trace[3]["prompt"][-1]["content"]
+    assert prompt.startswith("Recent turns:")
+    assert "Assistant at 2: 2" in prompt
+    assert "Assistant at 3: Zip" in prompt
+    assert "Assistant at 1: 1" not in prompt  # outside the 2-turn window
+    assert prompt.endswith("Your turn. 4:")
 
 
 def test_realtime_runner_marks_deadline_miss_with_fake_clock(tmp_path) -> None:

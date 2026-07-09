@@ -8,6 +8,7 @@ from typing import Any, Literal, Protocol
 
 ChatMessage = dict[str, str]
 InteractiveActor = Literal["human", "llm"]
+DeadlineMode = Literal["menu", "soft", "hard", "challenge"]
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class LocalChatModel(Protocol):
         *,
         max_tokens: int = 32,
         temperature: float = 0.0,
+        timeout_s: float | None = None,
     ) -> ChatModelResponse:
         ...
 

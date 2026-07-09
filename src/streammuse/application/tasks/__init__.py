@@ -4,6 +4,7 @@ from streammuse.application.tasks.interactive_runtime import (
     InteractiveTaskRunResult,
     InteractiveTaskRuntime,
     InteractiveTaskRuntimeConfig,
+    TimedPromptResult,
     StdTerminalIO,
     TerminalIO,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "InteractiveTaskRunResult",
     "InteractiveTaskRuntime",
     "InteractiveTaskRuntimeConfig",
+    "TimedPromptResult",
     "StdTerminalIO",
     "TaskRunResult",
     "TaskRuntime",

@@ -103,6 +103,7 @@ class TaskRuntime:
                     deadline_missed=deadline_missed,
                     prompt_tokens=model_response.prompt_tokens,
                     completion_tokens=model_response.completion_tokens,
+                    raw_response=model_response.raw,
                 )
                 self._append_response_trace(
                     run_dir=run_dir,
@@ -151,6 +152,7 @@ class TaskRuntime:
         deadline_missed: bool,
         prompt_tokens: int | None,
         completion_tokens: int | None,
+        raw_response: dict[str, object] | None = None,
     ) -> None:
         payload = {
             "turn": {
@@ -162,6 +164,7 @@ class TaskRuntime:
             },
             "state_before": asdict(previous_state),
             "model_response": response_text,
+            "model_response_raw": raw_response or {},
             "referee": asdict(referee),
             "state_after": asdict(next_state),
             "timing": {

@@ -67,3 +67,25 @@ def test_zip_zap_zop_interactive_hint_and_expected_are_task_specific() -> None:
 
     assert task.expected_for_state(state, []) == "ZipZop"
     assert task.build_hint(state, []) == "Check divisibility by: 3, 5."
+
+
+def test_zip_zap_zop_oracle_history_records_expected_instead_of_model_output() -> None:
+    task = ZipZapZopTask(start_number=3, history_limit=1, oracle_history=True)
+    state = task.initial_state()
+
+    result = task.validate_response(state, "wrong")
+    next_state = task.advance_state(state, result, "wrong")
+
+    assert result.expected_output == "Zip"
+    assert next_state.history[-1]["content"] == "Zip"
+    assert next_state.history[-1]["expected"] == "Zip"
+
+
+def test_zip_zap_zop_default_history_records_model_output() -> None:
+    task = ZipZapZopTask(start_number=3, history_limit=1)
+    state = task.initial_state()
+
+    result = task.validate_response(state, "wrong")
+    next_state = task.advance_state(state, result, "wrong")
+
+    assert next_state.history[-1]["content"] == "wrong"

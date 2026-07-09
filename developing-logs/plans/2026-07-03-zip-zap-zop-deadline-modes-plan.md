@@ -444,70 +444,70 @@ Schedule 用尽建议第一版策略：
 
 ### Phase 0: 决策确认
 
-- [ ] 确认 `play` 默认是否改为 `deadline_mode=menu`。
-- [ ] 确认 challenge 默认 deadline list：建议 `10000,5000,3000,2000,1000`。
-- [ ] 确认 challenge 每个 stage 默认 turn 数：建议 `20`。
-- [ ] 确认 schedule 用尽后是否继续使用最后一个 deadline：建议继续使用。
+- [x] 确认 `play` 默认是否改为 `deadline_mode=menu`。
+- [x] 确认 challenge 默认 deadline list：建议 `10000,5000,3000,2000,1000`。
+- [x] 确认 challenge 每个 stage 默认 turn 数：建议 `20`。
+- [x] 确认 schedule 用尽后是否继续使用最后一个 deadline：建议继续使用。
 
 ### Phase 1: 数据结构
 
-- [ ] 新增 `DeadlineMode` type。
-- [ ] 新增 `TimedPromptResult`。
-- [ ] 新增 `_DeadlineSessionState`。
-- [ ] 扩展 `InteractiveTaskRuntimeConfig`。
-- [ ] 扩展 `InteractiveTaskRunResult`，加入 mode、winner、loser、stop_reason、deadline_miss detail、invalid_response detail。
+- [x] 新增 `DeadlineMode` type。
+- [x] 新增 `TimedPromptResult`。
+- [x] 新增 `_DeadlineSessionState`。
+- [x] 扩展 `InteractiveTaskRuntimeConfig`。
+- [x] 扩展 `InteractiveTaskRunResult`，加入 mode、winner、loser、stop_reason、deadline_miss detail、invalid_response detail。
 
 ### Phase 2: Terminal timeout
 
-- [ ] 扩展 `TerminalIO.prompt_with_timeout()`。
-- [ ] 实现 `StdTerminalIO.prompt_with_timeout()`。
-- [ ] 用 `select.select()` 实现 Linux timeout。
-- [ ] fake terminal 支持 timeout 模拟。
-- [ ] 保留 `prompt()` 兼容 soft mode 和普通 command 输入。
+- [x] 扩展 `TerminalIO.prompt_with_timeout()`。
+- [x] 实现 `StdTerminalIO.prompt_with_timeout()`。
+- [x] 用 `select.select()` 实现 Linux timeout。
+- [x] fake terminal 支持 timeout 模拟。
+- [x] 保留 `prompt()` 兼容 soft mode 和普通 command 输入。
 
 ### Phase 3: LLM timeout
 
-- [ ] 扩展 `LocalChatModel.generate(..., timeout_s=None)` protocol。
-- [ ] 扩展 `LocalChatModelClient.generate()`，per-call timeout 覆盖 config timeout。
-- [ ] runtime hard/challenge mode 下按 current deadline 传 timeout。
-- [ ] 捕获 requests timeout，转成 deadline miss / loss。
-- [ ] 保持 batch `TaskRuntime.run()` 不传 timeout，行为不变。
+- [x] 扩展 `LocalChatModel.generate(..., timeout_s=None)` protocol。
+- [x] 扩展 `LocalChatModelClient.generate()`，per-call timeout 覆盖 config timeout。
+- [x] runtime hard/challenge mode 下按 current deadline 传 timeout。
+- [x] 捕获 requests timeout，转成 deadline miss / loss。
+- [x] 保持 batch `TaskRuntime.run()` 不传 timeout，行为不变。
 
 ### Phase 4: Runtime deadline mode
 
-- [ ] play 开始时解析 menu。
-- [ ] soft mode 保持继续游戏，但记录 miss details 和 invalid response details。
-- [ ] hard mode 任一 miss 立即停止。
-- [ ] hard mode 任一 invalid response 立即停止。
-- [ ] challenge mode 初始化 stage deadline。
-- [ ] challenge mode 每 stage 成功后切换 deadline。
-- [ ] challenge mode miss 后立即停止。
-- [ ] challenge mode invalid response 后立即停止。
-- [ ] 每 turn metadata 写 deadline mode / deadline / stage。
-- [ ] summary 写 deadline_misses / invalid_responses / winner / loser / stop_reason。
+- [x] play 开始时解析 menu。
+- [x] soft mode 保持继续游戏，但记录 miss details 和 invalid response details。
+- [x] hard mode 任一 miss 立即停止。
+- [x] hard mode 任一 invalid response 立即停止。
+- [x] challenge mode 初始化 stage deadline。
+- [x] challenge mode 每 stage 成功后切换 deadline。
+- [x] challenge mode miss 后立即停止。
+- [x] challenge mode invalid response 后立即停止。
+- [x] 每 turn metadata 写 deadline mode / deadline / stage。
+- [x] summary 写 deadline_misses / invalid_responses / winner / loser / stop_reason。
 
 ### Phase 5: CLI
 
-- [ ] 新增 `--deadline-mode`。
-- [ ] 新增 `--challenge-stage-turns`。
-- [ ] 新增 `--challenge-deadline-ms-list`。
-- [ ] 解析 deadline list。
-- [ ] 把 mode config 传给 `InteractiveTaskRuntimeConfig`。
-- [ ] 更新 help 文案。
+- [x] 新增 `--deadline-mode`。
+- [x] 新增 `--challenge-stage-turns`。
+- [x] 新增 `--challenge-deadline-ms-list`。
+- [x] 解析 deadline list。
+- [x] 把 mode config 传给 `InteractiveTaskRuntimeConfig`。
+- [x] 更新 help 文案。
 
 ### Phase 6: Tests
 
-- [ ] deadline state unit tests。
-- [ ] terminal timeout unit tests。
-- [ ] LLM timeout unit tests。
-- [ ] CLI parser tests。
-- [ ] interactive runtime soft/hard/challenge integration-style unit tests。
-- [ ] 全量 unit/integration regression。
+- [x] deadline state unit tests。
+- [x] terminal timeout unit tests。
+- [x] LLM timeout unit tests。
+- [x] CLI parser tests。
+- [x] interactive runtime soft/hard/challenge integration-style unit tests。
+- [x] 全量 unit/integration regression。
 
 ### Phase 7: 文档
 
-- [ ] 更新 implementation report 或新增 deadline modes report。
-- [ ] 写三种模式的运行命令。
-- [ ] 写 trace 里如何查看 miss。
-- [ ] 写 trace 里如何查看 invalid responses。
-- [ ] 写 hard/challenge 的 winner/loser 规则，包括超时和答错两种失败条件。
+- [x] 更新 implementation report 或新增 deadline modes report。
+- [x] 写三种模式的运行命令。
+- [x] 写 trace 里如何查看 miss。
+- [x] 写 trace 里如何查看 invalid responses。
+- [x] 写 hard/challenge 的 winner/loser 规则，包括超时和答错两种失败条件。

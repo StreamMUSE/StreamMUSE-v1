@@ -15,7 +15,7 @@ from streammuse.application.tasks import (
     TaskRuntimeConfig,
     TerminalIO,
 )
-from streammuse.domain.tasks import InteractiveTask, RealtimeTask, ZipZapZopTask
+from streammuse.domain.tasks import DeadlineMode, InteractiveTask, RealtimeTask, ZipZapZopTask
 from streammuse.infrastructure.inference.local_chat_client import (
     LocalChatModelClient,
     LocalChatModelClientConfig,
@@ -34,6 +34,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_task_args(run, max_tokens_default=32)
     run.add_argument("--runner", choices=sorted(RUNNERS), default="offline_benchmark")
     run.add_argument("--tick-rate-hz", type=float, default=1.0)
+    run.add_argument(
+        "--history-limit",
+        type=int,
+        default=0,
+        help="Recent turns of history shown to the model each turn (0 = memoryless, current default)",
+    )
+    run.add_argument(
+        "--top-p",
+        type=float,
+        default=None,
+        help="Optional nucleus sampling value sent to the OpenAI-compatible server",
+    )
 
     play = subcommands.add_parser("play", help="Play an interactive task with a local model server")
     _add_common_task_args(play, max_tokens_default=8)
@@ -42,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     first_actor.add_argument("--llm-first", dest="human_first", action="store_false")
     play.add_argument("--show-expected", action="store_true")
     play.add_argument("--history-limit", type=int, default=8)
+    play.add_argument("--deadline-mode", choices=["menu", "soft", "hard", "challenge"], default="menu")
+    play.add_argument("--challenge-stage-turns", type=int, default=20)
+    play.add_argument(
+        "--challenge-deadline-ms-list",
+        type=_parse_deadline_ms_list,
+        default=(10000.0, 5000.0, 3000.0, 2000.0, 1000.0),
+    )
     return parser
 
 
@@ -82,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
             deadline_ms=float(args.deadline_ms),
             output_dir=args.output_dir,
             start_number=int(args.start_number),
+            history_limit=int(args.history_limit),
+            top_p=args.top_p,
         )
         print(
             f"{result.runner_kind} completed: {result.turn_count} turns, "
@@ -105,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
         human_first=bool(args.human_first),
         show_expected=bool(args.show_expected),
         history_limit=int(args.history_limit),
+        deadline_mode=args.deadline_mode,
+        challenge_stage_turns=int(args.challenge_stage_turns),
+        challenge_deadline_ms_list=args.challenge_deadline_ms_list,
     )
     print(f"interactive completed: {result.turn_count} turns")
     print(f"trace: {result.output_dir}")
@@ -125,10 +149,25 @@ def run_task(
     deadline_ms: float,
     output_dir: str,
     start_number: int = 1,
+    history_limit: int = 0,
+    top_p: float | None = None,
+    extra_payload: dict[str, object] | None = None,
+    oracle_history: bool = False,
 ) -> TaskRunResult:
-    task = create_task(task_name, start_number=start_number)
+    task = create_task(
+        task_name,
+        start_number=start_number,
+        history_limit=history_limit,
+        oracle_history=oracle_history,
+    )
     run_dir = _new_run_dir(output_dir, task_name=task.name, runner_kind=runner_kind)
-    client = _build_client(model_url=model_url, model=model, timeout_s=timeout_s)
+    client = _build_client(
+        model_url=model_url,
+        model=model,
+        timeout_s=timeout_s,
+        top_p=top_p,
+        extra_payload=extra_payload,
+    )
     runtime = TaskRuntime(
         config=TaskRuntimeConfig(
             runner_kind=runner_kind,  # type: ignore[arg-type]
@@ -140,7 +179,10 @@ def run_task(
         ),
         model_client=client,
     )
-    return runtime.run(task, max_turns=max_turns)
+    try:
+        return runtime.run(task, max_turns=max_turns)
+    finally:
+        _close_client(client)
 
 
 def play_task(
@@ -158,6 +200,9 @@ def play_task(
     human_first: bool = True,
     show_expected: bool = False,
     history_limit: int = 8,
+    deadline_mode: DeadlineMode = "menu",
+    challenge_stage_turns: int = 20,
+    challenge_deadline_ms_list: tuple[float, ...] = (10000.0, 5000.0, 3000.0, 2000.0, 1000.0),
     terminal: TerminalIO | None = None,
 ) -> InteractiveTaskRunResult:
     task = create_task(task_name, start_number=start_number, history_limit=history_limit)
@@ -171,28 +216,74 @@ def play_task(
             temperature=temperature,
             human_first=human_first,
             show_expected=show_expected,
+            deadline_mode=deadline_mode,
+            challenge_stage_turns=challenge_stage_turns,
+            challenge_deadline_ms_list=challenge_deadline_ms_list,
         ),
         model_client=client,
         terminal=terminal or StdTerminalIO(),
     )
-    return runtime.play(task, max_turns=max_turns)
+    try:
+        return runtime.play(task, max_turns=max_turns)
+    finally:
+        _close_client(client)
 
 
-def create_task(task_name: str, *, start_number: int, history_limit: int = 8) -> RealtimeTask | InteractiveTask:
+def create_task(
+    task_name: str,
+    *,
+    start_number: int,
+    history_limit: int = 8,
+    oracle_history: bool = False,
+) -> RealtimeTask | InteractiveTask:
     if task_name == "zip_zap_zop":
-        return ZipZapZopTask(start_number=start_number, history_limit=history_limit)
+        return ZipZapZopTask(
+            start_number=start_number,
+            history_limit=history_limit,
+            oracle_history=oracle_history,
+        )
     raise ValueError(f"unsupported task: {task_name}")
 
 
-def _build_client(*, model_url: str, model: str, timeout_s: float) -> LocalChatModelClient:
+def _parse_deadline_ms_list(raw: str) -> tuple[float, ...]:
+    values: list[float] = []
+    for part in str(raw or "").split(","):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        value = float(stripped)
+        if value <= 0:
+            raise argparse.ArgumentTypeError("challenge deadlines must be positive")
+        values.append(value)
+    if not values:
+        raise argparse.ArgumentTypeError("challenge deadline list cannot be empty")
+    return tuple(values)
+
+
+def _build_client(
+    *,
+    model_url: str,
+    model: str,
+    timeout_s: float,
+    top_p: float | None = None,
+    extra_payload: dict[str, object] | None = None,
+) -> LocalChatModelClient:
     return LocalChatModelClient(
         LocalChatModelClientConfig(
             base_url=model_url,
             model=model,
             timeout_s=timeout_s,
             max_retries=0,
+            top_p=top_p,
+            extra_payload=extra_payload,
         )
     )
+
+
+def _close_client(client: object) -> None:
+    close = getattr(client, "close", None)
+    if callable(close):
+        close()
 
 
 def _new_run_dir(output_dir: str, *, task_name: str, runner_kind: str) -> Path:
