@@ -10,10 +10,16 @@ src/streammuse.egg-info/top_level.txt
 src/streammuse/application/__init__.py
 src/streammuse/application/config/__init__.py
 src/streammuse/application/config/models.py
+src/streammuse/application/debug/__init__.py
+src/streammuse/application/debug/compare.py
+src/streammuse/application/debug/replay.py
 src/streammuse/application/factories/__init__.py
 src/streammuse/application/factories/inference_factory.py
 src/streammuse/application/factories/input_factory.py
 src/streammuse/application/factories/output_factory.py
+src/streammuse/application/runtime/__init__.py
+src/streammuse/application/runtime/builder.py
+src/streammuse/application/runtime/session.py
 src/streammuse/application/services/input_timing.py
 src/streammuse/application/services/real_time_music_service.py
 src/streammuse/application/tasks/__init__.py
@@ -103,6 +109,9 @@ src/streammuse/presentation/__init__.py
 src/streammuse/presentation/cli/__init__.py
 src/streammuse/presentation/cli/cli.py
 src/streammuse/presentation/cli/config_parser.py
+src/streammuse/presentation/debug/__init__.py
+src/streammuse/presentation/debug/cli.py
+src/streammuse/presentation/debug/server.py
 src/streammuse/presentation/task/__init__.py
 src/streammuse/presentation/task/cli.py
 src/streammuse/presentation/web/__init__.py

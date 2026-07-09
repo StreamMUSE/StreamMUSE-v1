@@ -47,11 +47,12 @@ dependencies = [
 [project.scripts]
 streammuse-cli = "streammuse.presentation.cli.cli:main"
 streammuse-web = "streammuse.presentation.web.server:main"
+streammuse-debug = "streammuse.presentation.debug.cli:main"
 streammuse-task = "streammuse.presentation.task.cli:main"
 
 [tool.pytest.ini_options]
 markers = [
-  "consistency: realtime/offline end-to-end consistency test (needs GPU + checkpoint; opt-in via LEKAI_CHECKPOINT_PATH)",
+  "consistency: realtime/offline end-to-end consistency test (needs GPU + checkpoint; opt-in via checkpoint env)",
 ]
 
 [tool.uv.sources]
