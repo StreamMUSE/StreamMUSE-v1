@@ -6,14 +6,14 @@ import argparse
 from pathlib import Path
 
 from streammuse.application.tasks import TaskRunResult, TaskRuntime, TaskRuntimeConfig
-from streammuse.domain.tasks import RealtimeTask, ZipZapZopTask
+from streammuse.domain.tasks import AnimalNamingTask, RealtimeTask, ZipZapZopTask
 from streammuse.infrastructure.inference.local_chat_client import (
     LocalChatModelClient,
     LocalChatModelClientConfig,
 )
 
 
-TASKS = {"zip_zap_zop": ZipZapZopTask}
+TASKS = {"animal_naming": AnimalNamingTask, "zip_zap_zop": ZipZapZopTask}
 RUNNERS = {"offline_benchmark", "realtime_loop"}
 
 
@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--deadline-ms", type=float, default=1000.0)
     run.add_argument("--output-dir", default="task_runs")
     run.add_argument("--start-number", type=int, default=1)
+    run.add_argument("--live-output", action="store_true", help="Print each completed task turn to stdout")
     return parser
 
 
@@ -59,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         deadline_ms=float(args.deadline_ms),
         output_dir=args.output_dir,
         start_number=int(args.start_number),
+        live_output=bool(args.live_output),
     )
     print(
         f"{result.runner_kind} completed: {result.turn_count} turns, "
@@ -83,6 +85,7 @@ def run_task(
     deadline_ms: float,
     output_dir: str,
     start_number: int = 1,
+    live_output: bool = False,
 ) -> TaskRunResult:
     task = create_task(task_name, start_number=start_number)
     run_dir = _new_run_dir(output_dir, task_name=task.name, runner_kind=runner_kind)
@@ -102,6 +105,7 @@ def run_task(
             deadline_ms=deadline_ms,
             max_tokens=max_tokens,
             temperature=temperature,
+            live_output=live_output,
         ),
         model_client=client,
     )
@@ -109,6 +113,8 @@ def run_task(
 
 
 def create_task(task_name: str, *, start_number: int) -> RealtimeTask:
+    if task_name == "animal_naming":
+        return AnimalNamingTask()
     if task_name == "zip_zap_zop":
         return ZipZapZopTask(start_number=start_number)
     raise ValueError(f"unsupported task: {task_name}")
