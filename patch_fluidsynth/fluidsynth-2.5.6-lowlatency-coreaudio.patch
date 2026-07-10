@@ -1,0 +1,53 @@
+--- a/src/drivers/fluid_coreaudio.c	2026-07-04 14:25:20
++++ b/src/drivers/fluid_coreaudio.c	2026-07-10 21:47:02
+@@ -476,6 +476,35 @@
+ 
+     FLUID_LOG(FLUID_DBG, "MaximumFramesPerSlice = %d", dev->buffer_size);
+ 
++    /* Pin the CoreAudio device IO buffer to audio.period-size for low latency.
++     * Stock FluidSynth never sets kAudioDevicePropertyBufferFrameSize, so the
++     * device runs at the system default (typically 512 frames = 10.7 ms @48 kHz)
++     * regardless of audio.period-size. MaximumFramesPerSlice above is only a
++     * ceiling, not the IO period. Setting the buffer size on the AUHAL output
++     * unit's global scope (before AudioUnitInitialize) makes the whole device
++     * run at this size, so period-size actually governs output latency. */
++    {
++        UInt32 io_frames = (UInt32) period_size;
++        status = AudioUnitSetProperty(dev->outputUnit,
++                                      kAudioDevicePropertyBufferFrameSize,
++                                      kAudioUnitScope_Global,
++                                      0,
++                                      &io_frames,
++                                      sizeof(io_frames));
++
++        if(status != noErr)
++        {
++            FLUID_LOG(FLUID_WARN,
++                      "Could not set device buffer frame size to %u; using device default. Status=%ld",
++                      io_frames, (long int)status);
++            status = noErr; /* non-fatal: fall back to whatever the device offers */
++        }
++        else
++        {
++            FLUID_LOG(FLUID_DBG, "Device buffer frame size = %u", io_frames);
++        }
++    }
++
+     dev->buffers = FLUID_ARRAY(float *, audio_channels);
+ 
+     if(dev->buffers == NULL)
+--- a/src/drivers/fluid_adriver.c	2026-07-04 14:25:20
++++ b/src/drivers/fluid_adriver.c	2026-07-10 21:47:16
+@@ -236,7 +236,11 @@
+     fluid_settings_register_int(settings, "audio.period-size", 64, 64, 8192, 0);
+     fluid_settings_register_int(settings, "audio.periods", 8, 2, 64, 0);
+ #else
+-    fluid_settings_register_int(settings, "audio.period-size", 64, 64, 8192, 0);
++    /* Lower the period-size floor from 64 to 16: CoreAudio (and most modern
++     * backends) accept IO buffers this small, enabling sub-millisecond periods.
++     * Paired with the kAudioDevicePropertyBufferFrameSize fix in
++     * fluid_coreaudio.c, this lets audio.period-size actually drive latency. */
++    fluid_settings_register_int(settings, "audio.period-size", 64, 16, 8192, 0);
+     fluid_settings_register_int(settings, "audio.periods", 16, 2, 64, 0);
+ #endif
+ 
