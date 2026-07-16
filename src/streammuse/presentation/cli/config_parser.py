@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
             "a combined MIDI in log dir; json_log does not."
         ),
     )
+    parser.add_argument("--web-host", type=str, default="127.0.0.1", help="Host/interface for the web viewer to bind (use 0.0.0.0 to allow LAN access)")
+    parser.add_argument("--web-port", type=int, default=8001, help="Port for the web viewer")
     parser.add_argument("--midi-out-port", type=str, default=None, help="MIDI output port name (for audio output)")
     parser.add_argument("--midi-file-output-path", type=str, default=None, help="Path to save MIDI file output")
     parser.add_argument("--enable-metronome", action="store_true", help="Play MIDI metronome clicks aligned with playback")
