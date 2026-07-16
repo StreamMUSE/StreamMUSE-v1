@@ -79,6 +79,7 @@ class PianoLLaMAAdapter:
         top_p: float = 0.95,
         repetition_penalty: float = 1.2,
         verbose: bool = False,
+        generator: Optional[torch.Generator] = None,
     ) -> List[List[int]]:
         """
         Generate accompaniment (part1) from melody beats (part0).
@@ -93,6 +94,7 @@ class PianoLLaMAAdapter:
             top_p: Top-p sampling
             repetition_penalty: Repetition penalty
             verbose: Print debug info
+            generator: Explicit sampling RNG on the same device as model logits
             
         Returns:
             List of part1 beat tokens (each beat is a list of token IDs)
@@ -159,6 +161,7 @@ class PianoLLaMAAdapter:
                         top_k=top_k,
                         top_p=top_p,
                         repetition_penalty=repetition_penalty,
+                        generator=generator,
                     )
                     
                     generated = torch.cat([generated, next_token], dim=1)

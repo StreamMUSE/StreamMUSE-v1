@@ -22,6 +22,7 @@ class HttpInferenceClientConfig:
     inference_mode: str = "sliding_window"
     generation_interval_ticks: int = 2
     checkpoint_path: Optional[str] = None
+    bpm: Optional[int] = None
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -32,6 +33,7 @@ class HttpInferenceClientConfig:
 | `inference_mode` | `str` | `"sliding_window"` | 透传给服务器的推理模式提示 |
 | `generation_interval_ticks` | `int` | `2` | 透传给服务器的触发间隔参数 |
 | `checkpoint_path` | `Optional[str]` | `None` | 可选透传 checkpoint 路径 |
+| `bpm` | `Optional[int]` | `None` | 透传给模型的条件 BPM；不是客户端 playback wall-clock tempo |
 
 ---
 
@@ -64,6 +66,7 @@ class HttpInferenceClientConfig:
   "model_name": "stanley",
   "inference_mode": "sliding_window",
   "checkpoint_path": null,
+  "bpm": 120,
   "prompt_length_ticks": null
 }
 ```

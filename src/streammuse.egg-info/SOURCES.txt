@@ -50,6 +50,9 @@ src/streammuse/domain/tasks/zip_zap_zop.py
 src/streammuse/domain/timing/__init__.py
 src/streammuse/domain/timing/scheduler.py
 src/streammuse/domain/timing/tempo.py
+src/streammuse/experiments/__init__.py
+src/streammuse/experiments/melody_robustness.py
+src/streammuse/experiments/robustness_metrics.py
 src/streammuse/infrastructure/__init__.py
 src/streammuse/infrastructure/debug/__init__.py
 src/streammuse/infrastructure/debug/trace_recorder.py

@@ -23,7 +23,7 @@ class TempoConfig:
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `bpm` | `float` | `120.0` | 每分钟拍数 |
+| `bpm` | `float` | `120.0` | playback wall-clock 每分钟拍数 |
 | `ticks_per_beat` | `int` | `4` | 每拍 tick 数 |
 | `beats_per_bar` | `int` | `4` | 每小节拍数 |
 
@@ -100,6 +100,7 @@ class InferenceConfig:
     model_max_seq_len_frames: int = 96
     generation_length_frames: int = 20
     generation_interval_ticks: int = 2
+    model_condition_bpm: Optional[int] = None
 ```
 
 `InferenceType = Literal["http", "stanley"]`，`ModelName = Literal["stanley", "lekai"]`。
@@ -116,6 +117,7 @@ class InferenceConfig:
 | `model_max_seq_len_frames` | `int` | `96` | 模型最大序列长度 |
 | `generation_length_frames` | `int` | `20` | 每次推理生成帧数 |
 | `generation_interval_ticks` | `int` | `2` | 透传给 HTTP server 和日志；当前 tick loop 不用它决定触发时刻 |
+| `model_condition_bpm` | `Optional[int]` | `None` | HTTP 模型 prompt 的 BPM 条件；与 `TempoConfig.bpm` 独立。`None` 时 factory 回退到 playback BPM |
 
 ---
 

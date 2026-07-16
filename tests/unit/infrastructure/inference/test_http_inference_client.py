@@ -133,3 +133,114 @@ def test_http_inference_client_inject_and_clear(monkeypatch):
     assert cleared["melody_history"][0]["pitch"] == 60
     assert cleared["accompaniment_history"][0]["pitch"] == 48
 
+
+def test_http_client_reset_payload_request_ids_and_metadata_consume(monkeypatch):
+    calls = []
+
+    def fake_post(url, json=None, timeout=None):
+        calls.append((url, json, timeout))
+        if url.endswith("/debug/reset_session"):
+            return _FakeResponse(
+                {
+                    "success": True,
+                    "session_id": "session-abc",
+                    "session_epoch": 7,
+                    "effective_seed": 31415,
+                    "pending_boundary_generations": 0,
+                }
+            )
+        request_id = json["request_id"]
+        return _FakeResponse(
+            {
+                "accompaniment": [],
+                "timings": {
+                    "request_arrival_time": 1.0,
+                    "response_output_time": 2.0,
+                    "preprocess_start_time": 1.1,
+                    "inference_start_time": 1.2,
+                    "inference_end_time": 1.3,
+                    "postprocess_start_time": 1.4,
+                },
+                "generation_start_tick": json["generation_start_tick"],
+                "metadata": {
+                    "request_id": request_id,
+                    "session_id": json["session_id"],
+                    "session_epoch": json["session_epoch"],
+                    "effective_seed": 31415,
+                    "raw_tokens": [169],
+                },
+            }
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    client = HttpInferenceClient(
+        HttpInferenceClientConfig(
+            generate_url="http://x/generate_accompaniment",
+            timeout_s=4.0,
+            generation_interval_ticks=4,
+            bpm=120,
+            input_file="song.mid",
+        )
+    )
+
+    reset = client.reset_session(seed=31415)
+    assert reset["session_epoch"] == 7
+    assert calls[0] == (
+        "http://x/debug/reset_session",
+        {"seed": 31415},
+        4.0,
+    )
+
+    event = MusicalEvent(
+        tick=4,
+        pitch=60,
+        event_type=EventType.NOTE_ON,
+        velocity=91,
+        channel=2,
+        program=8,
+    )
+    client.generate_accompaniment(
+        melody_events=[event],
+        generation_start_tick=8,
+        generation_length_frames=4,
+    )
+    payload = calls[1][1]
+    assert payload["session_id"] == "session-abc"
+    assert payload["session_epoch"] == 7
+    assert payload["request_id"] == "session-abc-r000001"
+    assert payload["bpm"] == 120
+    assert payload["input_file"] == "song.mid"
+    assert payload["melody_notes"] == [
+        {
+            "type": "note_on",
+            "pitch": 60,
+            "tick": 4,
+            "velocity": 91,
+            "channel": 2,
+            "program": 8,
+        }
+    ]
+    snapshot = client.last_response_metadata
+    assert snapshot["raw_tokens"] == [169]
+    snapshot["raw_tokens"].append(170)
+    # Nested response structures are defensive; consume is destructive only for the slot.
+    consumed = client.consume_last_response_metadata()
+    assert consumed["request_id"] == "session-abc-r000001"
+    assert consumed["raw_tokens"] == [169]
+    consumed["raw_tokens"].append(171)
+    assert client.consume_last_response_metadata() == {}
+
+    client.set_next_request_id("rt-lifecycle:req_0002")
+    client.generate_accompaniment(
+        melody_events=[],
+        generation_start_tick=12,
+        generation_length_frames=4,
+    )
+    assert calls[2][1]["request_id"] == "rt-lifecycle:req_0002"
+
+    client.generate_accompaniment(
+        melody_events=[],
+        generation_start_tick=16,
+        generation_length_frames=4,
+    )
+    assert calls[3][1]["request_id"] == "session-abc-r000003"

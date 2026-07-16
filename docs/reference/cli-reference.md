@@ -19,7 +19,7 @@ uv run streammuse-cli [参数...]
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--tempo` | `float` | `120.0` | 每分钟拍数（BPM） |
+| `--tempo` | `float` | `120.0` | playback wall-clock BPM；控制 tick 调度速度，不必等于模型条件 BPM |
 | `--ticks-per-beat` | `int` | `4` | 每拍 tick 数 |
 | `--beats-per-bar` | `int` | `4` | 每小节拍数 |
 
@@ -94,6 +94,9 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `--model-max-seq-len-frames` | `int` | `96` | 模型 context window 帧数 |
 | `--generation-length-frames` | `int` | `20` | 每次推理生成的帧数 |
 | `--generation-interval-ticks` | `int` | `2` | 透传给 HTTP server 和日志的间隔参数 |
+| `--model-condition-bpm` | `int` | `None` | HTTP 模型 prompt 的 BPM 条件 token；与 `--tempo` 独立。未指定时为兼容旧调用而回退到 playback tempo |
+
+需要跨 playback tempo 比较生成内容时，必须显式固定 `--model-condition-bpm`。例如鲁棒性实验使用 `--tempo 60 --model-condition-bpm 120`；只固定 server 的 `LEKAI_DEFAULT_BPM` 不够，因为客户端会把有效 model-condition BPM 放进请求。
 
 ### 推理触发语义
 
@@ -116,10 +119,12 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `LEKAI_ENABLE_MPS_FALLBACK` | `true` | `mps` 失败时是否自动回退 CPU |
 | `LEKAI_USE_CACHE` | `true` | 生成时是否使用 KV cache |
 | `LEKAI_WARMUP_STEPS` | `1` | server 启动后 warmup 步数 |
+| `LEKAI_DEFAULT_BPM` | `120` | 请求没有 BPM 时的 server fallback；冻结实验仍应由 CLI 显式传 `--model-condition-bpm` |
 | `LEKAI_MAX_GENERATION_LENGTH_FRAMES` | `None` | 可选上限，限制单次生成长度 |
 | `LEKAI_MAX_PROMPT_TICKS` | `None` | 可选上限，限制 prompt 长度 |
 | `LEKAI_SERVER_HOST` | `0.0.0.0` | server 监听 host |
 | `LEKAI_SERVER_PORT` | `8000` | server 监听端口 |
+| `LEKAI_ENABLE_DEBUG_RESET` | `false` | 是否开放会清空状态并换 seed/epoch 的 `/debug/reset_session`；仅应在 dedicated `127.0.0.1` 实验 server 上启用 |
 
 这些是 server 侧环境变量；CLI 的 `env_to_config()` 当前仍返回 `None`，最终配置来自命令行参数。
 
@@ -130,7 +135,15 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `--count-in-beats` | `int` | `0` | 正式输入和推理前空转的拍数 |
-| `--max-ticks` | `int` | `None` | 最大运行 tick 数（`None` 表示不限，直到 Ctrl+C） |
+| `--max-ticks` | `int` | `None` | `--run-stop-tick` 的兼容别名；右端点 exclusive |
+| `--analysis-end-tick` | `int` | `None` | clean-reference 分析窗口的 exclusive 右端点 |
+| `--last-input-note-off-tick` | `int` | `None` | 输入最后 note-off，写入 validity 并可用于 tail 公式 |
+| `--request-cutoff-tick` | `int` | `None` | 最后允许的 generation-start tick；inclusive 且须按拍对齐 |
+| `--run-stop-tick` | `int` | `None` | tick/playback 循环的 exclusive 右端点 |
+| `--tail-beats` | `int` | `None` | 用 `ceil(last-note-off/beat)+tail` 推导 run stop |
+| `--drain-timeout-s` | `float` | `10.0` | request/in-flight/response graceful drain 的 hard timeout |
+
+实验运行应同时显式给出 analysis、last note-off、request cutoff 和 run stop。达到 cutoff 后服务进入 draining，不再产生请求，但会继续消费 response；`validity.json` 的 content/operational 双 verdict 是运行是否可用的权威来源。
 
 ---
 
@@ -160,6 +173,8 @@ uv run streammuse-cli \
     --inference-mode sliding_window \
     --generation-interval-ticks 4 \
     --generation-length-frames 4 \
+    --tempo 60 \
+    --model-condition-bpm 120 \
     --server-url http://127.0.0.1:8001/generate_accompaniment \
     --output-type console \
     --enable-metronome \
@@ -181,3 +196,5 @@ uv run streammuse-cli \
     --inference-type stanley \
     --checkpoint-path checkpoints/model.ckpt
 ```
+
+完整的扰动鲁棒性 staging、qualification、formal、analysis 和 listening 顺序见[旋律扰动鲁棒性实验工作流](../developer-guide/melody-perturbation-robustness.md)。

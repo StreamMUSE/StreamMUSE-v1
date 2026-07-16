@@ -73,6 +73,7 @@ class PianoLLaMA(PreTrainedModel):
         device: str = "cuda",
         verbose: bool = True,
         bpm_override: Optional[int] = None,
+        generator: Optional[torch.Generator] = None,
     ):
         """
         基于条件（part0）生成伴奏（part1）
@@ -91,6 +92,7 @@ class PianoLLaMA(PreTrainedModel):
             top_p: Top-p采样
             repetition_penalty: 重复惩罚
             device: 设备
+            generator: 与模型 logits 同设备的显式采样 RNG；None 保留旧的全局 RNG 行为
 
         Returns:
             dict: {
@@ -179,6 +181,7 @@ class PianoLLaMA(PreTrainedModel):
         part1_idx = 0  # 当前处理到第几拍part1（用于GT注入）
         part1_beats_generated = []  # 收集生成的part1 beats
         current_part1_beat = []  # 当前正在生成的part1 beat
+        sampled_token_trace: List[int] = []
 
         part1_end_marker = 171
         part1_empty_marker = 169
@@ -275,11 +278,13 @@ class PianoLLaMA(PreTrainedModel):
                         top_k=top_k,
                         top_p=top_p,
                         repetition_penalty=repetition_penalty,
+                        generator=generator,
                     )
 
                     # 添加到生成序列
                     generated = torch.cat([generated, next_token], dim=1)
                     current_part1_beat.append(next_token.item())
+                    sampled_token_trace.append(next_token.item())
 
                     # 检查是否完成一拍part1
                     if next_token.item() in [part1_end_marker, part1_empty_marker, bar_token_id]:
@@ -330,6 +335,7 @@ class PianoLLaMA(PreTrainedModel):
             "generated_sequence": generated.cpu(),
             "part0_beats": part0_beats_list,
             "part1_beats": part1_beats_generated,
+            "sampled_token_trace": sampled_token_trace,
             "GT_path": file_path,
             "metadata": {
                 "time_signature_idx": idx_value,
@@ -339,5 +345,7 @@ class PianoLLaMA(PreTrainedModel):
                 "num_part1_beats": len(part1_beats_generated),
                 "num_part1_gt_beats": num_gt_beats,
                 "num_part1_generated_beats": num_generated_beats,
+                "delay_beats": delay_beats,
+                "sample_seed": generator.initial_seed() if generator is not None else None,
             },
         }

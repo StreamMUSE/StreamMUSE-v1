@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from streammuse.application.config import ApplicationConfig
 from streammuse.domain.interfaces import InferenceEngine
 from streammuse.infrastructure.inference import (
@@ -33,6 +35,23 @@ class InferenceEngineFactory:
                     inference_mode=cfg.inference_mode,
                     generation_interval_ticks=int(cfg.generation_interval_ticks),
                     checkpoint_path=cfg.checkpoint_path,
+                    bpm=(
+                        int(cfg.model_condition_bpm)
+                        if cfg.model_condition_bpm is not None
+                        else int(round(float(app_config.tempo.bpm)))
+                    ),
+                    input_file=app_config.input.midi_file_path,
+                    session_id=os.environ.get("LEKAI_SESSION_ID") or None,
+                    session_epoch=(
+                        int(os.environ["LEKAI_SESSION_EPOCH"])
+                        if os.environ.get("LEKAI_SESSION_EPOCH")
+                        else None
+                    ),
+                    effective_seed=(
+                        int(os.environ["LEKAI_EFFECTIVE_SEED"])
+                        if os.environ.get("LEKAI_EFFECTIVE_SEED")
+                        else None
+                    ),
                 )
             )
 
@@ -49,4 +68,3 @@ class InferenceEngineFactory:
             )
 
         raise ValueError(f"Unknown inference type: {cfg.type}")
-

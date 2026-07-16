@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import Any
 
 import pytest
 
-from streammuse.presentation.cli.config_parser import args_to_config
+from streammuse.presentation.cli.config_parser import args_to_config, parse_args
 
 
 def _make_args(**overrides: Any) -> argparse.Namespace:
@@ -40,6 +41,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "model_max_seq_len_frames": 96,
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
+        "model_condition_bpm": None,
         "count_in_beats": 0,
         "input_snap_forward_fraction": 0.4,
         "max_ticks": None,
@@ -70,8 +72,50 @@ def test_parse_args_defaults() -> None:
     assert config.inference.server_generate_url == "http://localhost:8000/generate_accompaniment"
     assert config.inference.generation_interval_ticks == 2
     assert config.inference.generation_length_frames == 20
+    assert config.inference.model_condition_bpm is None
     assert config.count_in_beats == 0
     assert config.input_snap_forward_fraction == 0.4
+
+
+def test_parse_args_exposes_rt_horizon_and_drain_contract(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "streammuse-cli",
+            "--analysis-end-tick",
+            "224",
+            "--last-input-note-off-tick",
+            "224",
+            "--request-cutoff-tick",
+            "220",
+            "--run-stop-tick",
+            "320",
+            "--tail-beats",
+            "24",
+            "--drain-timeout-s",
+            "15",
+            "--model-condition-bpm",
+            "120",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.analysis_end_tick == 224
+    assert args.last_input_note_off_tick == 224
+    assert args.request_cutoff_tick == 220
+    assert args.run_stop_tick == 320
+    assert args.tail_beats == 24
+    assert args.drain_timeout_s == 15.0
+    assert args.model_condition_bpm == 120
+
+
+def test_args_to_config_separates_playback_and_model_condition_bpm() -> None:
+    config = args_to_config(_make_args(tempo=60.0, model_condition_bpm=120))
+
+    assert config.tempo.bpm == 60.0
+    assert config.inference.model_condition_bpm == 120
 
 
 def test_args_to_config_keyboard_input() -> None:

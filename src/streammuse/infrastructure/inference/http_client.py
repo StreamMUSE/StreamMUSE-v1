@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import time
+import threading
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +26,9 @@ class HttpInferenceClientConfig:
     checkpoint_path: Optional[str] = None
     bpm: Optional[int] = None
     input_file: Optional[str] = None  # 输入文件名，用于日志记录
+    session_id: Optional[str] = None
+    session_epoch: Optional[int] = None
+    effective_seed: Optional[int] = None
 
 
 class HttpInferenceClient(InferenceEngine):
@@ -36,6 +42,13 @@ class HttpInferenceClient(InferenceEngine):
     def __init__(self, config: HttpInferenceClientConfig) -> None:
         self._config = config
         self._injection_offset_ticks = 0
+        self._session_id = config.session_id
+        self._session_epoch = config.session_epoch
+        self._effective_seed: Optional[int] = config.effective_seed
+        self._request_counter = 0
+        self._next_request_id: Optional[str] = None
+        self._metadata_lock = threading.Lock()
+        self._last_response_metadata: Dict[str, Any] = {}
 
     def _endpoint(self, replacement_path: str) -> str:
         # Legacy clients derive endpoints by replacing /generate_accompaniment.
@@ -48,6 +61,16 @@ class HttpInferenceClient(InferenceEngine):
         generation_length_frames: int,
         prompt_length_ticks: int | None = None,
     ) -> tuple[List[MusicalEvent], TimingInfo]:
+        with self._metadata_lock:
+            self._request_counter += 1
+            request_id = self._next_request_id or (
+                f"{self._session_id}-r{self._request_counter:06d}"
+                if self._session_id
+                else uuid.uuid4().hex
+            )
+            self._next_request_id = None
+            session_id = self._session_id
+            session_epoch = self._session_epoch
         payload: Dict[str, Any] = {
             "melody_notes": [event_to_dict(e) for e in melody_events],
             "generation_start_tick": int(generation_start_tick),
@@ -60,6 +83,9 @@ class HttpInferenceClient(InferenceEngine):
             "prompt_length_ticks": (int(prompt_length_ticks) if prompt_length_ticks is not None else None),
             "bpm": self._config.bpm,
             "input_file": self._config.input_file,
+            "session_id": session_id,
+            "session_epoch": session_epoch,
+            "request_id": request_id,
         }
         # Drop nulls for cleaner wire format.
         payload = {k: v for k, v in payload.items() if v is not None}
@@ -74,7 +100,55 @@ class HttpInferenceClient(InferenceEngine):
 
         accompaniment = [event_from_dict(d) for d in data.get("accompaniment", [])]
         timings = timing_info_from_dict(data["timings"])
+        metadata = dict(data.get("metadata", {}))
+        metadata.setdefault("request_id", request_id)
+        with self._metadata_lock:
+            self._last_response_metadata = copy.deepcopy(metadata)
         return accompaniment, timings
+
+    @property
+    def last_response_metadata(self) -> Dict[str, Any]:
+        with self._metadata_lock:
+            return copy.deepcopy(self._last_response_metadata)
+
+    def consume_last_response_metadata(self) -> Dict[str, Any]:
+        with self._metadata_lock:
+            metadata = copy.deepcopy(self._last_response_metadata)
+            self._last_response_metadata = {}
+            return metadata
+
+    def set_next_request_id(self, request_id: str) -> None:
+        """Bind the next HTTP request to its service lifecycle request id."""
+        value = str(request_id).strip()
+        if not value:
+            raise ValueError("request_id must be non-empty")
+        with self._metadata_lock:
+            self._next_request_id = value
+
+    def reset_session(self, seed: int) -> Dict[str, Any]:
+        """Start a new, atomically seeded server session."""
+        url = self._endpoint("/debug/reset_session")
+        resp = requests.post(
+            url,
+            json={"seed": int(seed)},
+            timeout=float(self._config.timeout_s),
+        )
+        resp.raise_for_status()
+        data = dict(resp.json())
+        with self._metadata_lock:
+            self._session_id = str(data["session_id"])
+            self._session_epoch = int(data["session_epoch"])
+            self._effective_seed = int(data["effective_seed"])
+            self._request_counter = 0
+            self._next_request_id = None
+            self._last_response_metadata = {}
+        return data
+
+    def get_runtime_info(self) -> Dict[str, Any]:
+        url = self._endpoint("/runtime_info")
+        resp = requests.get(url, timeout=float(self._config.timeout_s))
+        resp.raise_for_status()
+        return dict(resp.json())
 
     def inject_history(
         self,
@@ -115,4 +189,3 @@ class HttpInferenceClient(InferenceEngine):
         resp = requests.get(url, timeout=float(self._config.timeout_s))
         resp.raise_for_status()
         return resp.json()
-

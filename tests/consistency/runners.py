@@ -57,6 +57,7 @@ def run_realtime(
         "--generation-length-frames", str(GENERATION_LENGTH_FRAMES),
         "--max-ticks", str(song.max_ticks),
         "--tempo", str(tempo),
+        "--model-condition-bpm", str(CONDITION_BPM),
         "--output-type", "session",
         "--log-dir", str(log_dir),
     ]
@@ -101,7 +102,7 @@ def count_dropped_requests(session_dir: Path, *, interval: int = GENERATION_INTE
 def run_offline(checkpoint: Path, song: SongSpec, *, out_dir: Path) -> Path:
     """Run run_lekai_offline.py for one song with greedy params, BPM pinned to CONDITION_BPM.
 
-    Returns the generated MIDI path (``{idx:03d}_{stem}_generated.mid``).
+    Returns the generated MIDI path selected by the song's stable NPZ stem.
     """
     offline_dir = out_dir / f"offline_song{song.number}"
     offline_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +120,11 @@ def run_offline(checkpoint: Path, song: SongSpec, *, out_dir: Path) -> Path:
         "--top-p", "0.0",
         "--gt-prefix-beats", "0",
         "--bpm", str(CONDITION_BPM),
-        "--condition-idx", str(song.condition_idx),
+        "--seed", "0",
+        "--expected-dataset-size", "5",
+        "--condition-stem", song.npz_stem,
+        "--source-midi", str(song.mel_path),
+        "--require-source-midi",
     ]
     result = subprocess.run(
         cmd,
@@ -135,7 +140,7 @@ def run_offline(checkpoint: Path, song: SongSpec, *, out_dir: Path) -> Path:
             f"stdout tail:\n{result.stdout[-2000:]}\nstderr tail:\n{result.stderr[-2000:]}"
         )
 
-    generated = sorted(offline_dir.glob(f"{song.condition_idx:03d}_*_generated.mid"))
+    generated = sorted(offline_dir.glob(f"*_{song.npz_stem}_generated.mid"))
     if not generated:
         raise RuntimeError(f"no generated MIDI under {offline_dir}")
     return generated[-1]

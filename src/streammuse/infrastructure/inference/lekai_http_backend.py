@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import threading
 import time
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -21,8 +26,14 @@ from streammuse.infrastructure.inference.generation_logger import GenerationLogg
 EventPayload = Dict[str, int | str]
 TimingPayload = Dict[str, float]
 
+
+class SessionStateError(RuntimeError):
+    """A request does not belong to the currently active experiment session."""
+
 # PianoLLaMA tokenization is fixed: 4 timesteps per beat.
 TIMESTEPS_PER_BEAT = 4
+DEFAULT_PROMPT_CONTEXT_BEATS = 128
+DEFAULT_HISTORY_MAX_TICKS = DEFAULT_PROMPT_CONTEXT_BEATS * TIMESTEPS_PER_BEAT
 
 
 @dataclass(frozen=True)
@@ -58,8 +69,33 @@ class LekaiHttpBackend:
     """
     
     def __init__(self, checkpoint_path: Optional[str] = None) -> None:
+        # Requests and session resets are serialized.  The boundary worker does
+        # not acquire this lock, which lets reset_session drain it without a
+        # lock inversion with _model_generation_lock.
+        self._session_gate = threading.RLock()
+        self._accepting_requests = True
+        self._session_epoch = 0
+        self._session_id: Optional[str] = None
+        self._effective_seed = int(os.environ.get("LEKAI_RT_SEED", "0"))
+        self._sample_generator = self._make_generator(self._effective_seed, "cpu")
+        self._generation_metadata: Dict[str, Dict[str, Any]] = {}
+        self._current_generation_trace: Dict[str, Any] = {}
+        self._checkpoint_sha256_cache: Dict[tuple[str, int, int], str] = {}
         self._melody_history: List[EventPayload] = []
+        # Full session input is retained only for the cumulative audit digest;
+        # model prompt history may be trimmed independently.
+        self._input_digest_history: List[EventPayload] = []
         self._accompaniment_history: List[EventPayload] = []
+        # Preserve the exact generated accompaniment tokens across HTTP requests.
+        # Event round-tripping cannot distinguish a model-generated BAR from an empty beat.
+        self._accompaniment_token_history: Dict[int, List[int]] = {}
+        self._accompaniment_bar_token_history: Dict[int, List[int]] = {}
+        self._model_generation_lock = threading.Lock()
+        self._boundary_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="lekai-boundary",
+        )
+        self._pending_boundary_generations: Dict[int, Future[List[int]]] = {}
         self._injection_length_ticks: int = 0
         self._runtime_config: Optional[BackendRuntimeConfig] = None
         self._runtime_status = BackendRuntimeStatus()
@@ -80,6 +116,68 @@ class LekaiHttpBackend:
             self._load_model(checkpoint_path)
 
     @staticmethod
+    def _canonical_sha256(value: Any) -> str:
+        payload = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _make_generator(seed: int, device: str) -> torch.Generator:
+        # torch.Generator only accepts concrete device types.  MPS currently
+        # uses the CPU generator accepted by torch.multinomial.
+        generator_device = str(device) if str(device).startswith("cuda") else "cpu"
+        try:
+            generator = torch.Generator(device=generator_device)
+        except (RuntimeError, TypeError):
+            generator = torch.Generator()
+        generator.manual_seed(int(seed))
+        return generator
+
+    def _checkpoint_sha256(self) -> Optional[str]:
+        raw_path = self._runtime_status.checkpoint_path
+        if not raw_path:
+            return None
+        path = Path(raw_path)
+        if not path.is_file():
+            return None
+        stat = path.stat()
+        key = (str(path.resolve()), int(stat.st_size), int(stat.st_mtime_ns))
+        cached = self._checkpoint_sha256_cache.get(key)
+        if cached is not None:
+            return cached
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result = digest.hexdigest()
+        self._checkpoint_sha256_cache = {key: result}
+        return result
+
+    def _sampling_config(self) -> Dict[str, float | int]:
+        def _float(name: str, default: float) -> float:
+            try:
+                return float(os.environ.get(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        def _int(name: str, default: int) -> int:
+            try:
+                return int(os.environ.get(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        return {
+            "temperature": _float("LEKAI_RT_TEMPERATURE", 0.8),
+            "top_k": _int("LEKAI_RT_TOP_K", 50),
+            "top_p": _float("LEKAI_RT_TOP_P", 0.95),
+            "repetition_penalty": _float("LEKAI_RT_REPETITION_PENALTY", 1.2),
+        }
+
+    @staticmethod
     def _checkpoint_format(path: str) -> str:
         suffix = Path(path).suffix.lower()
         if suffix == ".safetensors":
@@ -98,6 +196,12 @@ class LekaiHttpBackend:
 
     def _runtime_bool(self, name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
+
+    def _prompt_context_beats(self) -> int:
+        return (
+            self._env_positive_int("LEKAI_PROMPT_CONTEXT_BEATS")
+            or DEFAULT_PROMPT_CONTEXT_BEATS
+        )
 
     def _set_stub_mode(self, *, checkpoint_path: Optional[str], fallback_reason: Optional[str]) -> None:
         self._model_adapter = None
@@ -195,6 +299,9 @@ class LekaiHttpBackend:
             self._runtime_status.resolved_dtype = dtype_to_name(primary_dtype)
             self._runtime_status.load_time_ms = load_time_ms
             self._runtime_status.warmup_time_ms = warmup_time_ms
+            self._sample_generator = self._make_generator(
+                self._effective_seed, primary_device
+            )
             print(
                 f"[LekaiHttpBackend] Loaded model from {checkpoint_path} "
                 f"(device: {primary_device}, dtype: {dtype_to_name(primary_dtype)}, "
@@ -220,6 +327,9 @@ class LekaiHttpBackend:
                     self._runtime_status.load_time_ms = load_time_ms
                     self._runtime_status.warmup_time_ms = warmup_time_ms
                     self._runtime_status.fallback_reason = fallback_reason
+                    self._sample_generator = self._make_generator(
+                        self._effective_seed, "cpu"
+                    )
                     print(
                         f"[LekaiHttpBackend] CPU fallback succeeded "
                         f"(load_ms: {load_time_ms:.1f}, warmup_ms: {warmup_time_ms:.1f})"
@@ -273,7 +383,11 @@ class LekaiHttpBackend:
 
         return adjusted_length, adjusted_prompt
 
-    def runtime_info(self) -> Dict[str, str | float | bool | None]:
+    def runtime_info(self) -> Dict[str, Any]:
+        sampling = self._sampling_config()
+        configured_history = self._env_positive_int("LEKAI_HISTORY_MAX_TICKS")
+        source_path = Path(__file__)
+        source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
         return {
             "mode": "real_model" if self._has_real_model() else "rule_stub",
             "has_real_model": self._has_real_model(),
@@ -287,7 +401,112 @@ class LekaiHttpBackend:
             "use_cache": self._runtime_status.use_cache,
             "runtime_model_name": self._runtime_config.model_name if self._runtime_config else "",
             "runtime_inference_mode": self._runtime_config.inference_mode if self._runtime_config else "",
+            "generation_interval_ticks": (
+                self._runtime_config.generation_interval_ticks
+                if self._runtime_config is not None
+                else None
+            ),
+            "generation_length_frames": (
+                self._runtime_config.generation_length_frames
+                if self._runtime_config is not None
+                else None
+            ),
+            "prompt_length_ticks": (
+                self._runtime_config.prompt_length_ticks
+                if self._runtime_config is not None
+                else None
+            ),
+            "ticks_per_beat": TIMESTEPS_PER_BEAT,
+            "checkpoint_sha256": self._checkpoint_sha256(),
+            "source_sha256": source_sha256,
+            "code_identity": os.environ.get("STREAMMUSE_CODE_SHA", source_sha256),
+            "effective_bpm": (
+                self._request_bpm
+                if self._request_bpm is not None
+                else int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))
+            ),
+            **sampling,
+            "prompt_context_beats": self._prompt_context_beats(),
+            "history_retention_ticks": configured_history or DEFAULT_HISTORY_MAX_TICKS,
+            "max_generation_length_frames": self._env_positive_int(
+                "LEKAI_MAX_GENERATION_LENGTH_FRAMES"
+            ),
+            "max_prompt_ticks": self._env_positive_int("LEKAI_MAX_PROMPT_TICKS"),
+            "time_signature_index": int(os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4")),
+            "sample_seed": self._effective_seed,
+            "session_id": self._session_id,
+            "session_epoch": self._session_epoch,
+            "accepting_requests": self._accepting_requests,
+            "pending_boundary_generations": len(self._pending_boundary_generations),
+            "boundary_generation_order": (
+                "synchronous"
+                if self._runtime_bool("LEKAI_DETERMINISTIC_BOUNDARY_GENERATION", False)
+                else "single_executor_then_request"
+            ),
         }
+
+    def reset_session(self, seed: int) -> Dict[str, Any]:
+        """Atomically retire the old session and create a seeded session epoch."""
+        with self._session_gate:
+            self._accepting_requests = False
+            try:
+                # Do not hold _model_generation_lock while waiting: boundary
+                # futures need that lock in order to finish.
+                self._resolve_pending_boundary_generations(store=False)
+                with self._model_generation_lock:
+                    self._melody_history = []
+                    self._input_digest_history = []
+                    self._accompaniment_history = []
+                    self._accompaniment_token_history = {}
+                    self._accompaniment_bar_token_history = {}
+                    self._injection_length_ticks = 0
+                    self._active_pitches = set()
+                    self._request_bpm = None
+                    self._generation_metadata = {}
+                    self._current_generation_trace = {}
+                    self._session_epoch += 1
+                    self._session_id = uuid.uuid4().hex
+                    self._effective_seed = int(seed)
+                    self._sample_generator = self._make_generator(
+                        self._effective_seed,
+                        self._runtime_status.resolved_device,
+                    )
+            finally:
+                self._accepting_requests = True
+        return {
+            "success": True,
+            "session_id": self._session_id,
+            "session_epoch": self._session_epoch,
+            "effective_seed": self._effective_seed,
+            "pending_boundary_generations": len(self._pending_boundary_generations),
+        }
+
+    def _validate_session(
+        self,
+        *,
+        session_id: Optional[str],
+        session_epoch: Optional[int],
+    ) -> None:
+        if not self._accepting_requests:
+            raise SessionStateError("session_reset_in_progress")
+        supplied = session_id is not None or session_epoch is not None
+        if not supplied:
+            if self._runtime_bool("LEKAI_REQUIRE_SESSION", False):
+                raise SessionStateError("session_id and session_epoch are required")
+            return
+        if session_id is None or session_epoch is None:
+            raise SessionStateError("session_id and session_epoch must be supplied together")
+        if self._session_id is None:
+            raise SessionStateError("no active experiment session; call /debug/reset_session first")
+        if session_id != self._session_id or int(session_epoch) != self._session_epoch:
+            raise SessionStateError(
+                "stale session epoch: "
+                f"received {session_id}/{session_epoch}, "
+                f"active {self._session_id}/{self._session_epoch}"
+            )
+
+    def consume_generation_metadata(self, request_id: str) -> Dict[str, Any]:
+        return dict(self._generation_metadata.pop(str(request_id), {}))
 
     @staticmethod
     def _event_sort_key(event: EventPayload) -> Tuple[int, int]:
@@ -380,11 +599,10 @@ class LekaiHttpBackend:
 
         model = getattr(self._model_adapter, "model", None)
         if model is None:
-            raise RuntimeError("Model adapter does not expose `model` for interleaved decoding.")
+            raise RuntimeError("Model adapter does not expose model for interleaved decoding.")
 
         device = str(getattr(self._model_adapter, "device", "cpu"))
         use_cache = bool(getattr(self._model_adapter, "use_cache", True))
-        pad_token_id = 258
         part1_end_marker = 171
         part1_empty_marker = 169
         bar_token = int(getattr(self._model_adapter, "BAR_TOKEN", 255))
@@ -393,14 +611,13 @@ class LekaiHttpBackend:
         raw_tokens: List[int] = []
         past_key_values = None
 
-        with torch.no_grad():
+        with self._model_generation_lock, torch.no_grad():
             for _ in range(100):
                 outputs = model(
                     input_ids=generated[:, -1:] if past_key_values is not None else generated,
                     past_key_values=past_key_values,
                     use_cache=use_cache,
                 )
-
                 logits = outputs.logits[:, -1, :]
                 past_key_values = outputs.past_key_values
 
@@ -411,6 +628,7 @@ class LekaiHttpBackend:
                     top_k=top_k,
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
+                    generator=self._sample_generator,
                 )
 
                 token_val = int(next_token.item())
@@ -420,12 +638,56 @@ class LekaiHttpBackend:
                 if token_val in {part1_end_marker, part1_empty_marker, bar_token}:
                     break
 
-        valid_tokens = [token for token in raw_tokens if token != pad_token_id]
-        if valid_tokens and valid_tokens[-1] == bar_token:
-            valid_tokens.pop()
-        if not valid_tokens:
-            return [169]
-        return valid_tokens
+        return raw_tokens or [part1_empty_marker]
+
+    @staticmethod
+    def _playable_part1_tokens(raw_tokens: List[int]) -> List[int]:
+        playable = [token for token in raw_tokens if token != 258]
+        return playable or [169]
+
+    def _submit_boundary_generation(
+        self,
+        beat: int,
+        prompt_tokens: torch.Tensor,
+        *,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        repetition_penalty: float,
+    ) -> None:
+        if beat in self._pending_boundary_generations:
+            raise RuntimeError(f"Boundary generation already pending for beat {beat}.")
+        future = self._boundary_executor.submit(
+            self._generate_part1_tokens_from_prompt,
+            prompt_tokens.detach().cpu().clone(),
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+        )
+        self._pending_boundary_generations[beat] = future
+
+    def _resolve_pending_boundary_generations(
+        self,
+        *,
+        through_beat: Optional[int] = None,
+        store: bool = True,
+    ) -> None:
+        beats = sorted(
+            beat
+            for beat in self._pending_boundary_generations
+            if through_beat is None or beat <= through_beat
+        )
+        for beat in beats:
+            future = self._pending_boundary_generations.pop(beat)
+            try:
+                tokens = future.result()
+            except Exception:
+                if store:
+                    raise
+                continue
+            if store:
+                self._accompaniment_bar_token_history[beat] = list(tokens)
 
     def _generate_with_interleaved_prompt(
         self,
@@ -436,16 +698,21 @@ class LekaiHttpBackend:
         assert self._converter is not None and self._model_adapter is not None and self._tokenizer is not None
 
         _ = generation_interval_ticks
+        raw_response_tokens: List[int] = []
+        structural_tokens: List[int] = []
+        part0_tokens: List[int] = []
+        self._current_generation_trace = {}
 
         from streammuse.infrastructure.inference.lekai_model.PianoDataset import encode_bpm
         from streammuse.infrastructure.inference.lekai_model.inference_adapter import beats_to_pianoroll
 
         current_beat = int(generation_start_tick) // TIMESTEPS_PER_BEAT
+        self._resolve_pending_boundary_generations(through_beat=current_beat)
         num_beats_to_generate = max(1, int(generation_length_frames) // TIMESTEPS_PER_BEAT)
         if int(generation_length_frames) % TIMESTEPS_PER_BEAT != 0:
             num_beats_to_generate += 1
 
-        context_beats = self._env_positive_int("LEKAI_PROMPT_CONTEXT_BEATS") or 32
+        context_beats = self._prompt_context_beats()
         start_beat = max(0, current_beat - context_beats)
         context_start_tick = start_beat * TIMESTEPS_PER_BEAT
 
@@ -460,9 +727,9 @@ class LekaiHttpBackend:
         bos_token = int(getattr(self._model_adapter, "BOS_TOKEN", 1))
         pad_token = int(getattr(self._model_adapter, "PAD_MARKER", 173))
 
-        # Initial sequence matches offline training structure with delay_beats=-1:
-        # [BOS, ts, bpm, pad, bar, bar, acc_0, mel_0, acc_1, mel_1, ...]
-        # The pad corresponds to the dummy part0 slot before the first bar.
+        # Initial sequence matches the current offline delay_beats=-1 loop:
+        # [BOS, ts, bpm, part0_pad, generated_primer_BAR, part0_pad, acc_0, ...].
+        # The offline loop consumes two leading part0 positions as PAD slots.
         seq: List[torch.Tensor] = [
             torch.tensor([bos_token], dtype=torch.long),
             torch.tensor([time_sig_token], dtype=torch.long),
@@ -479,35 +746,49 @@ class LekaiHttpBackend:
         accompaniment_context_events: List[EventPayload] = list(real_accompaniment_history)
         accompaniment_active = self._active_pitches_before_tick(accompaniment_context_events, context_start_tick)
 
-        # Context loop — training data interleaving order is ACC first, then MEL.
-        # Training structure with delay_beats=-1:
-        #   [BOS, ts, bpm, PAD, BAR(part1), PAD(part0), ACC_0, MEL_0, BAR, BAR, ACC_4, MEL_4, ...]
-        # At beat 0 the second slot is a dummy PAD (second pad injection for delay_beats=-1).
-        # At all subsequent measure starts (beat 4, 8, ...) it is a real BAR from part0.
+        # Rebuild the exact offline delay_beats=-1 order. Beat 0 has the
+        # generated acc_{-1} BAR and the second dummy PAD. At later measure
+        # boundaries, the part0 BAR and its generated part1 structural slot
+        # occur after that boundary beat accompaniment and before its melody.
         for beat in range(start_beat, current_beat):
-            if beat % 4 == 0:
+            if beat == 0:
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
-                second = pad_token if beat == 0 else bar_token
-                seq.append(torch.tensor([second], dtype=torch.long))
+                seq.append(torch.tensor([pad_token], dtype=torch.long))
 
             beat_start_tick = beat * TIMESTEPS_PER_BEAT
 
-            # ACC first (part1 slot in training data)
-            acc_tokens, accompaniment_active = self._encode_beat_tokens(
-                events=accompaniment_context_events,
-                beat_start_tick=beat_start_tick,
-                active_pitches=accompaniment_active,
-                end_marker=171,
-            )
+            generated_history_tokens = self._accompaniment_token_history.get(beat)
+            if generated_history_tokens is None:
+                acc_tokens, accompaniment_active = self._encode_beat_tokens(
+                    events=accompaniment_context_events,
+                    beat_start_tick=beat_start_tick,
+                    active_pitches=accompaniment_active,
+                    end_marker=171,
+                )
+            else:
+                acc_tokens = torch.tensor(generated_history_tokens, dtype=torch.long)
+                accompaniment_active = self._advance_active_pitches(
+                    events=accompaniment_context_events,
+                    start_tick=beat_start_tick,
+                    end_tick=beat_start_tick + TIMESTEPS_PER_BEAT,
+                    active_pitches=accompaniment_active,
+                )
             seq.append(acc_tokens)
 
-            # MEL second (part0 slot in training data)
+            if beat > 0 and beat % 4 == 0:
+                seq.append(torch.tensor([bar_token], dtype=torch.long))
+                boundary_tokens = self._accompaniment_bar_token_history.get(
+                    beat, [bar_token]
+                )
+                seq.append(torch.tensor(boundary_tokens, dtype=torch.long))
+
             mel_tokens, melody_active = self._encode_beat_tokens(
                 events=self._melody_history,
                 beat_start_tick=beat_start_tick,
                 active_pitches=melody_active,
                 end_marker=170,
             )
+            part0_tokens.extend(int(token) for token in mel_tokens.tolist())
             seq.append(mel_tokens)
 
         generated_events: List[EventPayload] = []
@@ -534,16 +815,14 @@ class LekaiHttpBackend:
             target_beat = current_beat + beat_offset
             beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
 
-            # Add bar tokens at the start of each measure, before generating acc.
-            # Beat 0: [BAR, PAD] (second dummy part0 slot for delay_beats=-1).
-            # Beat 4+: [BAR, BAR] (both part1 and part0 contribute a real bar token).
-            if target_beat % 4 == 0:
+            if target_beat == 0:
                 seq.append(torch.tensor([bar_token], dtype=torch.long))
-                second = pad_token if target_beat == 0 else bar_token
-                seq.append(torch.tensor([second], dtype=torch.long))
+                seq.append(torch.tensor([pad_token], dtype=torch.long))
 
             # Generate ACC directly — do NOT inject mel[target_beat] first.
-            # Training context ends with mel[target_beat-1]; the model predicts acc[target_beat].
+            # At measure boundaries, the first slot may be either the playable
+            # beat or a structural BAR. Only the latter requires the post-BAR
+            # slot before this response can be returned.
             prompt_tokens = torch.cat(seq, dim=0)
             generated_beat_tokens = self._generate_part1_tokens_from_prompt(
                 prompt_tokens,
@@ -552,9 +831,60 @@ class LekaiHttpBackend:
                 top_p=rt_top_p,
                 repetition_penalty=rt_repetition_penalty,
             )
+            raw_response_tokens.extend(int(token) for token in generated_beat_tokens)
+            boundary_tokens: Optional[List[int]] = None
+            boundary_pending = False
+            if target_beat > 0 and target_beat % 4 == 0:
+                boundary_prompt_tokens = torch.cat(
+                    seq
+                    + [
+                        torch.tensor(generated_beat_tokens, dtype=torch.long),
+                        torch.tensor([bar_token], dtype=torch.long),
+                    ],
+                    dim=0,
+                )
+                generated_is_bar = (
+                    self._playable_part1_tokens(generated_beat_tokens) == [bar_token]
+                )
+                has_following_beat = beat_offset + 1 < num_beats_to_generate
+                if generated_is_bar or has_following_beat:
+                    boundary_tokens = self._generate_part1_tokens_from_prompt(
+                        boundary_prompt_tokens,
+                        temperature=rt_temperature,
+                        top_k=rt_top_k,
+                        top_p=rt_top_p,
+                        repetition_penalty=rt_repetition_penalty,
+                    )
+                    structural_tokens.extend(int(token) for token in boundary_tokens)
+                elif self._runtime_bool("LEKAI_DETERMINISTIC_BOUNDARY_GENERATION", False):
+                    boundary_tokens = self._generate_part1_tokens_from_prompt(
+                        boundary_prompt_tokens,
+                        temperature=rt_temperature,
+                        top_k=rt_top_k,
+                        top_p=rt_top_p,
+                        repetition_penalty=rt_repetition_penalty,
+                    )
+                    structural_tokens.extend(int(token) for token in boundary_tokens)
+                else:
+                    self._submit_boundary_generation(
+                        target_beat,
+                        boundary_prompt_tokens,
+                        temperature=rt_temperature,
+                        top_k=rt_top_k,
+                        top_p=rt_top_p,
+                        repetition_penalty=rt_repetition_penalty,
+                    )
+                    boundary_pending = True
 
+            playback_source_tokens = generated_beat_tokens
+            if (
+                boundary_tokens is not None
+                and self._playable_part1_tokens(generated_beat_tokens) == [bar_token]
+            ):
+                playback_source_tokens = boundary_tokens
+            playable_beat_tokens = self._playable_part1_tokens(playback_source_tokens)
             beat_pianoroll = beats_to_pianoroll(
-                [generated_beat_tokens],
+                [playable_beat_tokens],
                 tokenizer=self._tokenizer,
                 timesteps_per_beat=TIMESTEPS_PER_BEAT,
             )
@@ -602,10 +932,19 @@ class LekaiHttpBackend:
 
             generated_events.extend(normalized_beat_events)
             accompaniment_context_events.extend(normalized_beat_events)
+            self._accompaniment_token_history[target_beat] = list(generated_beat_tokens)
 
-            # Extend seq with: ACC tokens (just generated), then MEL tokens for this beat.
-            # This prepares the context for generating acc[target_beat+1].
+            # Preserve the raw ACC tokens in the model sequence. At a measure
+            # boundary, offline next injects a part0 BAR and generates a separate
+            # structural part1 slot before injecting this beats melody.
             seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
+            if target_beat > 0 and target_beat % 4 == 0:
+                seq.append(torch.tensor([bar_token], dtype=torch.long))
+                if boundary_tokens is not None:
+                    self._accompaniment_bar_token_history[target_beat] = list(boundary_tokens)
+                    seq.append(torch.tensor(boundary_tokens, dtype=torch.long))
+                else:
+                    assert boundary_pending
 
             mel_tokens_current, melody_active = self._encode_beat_tokens(
                 events=self._melody_history,
@@ -613,10 +952,31 @@ class LekaiHttpBackend:
                 active_pitches=melody_active,
                 end_marker=170,
             )
-            seq.append(mel_tokens_current)
+            part0_tokens.extend(int(token) for token in mel_tokens_current.tolist())
+            if not boundary_pending:
+                seq.append(mel_tokens_current)
 
         # Build full prompt tokens for logging
         full_prompt_tokens = torch.cat(seq, dim=0).tolist()
+        part0_end_tick = (current_beat + num_beats_to_generate) * TIMESTEPS_PER_BEAT
+        part0_roll = self._converter.events_to_pianoroll(
+            events=self._melody_history,
+            start_tick=context_start_tick,
+            end_tick=part0_end_tick,
+            active_pitches=self._active_pitches_before_tick(
+                self._melody_history, context_start_tick
+            ),
+        )
+        self._current_generation_trace = {
+            "raw_tokens": raw_response_tokens,
+            "structural_tokens": structural_tokens,
+            "prompt_tokens": [int(token) for token in full_prompt_tokens],
+            "part0_tokens": part0_tokens,
+            "part0_roll": part0_roll,
+            "part0_roll_start_tick": context_start_tick,
+            "part0_roll_end_tick": part0_end_tick,
+            "context_start_tick": context_start_tick,
+        }
         
         # Get melody events in the prompt window
         prompt_melody_events = [
@@ -638,13 +998,120 @@ class LekaiHttpBackend:
             melody_events=prompt_melody_events,
             accompaniment_events=generated_events,
             bpm=self._request_bpm,
-            notes=f"context_start_tick={context_start_tick}, current_beat={current_beat}",
+            notes=(
+                f"context_start_tick={context_start_tick}, current_beat={current_beat}, "
+                f"boundary_pending={boundary_pending}"
+            ),
             suffix="",
         )
 
         return generated_events
 
     def generate(
+        self,
+        melody_events: List[EventPayload],
+        generation_start_tick: int,
+        generation_length_frames: int,
+        generation_interval_ticks: int,
+        prompt_length_ticks: Optional[int],
+        inference_mode: str,
+        model_name: str,
+        checkpoint_path: Optional[str],
+        bpm: Optional[int] = None,
+        input_file: Optional[str] = None,
+        session_id: Optional[str] = None,
+        session_epoch: Optional[int] = None,
+        request_id: Optional[str] = None,
+    ) -> tuple[List[EventPayload], TimingPayload]:
+        """Generate one response and retain an auditable metadata envelope.
+
+        The return shape remains the historical two-tuple.  The HTTP layer uses
+        consume_generation_metadata(request_id) so existing direct callers do
+        not need to change.
+        """
+        with self._session_gate:
+            self._validate_session(session_id=session_id, session_epoch=session_epoch)
+            effective_request_id = str(
+                request_id
+                or f"legacy-e{self._session_epoch}-{time.time_ns()}"
+            )
+            input_increment = [dict(event) for event in melody_events]
+            cumulative_input = [dict(event) for event in self._input_digest_history] + input_increment
+            self._current_generation_trace = {}
+            accompaniment, timings = self._generate_locked(
+                melody_events=melody_events,
+                generation_start_tick=generation_start_tick,
+                generation_length_frames=generation_length_frames,
+                generation_interval_ticks=generation_interval_ticks,
+                prompt_length_ticks=prompt_length_ticks,
+                inference_mode=inference_mode,
+                model_name=model_name,
+                checkpoint_path=checkpoint_path,
+                bpm=bpm,
+                input_file=input_file,
+            )
+            self._input_digest_history.extend(input_increment)
+            trace = dict(self._current_generation_trace)
+            raw_tokens = [int(token) for token in trace.get("raw_tokens", [])]
+            structural_tokens = [
+                int(token) for token in trace.get("structural_tokens", [])
+            ]
+            prompt_tokens = [int(token) for token in trace.get("prompt_tokens", [])]
+            part0_tokens = [int(token) for token in trace.get("part0_tokens", [])]
+            raw_part0_roll = trace.get("part0_roll")
+            if isinstance(raw_part0_roll, np.ndarray):
+                canonical_roll = np.ascontiguousarray(raw_part0_roll, dtype=np.uint8)
+                part0_roll_shape = [int(value) for value in canonical_roll.shape]
+                part0_roll_bytes_sha256 = hashlib.sha256(
+                    canonical_roll.tobytes(order="C")
+                ).hexdigest()
+                part0_roll_digest = self._canonical_sha256(
+                    {
+                        "shape": part0_roll_shape,
+                        "bytes_sha256": part0_roll_bytes_sha256,
+                    }
+                )
+            else:
+                part0_roll_shape = []
+                part0_roll_bytes_sha256 = None
+                part0_roll_digest = None
+            metadata: Dict[str, Any] = {
+                "request_id": effective_request_id,
+                "session_id": self._session_id,
+                "session_epoch": self._session_epoch,
+                "effective_seed": self._effective_seed,
+                "effective_bpm": int(
+                    self._request_bpm
+                    if self._request_bpm is not None
+                    else os.environ.get("LEKAI_DEFAULT_BPM", "120")
+                ),
+                "generation_start_tick": int(generation_start_tick),
+                "raw_tokens": raw_tokens,
+                "structural_tokens": structural_tokens,
+                "raw_token_digest": self._canonical_sha256(
+                    {"raw": raw_tokens, "structural": structural_tokens}
+                ),
+                "prompt_token_digest": self._canonical_sha256(prompt_tokens),
+                "part0_tokens": part0_tokens,
+                "part0_token_digest": self._canonical_sha256(part0_tokens),
+                "input_increment_digest": self._canonical_sha256(input_increment),
+                "input_cumulative_digest": self._canonical_sha256(cumulative_input),
+                # Digest the exact 2x88xT array supplied to the part0 encoder;
+                # an event-table digest is not a substitute because converter
+                # window/carry semantics can change the actual model input.
+                "part0_roll_digest": part0_roll_digest,
+                "part0_roll_shape": part0_roll_shape,
+                "part0_roll_bytes_sha256": part0_roll_bytes_sha256,
+                "part0_roll_start_tick": trace.get("part0_roll_start_tick"),
+                "part0_roll_end_tick": trace.get("part0_roll_end_tick"),
+                "output_event_digest": self._canonical_sha256(accompaniment),
+                "empty_success": len(accompaniment) == 0,
+                "context_start_tick": trace.get("context_start_tick"),
+            }
+            self._generation_metadata[effective_request_id] = metadata
+            return accompaniment, timings
+
+    def _generate_locked(
         self,
         melody_events: List[EventPayload],
         generation_start_tick: int,
@@ -848,15 +1315,38 @@ class LekaiHttpBackend:
             )
         
         # 5. Generate part1 using model
+        sampling = self._sampling_config()
         part1_beats = self._model_adapter.generate_from_beats(
             part0_beats=part0_beats,
             num_beats_to_generate=num_beats_to_generate,
-            bpm=int(os.environ.get("LEKAI_DEFAULT_BPM", "120")),
-            temperature=0.8,
-            top_k=50,
-            top_p=0.95,
+            bpm=(
+                self._request_bpm
+                if self._request_bpm is not None
+                else int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))
+            ),
+            temperature=float(sampling["temperature"]),
+            top_k=int(sampling["top_k"]),
+            top_p=float(sampling["top_p"]),
+            repetition_penalty=float(sampling["repetition_penalty"]),
+            generator=self._sample_generator,
             verbose=False,
         )
+        raw_tokens = [int(token) for beat in part1_beats for token in beat]
+        prompt_tokens = [
+            int(token)
+            for beat in part0_beats
+            for token in (beat.tolist() if hasattr(beat, "tolist") else beat)
+        ]
+        self._current_generation_trace = {
+            "raw_tokens": raw_tokens,
+            "structural_tokens": [],
+            "prompt_tokens": prompt_tokens,
+            "part0_tokens": prompt_tokens,
+            "part0_roll": melody_pianoroll,
+            "part0_roll_start_tick": prompt_start,
+            "part0_roll_end_tick": prompt_start + int(melody_pianoroll.shape[2]),
+            "context_start_tick": prompt_start,
+        }
         
         # 6. Convert part1 beats to pianoroll
         # Use the correct beats_to_pianoroll function with tokenizer decode
@@ -918,8 +1408,25 @@ class LekaiHttpBackend:
         accompaniment_events: List[EventPayload],
         injection_length_ticks: int,
     ) -> Dict[str, int | bool | str]:
+        with self._session_gate:
+            return self._inject_history_locked(
+                melody_events,
+                accompaniment_events,
+                injection_length_ticks,
+            )
+
+    def _inject_history_locked(
+        self,
+        melody_events: List[EventPayload],
+        accompaniment_events: List[EventPayload],
+        injection_length_ticks: int,
+    ) -> Dict[str, int | bool | str]:
+        self._resolve_pending_boundary_generations(store=False)
         self._melody_history = list(melody_events)
+        self._input_digest_history = [dict(event) for event in melody_events]
         self._accompaniment_history = list(accompaniment_events)
+        self._accompaniment_token_history = {}
+        self._accompaniment_bar_token_history = {}
         self._injection_length_ticks = int(injection_length_ticks)
         # Reset active pitches on injection
         self._active_pitches = set()
@@ -933,11 +1440,19 @@ class LekaiHttpBackend:
         }
 
     def clear_history(self) -> Dict[str, Any]:
+        with self._session_gate:
+            return self._clear_history_locked()
+
+    def _clear_history_locked(self) -> Dict[str, Any]:
+        self._resolve_pending_boundary_generations(store=False)
         melody_history = [dict(event) for event in self._melody_history]
         accompaniment_history = [dict(event) for event in self._accompaniment_history]
 
         self._melody_history = []
+        self._input_digest_history = []
         self._accompaniment_history = []
+        self._accompaniment_token_history = {}
+        self._accompaniment_bar_token_history = {}
         self._injection_length_ticks = 0
         self._active_pitches = set()
         self._request_bpm = None
@@ -948,19 +1463,38 @@ class LekaiHttpBackend:
             "accompaniment_history": accompaniment_history,
         }
 
-    def injection_status(self) -> Dict[str, bool | int | str]:
+    def injection_status(self) -> Dict[str, Any]:
         return {
             "is_injected": self._injection_length_ticks > 0,
             "injection_length_ticks": self._injection_length_ticks,
             "runtime_model_name": self._runtime_config.model_name if self._runtime_config else "",
             "runtime_inference_mode": self._runtime_config.inference_mode if self._runtime_config else "",
+            "generation_interval_ticks": (
+                self._runtime_config.generation_interval_ticks
+                if self._runtime_config is not None
+                else None
+            ),
+            "generation_length_frames": (
+                self._runtime_config.generation_length_frames
+                if self._runtime_config is not None
+                else None
+            ),
+            "prompt_length_ticks": (
+                self._runtime_config.prompt_length_ticks
+                if self._runtime_config is not None
+                else None
+            ),
+            "ticks_per_beat": TIMESTEPS_PER_BEAT,
         }
 
     def _trim_histories(self, generation_start_tick: int, generation_length_frames: int) -> None:
         """Trim histories with a stable window independent from tiny generation lengths."""
         configured_max_ticks = self._env_positive_int("LEKAI_HISTORY_MAX_TICKS")
         if configured_max_ticks is None:
-            configured_max_ticks = max(512, int(generation_length_frames) * 16)
+            configured_max_ticks = max(
+                DEFAULT_HISTORY_MAX_TICKS,
+                int(generation_length_frames) * 16,
+            )
 
         max_history_ticks = configured_max_ticks
         cutoff_tick = int(generation_start_tick) - max_history_ticks
@@ -974,6 +1508,16 @@ class LekaiHttpBackend:
                 e for e in self._melody_history
                 if int(e.get("tick", 0)) >= cutoff_tick
             ]
+            self._accompaniment_token_history = {
+                beat: tokens
+                for beat, tokens in self._accompaniment_token_history.items()
+                if beat * TIMESTEPS_PER_BEAT >= cutoff_tick
+            }
+            self._accompaniment_bar_token_history = {
+                beat: tokens
+                for beat, tokens in self._accompaniment_bar_token_history.items()
+                if beat * TIMESTEPS_PER_BEAT >= cutoff_tick
+            }
 
     def _generate_rule_based(
         self, 

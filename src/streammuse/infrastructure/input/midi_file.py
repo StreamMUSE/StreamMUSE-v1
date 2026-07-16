@@ -94,6 +94,9 @@ class MidiFileInput:
         return notes, beat_div, int(actual_max_tick)
 
     def read_events(self) -> Iterator[MusicalEvent]:
+        # Anchor playback before parsing so file-conversion latency cannot shift
+        # the entire simulated performance relative to the service timeline.
+        start_time = self._now()
         seconds_per_tick = self._config.seconds_per_tick()
         notes, _resolution, _max_tick = self._midi_to_notes(
             self._path,
@@ -132,7 +135,6 @@ class MidiFileInput:
             )
 
         ticks = sorted(schedule.keys())
-        start_time = self._now()
         for t in ticks:
             if self._closed:
                 break

@@ -6,7 +6,7 @@ MIDI-file input produces the SAME accompaniment as the offline one-shot generato
 pianoroll level, within the song's melody window.
 
 Two things make the comparison meaningful (all the hard-won Phase 0 lessons):
-  * non-empty songs only — greedy collapses many songs to silence (song 4 is the default);
+  * non-empty songs only — greedy collapses many songs to silence (songs 4 and 5 are defaults);
   * pianoroll (beat, pitch) comparison, not raw MIDI notes — realtime re-triggers sustained
     notes per beat while offline keeps them long;
   * truncate to the melody window — realtime runs a bit past the song end with no melody.
@@ -17,7 +17,7 @@ Tempo ladder separates "consistency regression" from "inference too slow":
 A failure at tempo 15 is a real regression; tempo-15-green/tempo-120-red means the box was
 too slow (also caught earlier as a dropped-request precondition failure), not a bug.
 
-Opt-in (needs GPU + checkpoint), e.g. song 4 at both rungs takes a few minutes::
+Opt-in (needs GPU + checkpoint); the default runs songs 4 and 5 at both tempo rungs::
 
     LEKAI_CHECKPOINT_PATH=models/ModelLekai/epoch_4_1104_1204/model.safetensors \
       uv run pytest tests/consistency/ -v
@@ -42,7 +42,7 @@ from tests.consistency.runners import count_dropped_requests, run_offline, run_r
 
 pytestmark = pytest.mark.consistency
 
-DEFAULT_SONGS = "4"
+DEFAULT_SONGS = "4,5"
 DEFAULT_TEMPOS = "15,120"
 LATE_SCHEDULE_POLICIES = {
     "clamped_partial_note",

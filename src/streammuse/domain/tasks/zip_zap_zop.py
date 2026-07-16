@@ -41,7 +41,7 @@ class ZipZapZopTask:
         next_number = self.current_number(state)
         expected = self.expected_response(next_number)
         if self.history_limit <= 0 or not state.history:
-            user_content = f"{next_number}:"
+            user_content = f"Current number: {next_number}\nAnswer:"
         else:
             recent = state.history[-self.history_limit :]
             history_lines = []
@@ -49,7 +49,7 @@ class ZipZapZopTask:
                 label = "Human" if record.get("role") == "human" else "Assistant"
                 turn_number = record.get("number", "?")
                 history_lines.append(f"{label} at {turn_number}: {record.get('content', '')}")
-            user_content = "Recent turns:\n" + "\n".join(history_lines) + f"\nYour turn. {next_number}:"
+            user_content = "Recent turns:\n" + "\n".join(history_lines) + f"\nCurrent number: {next_number}\nAnswer:"
         return TaskTurn(
             task_name=self.name,
             turn_id=state.turn_index,
@@ -73,7 +73,7 @@ class ZipZapZopTask:
     ) -> list[ChatMessage]:
         number = self.current_number(state)
         if self.history_limit <= 0 or not transcript:
-            user_content = f"{number}:"
+            user_content = f"Current number: {number}\nAnswer:"
         else:
             recent = transcript[-self.history_limit :]
             history_lines = []
@@ -81,7 +81,7 @@ class ZipZapZopTask:
                 label = "Human" if record.actor == "human" else "Assistant"
                 turn_number = record.number if record.number is not None else "?"
                 history_lines.append(f"{label} at {turn_number}: {record.response}")
-            user_content = "Recent turns:\n" + "\n".join(history_lines) + f"\nYour turn. {number}:"
+            user_content = "Recent turns:\n" + "\n".join(history_lines) + f"\nCurrent number: {number}\nAnswer:"
 
         return [
             {"role": "system", "content": self.rules_prompt(with_human_context=True)},
@@ -163,7 +163,7 @@ class ZipZapZopTask:
         if with_human_context:
             prefix = "You are playing Zip-Zap-Zop with a human."
         return (
-            f"{prefix} Respond with only the next value. "
+            f"{prefix} Respond with only the value for the current number shown by the user. "
             "Multiples of 3 are Zip, multiples of 4 are Zap, multiples of 5 are Zop, "
             "and combined multiples concatenate those words. Otherwise respond with the number."
         )

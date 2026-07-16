@@ -94,7 +94,9 @@ if cfg.metronome_enabled:
 
 | `app_config.inference.type` | 返回类 | 备注 |
 |---|---|---|
-| `"http"` | `HttpInferenceClient` | 使用 `server_generate_url`、`timeout_s`，并透传 `model_name`、`inference_mode`、`generation_interval_ticks`、`checkpoint_path` |
+| `"http"` | `HttpInferenceClient` | 使用 `server_generate_url`、`timeout_s`，并透传 `model_name`、`inference_mode`、`generation_interval_ticks`、`checkpoint_path`、有效 model-condition BPM |
 | `"stanley"` | `StanleyInferenceEngine` | 需要 `checkpoint_path` 非空 |
 
 HTTP 模式是 Lekai server 和 fake server 的主路径；本地 Stanley 模式不需要 HTTP server。
+
+有效 model-condition BPM 优先取 `InferenceConfig.model_condition_bpm`；未显式配置时才回退到 `TempoConfig.bpm`。需要改变 playback 速度而固定模型条件的实验必须显式设置前者。

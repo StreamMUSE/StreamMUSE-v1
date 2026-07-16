@@ -64,6 +64,8 @@ def test_beats_to_pianoroll_roundtrip_real_beat():
 
 
 def test_generate_from_beats_allows_empty_part0_prompt(monkeypatch):
+    captured = {}
+
     class _FakeModel:
         def eval(self):
             return None
@@ -78,9 +80,13 @@ def test_generate_from_beats_allows_empty_part0_prompt(monkeypatch):
 
             return _Output(input_ids.shape[1])
 
+    def _sample(*args, **kwargs):
+        captured["generator"] = kwargs.get("generator")
+        return torch.tensor([[169]], dtype=torch.long)
+
     monkeypatch.setattr(
         "streammuse.infrastructure.inference.lekai_model.generation_utils.sample_token",
-        lambda *args, **kwargs: torch.tensor([[169]], dtype=torch.long),
+        _sample,
     )
 
     adapter = PianoLLaMAAdapter(
@@ -89,10 +95,13 @@ def test_generate_from_beats_allows_empty_part0_prompt(monkeypatch):
         device="cpu",
     )
 
+    generator = torch.Generator(device="cpu").manual_seed(123)
     beats = adapter.generate_from_beats(
         part0_beats=[],
         num_beats_to_generate=2,
+        generator=generator,
     )
 
     assert len(beats) == 2
     assert all(len(beat) >= 1 for beat in beats)
+    assert captured["generator"] is generator

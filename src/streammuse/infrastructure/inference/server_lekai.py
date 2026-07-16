@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from streammuse.infrastructure.inference.lekai_http_backend import EventPayload, LekaiHttpBackend
+from streammuse.infrastructure.inference.lekai_http_backend import (
+    EventPayload,
+    LekaiHttpBackend,
+    SessionStateError,
+)
 
 
 class MelodyNoteEvent(BaseModel):
     type: str
     pitch: int
     tick: int
+    velocity: int = 100
+    channel: int = 0
+    program: int = 0
+    is_placeholder: bool = False
 
 
 class AccompanimentNoteEvent(BaseModel):
@@ -34,6 +43,9 @@ class InferenceRequest(BaseModel):
     client_request_send_time: Optional[float] = None
     bpm: Optional[int] = None
     input_file: Optional[str] = None  # 输入文件名，用于日志记录
+    session_id: Optional[str] = None
+    session_epoch: Optional[int] = None
+    request_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class Timings(BaseModel):
@@ -49,6 +61,19 @@ class AccompanimentResponse(BaseModel):
     accompaniment: List[AccompanimentNoteEvent]
     timings: Timings
     generation_start_tick: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResetSessionRequest(BaseModel):
+    seed: int
+
+
+class ResetSessionResponse(BaseModel):
+    success: bool
+    session_id: str
+    session_epoch: int
+    effective_seed: int
+    pending_boundary_generations: int
 
 
 class DirectInjectionRequest(BaseModel):
@@ -77,6 +102,10 @@ class InjectionStatusResponse(BaseModel):
     injection_length_ticks: int
     runtime_model_name: str
     runtime_inference_mode: str
+    generation_interval_ticks: Optional[int] = None
+    generation_length_frames: Optional[int] = None
+    prompt_length_ticks: Optional[int] = None
+    ticks_per_beat: int
 
 
 class RuntimeInfoResponse(BaseModel):
@@ -92,6 +121,38 @@ class RuntimeInfoResponse(BaseModel):
     use_cache: bool
     runtime_model_name: str
     runtime_inference_mode: str
+    generation_interval_ticks: Optional[int] = None
+    generation_length_frames: Optional[int] = None
+    prompt_length_ticks: Optional[int] = None
+    ticks_per_beat: int
+    checkpoint_sha256: Optional[str] = None
+    source_sha256: str
+    code_identity: str
+    effective_bpm: int
+    temperature: float
+    top_k: int
+    top_p: float
+    repetition_penalty: float
+    prompt_context_beats: int
+    history_retention_ticks: int
+    max_generation_length_frames: Optional[int] = None
+    max_prompt_ticks: Optional[int] = None
+    time_signature_index: int
+    sample_seed: int
+    session_id: Optional[str] = None
+    session_epoch: int
+    accepting_requests: bool
+    pending_boundary_generations: int
+    boundary_generation_order: str
+
+
+def _debug_reset_enabled() -> bool:
+    return os.environ.get("LEKAI_ENABLE_DEBUG_RESET", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _validate_lekai_constraints(model_name: str, generation_length_frames: int) -> None:
@@ -120,22 +181,36 @@ async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResp
     )
 
     melody_payload: List[EventPayload] = [
-        {"type": note.type, "pitch": int(note.pitch), "tick": int(note.tick)}
+        {
+            "type": note.type,
+            "pitch": int(note.pitch),
+            "tick": int(note.tick),
+            "velocity": int(note.velocity),
+            "channel": int(note.channel),
+            "program": int(note.program),
+            **({"is_placeholder": True} if note.is_placeholder else {}),
+        }
         for note in request.melody_notes
     ]
 
-    accompaniment, timings = backend.generate(
-        melody_events=melody_payload,
-        generation_start_tick=int(request.generation_start_tick),
-        generation_length_frames=int(request.generation_length_frames),
-        generation_interval_ticks=int(request.generation_interval_ticks),
-        prompt_length_ticks=(int(request.prompt_length_ticks) if request.prompt_length_ticks is not None else None),
-        inference_mode=request.inference_mode,
-        model_name=request.model_name,
-        checkpoint_path=request.checkpoint_path,
-        bpm=request.bpm,
-        input_file=request.input_file,
-    )
+    try:
+        accompaniment, timings = backend.generate(
+            melody_events=melody_payload,
+            generation_start_tick=int(request.generation_start_tick),
+            generation_length_frames=int(request.generation_length_frames),
+            generation_interval_ticks=int(request.generation_interval_ticks),
+            prompt_length_ticks=(int(request.prompt_length_ticks) if request.prompt_length_ticks is not None else None),
+            inference_mode=request.inference_mode,
+            model_name=request.model_name,
+            checkpoint_path=request.checkpoint_path,
+            bpm=request.bpm,
+            input_file=request.input_file,
+            session_id=request.session_id,
+            session_epoch=request.session_epoch,
+            request_id=request.request_id,
+        )
+    except SessionStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     response_events = [
         AccompanimentNoteEvent(
@@ -151,13 +226,36 @@ async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResp
         accompaniment=response_events,
         timings=Timings(**timings),
         generation_start_tick=int(request.generation_start_tick),
+        metadata=backend.consume_generation_metadata(request.request_id),
     )
+
+
+@app.post("/debug/reset_session", response_model=ResetSessionResponse)
+async def reset_session(request: ResetSessionRequest) -> ResetSessionResponse:
+    if not _debug_reset_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "debug session reset is disabled; set "
+                "LEKAI_ENABLE_DEBUG_RESET=true only on a dedicated local server"
+            ),
+        )
+    result = backend.reset_session(seed=int(request.seed))
+    return ResetSessionResponse(**result)
 
 
 @app.post("/inject_notes", response_model=DirectInjectionResponse)
 async def inject_notes(request: DirectInjectionRequest) -> DirectInjectionResponse:
     melody_payload: List[EventPayload] = [
-        {"type": note.type, "pitch": int(note.pitch), "tick": int(note.tick)}
+        {
+            "type": note.type,
+            "pitch": int(note.pitch),
+            "tick": int(note.tick),
+            "velocity": int(note.velocity),
+            "channel": int(note.channel),
+            "program": int(note.program),
+            **({"is_placeholder": True} if note.is_placeholder else {}),
+        }
         for note in request.melody_notes
     ]
     accompaniment_payload: List[EventPayload] = [
@@ -204,6 +302,10 @@ async def injection_status() -> InjectionStatusResponse:
         injection_length_ticks=int(result["injection_length_ticks"]),
         runtime_model_name=str(result["runtime_model_name"]),
         runtime_inference_mode=str(result["runtime_inference_mode"]),
+        generation_interval_ticks=result["generation_interval_ticks"],
+        generation_length_frames=result["generation_length_frames"],
+        prompt_length_ticks=result["prompt_length_ticks"],
+        ticks_per_beat=int(result["ticks_per_beat"]),
     )
 
 
@@ -223,6 +325,29 @@ async def runtime_info() -> RuntimeInfoResponse:
         use_cache=bool(result["use_cache"]),
         runtime_model_name=str(result["runtime_model_name"]),
         runtime_inference_mode=str(result["runtime_inference_mode"]),
+        generation_interval_ticks=result["generation_interval_ticks"],
+        generation_length_frames=result["generation_length_frames"],
+        prompt_length_ticks=result["prompt_length_ticks"],
+        ticks_per_beat=int(result["ticks_per_beat"]),
+        checkpoint_sha256=result["checkpoint_sha256"],
+        source_sha256=str(result["source_sha256"]),
+        code_identity=str(result["code_identity"]),
+        effective_bpm=int(result["effective_bpm"]),
+        temperature=float(result["temperature"]),
+        top_k=int(result["top_k"]),
+        top_p=float(result["top_p"]),
+        repetition_penalty=float(result["repetition_penalty"]),
+        prompt_context_beats=int(result["prompt_context_beats"]),
+        history_retention_ticks=int(result["history_retention_ticks"]),
+        max_generation_length_frames=result["max_generation_length_frames"],
+        max_prompt_ticks=result["max_prompt_ticks"],
+        time_signature_index=int(result["time_signature_index"]),
+        sample_seed=int(result["sample_seed"]),
+        session_id=result["session_id"],
+        session_epoch=int(result["session_epoch"]),
+        accepting_requests=bool(result["accepting_requests"]),
+        pending_boundary_generations=int(result["pending_boundary_generations"]),
+        boundary_generation_order=str(result["boundary_generation_order"]),
     )
 
 

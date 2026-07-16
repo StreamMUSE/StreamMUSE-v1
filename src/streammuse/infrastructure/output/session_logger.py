@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -37,6 +38,10 @@ class SessionLoggerOutputSink:
         self._beats_per_bar = int(beats_per_bar)
         self._schedule_trace_path = self.session_dir / "model_schedule_trace.jsonl"
         self._theoretical_midi_path = self.session_dir / "theoretical_model.mid"
+        self._theoretical_summary_path = self.session_dir / "theoretical_model_summary.json"
+        self._lifecycle_path = self.session_dir / "request_lifecycle.jsonl"
+        self._validity_path = self.session_dir / "validity.json"
+        self._artifact_lock = threading.Lock()
 
         self.midi_sink: Optional[MidiFileOutputSink] = None
         self.json_sink: Optional[JsonLoggerOutputSink] = None
@@ -136,12 +141,39 @@ class SessionLoggerOutputSink:
             for row in rows:
                 f.write(json.dumps(row, sort_keys=True) + "\n")
 
+    def log_request_lifecycle(self, row: Dict[str, Any]) -> None:
+        if self.json_sink:
+            self.json_sink.log_request_lifecycle(row)
+            return
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self._artifact_lock:
+            with self._lifecycle_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(dict(row), sort_keys=True) + "\n")
+
+    def finalize_validity(self, summary: Dict[str, Any]) -> None:
+        if self.json_sink:
+            self.json_sink.finalize_validity(summary)
+            return
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._validity_path.with_suffix(".json.tmp")
+        with self._artifact_lock:
+            tmp_path.write_text(
+                json.dumps(dict(summary), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            tmp_path.replace(self._validity_path)
+
     def _write_theoretical_model_midi(self) -> None:
-        if not self.include_midi or not self._schedule_trace_path.exists():
+        if not self.include_midi:
             return
 
         events: list[MusicalEvent] = []
-        for line in self._schedule_trace_path.read_text(encoding="utf-8").splitlines():
+        trace_lines = (
+            self._schedule_trace_path.read_text(encoding="utf-8").splitlines()
+            if self._schedule_trace_path.exists()
+            else []
+        )
+        for line in trace_lines:
             if not line.strip():
                 continue
             try:
@@ -166,9 +198,6 @@ class SessionLoggerOutputSink:
                 )
             )
 
-        if not events:
-            return
-
         events.sort(key=lambda event: (
             int(event.tick),
             0 if event.event_type == EventType.NOTE_OFF else 1,
@@ -190,6 +219,20 @@ class SessionLoggerOutputSink:
         for event in events:
             sink.output_event(event, "model")
         sink.close()
+        self._theoretical_summary_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event_count": len(events),
+                    "empty": not events,
+                    "midi_path": self._theoretical_midi_path.name,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     def save_metrics(self, session_config: Dict[str, Any]) -> None:
         self._session_config = dict(session_config)

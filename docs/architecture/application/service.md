@@ -45,6 +45,8 @@ def __init__(
     count_in_beats: int = 0,
     now: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    drain_timeout_seconds: float = 10.0,
 ) -> None:
 ```
 
@@ -60,6 +62,8 @@ def __init__(
 | `count_in_beats` | `int` | `0` | 正式输入和推理前空转的拍数，必须 ≥ 0 |
 | `now` | `Callable[[], float]` | `time.time` | 时间获取函数，测试中可替换 |
 | `sleep` | `Callable[[float], None]` | `time.sleep` | 睡眠函数，测试中可替换 |
+| `monotonic` | `Callable[[], float]` | `time.monotonic` | drain hard-timeout 使用的单调时钟 |
+| `drain_timeout_seconds` | `float` | `10.0` | 停止生产后等待 request/in-flight/response 清空的上限 |
 
 初始化时会计算：
 
@@ -74,7 +78,7 @@ self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
 
 当前实时推理流程可以按以下顺序理解：
 
-1. `start()` 设置 `_running=True`，记录 `session_start_time` 和 `timeline_start_time`。
+1. `start()` 进入 `accepting_requests`，记录 `session_start_time` 和 `timeline_start_time`。
 2. 启动 `_input_worker`、`_tick_loop`、`_inference_worker` 三个 daemon 线程。
 3. `_tick_loop` 先执行 `_run_count_in()`：只输出 metronome tick，不读取正式输入队列，不发送推理请求。
 4. `_input_worker` 睡到 `timeline_start_time` 后才开始读取 input source；读到的事件按正式时间线打 `tick>=0`。
@@ -93,12 +97,12 @@ if tick == 0:
     with self._melody_history_lock:
         notes_for_request = self._melody_history.copy()
     if notes_for_request:
-        self._inference_request_queue.put((0, notes_for_request))
+        self._enqueue_inference_request(0, notes_for_request)
 
 # Beat tail (tick 4n-1, n≥1): always send for next beat.
 ticks_per_beat = self._tempo.ticks_per_beat
 if tick > 0 and (tick % ticks_per_beat) == (ticks_per_beat - 1):
-    self._inference_request_queue.put((tick + 1, notes_for_next_request))
+    self._enqueue_inference_request(tick + 1, notes_for_next_request)
     notes_for_next_request = []
 ```
 
@@ -196,29 +200,41 @@ while True:
 
 ---
 
-## `start(*, max_ticks=None) -> None`
+## `start(...)` 的 horizon 与 drain 语义
 
 ```python
-def start(self, *, max_ticks: Optional[int] = None) -> None:
+def start(
+    self,
+    *,
+    max_ticks: int | None = None,       # run_stop_tick 的兼容别名
+    run_stop_tick: int | None = None,
+    analysis_end_tick: int | None = None,
+    last_input_note_off_tick: int | None = None,
+    request_cutoff_tick: int | None = None,
+    drain_timeout_seconds: float | None = None,
+) -> None:
 ```
 
-启动服务：
+三个 horizon 不可互换：
 
-1. 设置 `_running = True`。
-2. 创建 `RealTimeServiceRuntime(session_start_time, timeline_start_time)`。
-3. 调用 `output_sink.output_status("running", "")`。
-4. 启动三个 daemon 线程。
+- `analysis_end_tick` 是分析窗口的 **exclusive** 右端点。
+- `request_cutoff_tick` 是允许发送的最后一个、beat-aligned `generation_start_tick`，是 **inclusive**；未显式给出时由 `floor((analysis_end_tick-1)/ticks_per_beat)*ticks_per_beat` 推导。
+- `run_stop_tick`（旧名 `max_ticks`）是 tick/playback 循环的 **exclusive** 右端点，必须严格晚于 request cutoff。
+- `last_input_note_off_tick` 不参与隐式猜测，只记录到 validity；CLI 可用它与 `tail_beats` 按 `ceil(note_off/beat)+tail` 显式推导 run stop。
 
 `start()` 是非阻塞的；CLI 通过 `while service.running: time.sleep(0.1)` 保持主线程存活。
+
+状态机为 `accepting_requests -> draining -> stopped`。达到 request cutoff 后不再 enqueue，但 tick loop 仍可消费 response 和播放已调度 note-off；到 run stop 或显式 stop 后，sentinel 让 worker 在已排队请求处理完后退出。request queue、in-flight 和 response queue 全空才算 drain 成功；超时会在 validity 中永久记为 invalid。
 
 ---
 
 ## `stop() -> None`
 
-停止服务：
+`stop()` 幂等。它先停止生产并进入 drain，关闭 input 以解除阻塞，等待 worker sentinel、queued/in-flight response 和 tick consumer，然后才写最终 verdict、关闭 output；重复调用不会重复关闭 sink。
 
-1. 设置 `_running = False`。
-2. 向 `_inference_request_queue` 放入 dummy 条目唤醒 inference worker。
-3. 调用 `input_source.close()`。
-4. 调用 `output_sink.output_status("stopped", "")` 和 `output_sink.close()`。
-5. Best-effort join 三个线程。
+`output-type=session` 且 debug artifact tier 下会固定生成：
+
+- `request_lifecycle.jsonl`：逐请求 `expected/enqueued/started/succeeded/failed/processed`，以及 stale drop、HTTP error、digest 和 response metadata；
+- `validity.json`：独立的 `content.valid` 与 `operational.valid`、pending-at-stop 和 horizon；
+- `model_schedule_trace.jsonl`：logical/scheduled tick、late/clamp/drop/forced note-off；
+- `theoretical_model.mid` 与 `theoretical_model_summary.json`：成功空响应也生成合法空 MIDI，并以 `empty=true` 区分于请求失败。

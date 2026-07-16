@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import queue
+import threading
 import time
 from types import SimpleNamespace
 
@@ -632,3 +635,447 @@ def test_tick_loop_forces_note_off_when_clear_removes_active_future_off() -> Non
     ]
     assert any(row["policy"] == "forced_note_off" and row["scheduled_tick"] == 0 for row in trace_rows)
     assert any(row["policy"] == "future_note" for row in trace_rows)
+
+
+class _LifecycleOutput(NoopOutput):
+    def __init__(self) -> None:
+        self.lifecycle_rows = []
+        self.validity = None
+        self.close_count = 0
+
+    def log_request_lifecycle(self, row):
+        self.lifecycle_rows.append(dict(row))
+
+    def finalize_validity(self, summary):
+        self.validity = dict(summary)
+
+    def close(self):
+        self.close_count += 1
+
+
+class _EmptyInference(NoopInference):
+    def generate_accompaniment(self, *args, **kwargs):
+        _ = args, kwargs
+        return [], TimingInfo(
+            request_arrival_time=0.0,
+            response_output_time=0.0,
+            preprocess_start_time=0.0,
+            inference_start_time=0.0,
+            inference_end_time=0.0,
+            postprocess_start_time=0.0,
+        )
+
+
+def _wait_until_stopped(service: RealTimeMusicService, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while service.running and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert not service.running
+
+
+def test_managed_run_uses_inclusive_request_cutoff_and_drains_last_request() -> None:
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    # analysis_end=5 derives cutoff=4. The tick-3 tail request is accepted;
+    # the tick-7 request is not produced and run_stop=8 remains exclusive.
+    service.start(run_stop_tick=8, analysis_end_tick=5)
+    _wait_until_stopped(service)
+    service.stop()
+
+    assert output.validity is not None
+    content = output.validity["content"]
+    assert content["valid"] is True
+    assert content["request_count"] == 1
+    assert content["empty_success"] is True
+    assert content["request_tick_contract_valid"] is True
+    assert content["planned_generation_start_ticks"] == [4]
+    assert content["actual_generation_start_ticks"] == [4]
+    assert content["missing_generation_start_ticks"] == []
+    assert content["unexpected_generation_start_ticks"] == []
+    assert content["duplicate_generation_start_ticks"] == []
+    assert output.validity["tick_semantics"] == {
+        "analysis_end_tick": 5,
+        "analysis_end_exclusive": True,
+        "last_input_note_off_tick": None,
+        "request_cutoff_tick": 4,
+        "request_cutoff_inclusive": True,
+        "run_stop_tick": 8,
+        "run_stop_exclusive": True,
+        "last_processed_tick": 7,
+    }
+    phases = [row["event"] for row in output.lifecycle_rows]
+    assert phases.index("expected") < phases.index("started") < phases.index("succeeded")
+    assert phases.index("succeeded") < phases.index("processed") < phases.index("drain_completed")
+
+
+def test_formal_request_tick_schedule_matches_every_beat_through_cutoff() -> None:
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda duration: time.sleep(min(duration, 0.001)),
+    )
+
+    service.start(run_stop_tick=12, analysis_end_tick=9)
+    _wait_until_stopped(service)
+    service.stop()
+
+    content = output.validity["content"]
+    assert content["valid"] is True
+    assert content["planned_generation_start_ticks"] == [4, 8]
+    assert content["actual_generation_start_ticks"] == [4, 8]
+    assert content["missing_generation_start_ticks"] == []
+    assert content["unexpected_generation_start_ticks"] == []
+    assert content["duplicate_generation_start_ticks"] == []
+    assert content["analysis_request_coverage"] == 1.0
+
+
+def test_formal_tick_zero_is_based_only_on_history_known_at_start() -> None:
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=_OneEventInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda duration: time.sleep(min(duration, 0.001)),
+    )
+
+    # The input worker may publish its event before tick zero, but it was not
+    # initial/injected service history when start() froze the request schedule.
+    service.start(run_stop_tick=8, analysis_end_tick=5)
+    _wait_until_stopped(service)
+    service.stop()
+
+    content = output.validity["content"]
+    assert content["valid"] is True
+    assert content["planned_generation_start_ticks"] == [4]
+    assert content["actual_generation_start_ticks"] == [4]
+
+
+def test_formal_known_initial_history_adds_tick_zero_to_plan() -> None:
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda duration: time.sleep(min(duration, 0.001)),
+    )
+    service._melody_history = [note(60, 0)]
+
+    service.start(run_stop_tick=8, analysis_end_tick=5)
+    _wait_until_stopped(service)
+    service.stop()
+
+    content = output.validity["content"]
+    assert content["valid"] is True
+    assert content["planned_generation_start_ticks"] == [0, 4]
+    assert content["actual_generation_start_ticks"] == [0, 4]
+
+
+def test_formal_request_tick_schedule_marks_one_omitted_beat_invalid() -> None:
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda duration: time.sleep(min(duration, 0.001)),
+    )
+    enqueue = service._enqueue_inference_request
+
+    def omit_second_beat(generation_start_tick, melody_events):
+        if generation_start_tick == 8:
+            return True
+        return enqueue(generation_start_tick, melody_events)
+
+    service._enqueue_inference_request = omit_second_beat
+    service.start(run_stop_tick=12, analysis_end_tick=9)
+    _wait_until_stopped(service)
+    service.stop()
+
+    content = output.validity["content"]
+    assert content["valid"] is False
+    assert content["request_tick_contract_valid"] is False
+    assert content["planned_generation_start_ticks"] == [4, 8]
+    assert content["actual_generation_start_ticks"] == [4]
+    assert content["missing_generation_start_ticks"] == [8]
+    assert content["unexpected_generation_start_ticks"] == []
+    assert content["analysis_request_coverage"] == 0.5
+
+
+def test_analysis_end_on_beat_boundary_uses_prior_boundary_as_cutoff() -> None:
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    # analysis_end is exclusive: tick 8 is outside the analysis window, so
+    # floor((8 - 1) / 4) * 4 yields the final allowed boundary at tick 4.
+    service.start(run_stop_tick=12, analysis_end_tick=8)
+    _wait_until_stopped(service)
+    service.stop()
+
+    assert output.validity["tick_semantics"]["request_cutoff_tick"] == 4
+    content = output.validity["content"]
+    assert content["valid"] is True
+    assert content["planned_generation_start_ticks"] == [4]
+    assert content["actual_generation_start_ticks"] == [4]
+
+
+def test_formal_request_tick_contract_rejects_non_beat_generation_interval() -> None:
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=NoopOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=2,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    with pytest.raises(ValueError, match="generation_interval_ticks"):
+        service.start(run_stop_tick=8, request_cutoff_tick=4)
+
+
+def test_request_tick_gate_reports_duplicate_and_out_of_range_attempts() -> None:
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=NoopOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    service._planned_generation_start_ticks = [4]
+    service._request_cutoff_tick = 4
+    service._running = True
+
+    first = service._register_request(4, [])
+    second = service._register_request(4, [])
+    service._update_request_record(first.request_id, succeeded=True, processed=True)
+    service._update_request_record(second.request_id, succeeded=True, processed=True)
+    assert service._enqueue_inference_request(8, []) is False
+
+    content = service._build_validity_summary()["content"]
+    assert content["valid"] is False
+    assert content["actual_generation_start_ticks"] == [4, 4]
+    assert content["missing_generation_start_ticks"] == []
+    assert content["unexpected_generation_start_ticks"] == [4, 8]
+    assert content["duplicate_generation_start_ticks"] == [4]
+    assert content["rejected_generation_start_ticks"] == [8]
+
+
+def test_inference_exception_is_structured_content_failure() -> None:
+    class _FailingInference(NoopInference):
+        def generate_accompaniment(self, *args, **kwargs):
+            _ = args, kwargs
+            raise RuntimeError("HTTP 503 from model server")
+
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_FailingInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    service.start(run_stop_tick=8, request_cutoff_tick=4)
+    _wait_until_stopped(service)
+    service.stop()
+
+    assert output.validity["content"]["valid"] is False
+    assert len(output.validity["content"]["failed_request_ids"]) == 1
+    failed = next(row for row in output.lifecycle_rows if row["event"] == "failed")
+    assert failed["http_error"] is True
+    assert failed["error_type"] == "RuntimeError"
+
+
+def test_drain_timeout_marks_pending_request_invalid() -> None:
+    release = threading.Event()
+    entered = threading.Event()
+
+    class _BlockingInference(NoopInference):
+        def generate_accompaniment(self, *args, **kwargs):
+            _ = args, kwargs
+            entered.set()
+            release.wait(timeout=1.0)
+            return _EmptyInference().generate_accompaniment()
+
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_BlockingInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda duration: time.sleep(min(duration, 0.001)),
+        drain_timeout_seconds=0.02,
+    )
+
+    service.start(run_stop_tick=8, request_cutoff_tick=4)
+    assert entered.wait(timeout=1.0)
+    _wait_until_stopped(service)
+    assert output.validity["drain"]["timed_out"] is True
+    assert output.validity["content"]["valid"] is False
+    assert output.validity["content"]["pending_at_stop_request_ids"]
+    release.set()
+    service.stop()
+    assert output.close_count == 1
+
+
+def test_stop_is_idempotent_after_automatic_drain() -> None:
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_EmptyInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    service.start(run_stop_tick=8, request_cutoff_tick=4)
+    _wait_until_stopped(service)
+    service.stop()
+    service.stop()
+
+    assert output.close_count == 1
+
+
+@pytest.mark.parametrize(
+    ("corrupt_digest", "corrupt_request_id", "expected_valid"),
+    [
+        (False, False, True),
+        (True, False, False),
+        (False, True, False),
+    ],
+)
+def test_http_response_metadata_is_verified_in_content_gate(
+    corrupt_digest: bool,
+    corrupt_request_id: bool,
+    expected_valid: bool,
+) -> None:
+    def digest(value) -> str:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    class _MetadataInference(_EmptyInference):
+        _session_id = "session-1"
+        _session_epoch = 3
+        _effective_seed = 42
+
+        def __init__(self) -> None:
+            self.metadata = {}
+            self.cumulative = []
+            self.next_request_id = None
+
+        def set_next_request_id(self, request_id):
+            self.next_request_id = request_id
+
+        def generate_accompaniment(
+            self,
+            melody_events,
+            generation_start_tick,
+            generation_length_frames,
+            **kwargs,
+        ):
+            _ = generation_length_frames, kwargs
+            increment = RealTimeMusicService._canonical_event_payload(list(melody_events))
+            self.cumulative.extend(increment)
+            raw_tokens = [1, 2]
+            structural_tokens = [258]
+            self.metadata = {
+                "request_id": "stale-request" if corrupt_request_id else self.next_request_id,
+                "session_id": self._session_id,
+                "session_epoch": self._session_epoch,
+                "effective_seed": self._effective_seed,
+                "generation_start_tick": generation_start_tick,
+                "raw_tokens": raw_tokens,
+                "structural_tokens": structural_tokens,
+                "raw_token_digest": digest(
+                    {"raw": raw_tokens, "structural": structural_tokens}
+                ),
+                "prompt_token_digest": digest([]),
+                "part0_tokens": [],
+                "part0_token_digest": digest([]),
+                "input_increment_digest": "bad" if corrupt_digest else digest(increment),
+                "input_cumulative_digest": digest(self.cumulative),
+                "part0_roll_digest": digest(self.cumulative),
+                "part0_roll_shape": [2, 88, 4],
+                "part0_roll_bytes_sha256": digest([]),
+                "part0_roll_start_tick": 0,
+                "part0_roll_end_tick": 4,
+                "effective_bpm": 120,
+                "output_event_digest": digest([]),
+                "empty_success": True,
+                "context_start_tick": 0,
+            }
+            return super().generate_accompaniment()
+
+        def consume_last_response_metadata(self):
+            metadata = dict(self.metadata)
+            self.metadata = {}
+            return metadata
+
+    output = _LifecycleOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=_MetadataInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_interval_ticks=4,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    service.start(run_stop_tick=8, request_cutoff_tick=4)
+    _wait_until_stopped(service)
+    service.stop()
+
+    assert output.validity["content"]["valid"] is expected_valid
+    invalid = output.validity["content"]["metadata_invalid_request_ids"]
+    assert bool(invalid) is (corrupt_digest or corrupt_request_id)

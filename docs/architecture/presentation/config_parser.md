@@ -17,7 +17,7 @@ description: parse_args()、args_to_config()、env_to_config() 的完整参数�
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--tempo` | `120.0` | 每分钟拍数 |
+| `--tempo` | `120.0` | playback wall-clock 每分钟拍数 |
 | `--ticks-per-beat` | `4` | 每拍 tick 数 |
 | `--beats-per-bar` | `4` | 每小节拍数 |
 
@@ -61,6 +61,7 @@ description: parse_args()、args_to_config()、env_to_config() 的完整参数�
 | `--model-max-seq-len-frames` | `96` | 模型 context window 帧数 |
 | `--generation-length-frames` | `20` | 每次推理生成帧数 |
 | `--generation-interval-ticks` | `2` | 透传给 server 和日志的间隔参数 |
+| `--model-condition-bpm` | `None` | HTTP 模型 prompt 条件 BPM；未给出时回退到 playback `--tempo` |
 
 ### 运行时参数
 

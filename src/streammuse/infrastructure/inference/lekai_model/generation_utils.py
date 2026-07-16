@@ -7,6 +7,7 @@ def sample_token(
     top_k: int = 50,
     top_p: float = 0.95,
     repetition_penalty: float = 1.0,
+    generator: torch.Generator | None = None,
 ):
     """
     Apply sampling strategies to logits and return the next token.
@@ -18,6 +19,9 @@ def sample_token(
         top_k: int
         top_p: float
         repetition_penalty: float
+        generator: Explicit RNG owned by the run/session.  Passing it avoids consuming
+            PyTorch's process-global RNG and makes sampling reproducible under a fixed
+            call order.  Its device must match ``logits.device``.
     """
     # Handle temperature=0 (greedy decoding)
     if temperature == 0.0:
@@ -44,7 +48,8 @@ def sample_token(
     # Top-k sampling
     if top_k > 0:
         # Filter top_k
-        top_k_values = torch.topk(logits, top_k)[0]
+        effective_top_k = min(top_k, logits.shape[-1])
+        top_k_values = torch.topk(logits, effective_top_k)[0]
         # Use the smallest of the top_k as the threshold
         min_top_k = top_k_values[..., -1, None]
         indices_to_remove = logits < min_top_k
@@ -61,21 +66,18 @@ def sample_token(
         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
         sorted_indices_to_remove[..., 0] = 0
         
-        # Scatter sorted tensors to original indexing
-        indices_to_remove = sorted_indices[sorted_indices_to_remove]
-        # Handle batch dimension if necessary, but here we assume simple scatter works or loop
-        # For batch_size=1 it's simple. For batch > 1, we need to be careful with indexing.
-        # The original code used logits[0, indices_to_remove] = -inf, implying batch=1.
-        
-        if logits.shape[0] == 1:
-             logits[0, indices_to_remove] = -float('Inf')
-        else:
-            # Fallback or more complex implementation for batch > 1 if needed
-            # For now, let's assume batch=1 as per original context
-             logits[0, indices_to_remove] = -float('Inf')
+        # Scatter the sorted removal mask back to the vocabulary order.  This works for
+        # every batch row; the historical implementation accidentally applied all rows'
+        # indices to row zero.
+        indices_to_remove = torch.zeros_like(sorted_indices_to_remove).scatter(
+            dim=-1,
+            index=sorted_indices,
+            src=sorted_indices_to_remove,
+        )
+        logits.masked_fill_(indices_to_remove, -float('Inf'))
     
     # Sampling
     probs = torch.softmax(logits, dim=-1)
-    next_token = torch.multinomial(probs, num_samples=1)
+    next_token = torch.multinomial(probs, num_samples=1, generator=generator)
     
     return next_token

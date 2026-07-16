@@ -12,7 +12,7 @@ def test_zip_zap_zop_task_progresses_state_on_valid_response() -> None:
 
     assert turn.turn_id == 0
     assert turn.expected_output == "1"
-    assert turn.messages[-1] == {"role": "user", "content": "1:"}
+    assert turn.messages[-1] == {"role": "user", "content": "Current number: 1\nAnswer:"}
     assert result.is_valid is True
     assert result.expected_output == "1"
     assert result.failure_reason == "NONE"
@@ -56,7 +56,7 @@ def test_zip_zap_zop_interactive_messages_can_include_bounded_transcript() -> No
     assert task.build_human_prompt(state, []) == "1:"
     assert "with a human" in messages[0]["content"]
     assert "Human at 1: 1" in messages[-1]["content"]
-    assert "Your turn. 2:" in messages[-1]["content"]
+    assert "Current number: 2\nAnswer:" in messages[-1]["content"]
     assert next_state.history[-1]["role"] == "human"
     assert next_state.history[-1]["number"] == "1"
 
