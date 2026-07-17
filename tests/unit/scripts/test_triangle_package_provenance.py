@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import mido
+import numpy as np
 import pytest
 
 from streammuse.experiments.melody_robustness import (
@@ -121,6 +122,31 @@ def test_output_event_provenance_uses_wire_projection_and_rejects_wire_tampering
     inferences.write_text(json.dumps(rows, sort_keys=True), encoding="utf-8")
     with pytest.raises(ValueError, match="output_event_digest mismatch"):
         prepare._raw_token_payload_provenance(inferences)
+
+
+def test_empty_source_audio_policy_replaces_renderer_noise_with_literal_silence(
+    load_script,
+) -> None:
+    prepare = load_script("prepare_robustness_listening")
+    raw = np.array(
+        [[1.0 / 32768.0, -1.0 / 32768.0], [0.0, 2.0 / 32768.0]],
+        dtype=np.float64,
+    )
+
+    silent, empty_policy = prepare._apply_empty_source_audio_policy(
+        raw, source_empty=True
+    )
+    assert not np.any(silent)
+    assert empty_policy["literal_silence_enforced"] is True
+    assert empty_policy["renderer_raw_silent_pcm16"] is False
+    assert empty_policy["renderer_raw_true_peak_linear"] > 0
+
+    unchanged, nonempty_policy = prepare._apply_empty_source_audio_policy(
+        raw, source_empty=False
+    )
+    assert np.array_equal(unchanged, raw)
+    assert nonempty_policy["literal_silence_enforced"] is False
+    assert nonempty_policy["renderer_raw_silent_pcm16"] is False
 
 
 def test_formal_excerpt_preserves_velocity_and_reconstructs_active_notes(

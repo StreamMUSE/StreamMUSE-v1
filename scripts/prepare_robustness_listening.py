@@ -2065,6 +2065,33 @@ def _read_rendered_pcm(path: Path, *, seconds: int) -> tuple[np.ndarray, int]:
     return samples, channels
 
 
+def _apply_empty_source_audio_policy(
+    samples: np.ndarray, *, source_empty: bool
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Canonicalize empty excerpts to literal digital silence.
+
+    FluidSynth can emit a tiny deterministic noise floor even for a MIDI file
+    with no note events.  Empty generated excerpts are experimental outcomes,
+    not synthesizer-noise controls, so the frozen policy represents them as
+    literal PCM zero while retaining a measurement of the renderer's raw
+    output for provenance.  Non-empty excerpts are returned unchanged.
+    """
+
+    raw_peak = _measure_true_peak(samples)
+    raw_pcm = _quantize_pcm16(samples)
+    canonical = np.zeros_like(samples) if source_empty else samples
+    return canonical, {
+        "schema_version": (
+            "streammuse.melody_robustness.empty_source_audio_policy.v1"
+        ),
+        "source_empty": bool(source_empty),
+        "literal_silence_enforced": bool(source_empty),
+        "renderer_raw_silent_pcm16": not bool(np.any(raw_pcm)),
+        "renderer_raw_true_peak_linear": raw_peak,
+        "renderer_raw_true_peak_dbtp": _dbtp(raw_peak),
+    }
+
+
 def _write_common_protected_wavs(
     rows: Sequence[tuple[Path, np.ndarray]],
 ) -> list[dict[str, Any]]:
@@ -2394,14 +2421,20 @@ def build_triangle_package(args: argparse.Namespace) -> None:
             samples, _channels = _read_rendered_pcm(
                 raw_wav, seconds=TRIANGLE_CLIP_SECONDS
             )
+            samples, empty_audio_policy = _apply_empty_source_audio_policy(
+                samples, source_empty=bool(provenance["source_empty"])
+            )
             canonical_audio = _write_common_protected_wavs([(raw_wav, samples)])[0]
-            if not provenance["source_empty"] and canonical_audio["silent"]:
-                raise RuntimeError(f"non-empty source rendered to silence: {source_id}")
+            if canonical_audio["silent"] != bool(provenance["source_empty"]):
+                raise RuntimeError(
+                    f"canonical silence differs from empty-source policy: {source_id}"
+                )
             provenance.update(
                 {
                     "canonical_wav_path": str(raw_wav),
                     "canonical_wav_sha256": file_sha256(raw_wav),
                     "canonical_audio": canonical_audio,
+                    "empty_source_audio_policy": empty_audio_policy,
                     "render_command": render_record,
                 }
             )
@@ -2411,6 +2444,7 @@ def build_triangle_package(args: argparse.Namespace) -> None:
                     "canonical_wav_path": None,
                     "canonical_wav_sha256": None,
                     "canonical_audio": None,
+                    "empty_source_audio_policy": None,
                     "render_command": None,
                 }
             )
@@ -2995,7 +3029,7 @@ def audit_triangle_package_dir(
     renderer_identity: dict[str, Any] | None = None
     control_report_path: Path | None = None
     control_records: dict[str, Mapping[str, Any]] = {}
-    rerendered_raw_pcm: dict[str, np.ndarray] = {}
+    rerendered_canonical_pcm: dict[str, np.ndarray] = {}
     canonical_note_events: dict[str, list[dict[str, int]]] = {}
     rerendered_source_count = 0
     rerendered_pair_count = 0
@@ -3627,17 +3661,28 @@ def audit_triangle_package_dir(
                     rebuilt_pcm, _channels = _read_rendered_pcm(
                         rebuilt_wav, seconds=TRIANGLE_CLIP_SECONDS
                     )
+                    rebuilt_pcm, rebuilt_empty_policy = (
+                        _apply_empty_source_audio_policy(
+                            rebuilt_pcm,
+                            source_empty=bool(source.get("source_empty")),
+                        )
+                    )
+                    if source.get("empty_source_audio_policy") != rebuilt_empty_policy:
+                        raise ValueError(
+                            "empty-source audio policy differs from frozen re-render"
+                        )
                     _write_common_protected_wavs([(rebuilt_wav, rebuilt_pcm)])
                     if rebuilt_wav.read_bytes() != canonical_wav.read_bytes():
                         raise ValueError(
                             "canonical source WAV differs byte-for-byte from frozen re-render"
                         )
-                    rerendered_raw_pcm[source_id] = rebuilt_pcm.copy()
+                    rerendered_canonical_pcm[source_id] = rebuilt_pcm.copy()
                 rerendered_source_count += 1
         except Exception as exc:
             errors.append(f"{source_id}: canonical source provenance audit failed: {exc}")
 
-    # Rebuild every unique matched pair from the frozen renderer's raw PCM.
+    # Rebuild every unique matched pair from the frozen renderer's canonical
+    # PCM, including the explicit literal-silence policy for empty excerpts.
     # This binds pair-level common gain, private a/b.wav, presentation metadata,
     # and every blind copy to the canonical source MIDI rather than to mutable
     # hashes recorded inside the package itself.
@@ -3756,10 +3801,12 @@ def audit_triangle_package_dir(
             }
             if require_wav:
                 if (
-                    source_id_a not in rerendered_raw_pcm
-                    or source_id_b not in rerendered_raw_pcm
+                    source_id_a not in rerendered_canonical_pcm
+                    or source_id_b not in rerendered_canonical_pcm
                 ):
-                    raise ValueError("frozen raw PCM is unavailable for matched-pair rebuild")
+                    raise ValueError(
+                        "frozen canonical PCM is unavailable for matched-pair rebuild"
+                    )
                 with tempfile.TemporaryDirectory(
                     prefix="streammuse-triangle-pair-audit-"
                 ) as raw_pair_tmp:
@@ -3767,8 +3814,8 @@ def audit_triangle_package_dir(
                     rebuilt_b = Path(raw_pair_tmp) / "b.wav"
                     audio_a, audio_b = _write_common_protected_wavs(
                         [
-                            (rebuilt_a, rerendered_raw_pcm[source_id_a]),
-                            (rebuilt_b, rerendered_raw_pcm[source_id_b]),
+                            (rebuilt_a, rerendered_canonical_pcm[source_id_a]),
+                            (rebuilt_b, rerendered_canonical_pcm[source_id_b]),
                         ]
                     )
                     private_a = pair_dir / "a.wav"
