@@ -77,10 +77,10 @@ def test_offline_benchmark_records_one_trace_event_per_turn(tmp_path) -> None:
     assert len(response_trace) == 3
     assert all(set(row) == {"turn_id", "prompt", "response"} for row in response_trace)
     assert response_trace[0]["turn_id"] == 0
-    assert response_trace[0]["prompt"][-1]["content"] == "1:"
+    assert response_trace[0]["prompt"][-1]["content"] == "Current number: 1\nAnswer:"
     assert response_trace[0]["response"] == "1"
     assert response_trace[2]["turn_id"] == 2
-    assert response_trace[2]["prompt"][-1]["content"] == "3:"
+    assert response_trace[2]["prompt"][-1]["content"] == "Current number: 3\nAnswer:"
     assert response_trace[2]["response"] == "Zip"
 
     manifest_path = Path(result.output_dir) / "manifest.json"
@@ -103,14 +103,14 @@ def test_offline_benchmark_includes_recent_history_when_enabled(tmp_path) -> Non
 
     response_trace = _read_response_trace(Path(result.output_dir))
     # Turn 0 has no history yet.
-    assert response_trace[0]["prompt"][-1]["content"] == "1:"
+    assert response_trace[0]["prompt"][-1]["content"] == "Current number: 1\nAnswer:"
     # Turn 3 (number 4) sees the last 2 turns (numbers 2 and 3), not turn 1.
     prompt = response_trace[3]["prompt"][-1]["content"]
     assert prompt.startswith("Recent turns:")
     assert "Assistant at 2: 2" in prompt
     assert "Assistant at 3: Zip" in prompt
     assert "Assistant at 1: 1" not in prompt  # outside the 2-turn window
-    assert prompt.endswith("Your turn. 4:")
+    assert prompt.endswith("Current number: 4\nAnswer:")
 
 
 def test_realtime_runner_marks_deadline_miss_with_fake_clock(tmp_path) -> None:

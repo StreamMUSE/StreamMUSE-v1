@@ -13,7 +13,7 @@ description: StreamMUSE CLI 所有参数说明
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--tempo` | `float` | `120.0` | BPM（每分钟节拍数） |
+| `--tempo` | `float` | `120.0` | playback wall-clock BPM（每分钟节拍数） |
 | `--ticks-per-beat` | `int` | `4` | 每拍 tick 数（时间分辨率） |
 | `--beats-per-bar` | `int` | `4` | 每小节拍数 |
 
@@ -69,8 +69,11 @@ description: StreamMUSE CLI 所有参数说明
 | `--model-max-seq-len-frames` | `int` | `96` | — | 模型最大上下文长度（帧数） |
 | `--generation-length-frames` | `int` | `20` | — | 每次推理生成的帧数 |
 | `--generation-interval-ticks` | `int` | `2` | — | 透传给 HTTP server 和日志的间隔参数；当前客户端 tick loop 不用它决定触发时刻 |
+| `--model-condition-bpm` | `int` | `None` | — | HTTP 模型 prompt 的 BPM 条件 token；与 playback `--tempo` 独立，未指定时回退到 playback tempo |
 
 当前客户端推理触发点是 tick=0 和每拍末尾（默认 tick=3、7、11...），不是每 `generation_interval_ticks` ticks 一次。
+
+若实验要改变 wall-clock 速度但保持生成条件不变，必须同时显式给出两个参数，例如 `--tempo 60 --model-condition-bpm 120`。
 
 ---
 
@@ -79,7 +82,13 @@ description: StreamMUSE CLI 所有参数说明
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `--count-in-beats` | `int` | `0` | 正式输入和推理前空转的拍数；负数会被 clamp 到 0 |
-| `--max-ticks` | `int` | `None` | 最大运行 tick 数（主要用于测试，不设则持续运行） |
+| `--max-ticks` | `int` | `None` | `--run-stop-tick` 的兼容别名；exclusive |
+| `--analysis-end-tick` | `int` | `None` | 分析窗口 exclusive 右端点 |
+| `--last-input-note-off-tick` | `int` | `None` | 输入最后 note-off tick |
+| `--request-cutoff-tick` | `int` | `None` | 最后允许请求的 beat-aligned tick（inclusive） |
+| `--run-stop-tick` | `int` | `None` | playback/drain exclusive 右端点 |
+| `--tail-beats` | `int` | `None` | 从 last note-off 推导 run stop 的尾部拍数 |
+| `--drain-timeout-s` | `float` | `10.0` | graceful drain hard timeout |
 
 `count-in` 阶段只输出 metronome，不读取正式输入，也不发送推理请求。若启用了 metronome MIDI 录制，count-in click 会被写入 MIDI 文件开头。
 
@@ -104,6 +113,8 @@ uv run streammuse-cli \
   --server-url http://127.0.0.1:8001/generate_accompaniment \
   --generation-length-frames 4 \
   --generation-interval-ticks 4 \
+  --tempo 60 \
+  --model-condition-bpm 120 \
   --output-type console \
   --enable-metronome \
   --count-in-beats 4 \
@@ -142,7 +153,8 @@ ApplicationConfig
 ├── TempoConfig          ← --tempo, --ticks-per-beat, --beats-per-bar
 ├── InputConfig          ← --input-mode, --midi-file-path, --injection-file, ...
 ├── OutputConfig         ← --output-type, --midi-out-port, --enable-metronome, ...
-├── InferenceConfig      ← --inference-type, --server-url, --generation-length-frames, ...
+├── InferenceConfig      ← --inference-type, --server-url, --generation-length-frames,
+│                          --model-condition-bpm, ...
 └── count_in_beats       ← --count-in-beats
 ```
 

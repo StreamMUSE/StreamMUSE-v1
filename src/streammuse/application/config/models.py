@@ -56,6 +56,10 @@ class InferenceConfig:
     model_max_seq_len_frames: int = 96
     generation_length_frames: int = 20
     generation_interval_ticks: int = 2  # How often to trigger generation
+    # Model-conditioning tempo can intentionally differ from wall-clock
+    # playback tempo (for example, robustness RT playback at 60 BPM while the
+    # Lekai prompt remains conditioned at its trained 120 BPM).
+    model_condition_bpm: Optional[int] = None
 
 
 @dataclass(frozen=True)

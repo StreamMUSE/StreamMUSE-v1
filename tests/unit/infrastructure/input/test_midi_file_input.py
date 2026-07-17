@@ -115,3 +115,29 @@ def test_midi_file_input_start_tick_uses_absolute_timing(tmp_path):
 
     assert sleeps
     assert sleeps[0] == pytest.approx(16 * cfg.seconds_per_tick())
+
+
+def test_midi_file_input_parsing_time_does_not_shift_schedule(tmp_path, monkeypatch):
+    path = tmp_path / "synthetic.mid"
+    path.write_bytes(b"placeholder")
+
+    clock = [0.0]
+    sleeps = []
+    cfg = MidiFileInputConfig(bpm=120.0, ticks_per_beat=4)
+    src = MidiFileInput(
+        str(path),
+        config=cfg,
+        now=lambda: clock[0],
+        sleep=lambda delay: sleeps.append(delay),
+    )
+
+    def _parse(*args, **kwargs):
+        _ = args, kwargs
+        clock[0] = 0.2
+        return ([{"pitch": 60, "tick": 4, "duration": 1}], 4, 5)
+
+    monkeypatch.setattr(src, "_midi_to_notes", _parse)
+
+    _ = list(src.read_events())
+
+    assert sleeps[0] == pytest.approx(4 * cfg.seconds_per_tick() - 0.2)

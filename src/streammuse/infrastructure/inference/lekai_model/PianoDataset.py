@@ -5,8 +5,6 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, Sampler
 import pickle
-from pathlib import Path
-from tqdm import tqdm
 from typing import List, Dict
 from dataclasses import dataclass
 from .my_tokenizer import PianoRollTokenizer
@@ -82,6 +80,8 @@ def encode_bpm(bpm):
 class PianoDataset(Dataset):
     """支持长度感知的数据集"""
 
+    VALID_MODES = {"train", "test", "all"}
+
     def __init__(self, data_dir, config, cache_lengths=True, mode='train',
                  test_split_ratio=0.05, random_seed=42):
         """
@@ -89,7 +89,8 @@ class PianoDataset(Dataset):
             data_dir: 数据目录
             config: 模型配置
             cache_lengths: 是否使用长度缓存
-            mode: 'train' 或 'test'，决定使用训练集还是测试集
+            mode: ``train``/``test`` 使用确定性划分；``all`` 按文件名稳定排序并
+                使用目录中的全部 NPZ（推理和实验应使用该模式）
             test_split_ratio: 测试集划分比例（0-1之间）
             random_seed: 随机种子，用于可重复的数据集划分
         """
@@ -103,7 +104,10 @@ class PianoDataset(Dataset):
         self.bar_token = config.bar_token_id
         self.time_sig_offset_id = config.time_sig_offset_id
         self.bpm_offset_id = config.bpm_offset_id
-        self.mode = mode
+        self.mode = str(mode).strip().lower()
+        if self.mode not in self.VALID_MODES:
+            valid = ", ".join(sorted(self.VALID_MODES))
+            raise ValueError(f"mode must be one of {{{valid}}}, got: {mode!r}")
         self.test_split_ratio = test_split_ratio
         self.random_seed = random_seed
 
@@ -119,7 +123,12 @@ class PianoDataset(Dataset):
             img_h=88
         )
 
-        self.data_files = [f for f in os.listdir(self.root_dir) if f.endswith('.npz')]
+        # Never inherit os.listdir()'s filesystem-dependent order. In particular, an
+        # inference manifest must address the same stem on every machine and must not be
+        # silently reordered by a stale length cache.
+        self.data_files = sorted(
+            f for f in os.listdir(self.root_dir) if f.endswith(".npz")
+        )
         print(f"找到 {len(self.data_files)} 个有效的npz文件")
 
         # 预计算长度信息
@@ -130,17 +139,12 @@ class PianoDataset(Dataset):
             with open(cache_file, 'rb') as f:
                 cache_data = pickle.load(f)
                 
-            # 验证patch参数是否匹配
-            if (cache_data['patch_h'] != self.patch_h or 
-                cache_data['patch_w'] != self.patch_w):
-                raise ValueError(
-                    f"缓存的patch参数({cache_data['patch_h']}x{cache_data['patch_w']}) "
-                    f"与配置({self.patch_h}x{self.patch_w})不匹配，请重新运行precompute_lengths.py"
-                )
-            
-            self.data_files = cache_data['data_files']
-            self.file_lengths = cache_data['lengths']
-            self.sorted_indices = cache_data['sorted_indices']
+            self._validate_length_cache(cache_data, cache_file)
+
+            # Keep the freshly scanned, sorted file list. The cache is metadata about that
+            # exact list; it is never authoritative for membership or ordering.
+            self.file_lengths = list(cache_data["lengths"])
+            self.sorted_indices = list(cache_data["sorted_indices"])
             
             print(f"加载 {len(self.data_files)} 个文件的长度信息")
             
@@ -155,34 +159,77 @@ class PianoDataset(Dataset):
             self.sorted_indices = None
             print(f"找到 {len(self.data_files)} 个文件（未使用长度缓存）")
 
-        # 划分训练集和测试集
+        # 划分训练集和测试集，或者保留稳定的全集顺序
         self._split_train_test()
+
+    def _validate_length_cache(self, cache_data, cache_file: str) -> None:
+        """Fail closed when a cache does not describe the current sorted file list."""
+        if not isinstance(cache_data, dict):
+            raise ValueError(f"Invalid length cache (expected a mapping): {cache_file}")
+
+        required = {"patch_h", "patch_w", "data_files", "lengths", "sorted_indices"}
+        missing = sorted(required.difference(cache_data))
+        if missing:
+            raise ValueError(
+                f"Invalid length cache {cache_file}: missing keys {missing}; regenerate it"
+            )
+
+        if cache_data["patch_h"] != self.patch_h or cache_data["patch_w"] != self.patch_w:
+            raise ValueError(
+                f"缓存的patch参数({cache_data['patch_h']}x{cache_data['patch_w']}) "
+                f"与配置({self.patch_h}x{self.patch_w})不匹配，请重新运行precompute_lengths.py"
+            )
+
+        cached_files = [str(name) for name in cache_data["data_files"]]
+        if cached_files != self.data_files:
+            raise ValueError(
+                f"Stale length cache {cache_file}: cached NPZ file list/order does not "
+                "exactly match the current sorted directory; regenerate the cache"
+            )
+
+        lengths = list(cache_data["lengths"])
+        if len(lengths) != len(self.data_files):
+            raise ValueError(
+                f"Invalid length cache {cache_file}: {len(lengths)} lengths for "
+                f"{len(self.data_files)} files"
+            )
+        if any(not isinstance(length, (int, np.integer)) or int(length) < 0 for length in lengths):
+            raise ValueError(f"Invalid length cache {cache_file}: lengths must be non-negative integers")
+
+        sorted_indices = [int(idx) for idx in cache_data["sorted_indices"]]
+        is_permutation = sorted(sorted_indices) == list(range(len(lengths)))
+        is_length_sorted = all(
+            lengths[left] <= lengths[right]
+            for left, right in zip(sorted_indices, sorted_indices[1:])
+        )
+        if not is_permutation or not is_length_sorted:
+            raise ValueError(
+                f"Invalid length cache {cache_file}: sorted_indices are not a "
+                "length-sorted permutation"
+            )
 
     def _split_train_test(self):
         """根据mode参数划分训练集和测试集"""
         total_files = len(self.data_files)
 
-        # 设置随机种子以确保可重复性
-        np.random.seed(self.random_seed)
-
-        # 创建索引数组并打乱
-        indices = np.arange(total_files)
-        np.random.shuffle(indices)
-
-        # 计算测试集大小
-        test_size = int(total_files * self.test_split_ratio)
-        train_size = total_files - test_size
-
-        if self.mode == 'train':
-            # 使用前train_size个样本作为训练集
-            selected_indices = indices[:train_size]
-            print(f"使用训练集: {len(selected_indices)} 个文件 ({train_size}/{total_files})")
-        elif self.mode == 'test':
-            # 使用后test_size个样本作为测试集
-            selected_indices = indices[train_size:]
-            print(f"使用测试集: {len(selected_indices)} 个文件 ({test_size}/{total_files})")
+        if self.mode == "all":
+            selected_indices = np.arange(total_files)
+            print(f"使用全部数据: {total_files} 个文件（稳定排序，不切分）")
         else:
-            raise ValueError(f"mode必须是'train'或'test'，当前为: {self.mode}")
+            # Use a local RNG. Dataset construction must not perturb global NumPy state.
+            rng = np.random.RandomState(self.random_seed)
+            indices = np.arange(total_files)
+            rng.shuffle(indices)
+
+            test_size = int(total_files * self.test_split_ratio)
+            train_size = total_files - test_size
+
+            if self.mode == 'train':
+                selected_indices = indices[:train_size]
+                print(f"使用训练集: {len(selected_indices)} 个文件 ({train_size}/{total_files})")
+            else:
+                selected_indices = indices[train_size:]
+                print(f"使用测试集: {len(selected_indices)} 个文件 ({test_size}/{total_files})")
 
         # 更新data_files和相关索引
         self.data_files = [self.data_files[i] for i in selected_indices]
@@ -196,6 +243,39 @@ class PianoDataset(Dataset):
                 range(len(self.file_lengths)),
                 key=lambda i: self.file_lengths[i]
             )
+
+    def index_for_stem(self, stem: str) -> int:
+        """Resolve exactly one dataset item by filename stem."""
+        normalized = os.path.basename(str(stem))
+        if normalized.lower().endswith(".npz"):
+            normalized = normalized[:-4]
+        matches = [
+            idx for idx, filename in enumerate(self.data_files)
+            if os.path.splitext(os.path.basename(filename))[0] == normalized
+        ]
+        if not matches:
+            raise ValueError(f"No NPZ with stem {normalized!r} in {self.root_dir}")
+        if len(matches) != 1:
+            raise ValueError(f"Ambiguous NPZ stem {normalized!r}: {len(matches)} matches")
+        return matches[0]
+
+    def index_for_path(self, path: str | os.PathLike[str]) -> int:
+        """Resolve a manifest path to exactly one item in this dataset."""
+        raw_path = os.fspath(path)
+        requested = os.path.realpath(raw_path)
+        if not os.path.isabs(raw_path):
+            rooted = os.path.realpath(os.path.join(self.root_dir, raw_path))
+            requested = rooted if os.path.exists(rooted) else requested
+
+        matches = [
+            idx for idx, filename in enumerate(self.data_files)
+            if os.path.realpath(os.path.join(self.root_dir, filename)) == requested
+        ]
+        if not matches:
+            raise ValueError(f"NPZ path is not an item in this dataset: {path}")
+        if len(matches) != 1:
+            raise ValueError(f"Ambiguous NPZ path {path}: {len(matches)} matches")
+        return matches[0]
 
     def __len__(self):
         return len(self.data_files)

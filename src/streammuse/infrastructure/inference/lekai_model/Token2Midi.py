@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import pretty_midi
+from .inference_adapter import beats_to_pianoroll
 from .my_tokenizer import PianoRollTokenizer
 
 def map_piano_to_midi(piano_roll):
@@ -80,6 +81,76 @@ def process_part_beats_to_pianoroll(beats_list, tokenizer=None,
     pianoroll = tokenizer.patch_tokens_to_image(decompressed_matrix)
     print(f"Part pianoroll形状: {pianoroll.shape}")
     return pianoroll
+
+
+def _beat_token_list(beat):
+    if isinstance(beat, torch.Tensor):
+        return [int(token) for token in beat.cpu().tolist()]
+    if isinstance(beat, np.ndarray):
+        return [int(token) for token in beat.tolist()]
+    if isinstance(beat, list):
+        return [int(token) for token in beat]
+    return [int(beat)]
+
+
+def _delay_minus_one_playable_part1_beats(part0_beats, part1_beats):
+    """Map generated part1 slots onto causal playback beats.
+
+    Slot 0 is the acc_-1 primer. Before each later part0 BAR, the model first
+    predicts the accompaniment slot for that playback beat. If that prediction
+    is BAR, it is a zero-time structural transition and the slot generated
+    after the injected part0 BAR becomes the playable beat. A BAR generated
+    anywhere else remains a real empty playback beat.
+    """
+    playable = []
+    index = 1
+    while index < len(part1_beats):
+        tokens = [token for token in _beat_token_list(part1_beats[index]) if token != 258]
+        tokens = tokens or [169]
+
+        boundary_index = index + 1
+        has_boundary_slot = (
+            boundary_index < len(part0_beats)
+            and boundary_index < len(part1_beats)
+            and _beat_token_list(part0_beats[boundary_index]) == [255]
+        )
+        if has_boundary_slot:
+            boundary_tokens = [
+                token
+                for token in _beat_token_list(part1_beats[boundary_index])
+                if token != 258
+            ]
+            if tokens == [255]:
+                tokens = boundary_tokens or [169]
+            playable.append(tokens)
+            index += 2
+            continue
+
+        playable.append(tokens)
+        index += 1
+
+    return playable
+
+
+def process_delay_minus_one_part1_to_pianoroll(part0_beats, part1_beats, tokenizer=None):
+    if tokenizer is None:
+        tokenizer = PianoRollTokenizer(
+            patch_h=1,
+            patch_w=4,
+            marker_offset=81,
+            measures_length=88,
+            end_marker_part0=170,
+            end_marker_part1=171,
+            empty_marker=169,
+            img_h=88,
+        )
+
+    playable_beats = _delay_minus_one_playable_part1_beats(part0_beats, part1_beats)
+    return beats_to_pianoroll(
+        playable_beats,
+        tokenizer=tokenizer,
+        timesteps_per_beat=4,
+    )
 
 
 def pianoroll_to_midi_notes(pianoroll, tempo, velocity, track_name="Piano"):
@@ -176,12 +247,19 @@ def tokens_to_midi(result_dict, save_path="temp.mid", velocity=64, tempo=120):
         split_marker_id_2=171   # part1的end marker (虽然part0不应该有171)
     )
 
-    part1_pianoroll = process_part_beats_to_pianoroll(
-        part1_beats,
-        tokenizer=None,  # 使用默认tokenizer
-        split_marker_id_1=170,
-        split_marker_id_2=171   # part1的end marker
-    )
+    if metadata.get("delay_beats") == -1:
+        part1_pianoroll = process_delay_minus_one_part1_to_pianoroll(
+            part0_beats,
+            part1_beats,
+            tokenizer=None,
+        )
+    else:
+        part1_pianoroll = process_part_beats_to_pianoroll(
+            part1_beats,
+            tokenizer=None,  # 使用默认tokenizer
+            split_marker_id_1=170,
+            split_marker_id_2=171   # part1的end marker
+        )
 
     # 3. 对齐长度（以较长者为准）
     target_length = max(part0_pianoroll.shape[2], part1_pianoroll.shape[2])

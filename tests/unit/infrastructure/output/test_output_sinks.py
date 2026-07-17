@@ -335,6 +335,35 @@ def test_session_logger_writes_model_schedule_trace_and_theoretical_midi(tmp_pat
     assert round(note.end, 3) == 0.5
 
 
+def test_session_logger_writes_valid_empty_theoretical_midi_and_summary(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=True,
+        include_json=True,
+        bpm=120.0,
+        ticks_per_beat=4,
+    )
+    sink.log_request_lifecycle({"event": "succeeded", "empty_success": True})
+    sink.finalize_validity(
+        {
+            "content": {"valid": True, "empty_success": True},
+            "operational": {"valid": True},
+        }
+    )
+    sink.close()
+
+    theoretical_path = tmp_path / "theoretical_model.mid"
+    assert theoretical_path.exists()
+    theoretical = pretty_midi.PrettyMIDI(str(theoretical_path))
+    assert sum(len(instrument.notes) for instrument in theoretical.instruments) == 0
+    summary = json.loads((tmp_path / "theoretical_model_summary.json").read_text())
+    assert summary["event_count"] == 0
+    assert summary["empty"] is True
+    assert json.loads((tmp_path / "validity.json").read_text())["content"]["valid"] is True
+    lifecycle = json.loads((tmp_path / "request_lifecycle.jsonl").read_text())
+    assert lifecycle["empty_success"] is True
+
+
 def test_composite_output_sink_fans_out_model_schedule_trace(tmp_path):
     rows = [{"type": "note_on", "pitch": 60, "logical_tick": 0, "scheduled_tick": 0}]
     session_sink = SessionLoggerOutputSink(
@@ -348,3 +377,36 @@ def test_composite_output_sink_fans_out_model_schedule_trace(tmp_path):
     composite.close()
 
     assert json.loads((tmp_path / "model_schedule_trace.jsonl").read_text().splitlines()[0])["pitch"] == 60
+
+
+def test_composite_output_sink_fans_out_lifecycle_and_validity(tmp_path):
+    session_sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=True,
+    )
+    composite = CompositeOutputSink([session_sink])
+
+    composite.log_request_lifecycle({"event": "expected", "request_id": "req-1"})
+    composite.finalize_validity({"content": {"valid": False}})
+    composite.close()
+
+    row = json.loads((tmp_path / "request_lifecycle.jsonl").read_text())
+    assert row["request_id"] == "req-1"
+    assert json.loads((tmp_path / "validity.json").read_text())["content"]["valid"] is False
+
+
+def test_session_logger_keeps_core_validity_artifacts_without_debug_json(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+        artifact_tier="normal",
+    )
+
+    sink.log_request_lifecycle({"event": "drain_completed"})
+    sink.finalize_validity({"content": {"valid": True}})
+    sink.close()
+
+    assert json.loads((tmp_path / "request_lifecycle.jsonl").read_text())["event"] == "drain_completed"
+    assert json.loads((tmp_path / "validity.json").read_text())["content"]["valid"] is True

@@ -79,3 +79,35 @@ def test_http_factory_propagates_checkpoint_path_for_http_client():
 
     eng = InferenceEngineFactory.create(cfg)
     assert getattr(eng, "_config").checkpoint_path == "/tmp/lekai.ckpt"
+
+
+def test_http_factory_keeps_model_condition_bpm_independent_from_playback():
+    cfg = ApplicationConfig(
+        tempo=TempoConfig(bpm=60.0),
+        inference=InferenceConfig(
+            type="http",
+            server_generate_url="http://x/generate_accompaniment",
+            model_name="lekai",
+            generation_interval_ticks=4,
+            generation_length_frames=4,
+            model_condition_bpm=120,
+        ),
+    )
+
+    eng = InferenceEngineFactory.create(cfg)
+
+    assert getattr(eng, "_config").bpm == 120
+
+
+def test_http_factory_defaults_model_condition_bpm_to_playback():
+    cfg = ApplicationConfig(
+        tempo=TempoConfig(bpm=90.0),
+        inference=InferenceConfig(
+            type="http",
+            server_generate_url="http://x/generate_accompaniment",
+        ),
+    )
+
+    eng = InferenceEngineFactory.create(cfg)
+
+    assert getattr(eng, "_config").bpm == 90

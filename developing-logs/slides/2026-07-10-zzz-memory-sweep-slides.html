@@ -1,0 +1,1855 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZipZapZop Memory Sweep Slides</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5d6977;
+      --faint: #eef2f5;
+      --panel: #ffffff;
+      --line: #d7dee5;
+      --teal: #087f8c;
+      --green: #4b9f5a;
+      --gold: #c08218;
+      --red: #c95050;
+      --blue: #3b6ea8;
+      --charcoal: #263238;
+      --shadow: 0 18px 50px rgba(23, 32, 42, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #e9edf1;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      overflow: hidden;
+    }
+
+    .deck {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+    }
+
+    .slide {
+      display: none;
+      width: min(1500px, calc(100vw - 56px));
+      aspect-ratio: 16 / 9;
+      max-height: calc(100vh - 56px);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      padding: 54px 64px 58px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .slide.active {
+      display: block;
+    }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 7px;
+      background: linear-gradient(90deg, var(--teal), var(--green), var(--gold), var(--red));
+    }
+
+    .slide-title {
+      margin: 0 0 24px;
+      color: var(--ink);
+      font-size: clamp(30px, 3vw, 52px);
+      line-height: 1.06;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--teal);
+      font-size: 15px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0;
+      max-width: 900px;
+      color: var(--muted);
+      font-size: clamp(18px, 1.35vw, 26px);
+      line-height: 1.45;
+    }
+
+    .content {
+      height: calc(100% - 96px);
+      min-height: 0;
+    }
+
+    .title-slide {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 54px;
+      align-items: center;
+      height: 100%;
+    }
+
+    .title-slide h1 {
+      margin: 0 0 22px;
+      font-size: clamp(54px, 5vw, 92px);
+      line-height: 0.96;
+      letter-spacing: 0;
+    }
+
+    .title-slide .takeaway {
+      margin-top: 28px;
+      padding-left: 18px;
+      border-left: 5px solid var(--teal);
+      color: var(--charcoal);
+      font-size: 25px;
+      line-height: 1.42;
+      max-width: 760px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 6px 12px;
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      color: var(--charcoal);
+      border-radius: 6px;
+      font-size: 15px;
+      font-weight: 680;
+    }
+
+    .game-loop {
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(#ffffff, #ffffff) padding-box,
+        repeating-linear-gradient(90deg, #dbe3ea 0 1px, transparent 1px 80px),
+        repeating-linear-gradient(0deg, #dbe3ea 0 1px, transparent 1px 80px);
+      padding: 28px;
+      min-height: 420px;
+      display: grid;
+      align-content: center;
+      gap: 18px;
+    }
+
+    .loop-row {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .loop-number {
+      width: 58px;
+      height: 58px;
+      display: grid;
+      place-items: center;
+      color: white;
+      background: var(--teal);
+      border-radius: 50%;
+      font-size: 22px;
+      font-weight: 760;
+    }
+
+    .loop-answer {
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      padding: 15px 18px;
+      border-radius: 6px;
+      font-size: 22px;
+      font-weight: 720;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px;
+      align-items: start;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+
+    .question-list,
+    .bullets {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 14px;
+    }
+
+    .question-list li,
+    .bullets li {
+      border-left: 5px solid var(--teal);
+      background: #f8fafb;
+      padding: 14px 16px;
+      font-size: 22px;
+      line-height: 1.32;
+    }
+
+    .bullets.compact li {
+      font-size: 18px;
+      padding: 10px 13px;
+    }
+
+    .callout {
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      padding: 20px;
+      border-radius: 8px;
+    }
+
+    .callout strong {
+      color: var(--teal);
+    }
+
+    .big-number {
+      font-size: 58px;
+      line-height: 1;
+      font-weight: 790;
+      color: var(--teal);
+      margin-bottom: 8px;
+    }
+
+    .metric-card {
+      border: 1px solid var(--line);
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 150px;
+    }
+
+    .metric-card .label {
+      color: var(--muted);
+      font-size: 15px;
+      font-weight: 720;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .metric-card .value {
+      color: var(--ink);
+      font-size: 44px;
+      font-weight: 790;
+      margin-top: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 16px;
+      line-height: 1.25;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      color: #33414f;
+      background: #f3f6f8;
+      font-weight: 760;
+    }
+
+    td.num,
+    th.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    tr.highlight td {
+      background: #edf8f9;
+      font-weight: 720;
+    }
+
+    .small-table {
+      font-size: 14px;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 26px;
+    }
+
+    .matrix-box {
+      border: 1px solid var(--line);
+      padding: 18px;
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+
+    .matrix-box h3 {
+      margin: 0 0 14px;
+      font-size: 20px;
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: white;
+      background: var(--charcoal);
+      font-weight: 720;
+      font-size: 15px;
+    }
+
+    .chip.teal { background: var(--teal); }
+    .chip.green { background: var(--green); }
+    .chip.gold { background: var(--gold); }
+    .chip.red { background: var(--red); }
+    .chip.blue { background: var(--blue); }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .stage {
+      min-height: 110px;
+      border: 1px solid var(--line);
+      background: #fbfcfd;
+      border-radius: 8px;
+      padding: 14px;
+      position: relative;
+    }
+
+    .stage::after {
+      content: ">";
+      position: absolute;
+      right: -13px;
+      top: 42%;
+      color: var(--muted);
+      font-weight: 780;
+    }
+
+    .stage:last-child::after {
+      content: "";
+    }
+
+    .stage b {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--teal);
+      font-size: 16px;
+    }
+
+    .stage span {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.3;
+    }
+
+    .heatmap {
+      font-size: 15px;
+    }
+
+    .heat {
+      --v: 0.5;
+      background: #edf8f9;
+      background: color-mix(in srgb, #ffffff calc((1 - var(--v)) * 100%), #087f8c calc(var(--v) * 100%));
+      color: #0f1c22;
+      font-weight: 760;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bar-list {
+      display: grid;
+      gap: 11px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 190px 1fr 90px;
+      align-items: center;
+      gap: 12px;
+      min-height: 32px;
+      font-size: 15px;
+    }
+
+    .bar-track {
+      height: 20px;
+      background: #edf1f4;
+      border-radius: 5px;
+      overflow: hidden;
+      border: 1px solid #dce3e9;
+    }
+
+    .bar {
+      height: 100%;
+      width: var(--w);
+      background: var(--teal);
+      border-radius: 4px;
+    }
+
+    .bar.green { background: var(--green); }
+    .bar.gold { background: var(--gold); }
+    .bar.red { background: var(--red); }
+    .bar.blue { background: var(--blue); }
+
+    .value-tag {
+      font-weight: 760;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .note-box {
+      border: 1px solid #eccb7a;
+      background: #fff9ea;
+      padding: 16px;
+      border-radius: 8px;
+      color: #553c0f;
+      font-size: 17px;
+      line-height: 1.4;
+    }
+
+    .explorer-layout {
+      display: grid;
+      grid-template-columns: 270px 1fr;
+      gap: 24px;
+      align-items: stretch;
+      min-height: 0;
+    }
+
+    .explorer-controls {
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      border-radius: 8px;
+      padding: 18px;
+      display: grid;
+      align-content: start;
+      gap: 18px;
+    }
+
+    .control-group {
+      display: grid;
+      gap: 8px;
+    }
+
+    .control-group label,
+    .control-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    select {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid #b9c4cd;
+      background: white;
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+      font-size: 15px;
+      font-weight: 680;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .segmented button {
+      width: auto;
+      min-width: 0;
+      height: 38px;
+      padding: 0 10px;
+      border-radius: 5px;
+      box-shadow: none;
+      font-size: 13px;
+      line-height: 1.1;
+    }
+
+    .segmented button.active {
+      color: white;
+      border-color: var(--teal);
+      background: var(--teal);
+    }
+
+    .segmented button:disabled {
+      color: #89949e;
+      background: #e7ecef;
+      cursor: not-allowed;
+    }
+
+    .explorer-results {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 14px;
+    }
+
+    .explorer-summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .summary-cell {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: white;
+      padding: 12px 14px;
+    }
+
+    .summary-cell span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+      text-transform: uppercase;
+    }
+
+    .summary-cell strong {
+      display: block;
+      margin-top: 4px;
+      color: var(--ink);
+      font-size: 22px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .interactive-charts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      min-height: 0;
+    }
+
+    .chart-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px 16px;
+      background: white;
+      min-width: 0;
+    }
+
+    .chart-panel h3 {
+      margin: 0 0 12px;
+      font-size: 17px;
+    }
+
+    .interactive-bar-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .interactive-bar-row {
+      display: grid;
+      grid-template-columns: 88px 1fr 64px;
+      gap: 8px;
+      align-items: center;
+      font-size: 13px;
+    }
+
+    .interactive-bar-row .bar-track {
+      height: 18px;
+    }
+
+    .explorer-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      min-height: 36px;
+    }
+
+    .turn-trace-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 260px;
+      gap: 20px;
+      align-items: stretch;
+      min-height: 0;
+    }
+
+    .turn-chart-panel {
+      position: relative;
+      min-width: 0;
+      height: 430px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 12px 14px 10px;
+    }
+
+    .turn-chart-panel svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .turn-chart-sidebar {
+      display: grid;
+      grid-template-rows: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .turn-stat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafb;
+      padding: 13px 15px;
+    }
+
+    .turn-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+      text-transform: uppercase;
+    }
+
+    .turn-stat strong {
+      display: block;
+      margin-top: 4px;
+      color: var(--ink);
+      font-size: 27px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .turn-stat small {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .turn-chart-tooltip {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      z-index: 4;
+      min-width: 148px;
+      padding: 9px 11px;
+      border: 1px solid #b9c4cd;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.97);
+      box-shadow: 0 8px 24px rgba(23, 32, 42, 0.14);
+      color: var(--ink);
+      font-size: 12px;
+      line-height: 1.45;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .turn-chart-tooltip strong {
+      color: var(--teal);
+      font-size: 14px;
+    }
+
+    .chart-legend {
+      position: absolute;
+      top: 16px;
+      right: 20px;
+      display: flex;
+      gap: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .legend-key {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-line {
+      width: 22px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--teal);
+    }
+
+    .legend-line.gold {
+      background: var(--gold);
+    }
+
+    .legend-line.green {
+      background: var(--green);
+    }
+
+    .turn-mode-control {
+      width: 220px;
+      margin-left: auto;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .turn-mode-control button {
+      height: 32px;
+      font-size: 12px;
+    }
+
+    .live-path {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .live-stage {
+      position: relative;
+      min-height: 104px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--teal);
+      background: #f8fafb;
+    }
+
+    .live-stage::after {
+      content: ">";
+      position: absolute;
+      right: -12px;
+      top: 40%;
+      z-index: 2;
+      color: var(--muted);
+      font-size: 20px;
+      font-weight: 780;
+    }
+
+    .live-stage:last-child::after {
+      content: "";
+    }
+
+    .live-stage.issue {
+      border-top-color: var(--gold);
+      background: #fff9ea;
+    }
+
+    .live-stage.failed {
+      border-top-color: var(--red);
+      background: #fff4f4;
+    }
+
+    .live-stage span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 740;
+      text-transform: uppercase;
+    }
+
+    .live-stage strong {
+      display: block;
+      margin-top: 7px;
+      font-size: 20px;
+      line-height: 1.2;
+    }
+
+    .live-stage small {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .status-band {
+      min-height: 190px;
+      padding: 20px 22px;
+      border-left: 6px solid var(--gold);
+      background: #fff9ea;
+    }
+
+    .status-band.output {
+      border-left-color: var(--red);
+      background: #fff4f4;
+    }
+
+    .status-band .status-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 760;
+      text-transform: uppercase;
+    }
+
+    .status-band h3 {
+      margin: 6px 0 10px;
+      font-size: 28px;
+      line-height: 1.15;
+    }
+
+    .status-band p {
+      margin: 0;
+      color: var(--charcoal);
+      font-size: 17px;
+      line-height: 1.45;
+    }
+
+    .live-verdict {
+      display: grid;
+      grid-template-columns: 190px 1fr;
+      gap: 20px;
+      align-items: center;
+      margin-top: 18px;
+      padding: 14px 18px;
+      border: 1px solid #e3b7b7;
+      background: #fff7f7;
+    }
+
+    .live-verdict strong {
+      color: var(--red);
+      font-size: 20px;
+    }
+
+    .live-verdict span {
+      color: var(--charcoal);
+      font-size: 17px;
+      line-height: 1.35;
+    }
+
+    .footer {
+      position: absolute;
+      left: 64px;
+      right: 64px;
+      bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .progress {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      height: 5px;
+      width: var(--progress, 0%);
+      background: var(--teal);
+      z-index: 20;
+      transition: width 180ms ease;
+    }
+
+    .controls {
+      position: fixed;
+      right: 22px;
+      bottom: 18px;
+      display: flex;
+      gap: 8px;
+      z-index: 30;
+    }
+
+    button {
+      width: 38px;
+      height: 38px;
+      border: 1px solid #b9c4cd;
+      background: white;
+      color: var(--ink);
+      border-radius: 6px;
+      font-size: 20px;
+      font-weight: 760;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(23, 32, 42, 0.12);
+    }
+
+    button:hover {
+      background: #f3f6f8;
+    }
+
+    .kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      background: #eef3f5;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+
+    @media (max-width: 1000px) {
+      .slide {
+        padding: 36px 38px 46px;
+      }
+
+      .grid-2,
+      .matrix,
+      .title-slide,
+      .explorer-layout,
+      .interactive-charts,
+      .turn-trace-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .pipeline {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .stage::after {
+        display: none;
+      }
+
+      .footer {
+        left: 38px;
+        right: 38px;
+      }
+    }
+
+    @media print {
+      body {
+        overflow: visible;
+        background: white;
+      }
+
+      .deck {
+        display: block;
+        padding: 0;
+      }
+
+      .slide,
+      .slide.active {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        max-height: none;
+        box-shadow: none;
+        border: 0;
+        page-break-after: always;
+      }
+
+      .controls,
+      .progress {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-live="polite">
+    <section class="slide active" data-title="Realtime MIDI keyboard test">
+      <p class="eyebrow">1 / Realtime MIDI keyboard</p>
+      <h2 class="slide-title">加入 new feature 后，Input 未修复，Output 又发生 regression</h2>
+      <div class="content">
+        <div class="live-path" aria-label="Realtime MIDI keyboard test path">
+          <div class="live-stage">
+            <span>Live source</span>
+            <strong>MIDI keyboard</strong>
+            <small>实体电子琴实时输入</small>
+          </div>
+          <div class="live-stage issue">
+            <span>Input path</span>
+            <strong>New feature enabled</strong>
+            <small>输入行为仍然不正确</small>
+          </div>
+          <div class="live-stage">
+            <span>Runtime</span>
+            <strong>StreamMUSE realtime</strong>
+            <small>端到端 live path 测试</small>
+          </div>
+          <div class="live-stage failed">
+            <span>Output path</span>
+            <strong>Regression</strong>
+            <small>当前输出已经不可用</small>
+          </div>
+        </div>
+        <div class="status-grid">
+          <div class="status-band">
+            <div class="status-label">Finding 01 / Input</div>
+            <h3>Input issue 仍然存在</h3>
+            <p>新的 input handling feature 已经接入，但真实 MIDI keyboard 测试没有证明问题被解决。下一步需要把 timing、tick assignment 和 tolerance 行为分开记录并复现。</p>
+          </div>
+          <div class="status-band output">
+            <div class="status-label">Finding 02 / Output</div>
+            <h3>Output path 也崩了</h3>
+            <p>当前问题已经不只是输入质量。需要分别检查 server raw output、scheduler 结果和最终 playback，定位 regression 出现在生成还是播放链路。</p>
+          </div>
+        </div>
+        <div class="live-verdict">
+          <strong>Current status</strong>
+          <span>当前 branch 暂不适合 realtime MIDI keyboard demo，需要把 input issue 和 output regression 分开做端到端定位。</span>
+        </div>
+      </div>
+      <div class="footer"><span>Physical MIDI keyboard, realtime end-to-end test</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Game rules">
+      <p class="eyebrow">2 / Game</p>
+      <h2 class="slide-title">ZipZapZop 的规则</h2>
+      <div class="grid-2 content">
+        <ul class="bullets">
+          <li>输入当前数字 <code>N</code>。</li>
+          <li>3 的倍数输出 <code>Zip</code>。</li>
+          <li>4 的倍数输出 <code>Zap</code>。</li>
+          <li>5 的倍数输出 <code>Zop</code>。</li>
+          <li>组合倍数直接拼接；否则输出数字本身。</li>
+        </ul>
+        <div class="game-loop">
+          <div class="loop-row"><div class="loop-number">3</div><div class="loop-answer">Zip</div></div>
+          <div class="loop-row"><div class="loop-number">4</div><div class="loop-answer">Zap</div></div>
+          <div class="loop-row"><div class="loop-number">5</div><div class="loop-answer">Zop</div></div>
+          <div class="loop-row"><div class="loop-number">15</div><div class="loop-answer">ZipZop</div></div>
+        </div>
+      </div>
+      <div class="footer"><span>Task definition from <code>ZipZapZopTask</code></span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Why">
+      <p class="eyebrow">3 / Motivation</p>
+      <h2 class="slide-title">为什么做这个实验</h2>
+      <div class="grid-2 content">
+        <ul class="question-list">
+          <li>LLM 在 turn-by-turn realtime task 里到底需要看多少历史？</li>
+          <li>更长 history 是否一定更准？</li>
+          <li>更长 prompt 是否一定更慢？</li>
+          <li>模型答错后，把错误写进历史，会不会污染后续表现？</li>
+        </ul>
+        <div class="callout">
+          <div class="big-number">100</div>
+          <p class="subtitle">每个 run 100 turns。每一轮都是一次模型调用，可以测 accuracy、latency、prompt tokens 和 completion tokens。</p>
+          <div class="meta">
+            <span class="pill">history window</span>
+            <span class="pill">temperature</span>
+            <span class="pill">APC</span>
+            <span class="pill">oracle history</span>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span>Question setup</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="What we tested">
+      <p class="eyebrow">4 / Scope</p>
+      <h2 class="slide-title">这次具体测了什么</h2>
+      <div class="grid-2 content">
+        <table class="small-table">
+          <thead><tr><th>模型</th><th>类型</th><th>精度</th><th class="num">GPU</th></tr></thead>
+          <tbody>
+            <tr><td>Qwen3-8B</td><td>dense</td><td>BF16</td><td class="num">1</td></tr>
+            <tr><td>Qwen3.6-27B</td><td>dense</td><td>BF16</td><td class="num">1</td></tr>
+            <tr><td>Gemma-3-27B-it</td><td>dense</td><td>BF16</td><td class="num">1</td></tr>
+            <tr><td>Qwen3.6-35B-A3B</td><td>MoE</td><td>BF16</td><td class="num">1</td></tr>
+            <tr><td>gpt-oss-120b</td><td>MoE / reasoning</td><td>MXFP4</td><td class="num">1</td></tr>
+            <tr><td>Llama-3.3-70B</td><td>dense</td><td>BF16</td><td class="num">2</td></tr>
+            <tr><td>Qwen3-235B-A22B</td><td>MoE</td><td>FP8</td><td class="num">2</td></tr>
+          </tbody>
+        </table>
+        <div>
+          <div class="grid-2">
+            <div class="metric-card"><div class="label">Models</div><div class="value">7</div></div>
+            <div class="metric-card"><div class="label">Turns / run</div><div class="value">100</div></div>
+          </div>
+          <div class="meta" style="margin-top:18px;">
+            <span class="pill">history: 0 / 8 / 32 / all</span>
+            <span class="pill">temp: 0 / 0.7</span>
+            <span class="pill">APC on / off</span>
+            <span class="pill">normal / oracle history</span>
+            <span class="pill">gpt-oss ngram</span>
+          </div>
+          <div class="note-box" style="margin-top:18px;">本次没有对同一个模型扫不同量化。能用 BF16 的模型统一使用 BF16。</div>
+        </div>
+      </div>
+      <div class="footer"><span>7 models, 88 formal summary rows</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Matrix">
+      <p class="eyebrow">5 / Protocol</p>
+      <h2 class="slide-title">实验协议与执行流程</h2>
+      <div class="content">
+        <div class="pipeline">
+          <div class="stage"><b>Download</b><span>HF cache 与 gated model auth。</span></div>
+          <div class="stage"><b>Serve</b><span>vLLM，按模型使用 1-GPU 或 2-GPU TP。</span></div>
+          <div class="stage"><b>Smoke</b><span>先跑 3 turns，验证裸答案格式。</span></div>
+          <div class="stage"><b>Sweep</b><span>按平衡顺序执行正式 cells。</span></div>
+          <div class="stage"><b>Merge</b><span>合并 per-turn 与 summary rows。</span></div>
+          <div class="stage"><b>Filter</b><span>过滤 pilot，生成 formal results。</span></div>
+        </div>
+        <div class="grid-2" style="margin-top:24px;">
+          <div class="matrix-box">
+            <h3>正式统计口径</h3>
+            <ul class="bullets compact">
+              <li>Greedy: <code>temperature=0</code>，每个 cell 1 run。</li>
+              <li>Normal: <code>temperature=0.7, top_p=0.8</code>，每个 cell 3 runs。</li>
+              <li>Oracle 只跑 all + greedy；APC-off 只跑 recent-32 / all。</li>
+              <li>每轮保存 latency、tokens、strict / normalized 判分。</li>
+            </ul>
+          </div>
+          <div class="matrix-box">
+            <h3>模型适配与运行约束</h3>
+            <ul class="bullets compact">
+              <li>Qwen3 / Qwen3.6: <code>enable_thinking=false</code>。</li>
+              <li>gpt-oss: <code>max_tokens=512</code>，从 final content 判分。</li>
+              <li>Prompt 使用 <code>Current number: N\nAnswer:</code>。</li>
+              <li>Qwen235: 关闭 FlashInfer blockscale FP8 GEMM，显存占用设为 0.90。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span>3-turn smoke → balanced sweep → formal filtered summary</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Interactive results">
+      <p class="eyebrow">6 / Results explorer</p>
+      <h2 class="slide-title">选择模型，直接看 history 对 accuracy 和 latency 的影响</h2>
+      <div class="explorer-layout content">
+        <div class="explorer-controls">
+          <div class="control-group">
+            <label for="modelSelect">Model</label>
+            <select id="modelSelect">
+              <option value="qwen235">Qwen3-235B-FP8</option>
+              <option value="qwen8">Qwen3-8B</option>
+              <option value="qwen27">Qwen3.6-27B</option>
+              <option value="qwen35">Qwen3.6-35B-A3B</option>
+              <option value="gemma">Gemma-3-27B-it</option>
+              <option value="llama">Llama-3.3-70B</option>
+              <option value="gptoss">gpt-oss-120b</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <span class="control-label">APC</span>
+            <div class="segmented">
+              <button type="button" class="active" data-apc="on" aria-pressed="true">On</button>
+              <button type="button" data-apc="off" aria-pressed="false">Off</button>
+            </div>
+          </div>
+          <div class="control-group">
+            <span class="control-label">Output history</span>
+            <div class="segmented">
+              <button type="button" class="active" data-output-mode="normal" aria-pressed="true">Normal</button>
+              <button type="button" data-output-mode="oracle" aria-pressed="false">Fixed / Oracle</button>
+            </div>
+          </div>
+          <div class="control-group">
+            <span class="control-label">Temperature</span>
+            <div class="segmented">
+              <button type="button" class="active" data-temperature="0" aria-pressed="true">0</button>
+              <button type="button" data-temperature="0.7" aria-pressed="false">0.7</button>
+            </div>
+          </div>
+          <div class="explorer-note" id="explorerNote"></div>
+        </div>
+        <div class="explorer-results">
+          <div class="explorer-summary">
+            <div class="summary-cell"><span id="summaryLabel1">Model</span><strong id="summaryValue1"></strong></div>
+            <div class="summary-cell"><span id="summaryLabel2">Best history</span><strong id="summaryValue2"></strong></div>
+            <div class="summary-cell"><span id="summaryLabel3">Best accuracy</span><strong id="summaryValue3"></strong></div>
+          </div>
+          <div class="interactive-charts">
+            <div class="chart-panel">
+              <h3>Strict accuracy</h3>
+              <div class="interactive-bar-list" id="accuracyChart"></div>
+            </div>
+            <div class="chart-panel">
+              <h3>Median latency</h3>
+              <div class="interactive-bar-list" id="latencyChart"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span>APC-off was measured only at normal history + temp=0 + recent-32/all</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Main result">
+      <p class="eyebrow">Accuracy result</p>
+      <h2 class="slide-title">最佳正式配置</h2>
+      <div class="content">
+        <table>
+          <thead><tr><th>模型</th><th>最佳正式配置</th><th class="num">Strict acc</th><th class="num">Median latency</th></tr></thead>
+          <tbody>
+            <tr class="highlight"><td>Qwen3-235B-FP8</td><td>recent-8, temp=0</td><td class="num">1.000</td><td class="num">146.5 ms</td></tr>
+            <tr><td>Qwen3-8B</td><td>recent-32</td><td class="num">0.760</td><td class="num">24.8-30.2 ms</td></tr>
+            <tr class="highlight"><td>Qwen3.6-27B</td><td>recent-32</td><td class="num">0.960</td><td class="num">88.4-89.7 ms</td></tr>
+            <tr><td>Qwen3.6-35B-A3B</td><td>memoryless / recent-32</td><td class="num">0.890</td><td class="num">79.2-82.5 ms</td></tr>
+            <tr><td>Gemma-3-27B-it</td><td>memoryless</td><td class="num">0.820</td><td class="num">82.0 ms</td></tr>
+            <tr><td>Llama-3.3-70B</td><td>recent-8</td><td class="num">0.730</td><td class="num">99.9 ms</td></tr>
+            <tr class="highlight"><td>gpt-oss-120b</td><td>多数档位</td><td class="num">1.000</td><td class="num">507.8-601.8 ms</td></tr>
+          </tbody>
+        </table>
+        <div class="note-box" style="margin-top:18px;">gpt-oss 的 latency 是 reasoning-mode total latency；不要和 8-token 短输出模型直接做纯速度结论。</div>
+      </div>
+      <div class="footer"><span>Best formal non-oracle APC-on rows</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="100-turn latency trace">
+      <p class="eyebrow">Single-game trace</p>
+      <h2 class="slide-title">一局 100 轮，APC on / off latency</h2>
+      <div class="content">
+        <div class="meta" style="margin-top:0; margin-bottom:12px;">
+          <span class="pill">Qwen3.6-27B</span>
+          <span class="pill">normal self-history</span>
+          <span class="pill">all history</span>
+          <span class="pill">temperature 0</span>
+          <div class="turn-mode-control segmented" role="group" aria-label="APC chart mode">
+            <button type="button" class="active" data-turn-apc="off" aria-pressed="true">Off</button>
+            <button type="button" data-turn-apc="on" aria-pressed="false">On</button>
+            <button type="button" data-turn-apc="both" aria-pressed="false">Both</button>
+          </div>
+        </div>
+        <div class="turn-trace-layout">
+          <div class="turn-chart-panel">
+            <div class="chart-legend" id="turnChartLegend" aria-hidden="true"></div>
+            <svg id="turnLatencyChart" viewBox="0 0 1000 420" role="img" aria-label="Qwen3.6-27B 单局 100 轮 APC on off latency 折线图"></svg>
+            <div class="turn-chart-tooltip" id="turnLatencyTooltip"></div>
+          </div>
+          <div class="turn-chart-sidebar">
+            <div class="turn-stat"><span id="turnStatLabel1">Median latency</span><strong id="turnStatValue1">105.0 ms</strong><small id="turnStatDetail1">100 turns</small></div>
+            <div class="turn-stat"><span id="turnStatLabel2">P95 latency</span><strong id="turnStatValue2">145.7 ms</strong><small id="turnStatDetail2">max 170.2 ms</small></div>
+            <div class="turn-stat"><span id="turnStatLabel3">Turns 81-100</span><strong id="turnStatValue3">130.8 ms</strong><small id="turnStatDetail3">after 784-token boundary</small></div>
+            <div class="turn-stat"><span id="turnStatLabel4">Accuracy</span><strong id="turnStatValue4">95%</strong><small id="turnStatDetail4">normal self-history</small></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span id="turnChartFooterNote">APC off baseline; hover the chart for exact turn values</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="History accuracy">
+      <p class="eyebrow">Memory window</p>
+      <h2 class="slide-title">History 更长不一定更准</h2>
+      <div class="content">
+        <table class="heatmap">
+          <thead><tr><th>模型, temp=0</th><th class="num">memoryless</th><th class="num">recent-8</th><th class="num">recent-32</th><th class="num">all</th></tr></thead>
+          <tbody>
+            <tr><td>Qwen3-235B-FP8</td><td class="heat" style="--v:.93">0.93</td><td class="heat" style="--v:1">1.00</td><td class="heat" style="--v:.99">0.99</td><td class="heat" style="--v:.94">0.94</td></tr>
+            <tr><td>Qwen3-8B</td><td class="heat" style="--v:.74">0.74</td><td class="heat" style="--v:.54">0.54</td><td class="heat" style="--v:.76">0.76</td><td class="heat" style="--v:.68">0.68</td></tr>
+            <tr><td>Qwen3.6-27B</td><td class="heat" style="--v:.93">0.93</td><td class="heat" style="--v:.95">0.95</td><td class="heat" style="--v:.96">0.96</td><td class="heat" style="--v:.95">0.95</td></tr>
+            <tr><td>Qwen3.6-35B-A3B</td><td class="heat" style="--v:.89">0.89</td><td class="heat" style="--v:.88">0.88</td><td class="heat" style="--v:.89">0.89</td><td class="heat" style="--v:.82">0.82</td></tr>
+            <tr><td>Gemma-3-27B-it</td><td class="heat" style="--v:.82">0.82</td><td class="heat" style="--v:.75">0.75</td><td class="heat" style="--v:.81">0.81</td><td class="heat" style="--v:.81">0.81</td></tr>
+            <tr><td>Llama-3.3-70B</td><td class="heat" style="--v:.62">0.62</td><td class="heat" style="--v:.73">0.73</td><td class="heat" style="--v:.64">0.64</td><td class="heat" style="--v:.58">0.58</td></tr>
+            <tr><td>gpt-oss-120b</td><td class="heat" style="--v:1">1.00</td><td class="heat" style="--v:1">1.00</td><td class="heat" style="--v:1">1.00</td><td class="heat" style="--v:1">1.00</td></tr>
+          </tbody>
+        </table>
+        <div class="grid-3" style="margin-top:20px;">
+          <div class="metric-card"><div class="label">Qwen235 best</div><div class="value">recent-8</div></div>
+          <div class="metric-card"><div class="label">Qwen3.6-27B best</div><div class="value">recent-32</div></div>
+          <div class="metric-card"><div class="label">Risk</div><div class="value">all</div></div>
+        </div>
+      </div>
+      <div class="footer"><span>Strict accuracy, formal rows, temp=0</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Latency">
+      <p class="eyebrow">Latency</p>
+      <h2 class="slide-title">最佳配置下的 median latency</h2>
+      <div class="content">
+        <div class="bar-list">
+          <div class="bar-row"><span>Qwen3-8B</span><div class="bar-track"><div class="bar green" style="--w:5%"></div></div><span class="value-tag">24.8 ms</span></div>
+          <div class="bar-row"><span>Gemma-27B</span><div class="bar-track"><div class="bar gold" style="--w:16%"></div></div><span class="value-tag">82.0 ms</span></div>
+          <div class="bar-row"><span>Qwen3.6-35B</span><div class="bar-track"><div class="bar gold" style="--w:16%"></div></div><span class="value-tag">79.2 ms</span></div>
+          <div class="bar-row"><span>Qwen3.6-27B</span><div class="bar-track"><div class="bar teal" style="--w:17%"></div></div><span class="value-tag">88.4 ms</span></div>
+          <div class="bar-row"><span>Llama-70B</span><div class="bar-track"><div class="bar gold" style="--w:20%"></div></div><span class="value-tag">99.9 ms</span></div>
+          <div class="bar-row"><span>Qwen235-FP8</span><div class="bar-track"><div class="bar teal" style="--w:29%"></div></div><span class="value-tag">146.5 ms</span></div>
+          <div class="bar-row"><span>gpt-oss-120b</span><div class="bar-track"><div class="bar red" style="--w:100%"></div></div><span class="value-tag">507.8 ms</span></div>
+        </div>
+        <div class="note-box" style="margin-top:22px;">Qwen235 是大模型但短输出下 latency 可接受。gpt-oss 高 latency 来自 reasoning/final path，需要单独解释。</div>
+      </div>
+      <div class="footer"><span>Bars normalized to gpt-oss best median latency</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="APC">
+      <p class="eyebrow">Prefix caching</p>
+      <h2 class="slide-title">APC 改写 latency 结论</h2>
+      <div class="content grid-2">
+        <div>
+          <h3>all history speedup</h3>
+          <div class="bar-list">
+            <div class="bar-row"><span>Qwen235</span><div class="bar-track"><div class="bar teal" style="--w:100%"></div></div><span class="value-tag">2.32x</span></div>
+            <div class="bar-row"><span>Llama-70B</span><div class="bar-track"><div class="bar teal" style="--w:89%"></div></div><span class="value-tag">2.06x</span></div>
+            <div class="bar-row"><span>Gemma</span><div class="bar-track"><div class="bar green" style="--w:63%"></div></div><span class="value-tag">1.45x</span></div>
+            <div class="bar-row"><span>Qwen3-8B</span><div class="bar-track"><div class="bar green" style="--w:62%"></div></div><span class="value-tag">1.43x</span></div>
+            <div class="bar-row"><span>gpt-oss</span><div class="bar-track"><div class="bar gold" style="--w:49%"></div></div><span class="value-tag">1.14x</span></div>
+          </div>
+        </div>
+        <div>
+          <h3>recent-32 speedup</h3>
+          <div class="bar-list">
+            <div class="bar-row"><span>Gemma</span><div class="bar-track"><div class="bar green" style="--w:100%"></div></div><span class="value-tag">1.23x</span></div>
+            <div class="bar-row"><span>Llama-70B</span><div class="bar-track"><div class="bar green" style="--w:99%"></div></div><span class="value-tag">1.22x</span></div>
+            <div class="bar-row"><span>gpt-oss</span><div class="bar-track"><div class="bar gold" style="--w:88%"></div></div><span class="value-tag">1.08x</span></div>
+            <div class="bar-row"><span>Qwen3-8B</span><div class="bar-track"><div class="bar gold" style="--w:85%"></div></div><span class="value-tag">1.04x</span></div>
+            <div class="bar-row"><span>Qwen235</span><div class="bar-track"><div class="bar gold" style="--w:82%"></div></div><span class="value-tag">1.01x</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span>APC-off median / APC-on median</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Oracle">
+      <p class="eyebrow">History pollution</p>
+      <h2 class="slide-title">模型自己的错误会污染 history</h2>
+      <div class="content grid-2">
+        <div class="bar-list">
+          <div class="bar-row"><span>Llama-70B</span><div class="bar-track"><div class="bar red" style="--w:100%"></div></div><span class="value-tag">+0.16</span></div>
+          <div class="bar-row"><span>Qwen3-8B</span><div class="bar-track"><div class="bar red" style="--w:56%"></div></div><span class="value-tag">+0.09</span></div>
+          <div class="bar-row"><span>Qwen3.6-35B</span><div class="bar-track"><div class="bar red" style="--w:50%"></div></div><span class="value-tag">+0.08</span></div>
+          <div class="bar-row"><span>Qwen235</span><div class="bar-track"><div class="bar gold" style="--w:31%"></div></div><span class="value-tag">+0.05</span></div>
+          <div class="bar-row"><span>Gemma</span><div class="bar-track"><div class="bar gold" style="--w:25%"></div></div><span class="value-tag">+0.04</span></div>
+          <div class="bar-row"><span>gpt-oss</span><div class="bar-track"><div class="bar green" style="--w:0%"></div></div><span class="value-tag">+0.00</span></div>
+        </div>
+        <div class="callout">
+          <div class="big-number">+0.16</div>
+          <p class="subtitle">Llama 的 oracle history 提升最大。结论：长 history 不只是信息更多，也可能把模型之前的错误持续带入后续轮次。</p>
+          <p class="subtitle" style="margin-top:16px;">Qwen3.6-27B 和 gpt-oss 对 self-history pollution 最稳。</p>
+        </div>
+      </div>
+      <div class="footer"><span>Oracle all strict acc minus normal all strict acc</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Speculative decoding">
+      <p class="eyebrow">Speculative decoding</p>
+      <h2 class="slide-title">gpt-oss ngram speculation 这次变慢</h2>
+      <div class="content grid-2">
+        <table>
+          <thead><tr><th>config</th><th class="num">baseline</th><th class="num">ngram</th><th class="num">ratio</th></tr></thead>
+          <tbody>
+            <tr><td>memoryless</td><td class="num">562.2 ms</td><td class="num">754.9 ms</td><td class="num">1.34x</td></tr>
+            <tr><td>recent-8</td><td class="num">546.3 ms</td><td class="num">792.0 ms</td><td class="num">1.45x</td></tr>
+            <tr><td>recent-32</td><td class="num">628.2 ms</td><td class="num">955.3 ms</td><td class="num">1.52x</td></tr>
+            <tr><td>all</td><td class="num">601.8 ms</td><td class="num">910.7 ms</td><td class="num">1.51x</td></tr>
+          </tbody>
+        </table>
+        <div class="callout">
+          <div class="big-number">0</div>
+          <p class="subtitle">正确性没有坏：greedy accuracy 仍然是 1.0。但 ngram speculation 对这个短答案 task 没有收益。</p>
+          <p class="subtitle" style="margin-top:16px;">下一步如果要评估 speculation，应换长文本 task 或扫 speculative 参数。</p>
+        </div>
+      </div>
+      <div class="footer"><span>gpt-oss-120b only</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Recommendations">
+      <p class="eyebrow">Recommendations</p>
+      <h2 class="slide-title">当前可执行建议</h2>
+      <div class="content grid-2">
+        <div>
+          <ul class="bullets">
+            <li>需要稳健、非 reasoning、较好 accuracy/latency 平衡：优先看 <code>Qwen3.6-27B</code>。</li>
+            <li>追求最高准确率且能接受 2 GPU：<code>Qwen3-235B-FP8</code>。</li>
+            <li>接受 reasoning latency、追求正确率：<code>gpt-oss-120b</code>。</li>
+          </ul>
+        </div>
+        <div>
+          <ul class="bullets">
+            <li>不要默认 <code>all history</code> 最好；每个 task 都需要选 history window。</li>
+            <li>报告 latency 时必须显式说明 APC 状态。</li>
+            <li>如果 history 写入模型实际输出，要同时评估 self-history pollution。</li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer"><span>Deployment-facing interpretation</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Next steps">
+      <p class="eyebrow">Next steps</p>
+      <h2 class="slide-title">下一步实验</h2>
+      <div class="content grid-2">
+        <div class="metric-card">
+          <div class="label">Ablation</div>
+          <div class="value">Quantization</div>
+          <p class="subtitle">固定同一模型，扫 BF16 / FP8 / AWQ / GPTQ，分离模型能力和量化误差。</p>
+        </div>
+        <div class="metric-card">
+          <div class="label">Measurement</div>
+          <div class="value">Clean APC</div>
+          <p class="subtitle">修复 prefix cache reset 或改成 per-config restart，重跑真正 cold-start per-run APC-on。</p>
+        </div>
+        <div class="metric-card">
+          <div class="label">Analysis</div>
+          <div class="value">Per-turn curves</div>
+          <p class="subtitle">画 turn index / prompt tokens / latency 曲线，定位长历史导致的真实成本。</p>
+        </div>
+        <div class="metric-card">
+          <div class="label">Generality</div>
+          <div class="value">More tasks</div>
+          <p class="subtitle">加入更多 game/task，验证 ZipZapZop 结论是否能泛化。</p>
+        </div>
+      </div>
+      <div class="footer"><span>Follow-up work</span><span class="counter"></span></div>
+    </section>
+  </main>
+
+  <div class="progress" aria-hidden="true"></div>
+  <div class="controls" aria-label="Slide controls">
+    <button type="button" id="prev" aria-label="Previous slide" title="Previous slide">‹</button>
+    <button type="button" id="next" aria-label="Next slide" title="Next slide">›</button>
+  </div>
+
+  <script>
+    const resultData = {
+      qwen235: {
+        label: 'Qwen3-235B-FP8',
+        temperatures: {
+          '0': { memoryless: [.93, 59.41], 'recent-8': [1, 146.5], 'recent-32': [.99, 144.3], all: [.94, 62.78] },
+          '0.7': { memoryless: [.9167, 48.75], 'recent-8': [.9933, 58.77], 'recent-32': [.9467, 59.89], all: [.94, 56.18] }
+        },
+        oracle: [.99, 62.19],
+        apcOff: { 'recent-32': [.95, 146.1], all: [.94, 145.6] }
+      },
+      qwen8: {
+        label: 'Qwen3-8B',
+        temperatures: {
+          '0': { memoryless: [.74, 24.44], 'recent-8': [.54, 31.87], 'recent-32': [.76, 30.25], all: [.68, 24.69] },
+          '0.7': { memoryless: [.7367, 24.63], 'recent-8': [.6133, 25.79], 'recent-32': [.76, 24.77], all: [.6833, 24.9] }
+        },
+        oracle: [.77, 25.04],
+        apcOff: { 'recent-32': [.76, 31.37], all: [.69, 35.22] }
+      },
+      qwen27: {
+        label: 'Qwen3.6-27B',
+        temperatures: {
+          '0': { memoryless: [.93, 88.19], 'recent-8': [.95, 88.22], 'recent-32': [.96, 89.66], all: [.95, 104.1] },
+          '0.7': { memoryless: [.9267, 87.78], 'recent-8': [.9367, 87.87], 'recent-32': [.96, 88.35], all: [.9367, 104.9] }
+        },
+        oracle: [.94, 104.3],
+        apcOff: { 'recent-32': [.95, 88.89], all: [.95, 105] }
+      },
+      qwen35: {
+        label: 'Qwen3.6-35B-A3B',
+        temperatures: {
+          '0': { memoryless: [.89, 82.45], 'recent-8': [.88, 82.05], 'recent-32': [.89, 79.18], all: [.82, 79.45] },
+          '0.7': { memoryless: [.89, 82.07], 'recent-8': [.87, 82.37], 'recent-32': [.8633, 78.37], all: [.8267, 77.84] }
+        },
+        oracle: [.90, 79.78],
+        apcOff: { 'recent-32': [.90, 81.82], all: [.84, 84.05] }
+      },
+      gemma: {
+        label: 'Gemma-3-27B-it',
+        temperatures: {
+          '0': { memoryless: [.82, 82.04], 'recent-8': [.75, 69.64], 'recent-32': [.81, 69.17], all: [.81, 66.34] },
+          '0.7': { memoryless: [.82, 82.17], 'recent-8': [.75, 67.71], 'recent-32': [.81, 65.11], all: [.8167, 66.81] }
+        },
+        oracle: [.85, 66.46],
+        apcOff: { 'recent-32': [.81, 85.13], all: [.83, 95.92] }
+      },
+      llama: {
+        label: 'Llama-3.3-70B',
+        temperatures: {
+          '0': { memoryless: [.62, 79.01], 'recent-8': [.73, 99.92], 'recent-32': [.64, 120.9], all: [.58, 92.07] },
+          '0.7': { memoryless: [.62, 68.11], 'recent-8': [.7267, 89.11], 'recent-32': [.64, 90.31], all: [.5867, 90.67] }
+        },
+        oracle: [.74, 89.74],
+        apcOff: { 'recent-32': [.64, 147.7], all: [.58, 190] }
+      },
+      gptoss: {
+        label: 'gpt-oss-120b',
+        temperatures: {
+          '0': { memoryless: [1, 562.2], 'recent-8': [1, 546.3], 'recent-32': [1, 628.2], all: [1, 601.8] },
+          '0.7': { memoryless: [1, 564.1], 'recent-8': [1, 507.8], 'recent-32': [.99, 585], all: [.9933, 634.7] }
+        },
+        oracle: [1, 614.9],
+        apcOff: { 'recent-32': [1, 676.5], all: [1, 683.7] }
+      }
+    };
+
+    const turnLatencyTrace = {
+      promptTokens: [84,96,104,111,118,126,133,141,148,156,165,175,185,195,203,213,221,231,239,249,259,267,277,287,297,306,316,324,332,342,352,362,370,378,386,395,405,415,425,433,443,453,463,473,481,491,501,511,521,531,540,548,556,566,574,583,591,599,609,619,631,641,651,659,667,676,684,694,702,710,720,730,740,750,760,770,778,788,796,806,816,824,834,844,854,863,873,881,889,899,909,919,927,935,945,954,964,974,982,991],
+      off: {
+        label: 'APC off',
+        color: '#087f8c',
+        latencyMs: [67.646,73.881,73.292,90.107,89.789,73.351,73.676,89.888,74.236,90.257,89.228,105.92,90.286,88.999,106.639,89.025,90.103,73.245,89.64,123.621,73.27,88.644,89.646,104.505,89.715,89.294,72.975,89.291,88.342,105.322,90.284,89.543,73.128,90.756,88.515,108.513,92.646,91.022,80.808,129.306,96.182,113.598,95.181,97.971,115.368,96.453,100.047,118.124,106.289,105.824,85.937,102.922,104.675,87.948,104.009,107.179,86.33,104.308,108.671,155.981,110.029,109.29,96.911,109.628,108.755,97.504,113.711,113.033,98.476,146.607,113.062,135.258,114.435,118.889,136.772,126.609,119.004,105.467,123.275,157.4,104.672,128.363,120.491,141.214,125.454,126.185,109.539,132.59,130.861,145.687,130.435,130.804,114.929,133.519,134.181,148.572,134.723,136.511,120.251,170.181]
+      },
+      on: {
+        label: 'APC on',
+        color: '#4b9f5a',
+        latencyMs: [76.389,75.691,75.826,104.647,99.732,80.789,86.859,100.583,85.74,105.209,100.286,116.615,101.62,102.701,115.638,100.814,98.692,86.886,93.785,128.67,84.823,93.883,97.462,108.229,98.313,94.851,75.662,93.462,92.334,114.342,100.579,95.785,75.068,90.906,94.463,107.534,93.586,90.532,79.706,128.193,96.834,114.835,96.206,98.203,115.629,96.654,99.954,116.7,104.275,105.513,85.581,104.326,102.754,86.683,104.015,104.086,87.434,103.513,108.117,156.758,108.803,109.878,94.815,110.385,108.994,95.987,113.113,113.091,94.741,146.484,113.239,132.187,115.658,116.216,133.178,125.023,117.75,326.579,138.063,172.398,54.06,70.564,71.209,86.409,99.17,91.753,75.772,94.431,90.115,106.986,91.348,90.153,74.197,91.762,90.937,106.323,91.879,89.813,74.716,122.976]
+      }
+    };
+
+    const turnChartStats = {
+      off: [
+        ['Median latency', '105.0 ms', '100 turns'],
+        ['P95 latency', '145.7 ms', 'max 170.2 ms'],
+        ['Turns 81-100', '130.8 ms', 'after 784-token boundary'],
+        ['Accuracy', '95%', 'normal self-history']
+      ],
+      on: [
+        ['Median latency', '98.9 ms', '100 turns'],
+        ['P95 latency', '133.2 ms', 'max 326.6 ms at turn 78 JIT'],
+        ['Turns 81-100', '90.5 ms', 'after 784-token boundary'],
+        ['Accuracy', '95%', 'same answer sequence as off']
+      ],
+      both: [
+        ['P50 off / on', '105.0 / 98.9', 'ms, 1.06x overall'],
+        ['P95 off / on', '145.7 / 133.2', 'ms, 1.09x'],
+        ['Turns 81-100', '1.44x', '130.8 → 90.5 ms'],
+        ['Output check', 'Identical', '95% accuracy in both runs']
+      ]
+    };
+
+    let turnChartMode = 'off';
+
+    function trailingAverage(values, windowSize) {
+      return values.map((_, index) => {
+        const start = Math.max(0, index - windowSize + 1);
+        const windowValues = values.slice(start, index + 1);
+        return windowValues.reduce((sum, value) => sum + value, 0) / windowValues.length;
+      });
+    }
+
+    function renderTurnLatencyChart() {
+      const svg = document.getElementById('turnLatencyChart');
+      const tooltip = document.getElementById('turnLatencyTooltip');
+      const legend = document.getElementById('turnChartLegend');
+      if (!svg || !tooltip || !legend) return;
+
+      const width = 1000;
+      const height = 420;
+      const margin = { top: 44, right: 28, bottom: 52, left: 66 };
+      const plotWidth = width - margin.left - margin.right;
+      const plotHeight = height - margin.top - margin.bottom;
+      const selected = turnChartMode === 'both'
+        ? [turnLatencyTrace.off, turnLatencyTrace.on]
+        : [turnLatencyTrace[turnChartMode]];
+      const yMin = 50;
+      const yMax = turnChartMode === 'off' ? 180 : 350;
+      const yTicks = turnChartMode === 'off'
+        ? [60, 80, 100, 120, 140, 160, 180]
+        : [50, 100, 150, 200, 250, 300, 350];
+      const xTicks = [1, 20, 40, 60, 80, 100];
+      const valueCount = turnLatencyTrace.promptTokens.length;
+      const x = (index) => margin.left + (index / (valueCount - 1)) * plotWidth;
+      const y = (value) => margin.top + ((yMax - value) / (yMax - yMin)) * plotHeight;
+      const makePath = (series) => series.map((value, index) =>
+        (index === 0 ? 'M' : 'L') + ' ' + x(index).toFixed(2) + ' ' + y(value).toFixed(2)
+      ).join(' ');
+
+      const gridLines = yTicks.map((tick) =>
+        '<line x1="' + margin.left + '" y1="' + y(tick) + '" x2="' + (width - margin.right) + '" y2="' + y(tick) + '" stroke="#e2e7eb" stroke-width="1"/>' +
+        '<text x="' + (margin.left - 12) + '" y="' + (y(tick) + 4) + '" text-anchor="end" fill="#5d6977" font-size="12">' + tick + '</text>'
+      ).join('');
+      const xLabels = xTicks.map((tick) =>
+        '<text x="' + x(tick - 1) + '" y="' + (height - 20) + '" text-anchor="middle" fill="#5d6977" font-size="12">' + tick + '</text>'
+      ).join('');
+
+      const seriesMarkup = selected.map((series) => {
+        const average = trailingAverage(series.latencyMs, 10);
+        const points = selected.length === 1
+          ? series.latencyMs.map((value, index) =>
+              '<circle cx="' + x(index) + '" cy="' + y(value) + '" r="2.2" fill="' + series.color + '" opacity="0.72"/>'
+            ).join('')
+          : '';
+        return '<path d="' + makePath(series.latencyMs) + '" fill="none" stroke="' + series.color + '" stroke-width="1.7" opacity="0.32"/>' +
+          points +
+          '<path d="' + makePath(average) + '" fill="none" stroke="' + series.color + '" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>';
+      }).join('');
+      const hoverDots = selected.map((series) =>
+        '<circle id="turnHoverDot-' + (series === turnLatencyTrace.on ? 'on' : 'off') + '" cx="0" cy="0" r="5" fill="#ffffff" stroke="' + series.color + '" stroke-width="3" visibility="hidden"/>'
+      ).join('');
+
+      svg.innerHTML =
+        gridLines +
+        xLabels +
+        '<text x="' + margin.left + '" y="19" fill="#5d6977" font-size="12">Latency (ms)</text>' +
+        '<text x="' + (margin.left + plotWidth / 2) + '" y="' + (height - 2) + '" text-anchor="middle" fill="#5d6977" font-size="12">Turn</text>' +
+        seriesMarkup +
+        '<line id="turnHoverLine" x1="0" y1="' + margin.top + '" x2="0" y2="' + (height - margin.bottom) + '" stroke="#263238" stroke-width="1" stroke-dasharray="4 4" visibility="hidden"/>' +
+        hoverDots +
+        '<rect id="turnChartHitArea" x="' + margin.left + '" y="' + margin.top + '" width="' + plotWidth + '" height="' + plotHeight + '" fill="transparent"/>';
+
+      legend.innerHTML = selected.map((series) =>
+        '<span class="legend-key"><span class="legend-line" style="height:2px;opacity:.34;background:' + series.color + '"></span>' + series.label + ' raw</span>' +
+        '<span class="legend-key"><span class="legend-line" style="height:4px;background:' + series.color + '"></span>' + series.label + ' 10-turn avg</span>'
+      ).join('');
+
+      const stats = turnChartStats[turnChartMode];
+      stats.forEach((item, index) => {
+        const n = index + 1;
+        document.getElementById('turnStatLabel' + n).textContent = item[0];
+        document.getElementById('turnStatValue' + n).textContent = item[1];
+        document.getElementById('turnStatDetail' + n).textContent = item[2];
+      });
+      const footerNotes = {
+        off: 'APC off baseline; Y-axis 50-180 ms; hover for exact turn values',
+        on: 'True APC on with align mode; Y-axis 50-350 ms; turn 78 retains a one-time JIT spike',
+        both: 'Same 100 answers; shared 50-350 ms axis; prefix cache hit rate reached 29.1%'
+      };
+      document.getElementById('turnChartFooterNote').textContent = footerNotes[turnChartMode];
+
+      document.querySelectorAll('[data-turn-apc]').forEach((button) => {
+        const active = button.dataset.turnApc === turnChartMode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+
+      const hitArea = svg.querySelector('#turnChartHitArea');
+      const hoverLine = svg.querySelector('#turnHoverLine');
+      const hoverDotBySeries = new Map(selected.map((series) => [
+        series,
+        svg.querySelector('#turnHoverDot-' + (series === turnLatencyTrace.on ? 'on' : 'off'))
+      ]));
+      hitArea.addEventListener('pointermove', (event) => {
+        const svgRect = svg.getBoundingClientRect();
+        const panelRect = svg.parentElement.getBoundingClientRect();
+        const viewX = ((event.clientX - svgRect.left) / svgRect.width) * width;
+        const ratio = Math.max(0, Math.min(1, (viewX - margin.left) / plotWidth));
+        const index = Math.round(ratio * (valueCount - 1));
+        const pointX = x(index);
+
+        hoverLine.setAttribute('x1', pointX);
+        hoverLine.setAttribute('x2', pointX);
+        hoverLine.setAttribute('visibility', 'visible');
+        selected.forEach((series) => {
+          const dot = hoverDotBySeries.get(series);
+          dot.setAttribute('cx', pointX);
+          dot.setAttribute('cy', y(series.latencyMs[index]));
+          dot.setAttribute('visibility', 'visible');
+        });
+
+        const latencyLines = selected.map((series) =>
+          '<span style="color:' + series.color + ';font-weight:760">' + series.label + ': ' + series.latencyMs[index].toFixed(1) + ' ms</span>'
+        ).join('<br>');
+        const comparison = selected.length === 2
+          ? '<br>off/on: ' + (turnLatencyTrace.off.latencyMs[index] / turnLatencyTrace.on.latencyMs[index]).toFixed(2) + 'x'
+          : '';
+        tooltip.style.display = 'block';
+        tooltip.innerHTML = '<strong>Turn ' + (index + 1) + '</strong><br>' + latencyLines + comparison + '<br>' + turnLatencyTrace.promptTokens[index] + ' prompt tokens';
+        const desiredLeft = event.clientX - panelRect.left + 12;
+        const desiredTop = event.clientY - panelRect.top - 88;
+        const maxLeft = panelRect.width - tooltip.offsetWidth - 10;
+        tooltip.style.left = Math.max(10, Math.min(maxLeft, desiredLeft)) + 'px';
+        tooltip.style.top = Math.max(10, desiredTop) + 'px';
+      });
+      hitArea.addEventListener('pointerleave', () => {
+        hoverLine.setAttribute('visibility', 'hidden');
+        hoverDotBySeries.forEach((dot) => dot.setAttribute('visibility', 'hidden'));
+        tooltip.style.display = 'none';
+      });
+    }
+
+    document.querySelectorAll('[data-turn-apc]').forEach((button) => {
+      button.addEventListener('click', () => {
+        turnChartMode = button.dataset.turnApc;
+        renderTurnLatencyChart();
+      });
+    });
+
+    const explorerState = { model: 'qwen235', apc: 'on', outputMode: 'normal', temperature: '0' };
+    const historyOrder = ['memoryless', 'recent-8', 'recent-32', 'all'];
+
+    function renderInteractiveBars(target, rows, valueIndex, formatter, colorClass) {
+      const maxValue = valueIndex === 0 ? 1 : Math.max(...rows.map((row) => row.values[valueIndex]));
+      target.innerHTML = rows.map((row) => {
+        const value = row.values[valueIndex];
+        const width = maxValue > 0 ? Math.max(2, (value / maxValue) * 100) : 0;
+        return `<div class="interactive-bar-row">
+          <span>${row.label}</span>
+          <div class="bar-track"><div class="bar ${colorClass}" style="--w:${width}%"></div></div>
+          <span class="value-tag">${formatter(value)}</span>
+        </div>`;
+      }).join('');
+    }
+
+    function setExplorerSummary(items) {
+      items.forEach((item, index) => {
+        document.getElementById(`summaryLabel${index + 1}`).textContent = item.label;
+        document.getElementById(`summaryValue${index + 1}`).textContent = item.value;
+      });
+    }
+
+    function renderExplorer() {
+      const model = resultData[explorerState.model];
+      const apcButtons = Array.from(document.querySelectorAll('[data-apc]'));
+      const temperatureButtons = Array.from(document.querySelectorAll('[data-temperature]'));
+      const modeButtons = Array.from(document.querySelectorAll('[data-output-mode]'));
+      const apcOff = explorerState.apc === 'off';
+
+      if (apcOff) {
+        explorerState.outputMode = 'normal';
+        explorerState.temperature = '0';
+      }
+      const oracleMode = explorerState.outputMode === 'oracle';
+      if (oracleMode) explorerState.temperature = '0';
+
+      apcButtons.forEach((button) => {
+        const active = button.dataset.apc === explorerState.apc;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      temperatureButtons.forEach((button) => {
+        button.disabled = (oracleMode || apcOff) && button.dataset.temperature === '0.7';
+        const active = button.dataset.temperature === explorerState.temperature;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      modeButtons.forEach((button) => {
+        button.disabled = apcOff && button.dataset.outputMode === 'oracle';
+        const active = button.dataset.outputMode === explorerState.outputMode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+
+      let rows;
+      if (apcOff) {
+        rows = ['recent-32', 'all'].map((label) => ({ label, values: model.apcOff[label] }));
+        const best = rows.reduce((left, right) => right.values[0] > left.values[0] ? right : left);
+        const fastest = rows.reduce((left, right) => right.values[1] < left.values[1] ? right : left);
+        setExplorerSummary([
+          { label: 'Model', value: model.label },
+          { label: 'Best history', value: best.label },
+          { label: 'Best / fastest', value: `${(best.values[0] * 100).toFixed(1)}% / ${fastest.label}` }
+        ]);
+        document.getElementById('explorerNote').textContent = 'APC Off 只测了 Normal history + temperature 0 + recent-32/all；其他控制项已自动锁定。';
+      } else if (oracleMode) {
+        const normalAll = model.temperatures['0'].all;
+        rows = [
+          { label: 'Normal all', values: normalAll },
+          { label: 'Fixed all', values: model.oracle }
+        ];
+        const delta = model.oracle[0] - normalAll[0];
+        setExplorerSummary([
+          { label: 'Model', value: model.label },
+          { label: 'Oracle delta', value: `${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)} pp` },
+          { label: 'Scope', value: 'all / temp 0' }
+        ]);
+        document.getElementById('explorerNote').textContent = 'Fixed/Oracle history 只测了 APC On + all history + temperature 0；这里展示与 Normal all 的直接对照。';
+      } else {
+        const cells = model.temperatures[explorerState.temperature];
+        rows = historyOrder.map((label) => ({ label, values: cells[label] }));
+        const best = rows.reduce((left, right) => right.values[0] > left.values[0] ? right : left);
+        const fastest = rows.reduce((left, right) => right.values[1] < left.values[1] ? right : left);
+        setExplorerSummary([
+          { label: 'Model', value: model.label },
+          { label: 'Best history', value: best.label },
+          { label: 'Best / fastest', value: `${(best.values[0] * 100).toFixed(1)}% / ${fastest.label}` }
+        ]);
+        document.getElementById('explorerNote').textContent = `Normal output history，temperature=${explorerState.temperature}，APC On。Latency bar 在当前模型内部归一化。`;
+      }
+
+      renderInteractiveBars(document.getElementById('accuracyChart'), rows, 0, (value) => `${(value * 100).toFixed(1)}%`, 'teal');
+      renderInteractiveBars(document.getElementById('latencyChart'), rows, 1, (value) => `${value.toFixed(1)} ms`, 'gold');
+    }
+
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const progress = document.querySelector('.progress');
+    const counters = Array.from(document.querySelectorAll('.counter'));
+    let current = 0;
+
+    function clamp(index) {
+      return Math.max(0, Math.min(index, slides.length - 1));
+    }
+
+    function show(index, pushHash = true) {
+      current = clamp(index);
+      slides.forEach((slide, i) => slide.classList.toggle('active', i === current));
+      counters.forEach((counter) => {
+        counter.textContent = `${current + 1} / ${slides.length}`;
+      });
+      progress.style.setProperty('--progress', `${((current + 1) / slides.length) * 100}%`);
+      document.title = `${current + 1}/${slides.length} ${slides[current].dataset.title || 'Slide'}`;
+      if (pushHash) {
+        history.replaceState(null, '', `#${current + 1}`);
+      }
+    }
+
+    function fromHash() {
+      const raw = window.location.hash.replace('#', '');
+      const parsed = Number.parseInt(raw, 10);
+      if (Number.isFinite(parsed)) {
+        show(parsed - 1, false);
+      } else {
+        show(0, false);
+      }
+    }
+
+    document.getElementById('modelSelect').addEventListener('change', (event) => {
+      explorerState.model = event.target.value;
+      renderExplorer();
+    });
+    document.querySelectorAll('[data-apc]').forEach((button) => {
+      button.addEventListener('click', () => {
+        explorerState.apc = button.dataset.apc;
+        renderExplorer();
+      });
+    });
+    document.querySelectorAll('[data-output-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        explorerState.outputMode = button.dataset.outputMode;
+        renderExplorer();
+      });
+    });
+    document.querySelectorAll('[data-temperature]').forEach((button) => {
+      button.addEventListener('click', () => {
+        if (button.disabled) return;
+        explorerState.temperature = button.dataset.temperature;
+        renderExplorer();
+      });
+    });
+
+    document.getElementById('prev').addEventListener('click', () => show(current - 1));
+    document.getElementById('next').addEventListener('click', () => show(current + 1));
+    window.addEventListener('hashchange', fromHash);
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+        event.preventDefault();
+        show(current + 1);
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
+        event.preventDefault();
+        show(current - 1);
+      }
+      if (event.key === 'Home') {
+        event.preventDefault();
+        show(0);
+      }
+      if (event.key === 'End') {
+        event.preventDefault();
+        show(slides.length - 1);
+      }
+    });
+
+    renderExplorer();
+    renderTurnLatencyChart();
+    fromHash();
+  </script>
+</body>
+</html>

@@ -258,8 +258,51 @@ def main() -> int:
         print(f"  Session artifact tier: {config.output.session_artifact_tier}")
     print("\nPress Ctrl+C to stop\n")
 
+    def _optional_int_arg(name: str) -> int | None:
+        value = getattr(args, name, None)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def _optional_float_arg(name: str) -> float | None:
+        value = getattr(args, name, None)
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    analysis_end_tick = _optional_int_arg("analysis_end_tick")
+    last_input_note_off_tick = _optional_int_arg("last_input_note_off_tick")
+    request_cutoff_tick = _optional_int_arg("request_cutoff_tick")
+    run_stop_tick = _optional_int_arg("run_stop_tick")
+    legacy_max_ticks = _optional_int_arg("max_ticks")
+    tail_beats = _optional_int_arg("tail_beats")
+    drain_timeout_seconds = _optional_float_arg("drain_timeout_s")
+
+    if run_stop_tick is None:
+        run_stop_tick = legacy_max_ticks
+    elif legacy_max_ticks is not None and run_stop_tick != legacy_max_ticks:
+        raise ValueError("--max-ticks and --run-stop-tick must match when both are supplied")
+
+    if tail_beats is not None:
+        if tail_beats < 0:
+            raise ValueError("--tail-beats must be >= 0")
+        if last_input_note_off_tick is None:
+            raise ValueError("--tail-beats requires --last-input-note-off-tick")
+        ticks_per_beat = int(tempo.ticks_per_beat)
+        rounded_input_end = (
+            (last_input_note_off_tick + ticks_per_beat - 1) // ticks_per_beat
+        ) * ticks_per_beat
+        derived_run_stop = rounded_input_end + tail_beats * ticks_per_beat
+        if run_stop_tick is not None and run_stop_tick != derived_run_stop:
+            raise ValueError(
+                "explicit run-stop does not match ceil(last-input-note-off/beat)+tail"
+            )
+        run_stop_tick = derived_run_stop
+
     try:
-        service.start(max_ticks=args.max_ticks)
+        service.start(
+            run_stop_tick=run_stop_tick,
+            analysis_end_tick=analysis_end_tick,
+            last_input_note_off_tick=last_input_note_off_tick,
+            request_cutoff_tick=request_cutoff_tick,
+            drain_timeout_seconds=drain_timeout_seconds,
+        )
         while service.running:
             import time
             time.sleep(0.1)

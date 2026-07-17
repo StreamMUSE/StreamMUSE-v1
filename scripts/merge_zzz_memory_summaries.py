@@ -36,9 +36,16 @@ def main(argv: list[str] | None = None) -> int:
             if record.get("status") == "error":
                 failures.append({"summary_path": str(summary_path), **record})
 
+    formal_rows = [row for row in rows if not bool(row.get("pilot"))]
     write_json(root / "matrix_summary.json", {"summary": rows, "failures": failures})
     write_csv(root / "matrix_summary.csv", rows)
     (root / "matrix_summary.md").write_text(render_markdown(rows, failures), encoding="utf-8")
+    write_json(root / "matrix_summary_formal.json", {"summary": formal_rows, "failures": failures})
+    write_csv(root / "matrix_summary_formal.csv", formal_rows)
+    (root / "matrix_summary_formal.md").write_text(
+        render_markdown(formal_rows, failures, title="ZipZapZop Formal Memory Matrix Summary"),
+        encoding="utf-8",
+    )
     print(f"merged {len(rows)} summary rows under {root}")
     return 0 if not failures else 1
 
@@ -82,8 +89,13 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow({key: row.get(key) for key in fieldnames})
 
 
-def render_markdown(rows: list[dict[str, Any]], failures: list[dict[str, Any]]) -> str:
-    lines = ["# ZipZapZop Memory Matrix Summary", ""]
+def render_markdown(
+    rows: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+    *,
+    title: str = "ZipZapZop Memory Matrix Summary",
+) -> str:
+    lines = [f"# {title}", ""]
     lines.append(f"- summary rows: {len(rows)}")
     lines.append(f"- failed run cells: {len(failures)}")
     lines.append("")

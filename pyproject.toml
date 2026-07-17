@@ -30,6 +30,7 @@ dependencies = [
   "python-rtmidi>=1.5.8",
   "pytorch-lightning>=2.5.1.post0",
   "requests>=2.32.0",
+  "scipy>=1.15.3",
   "tensorboard>=2.19.0",
   "tensorboardx>=2.6.4",
   "tensorflow>=2.19.0",

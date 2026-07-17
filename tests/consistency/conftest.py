@@ -54,10 +54,6 @@ DETERMINISTIC_SERVER_ENV = {
     "LEKAI_DEFAULT_BPM": str(CONDITION_BPM),
 }
 
-# Dataset file ordering is NOT numeric: PianoDataset lists [2,5,3,1,4].npz, so the offline
-# --condition-idx does not equal the song number. (Verified Phase 0.)
-SONG_TO_CONDITION_IDX = {1: 3, 2: 0, 3: 2, 4: 4, 5: 1}
-
 # Greedy collapses many songs to empty accompaniment; only these produce non-trivial,
 # deterministic output worth comparing (Phase 0 appendix B). song 1/3 are (near-)empty.
 NON_EMPTY_SONGS = (4, 5, 2)
@@ -69,8 +65,11 @@ TAIL_BEATS = 24
 @dataclass(frozen=True)
 class SongSpec:
     number: int
-    condition_idx: int
     melody_last_beat: int
+
+    @property
+    def npz_stem(self) -> str:
+        return str(self.number)
 
     @property
     def mel_path(self) -> Path:
@@ -103,7 +102,6 @@ def _melody_last_beat(mel_path: Path) -> int:
 def song_spec(number: int) -> SongSpec:
     return SongSpec(
         number=number,
-        condition_idx=SONG_TO_CONDITION_IDX[number],
         melody_last_beat=_melody_last_beat(MEL_DIR / f"{number}.mid"),
     )
 

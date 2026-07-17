@@ -22,6 +22,7 @@ Requires-Dist: pytest>=8.4.1
 Requires-Dist: python-rtmidi>=1.5.8
 Requires-Dist: pytorch-lightning>=2.5.1.post0
 Requires-Dist: requests>=2.32.0
+Requires-Dist: scipy>=1.15.3
 Requires-Dist: tensorboard>=2.19.0
 Requires-Dist: tensorboardx>=2.6.4
 Requires-Dist: tensorflow>=2.19.0

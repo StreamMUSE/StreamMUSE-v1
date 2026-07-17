@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -16,10 +17,13 @@ class JsonLoggerOutputSink:
         self.session_dir = Path(session_dir)
         self.events_file = self.session_dir / "events.jsonl"
         self.inferences_file = self.session_dir / "inferences.json"
+        self.lifecycle_file = self.session_dir / "request_lifecycle.jsonl"
+        self.validity_file = self.session_dir / "validity.json"
         self.inferences: list[InferenceEvent] = []
         self.metrics_calculator = MetricsCalculator()
         self.inference_counter = 0
         self.inference_log_detail = inference_log_detail
+        self._write_lock = threading.Lock()
 
     def output_event(self, event: MusicalEvent, source: str) -> None:
         log_event = LogEvent(
@@ -69,10 +73,31 @@ class JsonLoggerOutputSink:
         self.metrics_calculator.add_inference(inference)
 
     def _append_jsonl(self, obj: Dict[str, Any]) -> None:
-        with open(self.events_file, "a") as f:
-            f.write(json.dumps(obj) + "\n")
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self._write_lock:
+            with open(self.events_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(obj, sort_keys=True) + "\n")
+
+    def log_request_lifecycle(self, row: Dict[str, Any]) -> None:
+        """Append one request/operational lifecycle transition immediately."""
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self._write_lock:
+            with self.lifecycle_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(dict(row), sort_keys=True) + "\n")
+
+    def finalize_validity(self, summary: Dict[str, Any]) -> None:
+        """Atomically publish the final content and operational verdicts."""
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.validity_file.with_suffix(".json.tmp")
+        with self._write_lock:
+            tmp_path.write_text(
+                json.dumps(dict(summary), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            tmp_path.replace(self.validity_file)
 
     def save_metrics(self, session_config: Dict[str, Any]) -> None:
+        self.session_dir.mkdir(parents=True, exist_ok=True)
         performance_json = self.metrics_calculator.generate_performance_json(session_config)
         stats_csv = self.metrics_calculator.generate_statistics_csv()
 
@@ -85,6 +110,7 @@ class JsonLoggerOutputSink:
             f.write(stats_csv)
 
     def save_inferences(self) -> None:
+        self.session_dir.mkdir(parents=True, exist_ok=True)
         inferences_data = [inf.to_dict() for inf in self.inferences]
         with open(self.inferences_file, "w") as f:
             json.dump(inferences_data, f, indent=2)

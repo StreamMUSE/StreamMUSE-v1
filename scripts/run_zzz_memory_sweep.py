@@ -245,7 +245,7 @@ def model_special_config(model: str, *, explicit_max_tokens: int | None) -> Mode
     extra_payload: dict[str, Any] | None = None
     max_tokens = 8 if explicit_max_tokens is None else int(explicit_max_tokens)
     answer_mode = "content"
-    if model == "Qwen/Qwen3-8B":
+    if model == "Qwen/Qwen3-8B" or model.startswith("Qwen/Qwen3.6-"):
         extra_payload = {"chat_template_kwargs": {"enable_thinking": False}}
     if "gpt-oss" in lower:
         max_tokens = 512 if explicit_max_tokens is None else int(explicit_max_tokens)

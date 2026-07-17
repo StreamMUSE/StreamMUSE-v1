@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 import pytest
 
+from streammuse.infrastructure.inference import server_lekai
+from streammuse.infrastructure.inference.lekai_http_backend import LekaiHttpBackend
 from streammuse.infrastructure.inference.server_lekai import app
 
 
@@ -116,5 +118,72 @@ def test_runtime_info_contract():
         "use_cache",
         "runtime_model_name",
         "runtime_inference_mode",
+        "generation_interval_ticks",
+        "generation_length_frames",
+        "prompt_length_ticks",
+        "ticks_per_beat",
     ]:
         assert key in data
+
+
+def test_reset_endpoint_rotates_epoch_and_stale_session_returns_409(monkeypatch):
+    monkeypatch.setenv("LEKAI_ENABLE_DEBUG_RESET", "true")
+    fresh_backend = LekaiHttpBackend()
+    monkeypatch.setattr(server_lekai, "backend", fresh_backend)
+    local_client = TestClient(app)
+
+    first = local_client.post("/debug/reset_session", json={"seed": 101})
+    assert first.status_code == 200
+    first_session = first.json()
+    assert first_session["session_epoch"] == 1
+    assert first_session["effective_seed"] == 101
+
+    payload = _base_generate_payload()
+    payload.update(
+        {
+            "session_id": first_session["session_id"],
+            "session_epoch": first_session["session_epoch"],
+            "request_id": "first-r000001",
+        }
+    )
+    generated = local_client.post("/generate_accompaniment", json=payload)
+    assert generated.status_code == 200
+    metadata = generated.json()["metadata"]
+    assert metadata["request_id"] == "first-r000001"
+    assert metadata["session_id"] == first_session["session_id"]
+    assert metadata["effective_seed"] == 101
+
+    second = local_client.post("/debug/reset_session", json={"seed": 202})
+    assert second.status_code == 200
+    second_session = second.json()
+    assert second_session["session_epoch"] == 2
+    assert second_session["session_id"] != first_session["session_id"]
+
+    stale = local_client.post("/generate_accompaniment", json=payload)
+    assert stale.status_code == 409
+    assert "stale session epoch" in stale.json()["detail"]
+
+    payload.update(
+        {
+            "session_id": second_session["session_id"],
+            "session_epoch": second_session["session_epoch"],
+            "request_id": "second-r000001",
+        }
+    )
+    current = local_client.post("/generate_accompaniment", json=payload)
+    assert current.status_code == 200
+    current_metadata = current.json()["metadata"]
+    assert current_metadata["session_epoch"] == 2
+    assert current_metadata["effective_seed"] == 202
+
+
+def test_reset_endpoint_is_fail_closed_by_default(monkeypatch):
+    monkeypatch.delenv("LEKAI_ENABLE_DEBUG_RESET", raising=False)
+    fresh_backend = LekaiHttpBackend()
+    monkeypatch.setattr(server_lekai, "backend", fresh_backend)
+
+    response = TestClient(app).post("/debug/reset_session", json={"seed": 123})
+
+    assert response.status_code == 403
+    assert "LEKAI_ENABLE_DEBUG_RESET" in response.json()["detail"]
+    assert fresh_backend.runtime_info()["session_epoch"] == 0

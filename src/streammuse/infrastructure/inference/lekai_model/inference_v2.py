@@ -236,6 +236,7 @@ def generate_accompaniment_v2(
     repetition_penalty: float = 1.2,
     device: str = "cuda",
     verbose: bool = True,
+    generator: torch.Generator | None = None,
 ):
     """
     Modified version of generate_accompaniment that skips initial silence in Part 0.
@@ -435,6 +436,7 @@ def generate_accompaniment_v2(
                     top_k=top_k,
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
+                    generator=generator,
                 )
 
                 # 添加到生成序列

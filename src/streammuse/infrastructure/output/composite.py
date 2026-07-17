@@ -78,6 +78,16 @@ class CompositeOutputSink:
             if hasattr(s, "log_model_schedule"):
                 s.log_model_schedule(rows)
 
+    def log_request_lifecycle(self, row: Dict[str, Any]) -> None:
+        for s in self.sinks:
+            if hasattr(s, "log_request_lifecycle"):
+                s.log_request_lifecycle(row)
+
+    def finalize_validity(self, summary: Dict[str, Any]) -> None:
+        for s in self.sinks:
+            if hasattr(s, "finalize_validity"):
+                s.finalize_validity(summary)
+
     def close(self) -> None:
         for s in self.sinks:
             s.close()

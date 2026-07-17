@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
             "a combined MIDI in log dir; json_log does not."
         ),
     )
+    parser.add_argument("--web-host", type=str, default="127.0.0.1", help="Host/interface for the web viewer to bind (use 0.0.0.0 to allow LAN access)")
+    parser.add_argument("--web-port", type=int, default=8001, help="Port for the web viewer")
     parser.add_argument("--midi-out-port", type=str, default=None, help="MIDI output port name (for audio output)")
     parser.add_argument("--midi-file-output-path", type=str, default=None, help="Path to save MIDI file output")
     parser.add_argument("--enable-metronome", action="store_true", help="Play MIDI metronome clicks aligned with playback")
@@ -127,6 +129,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-max-seq-len-frames", type=int, default=96, help="Model max sequence length (frames)")
     parser.add_argument("--generation-length-frames", type=int, default=20, help="Frames to generate per request")
     parser.add_argument("--generation-interval-ticks", type=int, default=2, help="Ticks between generation requests")
+    parser.add_argument(
+        "--model-condition-bpm",
+        type=int,
+        default=None,
+        help=(
+            "Optional BPM token sent to the HTTP model, independent of wall-clock "
+            "--tempo; defaults to the playback tempo for backward compatibility"
+        ),
+    )
 
     # Runtime options
     parser.add_argument(
@@ -144,7 +155,51 @@ def parse_args() -> argparse.Namespace:
             "snaps forward to the next tick"
         ),
     )
-    parser.add_argument("--max-ticks", type=int, default=None, help="Maximum ticks to run (for testing)")
+    parser.add_argument(
+        "--max-ticks",
+        type=int,
+        default=None,
+        help="Legacy alias for exclusive --run-stop-tick",
+    )
+    parser.add_argument(
+        "--analysis-end-tick",
+        type=int,
+        default=None,
+        help="Exclusive clean-reference analysis horizon",
+    )
+    parser.add_argument(
+        "--last-input-note-off-tick",
+        type=int,
+        default=None,
+        help="Last source melody note-off tick recorded in validity artifacts",
+    )
+    parser.add_argument(
+        "--request-cutoff-tick",
+        type=int,
+        default=None,
+        help="Inclusive, beat-aligned last generation-start tick",
+    )
+    parser.add_argument(
+        "--run-stop-tick",
+        type=int,
+        default=None,
+        help="Exclusive playback/drain horizon",
+    )
+    parser.add_argument(
+        "--tail-beats",
+        type=int,
+        default=None,
+        help=(
+            "Derive run-stop from ceil(last-input-note-off/beat)+tail; "
+            "requires --last-input-note-off-tick"
+        ),
+    )
+    parser.add_argument(
+        "--drain-timeout-s",
+        type=float,
+        default=10.0,
+        help="Hard timeout for queued/in-flight inference drain",
+    )
 
     return parser.parse_args()
 
@@ -193,6 +248,11 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         model_max_seq_len_frames=int(args.model_max_seq_len_frames),
         generation_length_frames=int(args.generation_length_frames),
         generation_interval_ticks=int(args.generation_interval_ticks),
+        model_condition_bpm=(
+            int(args.model_condition_bpm)
+            if getattr(args, "model_condition_bpm", None) is not None
+            else None
+        ),
     )
 
     return ApplicationConfig(

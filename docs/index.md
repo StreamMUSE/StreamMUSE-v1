@@ -80,4 +80,5 @@ description: 实时 AI 音乐伴奏生成系统
 | [新增输入源](developer-guide/adding-input-source.md) | 如何扩展 InputSource |
 | [新增输出 Sink](developer-guide/adding-output-sink.md) | 如何扩展 OutputSink |
 | [新增推理引擎](developer-guide/adding-inference-engine.md) | 如何扩展 InferenceEngine |
+| [旋律扰动鲁棒性实验](developer-guide/melody-perturbation-robustness.md) | staging、qualification、formal、analysis 与盲听的可复现工作流 |
 | [CLI 参考](reference/cli-reference.md) | 完整命令行参数表 |

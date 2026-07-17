@@ -43,15 +43,15 @@ STREAMMUSE_CONSISTENCY_SONGS=4,5,2 STREAMMUSE_CONSISTENCY_TEMPOS=120,90,60,15 \
 
 贪心解码（top_k=1, temp=0）下，模型对**很多歌会生成全空的伴奏**（这是已知模型行为，非 bug）。空对空的比较毫无意义。实测各歌非空程度：
 
-| song | condition_idx | 非空拍数 | 适合 |
+| song | NPZ stem | 非空拍数 | 适合 |
 |---|---|---|---|
 | 4 | 4 | 56/76 | ✅ 默认 |
-| 5 | 1 | 19/116 | ✅ |
-| 2 | 0 | 9/96 | ✅ |
-| 3 | 2 | 1/151 | ⚠️ 几乎空 |
-| 1 | 3 | 0/141 | ❌ 全空 |
+| 5 | 5 | 19/116 | ✅ 默认 |
+| 2 | 2 | 9/96 | ✅ |
+| 3 | 3 | 1/151 | ⚠️ 几乎空 |
+| 1 | 1 | 0/141 | ❌ 全空 |
 
-> 注意 `condition_idx` 与歌曲编号**不相等**：`PianoDataset` 按 `[2,5,3,1,4].npz` 排序，映射为 `{1:3, 2:0, 3:2, 4:4, 5:1}`。
+> Gold runner 使用 `--condition-stem` 精确寻址，不依赖目录枚举或整数索引；`PianoDataset(mode="all")` 同时保证完整、稳定排序且不切 train/test split。
 
 ### 2. 在 pianoroll 层比，不在 MIDI note 层比
 
@@ -61,11 +61,11 @@ STREAMMUSE_CONSISTENCY_SONGS=4,5,2 STREAMMUSE_CONSISTENCY_TEMPOS=120,90,60,15 \
 
 旋律 MIDI 通常比 `--max-ticks` 短。实时跑过旋律末尾后，在没有旋律可条件的区间继续挂音，而离线在数据末尾就停。必须把对比截断到旋律最后一拍（`SongSpec.melody_last_beat`），否则尾部会假性 mismatch。
 
-> 滑窗（`LEKAI_PROMPT_CONTEXT_BEATS`）**不是**分叉源——全 context 与默认 32 拍结果完全相同。
+> `LEKAI_PROMPT_CONTEXT_BEATS` 必须覆盖要与 one-shot offline 对比的历史窗口。默认值现为 128 拍，与默认 server history retention 对齐；显式设成更短窗口会改变模型上下文。例如 `river_flows` 在 32 拍窗口下从 beat 36 分叉，而 128/200 拍窗口可与 offline 对齐。
 
 ## BPM 一致性
 
-BPM 是模型的条件 token（prompt 开头）。两侧必须落在同一个 `encode_bpm` 桶（`<90` 慢 / `90–200` 中 / `>200` 快），否则第一个 token 就不同、后面全部分叉。测试两侧都钉 `LEKAI_DEFAULT_BPM=120`（server）+ `--bpm 120`（offline，新增的直传口子），与各歌原生 BPM 无关。
+BPM 是模型的条件 token（prompt 开头）。两侧必须落在同一个 `encode_bpm` 桶（`<90` 慢 / `90–200` 中 / `>200` 快），否则第一个 token 就不同、后面全部分叉。Gold runner 在 realtime CLI 显式传 `--model-condition-bpm 120`，offline 显式传 `--bpm 120`；server 的 `LEKAI_DEFAULT_BPM=120` 只作为请求缺字段时的 fallback。三者都与歌曲原生 BPM、realtime 的 playback `--tempo` 无关。
 
 ## tempo 阶梯的诊断语义
 
