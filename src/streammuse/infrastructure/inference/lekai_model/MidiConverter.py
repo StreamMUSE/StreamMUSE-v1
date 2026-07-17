@@ -282,9 +282,11 @@ class MidiConverter:
 
         We interpret:
         - onset channel (1) as note_on.
-        - sustain channel (0) falling edge (1->0) as note_off.
-        - If close_at_end=True and sustain is still active at the last tick,
-          we emit a note_off at start_tick + T (the beat boundary).
+        - sustain channel (0) only extends a semantically active note.  A
+          sustain-only region without a carry-in or onset is inert.
+        - a semantically active note ends when sustain is 0 on a later tick.
+        - If close_at_end=True and a note is still semantically active after
+          the last tick, we emit a note_off at start_tick + T.
 
         Args:
             pianoroll (np.ndarray): shape (2, 88, T)
@@ -311,65 +313,71 @@ class MidiConverter:
         else:
             active_pitches = set(active_pitches)
         
-        # Track which pitches are active at the end of this beat
+        # Track which pitches are semantically active at the end of this beat.
+        # The model can emit sustain-only cells without an onset.  Those cells
+        # are not audible notes in the offline onset-rooted MIDI exporter and
+        # must not create ghost carry state (and a later orphan note_off) here.
         new_active_pitches = set()
 
         for pitch_idx in range(88):
             pitch = pitch_idx + 21
-            
-            # Check if this pitch was active from previous beat but NOT sustaining at tick 0
-            # This means the note ended exactly at the beat boundary
-            if pitch in active_pitches:
-                if T == 0 or sustain[pitch_idx, 0] == 0:
-                    # Note ended at beat boundary, emit note_off at start_tick
-                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick)})
+            active = pitch in active_pitches
 
-            # note_on: any onset==1
-            on_ticks = np.where(onset[pitch_idx] > 0)[0]
-            for t in on_ticks:
-                # IMPORTANT: If there's an onset at t and sustain was active at t-1,
-                # this means a new note starts while the previous note was still held.
-                # We need to emit note_off at t BEFORE the note_on.
-                # Case 1: t > 0 and sustain[t-1] = 1 (previous note from this beat)
-                # Case 2: t = 0 and pitch in active_pitches and sustain[0] = 1 
-                #         (previous note from last beat, but also has new onset at 0)
-                if t > 0 and sustain[pitch_idx, t - 1] > 0:
-                    # Previous note ends at this tick, emit note_off before note_on
-                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
-                elif t == 0 and pitch in active_pitches and sustain[pitch_idx, 0] > 0:
-                    # Special case: note continues from previous beat AND has new onset at tick 0
-                    # This means retrigger - emit note_off at start_tick before note_on
-                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick)})
-                
-                events.append({"type": "note_on", "pitch": int(pitch), "tick": int(start_tick + t)})
-
-            # note_off: falling edges in sustain (sustain goes from 1 to 0)
-            if T <= 1:
-                # Check if sustaining at the end
-                if T == 1 and sustain[pitch_idx, 0] > 0:
+            if T == 0:
+                if active and close_at_end:
+                    events.append(
+                        {"type": "note_off", "pitch": int(pitch), "tick": int(start_tick)}
+                    )
+                elif active:
                     new_active_pitches.add(pitch)
-                    if close_at_end:
-                        events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
                 continue
-            
-            s = sustain[pitch_idx].astype(np.int8)
-            o = onset[pitch_idx].astype(np.int8)
-            
-            # falling edge at t means s[t-1]==1 and s[t]==0
-            # BUT: if there's an onset at t, we already handled the note_off above
-            fall = np.where((s[:-1] == 1) & (s[1:] == 0))[0]
-            for t0 in fall:
-                t = t0 + 1
-                # Only emit note_off if there's no onset at t (otherwise we already emitted it)
-                if o[t] == 0:
-                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + t)})
-            
-            # Track if sustain is still active at the last tick
-            if s[-1] == 1:
-                new_active_pitches.add(pitch)
-                # If close_at_end=True, emit note_off at the beat boundary
+
+            for t in range(T):
+                absolute_tick = int(start_tick + t)
+                has_onset = bool(onset[pitch_idx, t] > 0)
+                has_sustain = bool(sustain[pitch_idx, t] > 0)
+
+                if has_onset:
+                    # A same-pitch onset retriggers a real carried/open note,
+                    # but a preceding sustain-only ghost is not active and
+                    # therefore must not synthesize a note_off.
+                    if active:
+                        events.append(
+                            {
+                                "type": "note_off",
+                                "pitch": int(pitch),
+                                "tick": absolute_tick,
+                            }
+                        )
+                    events.append(
+                        {
+                            "type": "note_on",
+                            "pitch": int(pitch),
+                            "tick": absolute_tick,
+                        }
+                    )
+                    active = True
+                elif active and not has_sustain:
+                    events.append(
+                        {
+                            "type": "note_off",
+                            "pitch": int(pitch),
+                            "tick": absolute_tick,
+                        }
+                    )
+                    active = False
+
+            if active:
                 if close_at_end:
-                    events.append({"type": "note_off", "pitch": int(pitch), "tick": int(start_tick + T)})
+                    events.append(
+                        {
+                            "type": "note_off",
+                            "pitch": int(pitch),
+                            "tick": int(start_tick + T),
+                        }
+                    )
+                else:
+                    new_active_pitches.add(pitch)
 
         events.sort(key=lambda e: (e["tick"], 0 if e["type"] == "note_off" else 1))
         return events, new_active_pitches
