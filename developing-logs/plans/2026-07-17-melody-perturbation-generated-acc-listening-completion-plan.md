@@ -1,6 +1,8 @@
 # Melody 扰动是否造成“可听的生成伴奏差异”——继续完成计划（2026-07-17）
 
-> 状态：technical implementation 已落地并进入最终回归；clean frozen campaign 与 human listening 分阶段执行。
+> 状态（2026-07-17 收口）：automated implementation、clean frozen campaign、160 formal runs、objective
+> analysis 和 accepted-final blind package 已完成。当前 overall technical DoD 因 rhythm targeted assay
+> 0/5 保持 `INCOMPLETE`；human listening 为 0/95、`not_started`，不得产生人耳结论。
 >
 > 本计划基于 2026-07-16 implementation report 和 2026-07-17 的代码复核。它复用
 > `2026-07-10-melody-perturbation-robustness-plan.md` 的 40-input、160-run、seed、指标和
@@ -10,6 +12,11 @@
 >
 > 2026-07-17 flexible-listening update：95 题是可逐步积累的完整题库，不是一次性提交要求。播放器
 > 必须逐题原子保存、可随时暂停/恢复，并能在任意已答题数上生成明确标注分母的 partial result。
+>
+> 2026-07-17 execution update：accepted campaign 为
+> `task_runs/melody_robustness_20260717_generated_acc_v3`。Formal integrity 160/160、listening readiness
+> 80/80、blind package audit 均通过；详细证据见
+> `developing-logs/reports/2026-07-17-melody-perturbation-generated-acc-listening-completion-report.md`。
 
 ## 1. 最终要回答的问题
 
@@ -41,19 +48,19 @@ perturbed melody。
 
 | 项目 | 当前状态 | 对本目标的意义 |
 |---|---|---|
-| 扰动/staging 工具 | 已实现并有自动测试 | `/tmp/.../mel` 的 40 个文件只是 formal input 候选 |
-| staging `acc` | 是 source accompaniment 副本 | 不是模型根据扰动生成的新 acc，不能用于本听测 |
-| offline/RT driver | 160-run、required-artifact、raw-token/MIDI reconciliation 已实现并有正负测试 | 真实 frozen campaign 待执行 |
-| objective analyzer | metrics、targeted controls、selection/control hash 闭环已实现 | formal metrics/controls/analysis index 待真实 campaign 生成 |
-| 当前 listening tool | v2 95 题 triangle、播放器、structured sitting、partial snapshot/report 和 QC retry 已实现 | 待生成 accepted-final WAV package |
-| qualification | fixed-20 artifact re-derivation 与独立 validator 已实现 | 待在 clean commit 上执行并 freeze C5 |
-| real checkpoint evidence | song 4/5 × 15/120 BPM consistency 已在当前实现上通过 | clean campaign 仍须归档同一 gate 与 runtime attestation |
-| formal generated treatment acc | 不存在 | 当前没有 pitch/onset/both 对应的正式生成伴奏可听文件 |
-| human scores/report | 不存在 | 还不能回答最终问题 |
+| 扰动/staging 工具 | 已实现并有自动测试 | v3 fresh 40 inputs/sidecars/NPZ 已生成并通过 static gate |
+| staging `acc` | 是 source accompaniment 副本 | 不是模型根据扰动生成的新 acc，未用于本听测 |
+| offline/RT driver | 160-run、required-artifact、raw-token/MIDI reconciliation 已实现并有正负测试 | v3 offline 80 + RT 80 已执行，formal audit 160/160 |
+| objective analyzer | 已生成 240 metric、210 paired、80 lifecycle rows，0 QC-invalid | harmonic/coverage/identity controls 通过；rhythm endpoint 0/5、assay-invalid |
+| 当前 listening tool | v2 95 题 triangle、播放器、structured sitting、partial snapshot/report 和 QC retry 已实现 | 95+3 accepted-final WAV package 已生成并独立 audit |
+| qualification | v3 exact 20/20 `attempt-001`，independent derivation passed | selected tempo=60、tail=8，C5 已冻结 |
+| real checkpoint evidence | song 4/5 × tempo 15/120 consistency 2 passed、0 skipped | code/checkpoint/environment/GPU attestation 已归档 |
+| formal generated treatment acc | 已生成 | offline 80、RT theoretical 80、RT combined 80 MIDI 全部保留 |
+| human scores/report | n=0 objective-only strict report 已生成 | 0/95、fully blind；仍不能回答人耳是否可辨别 |
 
-2026-07-16 报告记录的 407 unit + 5 integration passed 是当时工作树的实现证据，不等于 formal
-campaign 已通过。当前工作树仍有未提交变更；在 clean commit、真实 checkpoint qualification 和 C5
-freeze 之前，不得把任何 `/tmp` 或 development smoke output 当正式结果。
+2026-07-16 报告记录的 407 unit + 5 integration passed 只是当时实现证据；本轮已另行完成 clean v3
+campaign。最终代码回归为 530 passed。v2 qualification 的 fail-closed 记录、v3 formal artifacts 和
+pre-final listening failure directories 均保留；任何 `/tmp` 或 development smoke output 都没有被当作正式结果。
 
 ## 3. 本计划冻结的关键决策
 
@@ -503,6 +510,10 @@ Gate P3：`campaign_audit.json` 完整通过。未通过前不得打开 treatmen
 
 Gate P4：analysis index 和 final listening package audit 全绿；blind side 无任何 semantic leakage。
 
+Execution note：final listening package/blinding audit 已全绿；analysis artifact integrity 也全绿，但
+rhythm targeted endpoint validity 为 0/5。因此 P4 的 package 部分完成，overall objective technical gate
+按 strict report 保持 incomplete，原 analysis 不覆盖、不事后降 threshold。
+
 ### Phase P5 — 用户按自己的时间逐步盲听
 
 目标：在人耳不知道 condition 的情况下逐题积累 response；任意进度都可安全保存和整理结果。
@@ -547,128 +558,130 @@ Gate P6：report builder fail-closed 验证所有 artifacts/hash/score workflow�
 
 ### T0. Spec 和合同
 
-- [ ] **T0.1** 将本 plan 标记为旧 plan Phase F/T10 的 superseding contract；旧 24-clip quality package
+- [x] **T0.1** 将本 plan 标记为旧 plan Phase F/T10 的 superseding contract；旧 24-clip quality package
   降为 optional secondary，不满足本轮 DoD。
-- [ ] **T0.2** 在 shared config 写死 primary question、acc-only/rt-theoretical source、60 medium main、
+- [x] **T0.2** 在 shared config 写死 primary question、acc-only/rt-theoretical source、60 medium main、
   10 high、5 sham-noise、6 identity、6 known-different、8 repeat、3 practice。
-- [ ] **T0.3** 写死 8 s / 16-beat excerpt、默认 `[16,32)`、prefix-balanced global order、flexible sittings
+- [x] **T0.3** 写死 8 s / 16-beat excerpt、默认 `[16,32)`、prefix-balanced global order、flexible sittings
   和六种 presentation balancing 规则。
-- [ ] **T0.4** 写死 response schema、partial snapshot semantics、QC thresholds、full-sample condition decision
+- [x] **T0.4** 写死 response schema、partial snapshot semantics、QC thresholds、full-sample condition decision
   rule、empty/operational policies。
-- [ ] **T0.5** 选定 fixed-20 qualification，更新所有与 staged short-circuit 或“直接取 tail 24”冲突的
+- [x] **T0.5** 选定 fixed-20 qualification，更新所有与 staged short-circuit 或“直接取 tail 24”冲突的
   plan/docs/help text。
-- [ ] **T0.6** 把 dense song `2`、tail songs `[2,4]` 和 stable manifest identities 加入 shared contract。
-- [ ] **T0.7** 明确 formal blind 前禁止 semantic preview，development preview 永不进入 formal selection。
+- [x] **T0.6** 把 dense song `2`、tail songs `[2,4]` 和 stable manifest identities 加入 shared contract。
+- [x] **T0.7** 明确 formal blind 前禁止 semantic preview，development preview 永不进入 formal selection。
 
 ### T1. Qualification hardening
 
-- [ ] **T1.1** 实现 shared `derive_qualification_decision()`，输入只允许 pinned spec/schedule/static summary/
+- [x] **T1.1** 实现 shared `derive_qualification_decision()`，输入只允许 pinned spec/schedule/static summary/
   immutable attempt evidence。
-- [ ] **T1.2** `evaluate()` 改为调用 shared derivation，不再维护第二套判定逻辑。
-- [ ] **T1.3** `validate_qualification_result()` 重新读取 20 attempt trees 并 exact-compare 全部 derived fields。
-- [ ] **T1.4** `freeze()` 和 `validate_frozen_qualification()` 重算 decision 后才接受 result。
-- [ ] **T1.5** 正式 qualification CLI 拒绝 `--allow-dirty`；development-only result 永不能 freeze。
-- [ ] **T1.6** verifier 强制 exact 20 runs、exact order、exact selectors、20/20 `attempt-001`、零 retry。
-- [ ] **T1.7** 实现 tempo/tail 停止规则；不收敛时输出 failed reason 而不是选择 24。
-- [ ] **T1.8** 增加 decision forgery、wrong songs、dirty、retry/latest、schedule reorder、artifact drift 负测。
+- [x] **T1.2** `evaluate()` 改为调用 shared derivation，不再维护第二套判定逻辑。
+- [x] **T1.3** `validate_qualification_result()` 重新读取 20 attempt trees 并 exact-compare 全部 derived fields。
+- [x] **T1.4** `freeze()` 和 `validate_frozen_qualification()` 重算 decision 后才接受 result。
+- [x] **T1.5** 正式 qualification CLI 拒绝 `--allow-dirty`；development-only result 永不能 freeze。
+- [x] **T1.6** verifier 强制 exact 20 runs、exact order、exact selectors、20/20 `attempt-001`、零 retry。
+- [x] **T1.7** 实现 tempo/tail 停止规则；不收敛时输出 failed reason 而不是选择 24。
+- [x] **T1.8** 增加 decision forgery、wrong songs、dirty、retry/latest、schedule reorder、artifact drift 负测。
 
 ### T2. Formal RT generated-acc artifact gate
 
-- [ ] **T2.1** 定义 offline/RT attempt required-artifact schemas，不再只信 verdict 自建 index。
-- [ ] **T2.2** `theoretical_model.mid` export 异常向 run gate 传播；删除 silent-pass。
-- [ ] **T2.3** 空模型输出仍写合法 empty MIDI + summary，区分 empty-success 与 export/request failure。
-- [ ] **T2.4** 从 raw token/model schedule trace 独立恢复 theoretical notes，与 MIDI semantic-equal。
-- [ ] **T2.5** 验证 combined Accompaniment events 对应 scheduled ticks；保留 theoretical/combined 分层。
-- [ ] **T2.6** required set 记录 lifecycle、validity、full trace、runtime/checkpoint/input/reset/command/process gates。
-- [ ] **T2.7** shared attempt verifier 验 actual file set、index、size、hash、schema、campaign binding。
-- [ ] **T2.8** campaign audit 新增 `listening_source_readiness` 和逐 source failure reasons。
-- [ ] **T2.9** 增加 missing theoretical、tampered theoretical、trace mismatch、expected empty、unexpected silence
+- [x] **T2.1** 定义 offline/RT attempt required-artifact schemas，不再只信 verdict 自建 index。
+- [x] **T2.2** `theoretical_model.mid` export 异常向 run gate 传播；删除 silent-pass。
+- [x] **T2.3** 空模型输出仍写合法 empty MIDI + summary，区分 empty-success 与 export/request failure。
+- [x] **T2.4** 从 raw token/model schedule trace 独立恢复 theoretical notes，与 MIDI semantic-equal。
+- [x] **T2.5** 验证 combined Accompaniment events 对应 scheduled ticks；保留 theoretical/combined 分层。
+- [x] **T2.6** required set 记录 lifecycle、validity、full trace、runtime/checkpoint/input/reset/command/process gates。
+- [x] **T2.7** shared attempt verifier 验 actual file set、index、size、hash、schema、campaign binding。
+- [x] **T2.8** campaign audit 新增 `listening_source_readiness` 和逐 source failure reasons。
+- [x] **T2.9** 增加 missing theoretical、tampered theoretical、trace mismatch、expected empty、unexpected silence
   测试。
 
 ### T3. Listening schema v2 和 selection
 
-- [ ] **T3.1** 新增 `listening_triangle_selection.v2` builder/validator，保留 v1 read path 但禁止其满足新 DoD。
-- [ ] **T3.2** 拆分 formal pipeline/source artifact/presentation/question semantics，不再复用 overloaded pipeline。
-- [ ] **T3.3** 枚举 60 medium selectors，断言每 song/condition 精确覆盖 4 个 pseed×sseed pairs。
-- [ ] **T3.4** 枚举 10 high 和 5 sham-noise selectors；high 不能标作 listener QC。
-- [ ] **T3.5** 预冻结 6 identity、6 known-different recipes 和 8 exact repeat sources/间距。
-- [ ] **T3.6** 实现六种 presentation order 与 odd-condition balancing，duplicate 必须 literal copy。
-- [ ] **T3.7** 实现 deterministic prefix/chunk-balanced global order，使任意合理停止点的
+- [x] **T3.1** 新增 `listening_triangle_selection.v2` builder/validator，保留 v1 read path 但禁止其满足新 DoD。
+- [x] **T3.2** 拆分 formal pipeline/source artifact/presentation/question semantics，不再复用 overloaded pipeline。
+- [x] **T3.3** 枚举 60 medium selectors，断言每 song/condition 精确覆盖 4 个 pseed×sseed pairs。
+- [x] **T3.4** 枚举 10 high 和 5 sham-noise selectors；high 不能标作 listener QC。
+- [x] **T3.5** 预冻结 6 identity、6 known-different recipes 和 8 exact repeat sources/间距。
+- [x] **T3.6** 实现六种 presentation order 与 odd-condition balancing，duplicate 必须 literal copy。
+- [x] **T3.7** 实现 deterministic prefix/chunk-balanced global order，使任意合理停止点的
   condition/song/seed/control 覆盖不过度偏斜；sitting 边界不进入 selection 语义。
-- [ ] **T3.8** selection 写入 excerpt、render、empty、operational、score、per-trial persistence、partial
+- [x] **T3.8** selection 写入 excerpt、render、empty、operational、score、per-trial persistence、partial
   snapshot、QC、retry-attempt 和 blind seed rules。
-- [ ] **T3.9** validator exact-rebuild 全 selection；删行、换 seed、换 window、换 control/repeat/order 都失败。
-- [ ] **T3.10** C5 config 绑定 selection path/hash/schema；formal driver 在运行前再校验 frozen-before-output。
+- [x] **T3.9** validator exact-rebuild 全 selection；删行、换 seed、换 window、换 control/repeat/order 都失败。
+- [x] **T3.10** C5 config 绑定 selection path/hash/schema；formal driver 在运行前再校验 frozen-before-output。
 
 ### T4. Triangle package、播放器和 score workflow
 
-- [ ] **T4.1** builder 改用 shared immutable-attempt verifier，禁止较弱的 `_verified_attempt()` 分叉逻辑。
-- [ ] **T4.2** 只从 `theoretical_model.mid` 生成 primary acc-solo；自动审计不含 melody/metronome。
-- [ ] **T4.3** 实现 120 BPM、44.1 kHz、16-bit、固定 program/soundfont/version/gain 的 canonical render。
-- [ ] **T4.4** 实现 common pair attenuation、4× true-peak audit、pre-roll/crop/fade/pad 固定规则。
-- [ ] **T4.5** expected empty 允许 literal silence；non-empty→silence 失败；provenance 写 source_empty/note counts。
-- [ ] **T4.6** 为每 trial 从 unique canonical WAV 复制两份 duplicate，audit duplicate SHA-256 完全相同。
-- [ ] **T4.7** private key/render manifest 记录 attempt/verdict/artifact/path/hash/validity/excerpt/program/gain。
-- [ ] **T4.8** public manifest 和 blind player 显示正式 acc-only triangle prompt，不泄露 semantic fields；
+- [x] **T4.1** builder 改用 shared immutable-attempt verifier，禁止较弱的 `_verified_attempt()` 分叉逻辑。
+- [x] **T4.2** 只从 `theoretical_model.mid` 生成 primary acc-solo；自动审计不含 melody/metronome。
+- [x] **T4.3** 实现 120 BPM、44.1 kHz、16-bit、固定 program/soundfont/version/gain 的 canonical render。
+- [x] **T4.4** 实现 common pair attenuation、4× true-peak audit、pre-roll/crop/fade/pad 固定规则。
+- [x] **T4.5** expected empty 允许 literal silence；non-empty→silence 失败；provenance 写 source_empty/note counts。
+- [x] **T4.6** 为每 trial 从 unique canonical WAV 复制两份 duplicate，audit duplicate SHA-256 完全相同。
+- [x] **T4.7** private key/render manifest 记录 attempt/verdict/artifact/path/hash/validity/excerpt/program/gain。
+- [x] **T4.8** public manifest 和 blind player 显示正式 acc-only triangle prompt，不泄露 semantic fields；
   每题提交后显示“已保存”，支持关闭后从下一 unanswered trial 恢复。
-- [ ] **T4.9** append-only score ledger exact-validate odd/no-difference、confidence、tags、note、play count、
+- [x] **T4.9** append-only score ledger exact-validate odd/no-difference、confidence、tags、note、play count、
   response time、sitting ID、previous-record hash；独立 sitting ledger 记录 start/end、device、environment、
   anomalies 和 previous-record hash；两条 ledger 采用同一 CAS lock、原子写/恢复，不能因中断丢失已答题。
-- [ ] **T4.10** snapshot/seal 接受 1–95 个已答 rows，固定 response/sitting ledger prefix/head hash 和 pending
+- [x] **T4.10** snapshot/seal 接受 1–95 个已答 rows，固定 response/sitting ledger prefix/head hash 和 pending
   set；拒绝 duplicate、edited、orphan rows，但不得仅因未答满而失败。
-- [ ] **T4.11** summarize 支持 blind progress 与 semantic partial/full 两种模式；输出实际分母、QC coverage、
+- [x] **T4.11** summarize 支持 blind progress 与 semantic partial/full 两种模式；输出实际分母、QC coverage、
   per-condition/per-song、objective identity、coverage-driven、repeat views 和 first-semantic-unblind boundary。
-- [ ] **T4.12** synthetic end-to-end fixture 覆盖 build/audit、答 1 题后中断恢复、任意 partial snapshot、
+- [x] **T4.12** synthetic end-to-end fixture 覆盖 build/audit、答 1 题后中断恢复、任意 partial snapshot、
   0/1/94/95 题状态、seal/unblind/summarize 和全部篡改负测。
-- [ ] **T4.13** full QC fail 后只允许从 immutable 95-response snapshot 派生 attempt-N+1；authorization
+- [x] **T4.13** full QC fail 后只允许从 immutable 95-response snapshot 派生 attempt-N+1；authorization
   hash-bind 失败 package/selection/audit/render/private key、response/sitting ledgers、snapshot/unblind/summary；
   retry 仅重排盲序和 presentation，保持 semantic trial/source/excerpt/control/repeat 集合，且新 package 两条
   ledger 必须从空开始。
 
 ### T5. Clean freeze 和 fresh staging
 
-- [ ] **T5.1** 整理并提交当前 dirty worktree 中与本 campaign 有关的 code/plan/tests/docs；保留无关用户修改。
-- [ ] **T5.2** 从独立 clean worktree/固定 durable root 启动；记录 code/environment/GPU identity。
-- [ ] **T5.3** 提供真实 checkpoint，记录 SHA-256；`runtime_info.has_real_model=true`。
-- [ ] **T5.4** 运行 song 4/5 × tempo 15/120 gold consistency，2 skipped 必须转为 passed。
-- [ ] **T5.5** fresh 生成 40 inputs/sidecars/NPZ/source-acc copies，禁止复用 `/tmp` campaign-check。
-- [ ] **T5.6** 40/40 replay、note universe、latent pairing、MIDI↔NPZ、source acc hash、horizon 全绿。
-- [ ] **T5.7** 仅根据 clean inputs 确认/冻结每歌 excerpt；生成 selection 并计算 SHA-256。
-- [ ] **T5.8** 安装/探测 FluidSynth 和 soundfont，冻结 binary/version/file SHA/program/render contract。
+- [x] **T5.1** 整理并提交当前 dirty worktree 中与本 campaign 有关的 code/plan/tests/docs；保留无关用户修改。
+- [x] **T5.2** 从独立 clean worktree/固定 durable root 启动；记录 code/environment/GPU identity。
+- [x] **T5.3** 提供真实 checkpoint，记录 SHA-256；`runtime_info.has_real_model=true`。
+- [x] **T5.4** 运行 song 4/5 × tempo 15/120 gold consistency，2 skipped 必须转为 passed。
+- [x] **T5.5** fresh 生成 40 inputs/sidecars/NPZ/source-acc copies，禁止复用 `/tmp` campaign-check。
+- [x] **T5.6** 40/40 replay、note universe、latent pairing、MIDI↔NPZ、source acc hash、horizon 全绿。
+- [x] **T5.7** 仅根据 clean inputs 确认/冻结每歌 excerpt；生成 selection 并计算 SHA-256。
+- [x] **T5.8** 安装/探测 FluidSynth 和 soundfont，冻结 binary/version/file SHA/program/render contract。
 
 ### T6. Qualification 和 C5
 
-- [ ] **T6.1** 生成 candidate config、qualification spec、20-row schedule 及各自 hash/binding。
-- [ ] **T6.2** 在 clean code 上运行 exact 20 first attempts；不允许 allow-dirty 或 retry。
-- [ ] **T6.3** offline/RT determinism 逐 raw token/trace/theoretical notes 完全一致。
-- [ ] **T6.4** static input gate 和 RT per-request dynamic input trace gate 通过。
-- [ ] **T6.5** tempo 60/30 operational evidence 派生唯一 selected tempo；失败时停止。
-- [ ] **T6.6** tail 8/16/24 convergence 派生唯一 selected tail；不收敛时停止。
-- [ ] **T6.7** evaluate 和 independent validator derived decision exact-equal，qualification passed。
-- [ ] **T6.8** freeze C5 config，绑定 code/checkpoint/input/result/selection/soundfont hashes。
+- [x] **T6.1** 生成 candidate config、qualification spec、20-row schedule 及各自 hash/binding。
+- [x] **T6.2** 在 clean code 上运行 exact 20 first attempts；不允许 allow-dirty 或 retry。
+- [x] **T6.3** offline/RT determinism 逐 raw token/trace/theoretical notes 完全一致。
+- [x] **T6.4** static input gate 和 RT per-request dynamic input trace gate 通过。
+- [x] **T6.5** tempo 60/30 operational evidence 派生唯一 selected tempo；失败时停止。
+- [x] **T6.6** tail 8/16/24 convergence 派生唯一 selected tail；不收敛时停止。
+- [x] **T6.7** evaluate 和 independent validator derived decision exact-equal，qualification passed。
+- [x] **T6.8** freeze C5 config，绑定 code/checkpoint/input/result/selection/soundfont hashes。
 
 ### T7. Formal generation 和 objective analysis
 
-- [ ] **T7.1** 从 frozen contract 重建 exact 160-row schedule，assert offline 80 + RT 80。
-- [ ] **T7.2** 运行 offline 80；每 run same-seed reset、content/artifact gate 和 immutable attempt 完整。
-- [ ] **T7.3** 运行 RT 80；每 run reset/session epoch、required artifacts、trace/MIDI gate 完整。
-- [ ] **T7.4** formal retry 按 frozen matched-block policy 执行，首 attempt 永不覆盖且所有失败保留。
-- [ ] **T7.5** campaign audit 确认 160 expected、0 missing/extra/content-invalid/corrupt。
-- [ ] **T7.6** audit 确认所有 frozen listening sources ready；operational-invalid/empty 单列。
-- [ ] **T7.7** 生成 targeted controls；control recipe/source hashes 与 selection 完全一致。
-- [ ] **T7.8** 运行 analyzer，生成 metrics/contrasts/interactions/coverage/bootstrap/controls/index。
-- [ ] **T7.9** objective 结果只用于后续对齐和报告，不能据此替换 blind trial/window。
+- [x] **T7.1** 从 frozen contract 重建 exact 160-row schedule，assert offline 80 + RT 80。
+- [x] **T7.2** 运行 offline 80；每 run same-seed reset、content/artifact gate 和 immutable attempt 完整。
+- [x] **T7.3** 运行 RT 80；每 run reset/session epoch、required artifacts、trace/MIDI gate 完整。
+- [x] **T7.4** 验证 formal frozen matched-block retry policy；触发时执行，首 attempt 永不覆盖且所有失败保留。
+  **本 campaign 为 N/A：0 content retry triggered；policy 已实现并测试，160 runs 均为 attempt-001。**
+- [x] **T7.5** campaign audit 确认 160 expected、0 missing/extra/content-invalid/corrupt。
+- [x] **T7.6** audit 确认所有 frozen listening sources ready；operational-invalid/empty 单列。
+- [x] **T7.7** 生成 targeted controls；control recipe/source hashes 与 selection 完全一致。
+  **Artifact/binding 已完成，但 rhythm endpoint 0/5、assay-invalid；不能据此宣称 overall objective DoD 通过。**
+- [x] **T7.8** 运行 analyzer，生成 metrics/contrasts/interactions/coverage/bootstrap/controls/index。
+- [x] **T7.9** objective 结果只用于后续对齐和报告，不能据此替换 blind trial/window。
 
 ### T8. Build、audit 和用户盲听
 
-- [ ] **T8.1** 构建 95-trial/3-practice blind WAV package；生成 prefix-balanced global order、resume state
+- [x] **T8.1** 构建 95-trial/3-practice blind WAV package；生成 prefix-balanced global order、resume state
   template 和 private key。
-- [ ] **T8.2** audit 285 scored presentations 的数量、8 s 长度、PCM、true peak、hash、blinding、mapping。
-- [ ] **T8.3** audit 6 identity 是 A/A/A，所有 normal duplicate 是 literal copy，8 repeats 映射正确。
-- [ ] **T8.4** audit expected silence 与 non-empty render，禁止自动替换 empty/operational-invalid source。
+- [x] **T8.2** audit 285 scored presentations 的数量、8 s 长度、PCM、true peak、hash、blinding、mapping。
+- [x] **T8.3** audit 6 identity 是 A/A/A，所有 normal duplicate 是 literal copy，8 repeats 映射正确。
+- [x] **T8.4** audit expected silence 与 non-empty render，禁止自动替换 empty/operational-invalid source。
 - [ ] **T8.5** 用户只打开 blind side，完成 practice 后固定设备/音量。
 - [ ] **T8.6** 验证第一题提交后 response ledger、previous hash、progress state 均落盘；关闭/重开能从
-  下一 unanswered trial 继续。
+  下一 unanswered trial 继续。**Synthetic E2E 已通过；仍待第一条真人 response 做 package-level 验证。**
 - [ ] **T8.7** 用户每次可答任意题数；每个 sitting 独立记录环境，暂停不触发失败或丢数据。
 - [ ] **T8.8** 任意 `n>=1` 可建立 sealed snapshot，并生成 answered/pending/QC-coverage blind summary。
 - [ ] **T8.9** 用户要求查看结果时，只解盲该 snapshot 已答 rows，生成带实际分母的 semantic partial
@@ -687,13 +700,18 @@ Gate P6：report builder fail-closed 验证所有 artifacts/hash/score workflow�
 - [ ] **T9.4** 未答满的 condition 标 `partial — preregistered decision pending`；只有满足完整题数、QC 和
   blind-boundary 条件时才按预注册规则标 `confirmed` 或 `not confirmed`。
 - [ ] **T9.5** 生成 `generated_acc_index.csv` 和 unblind 后按 semantic names 导出的 MIDI/WAV。
-- [ ] **T9.6** report builder 在 0/1–94/95 题分别生成 `not_started/partial/full` 状态，验证当前 snapshot
+- [x] **T9.6** report builder 在 0/1–94/95 题分别生成 `not_started/partial/full` 状态，验证当前 snapshot
   和所有 config/schedule/result/artifact/score hashes，不因 pending rows 拒绝 partial report；0 题只接受
   真正空 ledger 且不传 snapshot，任一已有 response/snapshot/unblind state 都必须 fail closed。
-- [ ] **T9.7** limitations 明确单 listener、5 songs、fixed excerpts、source dependence、无质量/偏好结论。
+- [x] **T9.7** limitations 明确单 listener、5 songs、fixed excerpts、source dependence、无质量/偏好结论。
 - [ ] **T9.8** post-unblinding 自由复听单列记录，不回写或覆盖 primary blind scores。
 
 ## 8. Definition of Done 与可交付状态
+
+2026-07-17 execution snapshot：下列 1–6、8–10 已通过；第 7 项的 analysis/index artifacts 已完整生成，
+但 rhythm targeted control 为 0/5，因此 strict `reproducibility_index.json` 正确记录
+`status=incomplete`、`targeted_controls=false`。Human collection 仍为 0/95。这里把“formal/package 已完成”、
+“objective endpoint 是否有效”和“human 是否已答题”分开，不能用前一项掩盖后两项。
 
 首先完成不依赖用户答题数量的 technical campaign：
 

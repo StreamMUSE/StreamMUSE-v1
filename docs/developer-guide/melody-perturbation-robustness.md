@@ -45,7 +45,7 @@ hash-pin code、checkpoint、dependency/runtime/GPU 环境和 fixed-20 qualifica
 被 gitignore 的 durable campaign root，因此写入后不会破坏后续 clean gate：
 
 ```bash
-CAMPAIGN="$PWD/task_runs/melody_robustness_20260717_generated_acc_v2"
+CAMPAIGN="$PWD/task_runs/melody_robustness_20260717_generated_acc_v3"
 CHECKPOINT="$PWD/models/ModelLekai/epoch_4_1104_1204/model.safetensors"
 CODE_SHA="$(git rev-parse HEAD)"
 test -z "$(git status --porcelain)"
@@ -212,6 +212,11 @@ read -r CONTROL_REPORT_SHA _ \
 
 objective metrics、paired contrasts、coverage、factorial interaction、song-block bootstrap 和 controls 只用于报告及听测结果对齐，不能改变盲题。
 
+当前 v3 campaign 的 harmonic/coverage/identity controls 通过，但冻结的 +1-tick rhythm control 为
+0/5；因此 rhythm endpoint 是 assay-invalid，strict report 的 `targeted_controls=false`。不要事后降低
+threshold 或覆盖 `40_analysis`。这不阻止 acc-only triangle 听测，但 objective rhythm 结论必须保持无效；
+详见 [`2026-07-17 completion report`](../../developing-logs/reports/2026-07-17-melody-perturbation-generated-acc-listening-completion-report.md)。
+
 ## 8. 构建并审计 95 题 blind package
 
 ```bash
@@ -301,6 +306,9 @@ ssh -L 8765:127.0.0.1:8765 <SERVER>
 只有 active structured sitting 才允许提交 response。HTTP 模式只有在 sitting/response hash-chain ledger
 `fsync` 和 progress atomic update 成功后才显示“已保存”。仅关闭页面不会伪造 sitting end event；同一浏览器
 重开后可恢复仍 active 的 sitting，或先显式结束再开始新的 sitting。每次可答任意数量。
+
+实际播放器文件是 `<CAMPAIGN>/50_listening/blind/player.html`。正式答题应优先使用上面的
+`serve-triangle` HTTP mode；直接双击静态 HTML 只写浏览器 localStorage，不会自动写服务器 ledger。
 
 若只下载 `blind/` 静态目录，播放器会使用浏览器 localStorage 并导出 `triangle-responses.json`；必须及时导回服务器：
 
@@ -398,6 +406,7 @@ uv run python scripts/build_robustness_report.py \
 ## 11. 文件在哪里
 
 - 每个 formal run 的 generated acc：`30_formal_runs/runs/<RUN_ID>/attempt-XXX/**/theoretical_model.mid`；
+- blind player：`50_listening/blind/player.html`；
 - 不泄义的盲听 WAV：`50_listening/blind/trials/Qxxx/clip_{1,2,3}.wav`；
 - 解盲后的可读 MIDI/WAV：`50_listening/generated_acc_after_unblind/`；
 - 当前人耳结果：所选 `snapshots/<SNAPSHOT_ID>/partial_discrimination_summary.json`；
