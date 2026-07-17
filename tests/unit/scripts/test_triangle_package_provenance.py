@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import mido
+import pytest
 
 from streammuse.experiments.melody_robustness import (
     build_run_schedule,
@@ -54,7 +55,19 @@ def _write_theoretical_midi(
 
 def _write_inferences(path: Path) -> None:
     token_payload = {"raw": [1, 2], "structural": [3]}
-    accompaniment = [{"tick": 0, "pitch": 60, "velocity": 37}]
+    canonical_output = [
+        {"type": "note_on", "tick": 0, "pitch": 60, "velocity": 37}
+    ]
+    accompaniment = [
+        {
+            **canonical_output[0],
+            "channel": 0,
+            "program": 0,
+            "source": "unknown",
+            "is_placeholder": False,
+            "backup_level": 0,
+        }
+    ]
     raw_digest = hashlib.sha256(
         json.dumps(
             token_payload, sort_keys=True, separators=(",", ":")
@@ -62,7 +75,7 @@ def _write_inferences(path: Path) -> None:
     ).hexdigest()
     output_digest = hashlib.sha256(
         json.dumps(
-            accompaniment, sort_keys=True, separators=(",", ":")
+            canonical_output, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
     path.write_text(
@@ -84,6 +97,30 @@ def _write_inferences(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_output_event_provenance_uses_wire_projection_and_rejects_wire_tampering(
+    tmp_path: Path, load_script
+) -> None:
+    prepare = load_script("prepare_robustness_listening")
+    inferences = tmp_path / "inferences.json"
+    _write_inferences(inferences)
+
+    provenance = prepare._raw_token_payload_provenance(inferences)
+    assert provenance["inference_count"] == 1
+    assert len(provenance["output_event_payload_sha256"]) == 64
+
+    rows = json.loads(inferences.read_text(encoding="utf-8"))
+    event = rows[0]["response_data"]["accompaniment"][0]
+    event["channel"] = 9
+    event["source"] = "persisted-debug-field"
+    inferences.write_text(json.dumps(rows, sort_keys=True), encoding="utf-8")
+    prepare._raw_token_payload_provenance(inferences)
+
+    event["pitch"] += 1
+    inferences.write_text(json.dumps(rows, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="output_event_digest mismatch"):
+        prepare._raw_token_payload_provenance(inferences)
 
 
 def test_formal_excerpt_preserves_velocity_and_reconstructs_active_notes(

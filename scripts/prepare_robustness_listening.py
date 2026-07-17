@@ -1620,6 +1620,38 @@ def _triangle_source_key(source: Mapping[str, Any]) -> str:
     return canonical_sha256(dict(source))
 
 
+def _canonical_output_event_payload(
+    accompaniment: Sequence[Mapping[str, Any]], *, row_index: int
+) -> list[dict[str, Any]]:
+    """Rebuild the exact wire projection protected by output_event_digest.
+
+    ``inferences.json`` persists full ``MusicalEvent`` dictionaries, including
+    transport/debug fields such as channel, program, source and backup_level.
+    The inference backend deliberately binds ``output_event_digest`` only to
+    the decoded wire event projection consumed by the HTTP client.  Mirror
+    that producer contract here instead of accidentally hashing the additional
+    persisted fields.
+    """
+
+    canonical: list[dict[str, Any]] = []
+    for event_index, event in enumerate(accompaniment):
+        try:
+            canonical.append(
+                {
+                    "type": str(event["type"]),
+                    "pitch": int(event["pitch"]),
+                    "tick": int(event["tick"]),
+                    "velocity": int(event.get("velocity", 100)),
+                }
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"inferences.json row {row_index} accompaniment event "
+                f"{event_index} is not a canonical wire event"
+            ) from exc
+    return canonical
+
+
 def _raw_token_payload_provenance(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, list) or any(not isinstance(row, Mapping) for row in value):
@@ -1654,9 +1686,12 @@ def _raw_token_payload_provenance(path: Path) -> dict[str, Any]:
             raise ValueError(
                 f"inferences.json row {index} lacks the full accompaniment event payload"
             )
+        canonical_output = _canonical_output_event_payload(
+            accompaniment, row_index=index
+        )
         output_digest = hashlib.sha256(
             json.dumps(
-                accompaniment,
+                canonical_output,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1664,7 +1699,7 @@ def _raw_token_payload_provenance(path: Path) -> dict[str, Any]:
         ).hexdigest()
         if metadata.get("output_event_digest") != output_digest:
             raise ValueError(f"inferences.json row {index} output_event_digest mismatch")
-        output_payload.append(accompaniment)
+        output_payload.append(canonical_output)
     digest = hashlib.sha256(
         json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
