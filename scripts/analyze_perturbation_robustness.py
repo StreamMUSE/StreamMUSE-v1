@@ -9,14 +9,17 @@ import json
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from streammuse.experiments.melody_robustness import (
     build_run_schedule,
+    canonical_sha256,
     file_sha256,
     read_jsonl,
     validate_campaign_config,
+    validate_frozen_qualification,
     validate_staged_input_manifest,
+    verify_attempt_verdict,
     write_canonical_json,
     write_jsonl,
 )
@@ -30,6 +33,13 @@ from streammuse.experiments.robustness_metrics import (
     sensitivity_metrics,
     transform_roll,
     write_roll_midi,
+)
+from streammuse.experiments.triangle_midi import build_formal_triangle_excerpt
+from streammuse.experiments.triangle_listening import (
+    TRIANGLE_CLIP_BEATS,
+    TRIANGLE_SELECTION_SCHEMA_VERSION,
+    build_triangle_control_roll,
+    validate_triangle_selection_manifest,
 )
 
 
@@ -119,6 +129,7 @@ def _validated_campaign_inputs(
     validate_staged_input_manifest(
         input_manifest, manifest_path=input_manifest_path, verify_files=True
     )
+    validate_frozen_qualification(config, verify_files=True)
 
     schedule_sha = file_sha256(schedule_path)
     if expected_schedule_sha256 is None:
@@ -146,10 +157,22 @@ def _validated_campaign_inputs(
     )
 
 
-def _attempt_dir(output_root: Path, run_id: str) -> tuple[Path, dict[str, Any]]:
-    run_dir = output_root / "runs" / run_id
-    verdict = _read_json(run_dir / "latest_verdict.json")
-    return run_dir / str(verdict["attempt_id"]), verdict
+def _attempt_dir(
+    output_root: Path,
+    row: Mapping[str, Any],
+    campaign_binding: Mapping[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    run_dir = output_root / "runs" / str(row["run_id"])
+    if campaign_binding.get("development_unbound_output_root"):
+        verdict = _read_json(run_dir / "latest_verdict.json")
+        return run_dir / str(verdict["attempt_id"]), verdict
+    attempt, verdict, _ = verify_attempt_verdict(
+        run_dir,
+        row,
+        campaign_binding,
+        require_content_valid=True,
+    )
+    return attempt, verdict
 
 
 def _validated_output_binding(
@@ -175,6 +198,7 @@ def _validated_output_binding(
         "checkpoint_path": str(Path(config["checkpoint"]["path"]).resolve()),
         "checkpoint_sha256": str(config["checkpoint"]["sha256"]),
         "code_identity": str(config["code_identity"]),
+        "qualification_result_sha256": str(config["qualification_result"]["sha256"]),
     }
     if not path.is_file():
         if allow_missing_development_binding:
@@ -190,9 +214,11 @@ def _validated_output_binding(
 
 
 def _output_paths(
-    row: Mapping[str, Any], output_root: Path
+    row: Mapping[str, Any],
+    output_root: Path,
+    campaign_binding: Mapping[str, Any],
 ) -> list[tuple[str, Path, str | None, dict[str, Any]]]:
-    attempt, verdict = _attempt_dir(output_root, str(row["run_id"]))
+    attempt, verdict = _attempt_dir(output_root, row, campaign_binding)
     if row["pipeline"] == "offline":
         return [("offline", _single(attempt, f"{row['run_id']}_generated.mid"), None, verdict)]
     return [
@@ -860,13 +886,14 @@ def _collect_lifecycle_rows(
     schedule: Iterable[Mapping[str, Any]],
     output_root: Path,
     config_sha: str,
+    campaign_binding: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for row in schedule:
         if row.get("pipeline") != "rt":
             continue
         try:
-            attempt_dir, verdict = _attempt_dir(output_root, str(row["run_id"]))
+            attempt_dir, verdict = _attempt_dir(output_root, row, campaign_binding)
             result.append(_lifecycle_row(row, attempt_dir, verdict, config_sha))
         except Exception as exc:
             result.append(
@@ -974,9 +1001,141 @@ def _factorial_effects(pairs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any
     return results
 
 
+def _selection_known_different_controls(
+    selection: Mapping[str, Any],
+    metrics: Sequence[Mapping[str, Any]],
+    rolls: Mapping[tuple[str, str], dict[str, Roll]],
+    output_dir: Path,
+    *,
+    config_sha: str,
+    selection_sha: str,
+) -> dict[str, Any]:
+    """Assay the exact six pre-frozen listening controls and bind their hashes."""
+
+    known = [
+        trial
+        for trial in selection.get("trials", [])
+        if isinstance(trial, Mapping)
+        and trial.get("block") == "known_different_control"
+    ]
+    if len(known) != 6:
+        raise ValueError("triangle selection must contain exactly six known-different controls")
+    records: list[dict[str, Any]] = []
+    root = output_dir / "controls" / "listening_known_different"
+    for index, trial in enumerate(known, start=1):
+        sources = trial.get("sources")
+        excerpt = trial.get("excerpt")
+        if not isinstance(sources, Mapping) or not isinstance(excerpt, Mapping):
+            raise ValueError("known-different trial lacks frozen sources/excerpt")
+        formal = sources.get("a")
+        synthetic = sources.get("b")
+        if (
+            not isinstance(formal, Mapping)
+            or formal.get("kind") != "formal"
+            or formal.get("formal_pipeline") != "rt"
+            or formal.get("source_artifact") != "theoretical_model"
+            or not isinstance(synthetic, Mapping)
+            or synthetic.get("kind") != "synthetic_control"
+        ):
+            raise ValueError("known-different trial source roles differ from the frozen contract")
+        matches = [
+            metric
+            for metric in metrics
+            if metric.get("pipeline") == "rt_theoretical"
+            and metric.get("song") == formal.get("song")
+            and metric.get("condition") == formal.get("condition")
+            and metric.get("perturb_seed") == formal.get("perturb_seed")
+            and metric.get("sample_seed") == formal.get("sample_seed")
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"known-different comparator selector matched {len(matches)} formal rows"
+            )
+        metric = matches[0]
+        formal_rolls = rolls.get((str(metric["run_id"]), "rt_theoretical"))
+        if formal_rolls is None:
+            raise ValueError("known-different comparator roll is unavailable")
+        start = excerpt.get("start_model_tick")
+        end = excerpt.get("end_model_tick")
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+            or end - start != TRIANGLE_CLIP_BEATS * 4
+        ):
+            raise ValueError("known-different control excerpt differs from 16 frozen beats")
+        synthetic_roll, synthetic_velocity = build_triangle_control_roll(synthetic)
+        control_dir = root / f"K{index:02d}"
+        comparator_path = control_dir / "formal_comparator_excerpt.mid"
+        synthetic_path = control_dir / "synthetic_known_different.mid"
+        comparator_roll, comparator_note_events = build_formal_triangle_excerpt(
+            metric["paths"]["accompaniment"],
+            comparator_path,
+            start_model_tick=start,
+            end_model_tick=end,
+            bpm=120,
+        )
+        write_roll_midi(
+            synthetic_roll,
+            synthetic_path,
+            bpm=120,
+            velocity=synthetic_velocity,
+        )
+        not_identical = comparator_roll != synthetic_roll
+        if synthetic.get("recipe", {}).get("fail_if_equal_to_comparator") is not True:
+            raise ValueError("known-different control does not fail on comparator equality")
+        if not not_identical:
+            raise ValueError("known-different control equals its formal comparator")
+        recipe = synthetic.get("recipe")
+        if not isinstance(recipe, Mapping):
+            raise ValueError("known-different control recipe is missing")
+        records.append(
+            {
+                "campaign_config_sha256": config_sha,
+                "semantic_id": trial.get("semantic_id"),
+                "question_id": trial.get("question_id"),
+                "selection_source_a_sha256": canonical_sha256(dict(formal)),
+                "selection_source_b_sha256": canonical_sha256(dict(synthetic)),
+                "selection_recipe_sha256": canonical_sha256(dict(recipe)),
+                "formal_run_id": metric["run_id"],
+                "formal_source_path": metric["paths"]["accompaniment"],
+                "formal_source_sha256": metric["hashes"]["accompaniment"],
+                "formal_comparator_excerpt_path": str(comparator_path),
+                "formal_comparator_excerpt_sha256": file_sha256(comparator_path),
+                "formal_comparator_note_events_sha256": canonical_sha256(
+                    comparator_note_events
+                ),
+                "synthetic_excerpt_path": str(synthetic_path),
+                "synthetic_excerpt_sha256": file_sha256(synthetic_path),
+                "synthetic_velocity": synthetic_velocity,
+                "not_identical": not_identical,
+            }
+        )
+    return {
+        "selection_sha256": selection_sha,
+        "expected_count": 6,
+        "actual_count": len(records),
+        "all_recipe_bound": all(
+            isinstance(row.get("selection_recipe_sha256"), str) for row in records
+        ),
+        "all_source_selectors_bound": all(
+            isinstance(row.get("selection_source_a_sha256"), str)
+            and isinstance(row.get("selection_source_b_sha256"), str)
+            and isinstance(row.get("formal_source_sha256"), str)
+            for row in records
+        ),
+        "all_not_identical": all(row["not_identical"] for row in records),
+        "controls": records,
+    }
+
+
 def _targeted_controls(
     metrics: list[dict[str, Any]], rolls: Mapping[tuple[str, str], dict[str, Roll]],
     output_dir: Path, config_sha: str, expected_songs: set[str],
+    *,
+    triangle_selection: Mapping[str, Any] | None = None,
+    triangle_selection_sha: str | None = None,
 ) -> dict[str, Any]:
     # Selection is deterministic and independent of treatment values: first
     # lexical sham theoretical/offline row per song, first sample seed.
@@ -1037,13 +1196,25 @@ def _targeted_controls(
                 },
             }
         )
-    return {
+    result = {
         "campaign_config_sha256": config_sha,
         "thresholds": {"harmonic_D_increase": 0.02, "rhythm_ticks": 1.0, "dropout_ratio": 0.75},
         "expected_songs": sorted(expected_songs),
         "missing_songs": sorted(expected_songs - set(sources)),
         "songs": reports,
     }
+    if triangle_selection is not None:
+        if triangle_selection_sha is None:
+            raise ValueError("triangle selection SHA-256 is required for v2 controls")
+        result["listening_known_different"] = _selection_known_different_controls(
+            triangle_selection,
+            metrics,
+            rolls,
+            output_dir,
+            config_sha=config_sha,
+            selection_sha=triangle_selection_sha,
+        )
+    return result
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
@@ -1080,7 +1251,7 @@ def analyze_campaign(args: argparse.Namespace) -> None:
     (
         config,
         config_sha,
-        _input_manifest,
+        input_manifest,
         input_manifest_path,
         schedule,
         schedule_sha,
@@ -1091,6 +1262,21 @@ def analyze_campaign(args: argparse.Namespace) -> None:
         expected_schedule_sha256=getattr(args, "schedule_sha256", None),
         allow_unpinned_schedule=allow_unpinned_schedule,
     )
+    triangle_selection: dict[str, Any] | None = None
+    triangle_selection_sha: str | None = None
+    listening = config.get("listening", {})
+    if listening.get("schema_version") == TRIANGLE_SELECTION_SCHEMA_VERSION:
+        selection_path = Path(str(listening.get("selection_manifest_path", ""))).resolve()
+        triangle_selection_sha = str(listening.get("selection_manifest_sha256", ""))
+        if not selection_path.is_file() or file_sha256(selection_path) != triangle_selection_sha:
+            raise RuntimeError("triangle selection path/hash differs from frozen C5")
+        triangle_selection = _read_json(selection_path)
+        validate_triangle_selection_manifest(
+            triangle_selection,
+            input_manifest,
+            manifest_path=input_manifest_path,
+            verify_files=True,
+        )
     expected_songs = {str(row["song"]) for row in schedule}
     output_root = Path(args.output_root).resolve()
     campaign_binding = _validated_output_binding(
@@ -1109,7 +1295,9 @@ def analyze_campaign(args: argparse.Namespace) -> None:
     qc: list[dict[str, Any]] = []
     for row in schedule:
         try:
-            for kind, output_path, track_filter, verdict in _output_paths(row, output_root):
+            for kind, output_path, track_filter, verdict in _output_paths(
+                row, output_root, campaign_binding
+            ):
                 metric, roll_set = _metric_row(
                     row, kind, output_path, track_filter, verdict, manifest_dir, config_sha
                 )
@@ -1133,7 +1321,9 @@ def analyze_campaign(args: argparse.Namespace) -> None:
     operational_treatment_rows = _paired_operational_rows(
         raw_operational_rows, config_sha
     )
-    lifecycle_rows = _collect_lifecycle_rows(schedule, output_root, config_sha)
+    lifecycle_rows = _collect_lifecycle_rows(
+        schedule, output_root, config_sha, campaign_binding
+    )
     qc.extend(
         {
             "campaign_config_sha256": config_sha,
@@ -1223,7 +1413,15 @@ def analyze_campaign(args: argparse.Namespace) -> None:
         config_sha=config_sha,
     )
     lifecycle_summary = _lifecycle_summary(lifecycle_rows, config_sha)
-    controls = _targeted_controls(metrics, rolls, report_root, config_sha, expected_songs)
+    controls = _targeted_controls(
+        metrics,
+        rolls,
+        report_root,
+        config_sha,
+        expected_songs,
+        triangle_selection=triangle_selection,
+        triangle_selection_sha=triangle_selection_sha,
+    )
     write_jsonl(report_root / "run_metrics.jsonl", metrics)
     write_jsonl(report_root / "paired_contrasts.jsonl", pairs)
     write_canonical_json(report_root / "factorial_interactions.json", {
@@ -1271,6 +1469,7 @@ def analyze_campaign(args: argparse.Namespace) -> None:
         "input_manifest_sha256": str(config["input_manifest"]["sha256"]),
         "run_schedule_sha256": schedule_sha,
         "campaign_binding_sha256": campaign_binding["campaign_binding_sha256"],
+        "qualification_result_sha256": config["qualification_result"]["sha256"],
         "metric_rows": len(metrics), "paired_rows": len(pairs),
         "qc_invalid": sum(row["status"] != "loaded" for row in qc),
         "lifecycle_rows": len(lifecycle_rows),

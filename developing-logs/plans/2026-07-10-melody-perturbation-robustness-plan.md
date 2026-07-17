@@ -1,5 +1,10 @@
 # Melody 扰动鲁棒性实验（"人弹不稳"假设检验）— 计划（2026-07-10，rev3）
 
+> **Superseded listening contract：**本文件的 40-input、160-run、objective analysis 和 artifact-binding
+> 设计仍作为历史基础；Phase F / T10 的旧 24-clip quality-rating 听测已由
+> [`2026-07-17-melody-perturbation-generated-acc-listening-completion-plan.md`](2026-07-17-melody-perturbation-generated-acc-listening-completion-plan.md)
+> 替换，不能满足当前 acc-only triangle discrimination 的 Definition of Done。
+>
 > rev2：第一轮评审 12 条采纳（factorial、seed 分离、theoretical/combined 分离、sensitivity/quality 分离等）。
 > rev3（第二轮评审 12 条全采纳）：① 冻结顺序改为"先实现全部→提交→clean worktree→冻结 SHA"；② offline 加 `mode=all`（修 PianoDataset 40→38 静默丢文件，已核实）；③ RT graceful drain + tail 收敛验证（8/16/24）；④ 结构化 validity lifecycle 日志；⑤ sample seed 用 per-session `torch.Generator` + 原子 reset；⑥ **删除 IQR 等价判定，本轮定性 exploratory pilot**；⑦ 空伴奏 quality guardrail + D_actual/D_intended 命名 + known-bad output control；⑧ keyed RNG 实现真配对 factorial；⑨ note universe/collision/sidecar 验收重定义；⑩ campaign 级 tempo qualification + 统一 listening render BPM；⑪ Phase 0 拆解循环依赖；⑫ 听测子集预冻结。
 
@@ -197,6 +202,8 @@ factorial 交互 = D_both − D_pitch − D_onset + D_sham
 > 执行纪律：每项只有在“实现/文档完成 + 自动验收通过 + artifact 可审计”后才能勾选。任何会改变实验语义的调整，都必须先修改本 plan 并重新冻结；不得在看过 formal treatment 结果后修改 condition、seed、窗口、指标、选材或排除规则。
 >
 > 2026-07-16 实现状态说明：下列 `[x]` 只表示对应代码路径及其定向自动测试已经落地，不代表 Phase B 提交/clean-worktree freeze、qualification、formal 160-run、最终听测包或用户盲听已经完成。凡是同时要求真实 campaign artifact 或人工步骤的条目，即使工具已实现，也继续保持 `[ ]`。
+>
+> 2026-07-16 fail-closed 补强：`default_campaign_config` 现在只能生成 qualification candidate；canonical 20-row qualification schedule 会在 driver/evaluator 两端独立重建。`evaluate` 必须校验 config/schedule hash、qualification root binding、immutable verdict、artifact exact set/hash，并输出完整 evidence graph。唯一 C5 入口是 `qualify_perturbation_campaign.py freeze`；最终 config 绑定 candidate/result path+hash，formal driver、audit、analyzer、listening 与 report 会再次核验并传播 qualification result hash。该实现不等同于 T7 的真实 qualification 已完成。
 
 ### T0. Spec gate：先关闭剩余设计歧义
 
@@ -284,7 +291,7 @@ factorial 交互 = D_both − D_pitch − D_onset + D_sham
 
 ### T7. 提交、clean worktree 与 qualification
 
-- [ ] **T7.1 Phase A 测试**：offline all-mode、RT drain/validity、Generator/reset、perturb replay、strict staging、driver dry-run、analyzer fixture 全绿。
+- [x] **T7.1 Phase A 测试**：offline all-mode、RT drain/validity、Generator/reset、perturb replay、strict staging、driver dry-run、analyzer fixture 全绿。2026-07-16 验收：407 unit + 5 integration 通过；2 个 real-checkpoint consistency case 因未提供 `LEKAI_CHECKPOINT_PATH` 按设计跳过，归入尚未完成的 T7.3，而非本项。
 - [ ] **T7.2 提交并冻结代码**：提交 plan、production code、scripts、tests；记录 code SHA、checkpoint hash、lockfile/environment、GPU/CUDA/PyTorch、device/dtype；从独立 clean worktree 运行。
 - [ ] **T7.3 gold regression**：song 4/5 × tempo 15/120 全绿；使用 stem 寻址并断言 real model/checkpoint hash。
 - [ ] **T7.4 先做确定性 qualification**：先确认 offline/RT 同 seed 逐 token 一致，再比较 tempo/tail。
@@ -325,7 +332,7 @@ factorial 交互 = D_both − D_pitch − D_onset + D_sham
 > selection/build/audit/seal/unblind 工具已有定向测试；T10.3/T10.4 的 canonical render 与 4× polyphase inter-sample true-peak 代码已通过定向测试。其余 checkbox 还要求冻结后的真实 artifact 或用户步骤，因此在正式 selection、soundfont/WAV 包和盲评完成前保持未勾。
 
 - [ ] **T10.1 预冻结 selection manifest**：在 Phase D/E 前写死 pseed/sseed、每首 excerpt 起止 model beat、theoretical/combined 来源、known-bad/high-dose clip、重复 trial、呈现顺序和 seed。
-- [ ] **T10.2 明确听测问题**：ecological 只回答 end-to-end joint quality；acc-solo 只回答 standalone coherence。若要测 accompaniment adaptation，用同一 dirty melody 下的 sham acc vs dirty-conditioned acc 交叉混音替换部分 acc-solo。
+- [x] **T10.2 明确听测问题**：ecological 只回答 end-to-end joint quality；acc-solo 只回答 standalone coherence。若要测 accompaniment adaptation，用同一 dirty melody 下的 sham acc vs dirty-conditioned acc 交叉混音替换部分 acc-solo。问题语义已冻结进 selection manifest contract，并有 exact-manifest 测试。
 - [x] **T10.3 canonical render**：从 model-tick grid 重建 BPM=120 的 MIDI/WAV；冻结 soundfont hash、synth 版本、program、sample rate、bit depth、render command。
 - [x] **T10.4 gain policy**：使用固定 synth gain 或同 song/pair 共用 gain，只做 true-peak protection；禁止逐 clip LUFS 拉齐后放大稀疏/近空伴奏。
 - [ ] **T10.5 excerpt**：按 manifest 的 beat window 裁剪；sham/treatment 窗口完全相同；不足长度使用预定义 pad，不能听后挑片段。

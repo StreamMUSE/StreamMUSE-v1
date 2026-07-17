@@ -167,6 +167,7 @@ def test_service_client_server_metadata_contract_survives_backend_history_trim(
     )
 
     third_metadata = succeeded[-1]["response_metadata"]
+    assert third_metadata["part0_trace_available"] is False
     assert third_metadata["input_cumulative_digest"] == lifecycle_requests[-1].input_cumulative_digest
     assert third_metadata["input_increment_digest"] == lifecycle_requests[-1].input_increment_digest
     assert third_metadata["part0_roll_digest"] != third_metadata["input_cumulative_digest"]

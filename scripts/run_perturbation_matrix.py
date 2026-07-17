@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze, execute, and audit the 160-run melody robustness campaign.
+"""Schedule, execute, and audit the 160-run melody robustness campaign.
 
 The driver intentionally fails closed.  Formal execution requires a clean
 worktree, immutable hashed inputs/config/schedule, a dedicated real-model
@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
@@ -28,6 +29,10 @@ import numpy as np
 import requests
 
 from streammuse.experiments.melody_robustness import (
+    OFFLINE_REQUIRED_ARTIFACT_SCHEMA,
+    OFFLINE_REQUIRED_ATTEMPT_ARTIFACTS,
+    RT_REQUIRED_ARTIFACT_SCHEMA,
+    RT_REQUIRED_ATTEMPT_ARTIFACTS,
     build_qualification_schedule,
     build_run_schedule,
     canonical_sha256,
@@ -37,12 +42,21 @@ from streammuse.experiments.melody_robustness import (
     validate_frozen_qualification,
     validate_listening_selection_manifest,
     validate_staged_input_manifest,
+    verify_attempt_verdict,
     write_canonical_json,
     write_jsonl,
+)
+from streammuse.infrastructure.inference.lekai_http_backend import (
+    decode_part1_token_trace,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+OFFLINE_ARTIFACT_CONTRACT_SCHEMA = OFFLINE_REQUIRED_ARTIFACT_SCHEMA
+RT_ARTIFACT_CONTRACT_SCHEMA = RT_REQUIRED_ARTIFACT_SCHEMA
+OFFLINE_REQUIRED_ARTIFACTS = OFFLINE_REQUIRED_ATTEMPT_ARTIFACTS
+RT_REQUIRED_ARTIFACTS = RT_REQUIRED_ATTEMPT_ARTIFACTS
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -228,7 +242,7 @@ def _reset_contract_errors(
 def _hash_index(root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
-        if path.is_file() and not path.name.endswith(".sha256"):
+        if path.is_file():
             rows.append(
                 {
                     "path": str(path.relative_to(root)),
@@ -352,6 +366,7 @@ def _verified_existing_verdict(
     if not isinstance(index, list) or not index:
         return None
     seen: set[str] = set()
+    indexed_records: dict[str, Mapping[str, Any]] = {}
     for record in index:
         if not isinstance(record, Mapping) or not record.get("path") or not record.get("sha256"):
             return None
@@ -359,6 +374,7 @@ def _verified_existing_verdict(
         if relative in seen:
             return None
         seen.add(relative)
+        indexed_records[relative] = record
         path = (attempt / relative).resolve()
         try:
             if not path.is_relative_to(attempt):
@@ -378,12 +394,346 @@ def _verified_existing_verdict(
         str(path.relative_to(attempt))
         for path in attempt.rglob("*")
         if path.is_file()
-        and not path.name.endswith(".sha256")
-        and path.name != "verdict.json"
+        and path.name not in {"verdict.json", "verdict.json.sha256"}
     }
     if actual != seen:
         return None
+    # Formal attempts must carry a pipeline-specific, independently generated
+    # required-artifact gate.  Qualification attempts use their own evidence
+    # validator and intentionally do not claim this formal contract.
+    if expected_binding is not None and "qualification_result_sha256" in expected_binding:
+        if verdict.get("schema_version") != "streammuse.melody_robustness.verdict.v1":
+            return None
+        pipeline = verdict.get("pipeline")
+        if pipeline == "rt":
+            expected_schema = RT_ARTIFACT_CONTRACT_SCHEMA
+            expected_labels = set(RT_REQUIRED_ARTIFACTS)
+            expected_gate = "rt_artifact_gate.json"
+        elif pipeline == "offline":
+            expected_schema = OFFLINE_ARTIFACT_CONTRACT_SCHEMA
+            expected_labels = set(OFFLINE_REQUIRED_ARTIFACTS)
+            expected_gate = "offline_post_run_gate.json"
+        else:
+            return None
+        contract = verdict.get("required_artifact_contract")
+        if not isinstance(contract, Mapping):
+            return None
+        if (
+            contract.get("schema_version") != expected_schema
+            or contract.get("enforced") is not True
+            or contract.get("gate_path") != expected_gate
+            or contract.get("required_labels") != sorted(expected_labels)
+        ):
+            return None
+        gate_path = attempt / expected_gate
+        if expected_gate not in indexed_records or not gate_path.is_file():
+            return None
+        try:
+            gate = _read_json(gate_path)
+        except Exception:
+            return None
+        required = gate.get("required_artifacts")
+        if (
+            gate.get("schema_version") != expected_schema
+            or gate.get("enforced", True) is not True
+            or gate.get("content_valid") is not True
+            or not isinstance(required, Mapping)
+            or set(required) != expected_labels
+        ):
+            return None
+        for label in expected_labels:
+            record = required.get(label)
+            if not isinstance(record, Mapping):
+                return None
+            relative = record.get("path")
+            if not isinstance(relative, str):
+                return None
+            basename = Path(relative).name
+            expected_name = (
+                RT_REQUIRED_ARTIFACTS[label]
+                if pipeline == "rt"
+                else OFFLINE_REQUIRED_ARTIFACTS[label]
+            )
+            if (
+                (expected_name.startswith("_") and not basename.endswith(expected_name))
+                or (not expected_name.startswith("_") and basename != expected_name)
+            ):
+                return None
+            indexed = indexed_records.get(relative)
+            if indexed is None or dict(indexed) != dict(record):
+                return None
+        if pipeline == "rt":
+            semantic = gate.get("semantic_evidence")
+            if not isinstance(semantic, Mapping) or any(
+                semantic.get(field) is not True
+                for field in (
+                    "raw_token_trace_complete",
+                    "token_decode_reconciliation_complete",
+                    "output_event_digest_complete",
+                    "trace_inference_equal",
+                    "theoretical_semantic_equal",
+                    "combined_schedule_consistent",
+                    "combined_semantic_equal",
+                )
+            ):
+                return None
+        try:
+            _attempt, shared_verdict, _indexed = verify_attempt_verdict(
+                run_dir,
+                {"run_id": run_dir.name, "pipeline": pipeline},
+                expected_binding,
+                require_content_valid=True,
+            )
+        except Exception:
+            return None
+        if shared_verdict != verdict:
+            return None
     return verdict
+
+
+_ATTEMPT_ID_PATTERN = re.compile(r"attempt-([0-9]{3})")
+
+
+def _matched_retry_block_key(row: Mapping[str, Any]) -> tuple[str, str, int]:
+    return (
+        str(row["pipeline"]),
+        str(row["song"]),
+        int(row["sample_seed"]),
+    )
+
+
+def _formal_retry_blocks(
+    rows: Iterable[Mapping[str, Any]],
+) -> list[tuple[tuple[str, str, int], list[Mapping[str, Any]]]]:
+    """Group the canonical formal schedule into its immutable 8-run blocks."""
+    grouped: dict[tuple[str, str, int], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(_matched_retry_block_key(row), []).append(row)
+    blocks = list(grouped.items())
+    for key, block_rows in blocks:
+        selectors = {
+            (
+                str(row.get("condition")),
+                (
+                    None
+                    if row.get("perturb_seed") is None
+                    else int(row["perturb_seed"])
+                ),
+            )
+            for row in block_rows
+        }
+        if len(block_rows) != 8 or len(selectors) != 8:
+            raise ValueError(
+                "formal matched retry block must contain exactly 8 distinct "
+                f"condition/perturb-seed runs: block={key!r}, "
+                f"rows={len(block_rows)}, selectors={len(selectors)}"
+            )
+    return blocks
+
+
+def _attempt_directory_ids(run_dir: Path) -> list[str]:
+    """Return a contiguous immutable attempt sequence, rejecting lookalikes."""
+    if not run_dir.exists():
+        return []
+    if not run_dir.is_dir():
+        raise ValueError(f"run path is not a directory: {run_dir}")
+    attempt_ids: list[str] = []
+    for path in run_dir.iterdir():
+        if not path.name.startswith("attempt-"):
+            continue
+        match = _ATTEMPT_ID_PATTERN.fullmatch(path.name)
+        if match is None or not path.is_dir():
+            raise ValueError(f"invalid attempt entry: {path}")
+        attempt_ids.append(path.name)
+    attempt_ids.sort()
+    expected = [f"attempt-{index:03d}" for index in range(1, len(attempt_ids) + 1)]
+    if attempt_ids != expected:
+        raise ValueError(
+            f"attempt IDs are not contiguous from attempt-001: {run_dir}: "
+            f"actual={attempt_ids!r}, expected={expected!r}"
+        )
+    return attempt_ids
+
+
+def _verified_attempt_history(
+    *,
+    row: Mapping[str, Any],
+    output_root: Path,
+    campaign_binding: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Verify every immutable attempt plus the pointer to the highest one."""
+    run_dir = output_root / "runs" / str(row["run_id"])
+    attempt_ids = _attempt_directory_ids(run_dir)
+    pointer = run_dir / "latest_verdict.json"
+    if not attempt_ids:
+        if pointer.exists():
+            raise ValueError(f"latest verdict exists without an immutable attempt: {pointer}")
+        return {}
+    history: dict[str, dict[str, Any]] = {}
+    for attempt_id in attempt_ids:
+        _attempt, verdict, _indexed = verify_attempt_verdict(
+            run_dir,
+            row,
+            campaign_binding,
+            expected_attempt_id=attempt_id,
+            require_content_valid=None,
+            require_latest_pointer=False,
+        )
+        history[attempt_id] = verdict
+    highest = attempt_ids[-1]
+    _attempt, latest, _indexed = verify_attempt_verdict(
+        run_dir,
+        row,
+        campaign_binding,
+        expected_attempt_id=highest,
+        require_content_valid=None,
+        require_latest_pointer=True,
+    )
+    if latest != history[highest]:
+        raise ValueError(f"latest verdict is not the highest immutable attempt: {run_dir}")
+    return history
+
+
+def _inspect_formal_retry_block(
+    *,
+    key: tuple[str, str, int],
+    block_rows: list[Mapping[str, Any]],
+    output_root: Path,
+    campaign_binding: Mapping[str, Any],
+    allow_partial_latest: bool,
+    maximum_attempts: int | None = None,
+) -> dict[str, Any]:
+    """Verify block history and permit only an interruptible highest attempt."""
+    if len(block_rows) != 8:
+        raise ValueError(f"matched retry block must contain 8 rows: {key!r}")
+    histories = {
+        str(row["run_id"]): _verified_attempt_history(
+            row=row,
+            output_root=output_root,
+            campaign_binding=campaign_binding,
+        )
+        for row in block_rows
+    }
+    id_sets = {run_id: set(history) for run_id, history in histories.items()}
+    union = sorted(set().union(*id_sets.values())) if id_sets else []
+    if maximum_attempts is not None and len(union) > maximum_attempts:
+        raise ValueError(
+            f"block {key!r} exceeds frozen retry policy: "
+            f"attempts={union!r}, maximum={maximum_attempts}"
+        )
+    for attempt_id in union[:-1]:
+        missing = sorted(run_id for run_id, ids in id_sets.items() if attempt_id not in ids)
+        if missing:
+            raise ValueError(
+                f"block {key!r} has a non-highest partial {attempt_id}: missing={missing!r}"
+            )
+    partial_latest = False
+    missing_latest: list[str] = []
+    if union:
+        highest = union[-1]
+        missing_latest = sorted(
+            run_id for run_id, ids in id_sets.items() if highest not in ids
+        )
+        partial_latest = bool(missing_latest)
+        if partial_latest and not allow_partial_latest:
+            raise ValueError(
+                f"block {key!r} attempt ID sets are not aligned at {highest}: "
+                f"missing={missing_latest!r}"
+            )
+    else:
+        highest = None
+    return {
+        "key": key,
+        "rows": block_rows,
+        "histories": histories,
+        "attempt_ids": union,
+        "highest_attempt_id": highest,
+        "partial_latest": partial_latest,
+        "missing_latest_run_ids": missing_latest,
+        "per_run_attempt_ids": {
+            run_id: sorted(ids) for run_id, ids in id_sets.items()
+        },
+    }
+
+
+def _preaudit_formal_retry_blocks(
+    *,
+    blocks: list[tuple[tuple[str, str, int], list[Mapping[str, Any]]]],
+    output_root: Path,
+    campaign_binding: Mapping[str, Any],
+    allow_partial_latest: bool,
+    maximum_attempts: int | None = None,
+) -> dict[tuple[str, str, int], dict[str, Any]]:
+    """Audit all blocks before the driver creates any new attempt directory."""
+    return {
+        key: _inspect_formal_retry_block(
+            key=key,
+            block_rows=block_rows,
+            output_root=output_root,
+            campaign_binding=campaign_binding,
+            allow_partial_latest=allow_partial_latest,
+            maximum_attempts=maximum_attempts,
+        )
+        for key, block_rows in blocks
+    }
+
+
+def _formal_retry_action(
+    state: Mapping[str, Any], *, maximum_attempts: int
+) -> dict[str, Any] | None:
+    """Choose one aligned attempt action; ``None`` means block is terminal."""
+    if maximum_attempts < 1:
+        raise ValueError("maximum_attempts must include at least attempt-001")
+    rows = list(state["rows"])
+    attempt_ids = list(state["attempt_ids"])
+    highest = state.get("highest_attempt_id")
+    histories = state["histories"]
+    if state.get("partial_latest"):
+        assert isinstance(highest, str)
+        missing = set(state["missing_latest_run_ids"])
+        return {
+            "attempt_id": highest,
+            "rows": [row for row in rows if str(row["run_id"]) in missing],
+            "resume_partial": True,
+        }
+    if not attempt_ids:
+        return {
+            "attempt_id": "attempt-001",
+            "rows": rows,
+            "resume_partial": False,
+        }
+    assert isinstance(highest, str)
+    latest = [histories[str(row["run_id"])][highest] for row in rows]
+    if all(verdict.get("content_valid") is True for verdict in latest):
+        return None
+    if len(attempt_ids) >= maximum_attempts:
+        return None
+    return {
+        "attempt_id": f"attempt-{len(attempt_ids) + 1:03d}",
+        "rows": rows,
+        "resume_partial": False,
+    }
+
+
+def _selected_formal_block_keys(
+    *,
+    rows: list[Mapping[str, Any]],
+    run_id: str | None,
+    limit: int | None,
+) -> set[tuple[str, str, int]]:
+    """Expand row-oriented CLI selectors to complete matched retry blocks."""
+    if run_id is not None:
+        matches = [row for row in rows if row["run_id"] == run_id]
+        if len(matches) != 1:
+            raise KeyError(f"unknown run_id: {run_id}")
+        selected = matches
+    elif limit is not None:
+        if limit < 0:
+            raise ValueError("--limit must be non-negative")
+        selected = rows[:limit]
+    else:
+        selected = rows
+    return {_matched_retry_block_key(row) for row in selected}
 
 
 def _validate_frozen_listening_selection(
@@ -398,12 +748,28 @@ def _validate_frozen_listening_selection(
         config["listening"].get("selection_manifest_sha256"),
         "listening selection manifest",
     )
-    validate_listening_selection_manifest(
-        _read_json(selection_path),
-        input_manifest,
-        manifest_path=Path(config["input_manifest"]["path"]).resolve(),
-        verify_files=True,
-    )
+    selection = _read_json(selection_path)
+    if (
+        selection.get("schema_version")
+        == "streammuse.melody_robustness.listening_triangle_selection.v2"
+    ):
+        from streammuse.experiments.triangle_listening import (
+            validate_triangle_selection_manifest,
+        )
+
+        validate_triangle_selection_manifest(
+            selection,
+            input_manifest,
+            manifest_path=Path(config["input_manifest"]["path"]).resolve(),
+            verify_files=True,
+        )
+    else:
+        validate_listening_selection_manifest(
+            selection,
+            input_manifest,
+            manifest_path=Path(config["input_manifest"]["path"]).resolve(),
+            verify_files=True,
+        )
     return selection_path
 
 
@@ -426,6 +792,736 @@ def _find_single(root: Path, name: str) -> Path | None:
     if len(matches) > 1:
         raise RuntimeError(f"ambiguous {name} beneath {root}: {matches}")
     return matches[0] if matches else None
+
+
+def _artifact_record(path: Path, attempt_dir: Path) -> dict[str, Any]:
+    resolved = path.resolve()
+    attempt = attempt_dir.resolve()
+    if not resolved.is_file() or not resolved.is_relative_to(attempt):
+        raise ValueError(f"artifact is missing or escapes attempt: {path}")
+    return {
+        "path": str(resolved.relative_to(attempt)),
+        "size": resolved.stat().st_size,
+        "sha256": file_sha256(resolved),
+    }
+
+
+def _read_jsonl_objects(path: Path, label: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{label} line {line_number} is invalid JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} line {line_number} is not an object")
+        rows.append(value)
+    return rows
+
+
+def _event_fingerprint(
+    row: Mapping[str, Any], *, tick_field: str, include_key: bool
+) -> tuple[Any, ...]:
+    event_type = row.get("type")
+    if event_type not in {"note_on", "note_off"}:
+        raise ValueError(f"invalid model event type: {event_type!r}")
+    tick = row.get(tick_field)
+    if isinstance(tick, bool) or not isinstance(tick, int):
+        raise ValueError(f"model event lacks integer {tick_field}")
+    pitch = row.get("pitch")
+    velocity = row.get("velocity")
+    if isinstance(pitch, bool) or not isinstance(pitch, int) or not -1 <= pitch <= 127:
+        raise ValueError("model event pitch is invalid")
+    if (
+        isinstance(velocity, bool)
+        or not isinstance(velocity, int)
+        or not 0 <= velocity <= 127
+    ):
+        raise ValueError("model event velocity is invalid")
+    base: tuple[Any, ...] = (event_type, pitch, tick, velocity)
+    if not include_key:
+        return base
+    channel = row.get("channel", 0)
+    program = row.get("program", 0)
+    if (
+        isinstance(channel, bool)
+        or not isinstance(channel, int)
+        or isinstance(program, bool)
+        or not isinstance(program, int)
+    ):
+        raise ValueError("model event channel/program is invalid")
+    return (*base, channel, program)
+
+
+def _canonical_notes_from_events(
+    rows: Iterable[Mapping[str, Any]], *, tick_field: str, final_tick: int | None = None
+) -> list[tuple[int, int, int, int]]:
+    """Mirror MidiFileOutputSink note reconstruction in integer tick space."""
+    events = [
+        _event_fingerprint(row, tick_field=tick_field, include_key=False)
+        for row in rows
+        if int(row.get("pitch", -1)) != -1
+    ]
+    events.sort(
+        key=lambda event: (
+            int(event[2]),
+            0 if event[0] == "note_off" else 1,
+            int(event[1]),
+        )
+    )
+    active: dict[int, tuple[int, int]] = {}
+    notes: list[tuple[int, int, int, int]] = []
+    max_tick = int(final_tick or 0)
+    for event_type, raw_pitch, raw_tick, raw_velocity in events:
+        pitch = int(raw_pitch)
+        tick = int(raw_tick)
+        velocity = int(raw_velocity)
+        max_tick = max(max_tick, tick)
+        if event_type == "note_on" and velocity > 0:
+            previous = active.pop(pitch, None)
+            if previous is not None and tick > previous[0]:
+                notes.append((previous[0], tick, pitch, previous[1]))
+            active[pitch] = (tick, velocity)
+        elif event_type == "note_off":
+            previous = active.pop(pitch, None)
+            if previous is not None and tick > previous[0]:
+                notes.append((previous[0], tick, pitch, previous[1]))
+    for pitch, (start, velocity) in active.items():
+        if max_tick > start:
+            notes.append((start, max_tick, pitch, velocity))
+    return sorted(notes)
+
+
+def _midi_track_notes(
+    path: Path,
+    *,
+    track_name: str,
+    bpm: float,
+    ticks_per_beat: int,
+    allowed_other_tracks: set[str],
+) -> tuple[list[tuple[int, int, int, int]], list[str]]:
+    import pretty_midi
+
+    errors: list[str] = []
+    midi = pretty_midi.PrettyMIDI(str(path))
+    matching = [instrument for instrument in midi.instruments if instrument.name == track_name]
+    if len(matching) > 1:
+        errors.append(f"MIDI contains multiple {track_name!r} tracks")
+    for instrument in midi.instruments:
+        if instrument.name != track_name and instrument.notes:
+            if instrument.name not in allowed_other_tracks:
+                errors.append(f"MIDI contains unexpected non-empty track {instrument.name!r}")
+    seconds_per_tick = (60.0 / float(bpm)) / int(ticks_per_beat)
+    notes: list[tuple[int, int, int, int]] = []
+    for instrument in matching:
+        for note in instrument.notes:
+            raw_start = float(note.start) / seconds_per_tick
+            raw_end = float(note.end) / seconds_per_tick
+            start = int(round(raw_start))
+            end = int(round(raw_end))
+            if abs(raw_start - start) > 1e-4 or abs(raw_end - end) > 1e-4:
+                errors.append("MIDI note is not aligned to the frozen logical tick grid")
+            notes.append((start, end, int(note.pitch), int(note.velocity)))
+    return sorted(notes), errors
+
+
+def _resolve_formal_rt_required_artifacts(
+    attempt_dir: Path,
+) -> tuple[dict[str, Path], list[str]]:
+    errors: list[str] = []
+    paths: dict[str, Path] = {}
+    root_labels = {
+        "command",
+        "process_log",
+        "rt_input_gate",
+        "post_run_runtime_info",
+    }
+    for label, name in RT_REQUIRED_ARTIFACTS.items():
+        try:
+            path = attempt_dir / name if label in root_labels else _find_single(attempt_dir, name)
+        except Exception as exc:
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            continue
+        if path is None or not path.is_file():
+            errors.append(f"missing required RT artifact {label}: {name}")
+            continue
+        paths[label] = path.resolve()
+    session_labels = set(RT_REQUIRED_ARTIFACTS) - root_labels
+    session_dirs = {paths[label].parent for label in session_labels if label in paths}
+    if len(session_dirs) != 1:
+        errors.append(
+            "required RT session artifacts do not resolve to one session directory"
+        )
+    return paths, errors
+
+
+def _rt_postrun_artifact_gate(
+    attempt_dir: Path,
+    *,
+    row: Mapping[str, Any],
+    config: Mapping[str, Any],
+    returncode: int,
+    base_content_valid: bool,
+    base_operational_valid: bool,
+    enforce_formal_contract: bool,
+) -> dict[str, Any]:
+    """Independently validate formal RT evidence and generated MIDI semantics."""
+    if not enforce_formal_contract:
+        return {
+            "schema_version": RT_ARTIFACT_CONTRACT_SCHEMA,
+            "enforced": False,
+            "content_valid": bool(base_content_valid),
+            "operational_valid": bool(base_operational_valid),
+            "required_artifacts": {},
+            "semantic_evidence": {},
+            "errors": [],
+        }
+
+    errors: list[str] = []
+    paths, resolution_errors = _resolve_formal_rt_required_artifacts(attempt_dir)
+    errors.extend(resolution_errors)
+    required_records: dict[str, dict[str, Any]] = {}
+    for label, path in paths.items():
+        try:
+            required_records[label] = _artifact_record(path, attempt_dir)
+        except Exception as exc:
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+
+    if int(returncode) != 0:
+        errors.append(f"RT process returned nonzero status {returncode}")
+    if not base_content_valid:
+        errors.append("RT service validity gate rejected content")
+
+    command: dict[str, Any] = {}
+    input_gate: dict[str, Any] = {}
+    runtime_gate: dict[str, Any] = {}
+    validity: dict[str, Any] = {}
+    summary: dict[str, Any] = {}
+    session_config: dict[str, Any] = {}
+    for label, destination in (
+        ("command", command),
+        ("rt_input_gate", input_gate),
+        ("post_run_runtime_info", runtime_gate),
+        ("validity", validity),
+        ("theoretical_model_summary", summary),
+        ("session_config", session_config),
+    ):
+        path = paths.get(label)
+        if path is None:
+            continue
+        try:
+            destination.update(_read_json(path))
+        except Exception as exc:
+            errors.append(f"cannot parse {label}: {type(exc).__name__}: {exc}")
+
+    expected_attempt_id = attempt_dir.name
+    for label, actual, expected in (
+        ("command.run_id", command.get("run_id"), row.get("run_id")),
+        ("command.attempt_id", command.get("attempt_id"), expected_attempt_id),
+        ("command.pipeline", command.get("pipeline"), "rt"),
+        ("input gate valid", input_gate.get("valid"), True),
+        ("post runtime gate valid", runtime_gate.get("valid"), True),
+        ("session output_type", session_config.get("output_type"), "session"),
+        ("session artifact tier", session_config.get("session_artifact_tier"), "debug"),
+    ):
+        if actual != expected or type(actual) is not type(expected):
+            errors.append(f"{label} mismatch: expected={expected!r}, actual={actual!r}")
+    reset_ack = command.get("reset_ack")
+    runtime_info = command.get("runtime_info")
+    if not isinstance(reset_ack, Mapping) or not isinstance(runtime_info, Mapping):
+        errors.append("command artifact lacks reset/runtime evidence")
+    content = validity.get("content")
+    if not isinstance(content, Mapping) or content.get("valid") is not True:
+        errors.append("validity.json does not contain content.valid=true")
+
+    trace_rows: list[dict[str, Any]] = []
+    inference_rows: list[dict[str, Any]] = []
+    actual_rows: list[dict[str, Any]] = []
+    lifecycle_rows: list[dict[str, Any]] = []
+    for label, destination in (
+        ("model_schedule_trace", trace_rows),
+        ("actual_event_trace", actual_rows),
+        ("request_lifecycle", lifecycle_rows),
+    ):
+        path = paths.get(label)
+        if path is None:
+            continue
+        try:
+            destination.extend(_read_jsonl_objects(path, label))
+        except Exception as exc:
+            errors.append(f"cannot parse {label}: {type(exc).__name__}: {exc}")
+    inference_path = paths.get("full_inference_trace")
+    if inference_path is not None:
+        try:
+            raw_inferences = json.loads(inference_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_inferences, list) or any(
+                not isinstance(item, dict) for item in raw_inferences
+            ):
+                raise ValueError("inferences.json must be a list of objects")
+            inference_rows.extend(raw_inferences)
+        except Exception as exc:
+            errors.append(
+                f"cannot parse full_inference_trace: {type(exc).__name__}: {exc}"
+            )
+
+    inference_events: list[Mapping[str, Any]] = []
+    inference_request_ids: list[str] = []
+    raw_token_trace_complete = True
+    token_decode_reconciliation_complete = True
+    output_event_digest_complete = True
+    validity_requests = validity.get("requests")
+    validity_by_request: dict[str, Mapping[str, Any]] = {}
+    if isinstance(validity_requests, list):
+        for request in validity_requests:
+            if isinstance(request, Mapping) and isinstance(request.get("request_id"), str):
+                validity_by_request[str(request["request_id"])] = request
+    else:
+        errors.append("validity.json requests is not a list")
+        raw_token_trace_complete = False
+        output_event_digest_complete = False
+    for index, inference in enumerate(inference_rows):
+        request_data = inference.get("request_data")
+        response_data = inference.get("response_data")
+        if not isinstance(request_data, Mapping) or not isinstance(response_data, Mapping):
+            errors.append(f"inference {index} lacks request/response objects")
+            raw_token_trace_complete = False
+            output_event_digest_complete = False
+            continue
+        request_id = request_data.get("lifecycle_request_id")
+        if not isinstance(request_id, str) or not request_id:
+            errors.append(f"inference {index} lacks lifecycle_request_id")
+            raw_token_trace_complete = False
+            output_event_digest_complete = False
+            request_id = f"<invalid-inference-{index}>"
+        inference_request_ids.append(request_id)
+        if request_data.get("log_detail") != "full" or not isinstance(
+            request_data.get("melody_notes"), list
+        ):
+            errors.append(f"inference {index} is not a full-detail request trace")
+            raw_token_trace_complete = False
+        accompaniment = response_data.get("accompaniment")
+        metadata = response_data.get("response_metadata")
+        if not isinstance(accompaniment, list) or any(
+            not isinstance(event, Mapping) for event in accompaniment
+        ):
+            errors.append(f"inference {index} lacks full accompaniment events")
+            accompaniment = []
+            raw_token_trace_complete = False
+            output_event_digest_complete = False
+        if not isinstance(metadata, Mapping) or not isinstance(
+            metadata.get("raw_tokens"), list
+        ) or not isinstance(metadata.get("structural_tokens"), list):
+            errors.append(f"inference {index} lacks the full raw-token trace")
+            raw_token_trace_complete = False
+            output_event_digest_complete = False
+        else:
+            raw_tokens = metadata["raw_tokens"]
+            structural_tokens = metadata["structural_tokens"]
+            raw_digest = _wire_digest(
+                {"raw": raw_tokens, "structural": structural_tokens}
+            )
+            if metadata.get("raw_token_digest") != raw_digest:
+                errors.append(f"inference {index} raw-token digest mismatch")
+                raw_token_trace_complete = False
+            decode_beats = metadata.get("token_decode_beats")
+            decode_initial = metadata.get("token_decode_initial_active_pitches")
+            decode_digest = metadata.get("token_decode_digest")
+            decode_payload = {
+                "initial_active_pitches": decode_initial,
+                "beats": decode_beats,
+            }
+            if (
+                not isinstance(decode_beats, list)
+                or any(not isinstance(record, Mapping) for record in decode_beats)
+                or not isinstance(decode_initial, list)
+                or any(
+                    isinstance(pitch, bool) or not isinstance(pitch, int)
+                    for pitch in decode_initial
+                )
+                or decode_digest != _wire_digest(decode_payload)
+            ):
+                errors.append(f"inference {index} token-decode trace/digest mismatch")
+                token_decode_reconciliation_complete = False
+            else:
+                flattened_raw = [
+                    token
+                    for record in decode_beats
+                    for token in record.get("raw_tokens", [])
+                ]
+                flattened_structural = [
+                    token
+                    for record in decode_beats
+                    for token in record.get("boundary_tokens", [])
+                ]
+                if flattened_raw != raw_tokens or flattened_structural != structural_tokens:
+                    errors.append(
+                        f"inference {index} token partitions differ from raw/structural tokens"
+                    )
+                    token_decode_reconciliation_complete = False
+                try:
+                    independently_decoded = decode_part1_token_trace(
+                        decode_beats,
+                        initial_active_pitches=decode_initial,
+                    )
+                    canonical_wire_events = [
+                        {
+                            "type": str(event.get("type")),
+                            "pitch": int(event.get("pitch")),
+                            "tick": int(event.get("tick")),
+                        }
+                        for event in accompaniment
+                    ]
+                    decoded_note_events = [
+                        {
+                            "type": str(event["type"]),
+                            "pitch": int(event["pitch"]),
+                            "tick": int(event["tick"]),
+                        }
+                        for event in independently_decoded
+                    ]
+                    # The PianoLLaMA token vocabulary encodes onset/sustain,
+                    # pitch and time, but not wire velocity.  Velocity remains
+                    # independently protected by output_event_digest.
+                    if decoded_note_events != canonical_wire_events:
+                        errors.append(
+                            f"inference {index} raw-token decode differs from accompaniment events"
+                        )
+                        token_decode_reconciliation_complete = False
+                except Exception as exc:
+                    errors.append(
+                        f"inference {index} raw-token decode failed: {type(exc).__name__}: {exc}"
+                    )
+                    token_decode_reconciliation_complete = False
+            request_record = validity_by_request.get(str(request_id))
+            canonical_decoded_events = [
+                {
+                    "type": event.get("type"),
+                    "pitch": event.get("pitch"),
+                    "tick": event.get("tick"),
+                    "velocity": event.get("velocity"),
+                }
+                for event in accompaniment
+            ]
+            output_digest = metadata.get("output_event_digest")
+            if output_digest != _wire_digest(canonical_decoded_events):
+                errors.append(f"inference {index} output-event digest mismatch")
+                output_event_digest_complete = False
+            elif request_record is None or request_record.get(
+                "output_event_digest"
+            ) != output_digest:
+                errors.append(
+                    f"inference {index} output-event digest is not bound to validity request"
+                )
+                output_event_digest_complete = False
+            if request_record is None or request_record.get("raw_token_digest") != raw_digest:
+                errors.append(
+                    f"inference {index} raw-token digest is not bound to validity request"
+                )
+                raw_token_trace_complete = False
+            if request_record is None or request_record.get(
+                "token_decode_digest"
+            ) != decode_digest:
+                errors.append(
+                    f"inference {index} token-decode digest is not bound to validity request"
+                )
+                token_decode_reconciliation_complete = False
+        inference_events.extend(accompaniment)
+    if isinstance(content, Mapping):
+        request_count = content.get("request_count")
+        if (
+            isinstance(request_count, bool)
+            or not isinstance(request_count, int)
+            or request_count <= 0
+            or len(inference_rows) != request_count
+        ):
+            errors.append(
+                "full inference trace count does not equal the positive validity request_count"
+            )
+
+    lifecycle_reconciliation_complete = True
+    try:
+        validity_request_ids = [
+            str(request["request_id"])
+            for request in validity_requests
+            if isinstance(request, Mapping) and isinstance(request.get("request_id"), str)
+        ] if isinstance(validity_requests, list) else []
+        if len(validity_request_ids) != len(set(validity_request_ids)):
+            raise ValueError("validity request IDs are duplicated")
+        validity_id_set = set(validity_request_ids)
+        if not validity_id_set:
+            raise ValueError("validity request ID set is empty")
+        if len(inference_request_ids) != len(set(inference_request_ids)):
+            raise ValueError("inference lifecycle_request_id values are duplicated")
+        if set(inference_request_ids) != validity_id_set:
+            raise ValueError("inference request IDs differ from validity request IDs")
+        if not isinstance(content, Mapping):
+            raise ValueError("validity content is not an object")
+        for field in (
+            "expected_request_ids",
+            "succeeded_request_ids",
+            "processed_request_ids",
+        ):
+            raw_ids = content.get(field)
+            if (
+                not isinstance(raw_ids, list)
+                or any(not isinstance(value, str) for value in raw_ids)
+                or len(raw_ids) != len(set(raw_ids))
+                or set(raw_ids) != validity_id_set
+            ):
+                raise ValueError(f"validity {field} differs from request records")
+        for field in (
+            "failed_request_ids",
+            "stale_dropped_request_ids",
+            "metadata_invalid_request_ids",
+            "pending_at_stop_request_ids",
+        ):
+            if content.get(field) != []:
+                raise ValueError(f"validity {field} must be empty for content-valid RT")
+        lifecycle_by_event: dict[str, list[str]] = {}
+        metadata_lifecycle: dict[str, dict[str, Mapping[str, Any]]] = {
+            "succeeded": {},
+            "processed": {},
+        }
+        for lifecycle in lifecycle_rows:
+            event = lifecycle.get("event")
+            request_id = lifecycle.get("request_id")
+            if not isinstance(event, str) or request_id is None:
+                continue
+            if not isinstance(request_id, str) or request_id not in validity_id_set:
+                raise ValueError("lifecycle row references an unknown request ID")
+            lifecycle_by_event.setdefault(event, []).append(request_id)
+            if event in metadata_lifecycle:
+                metadata_lifecycle[event][request_id] = lifecycle
+        for event in ("expected", "enqueued", "started", "succeeded", "processed"):
+            ids = lifecycle_by_event.get(event, [])
+            if len(ids) != len(set(ids)) or set(ids) != validity_id_set:
+                raise ValueError(f"lifecycle {event} rows do not exactly cover request IDs")
+        for forbidden in ("failed", "stale_dropped", "pending_at_stop"):
+            if lifecycle_by_event.get(forbidden):
+                raise ValueError(f"content-valid lifecycle contains {forbidden}")
+        inference_by_id = {
+            request_id: inference
+            for request_id, inference in zip(inference_request_ids, inference_rows)
+        }
+        for request_id in sorted(validity_id_set):
+            record = validity_by_request[request_id]
+            if any(
+                record.get(field) is not expected
+                for field, expected in (
+                    ("expected", True),
+                    ("enqueued", True),
+                    ("started", True),
+                    ("succeeded", True),
+                    ("processed", True),
+                    ("failed", False),
+                    ("stale_dropped", False),
+                )
+            ):
+                raise ValueError(f"validity request flags are inconsistent: {request_id}")
+            inference = inference_by_id[request_id]
+            request_data = inference["request_data"]
+            response_data = inference["response_data"]
+            if int(request_data.get("generation_start_tick", -1)) != int(
+                record.get("generation_start_tick", -2)
+            ):
+                raise ValueError(f"generation tick differs for request {request_id}")
+            metadata = response_data.get("response_metadata")
+            if not isinstance(metadata, Mapping):
+                raise ValueError(f"inference response metadata is invalid for {request_id}")
+            for event in ("succeeded", "processed"):
+                lifecycle_metadata = metadata_lifecycle[event][request_id].get(
+                    "response_metadata"
+                )
+                if not isinstance(lifecycle_metadata, Mapping) or dict(
+                    lifecycle_metadata
+                ) != dict(metadata):
+                    raise ValueError(
+                        f"{event} lifecycle metadata differs for {request_id}"
+                    )
+            if record.get("raw_token_digest") != metadata.get("raw_token_digest"):
+                raise ValueError(f"raw-token digest differs for request {request_id}")
+            if record.get("output_event_digest") != metadata.get("output_event_digest"):
+                raise ValueError(f"output-event digest differs for request {request_id}")
+    except Exception as exc:
+        lifecycle_reconciliation_complete = False
+        errors.append(f"request lifecycle reconciliation failed: {type(exc).__name__}: {exc}")
+
+    non_forced_trace = [
+        row for row in trace_rows if row.get("policy") != "forced_note_off"
+    ]
+    trace_inference_equal = False
+    try:
+        trace_counter = Counter(
+            _event_fingerprint(row, tick_field="logical_tick", include_key=True)
+            for row in non_forced_trace
+        )
+        inference_counter = Counter(
+            _event_fingerprint(row, tick_field="tick", include_key=True)
+            for row in inference_events
+        )
+        trace_inference_equal = trace_counter == inference_counter
+        if not trace_inference_equal:
+            errors.append("full inference events and model schedule trace differ")
+    except Exception as exc:
+        errors.append(f"cannot compare inference/trace events: {type(exc).__name__}: {exc}")
+
+    theoretical_event_rows: list[dict[str, Any]] = []
+    try:
+        theoretical_event_rows = [
+            row
+            for row in non_forced_trace
+            if int(row.get("pitch", -1)) != -1
+        ]
+    except Exception as exc:
+        errors.append(
+            f"cannot identify theoretical trace events: {type(exc).__name__}: {exc}"
+        )
+    expected_theoretical_notes: list[tuple[int, int, int, int]] = []
+    actual_theoretical_notes: list[tuple[int, int, int, int]] = []
+    theoretical_semantic_equal = False
+    theoretical_path = paths.get("theoretical_model_midi")
+    try:
+        expected_theoretical_notes = _canonical_notes_from_events(
+            theoretical_event_rows, tick_field="logical_tick"
+        )
+        if theoretical_path is None:
+            raise FileNotFoundError("theoretical_model.mid is missing")
+        actual_theoretical_notes, midi_errors = _midi_track_notes(
+            theoretical_path,
+            track_name="Theoretical Accompaniment",
+            bpm=float(config["runtime"]["playback_tempo"]),
+            ticks_per_beat=int(config["runtime"]["ticks_per_beat"]),
+            allowed_other_tracks={"Melody"},
+        )
+        errors.extend(f"theoretical MIDI: {error}" for error in midi_errors)
+        theoretical_semantic_equal = (
+            expected_theoretical_notes == actual_theoretical_notes and not midi_errors
+        )
+        if not theoretical_semantic_equal:
+            errors.append("model schedule trace and theoretical_model.mid differ")
+        if theoretical_event_rows and not actual_theoretical_notes:
+            errors.append("non-empty theoretical event trace exported to silent MIDI")
+    except Exception as exc:
+        errors.append(f"cannot verify theoretical MIDI: {type(exc).__name__}: {exc}")
+
+    source_empty = not actual_theoretical_notes
+    if summary:
+        summary_expectations = {
+            "schema_version": 2,
+            "export_status": "success",
+            "trace_path": "model_schedule_trace.jsonl",
+            "trace_sha256": (
+                file_sha256(paths["model_schedule_trace"])
+                if "model_schedule_trace" in paths
+                else None
+            ),
+            "trace_row_count": len(trace_rows),
+            "forced_note_off_excluded_count": len(trace_rows) - len(non_forced_trace),
+            "event_count": len(theoretical_event_rows),
+            "note_count": len(actual_theoretical_notes),
+            "empty": source_empty,
+            "midi_path": "theoretical_model.mid",
+        }
+        for field, expected in summary_expectations.items():
+            actual = summary.get(field)
+            if actual != expected or type(actual) is not type(expected):
+                errors.append(
+                    f"theoretical summary {field} mismatch: "
+                    f"expected={expected!r}, actual={actual!r}"
+                )
+
+    scheduled_counter: Counter[tuple[Any, ...]] = Counter()
+    actual_model_event_rows: list[dict[str, Any]] = []
+    combined_schedule_consistent = False
+    combined_semantic_equal = False
+    try:
+        scheduled_counter = Counter(
+            _event_fingerprint(row, tick_field="scheduled_tick", include_key=False)
+            for row in trace_rows
+            if row.get("action") == "scheduled"
+            and row.get("scheduled_tick") is not None
+            and int(row.get("pitch", -1)) != -1
+        )
+        for row in actual_rows:
+            data = row.get("data")
+            if not isinstance(data, Mapping) or data.get("source") != "model":
+                continue
+            actual_model_event_rows.append(
+                {
+                    "type": row.get("type"),
+                    "pitch": data.get("pitch"),
+                    "tick": row.get("tick"),
+                    "velocity": data.get("velocity"),
+                }
+            )
+        actual_counter = Counter(
+            _event_fingerprint(row, tick_field="tick", include_key=False)
+            for row in actual_model_event_rows
+        )
+        combined_schedule_consistent = not bool(actual_counter - scheduled_counter)
+        if not combined_schedule_consistent:
+            errors.append("actual combined model events are absent from scheduled trace")
+        all_actual_ticks = [
+            int(row["tick"])
+            for row in actual_rows
+            if isinstance(row.get("tick"), int)
+            and not isinstance(row.get("tick"), bool)
+        ]
+        expected_combined_notes = _canonical_notes_from_events(
+            actual_model_event_rows,
+            tick_field="tick",
+            final_tick=max(all_actual_ticks, default=0),
+        )
+        combined_path = paths.get("combined_midi")
+        if combined_path is None:
+            raise FileNotFoundError("combined.mid is missing")
+        actual_combined_notes, midi_errors = _midi_track_notes(
+            combined_path,
+            track_name="Accompaniment",
+            bpm=float(config["runtime"]["playback_tempo"]),
+            ticks_per_beat=int(config["runtime"]["ticks_per_beat"]),
+            allowed_other_tracks={"Melody"},
+        )
+        errors.extend(f"combined MIDI: {error}" for error in midi_errors)
+        combined_semantic_equal = (
+            expected_combined_notes == actual_combined_notes and not midi_errors
+        )
+        if not combined_semantic_equal:
+            errors.append("actual model event trace and combined.mid accompaniment differ")
+    except Exception as exc:
+        errors.append(f"cannot verify combined MIDI: {type(exc).__name__}: {exc}")
+
+    content_valid = not errors
+    return {
+        "schema_version": RT_ARTIFACT_CONTRACT_SCHEMA,
+        "enforced": True,
+        "content_valid": content_valid,
+        "operational_valid": bool(content_valid and base_operational_valid),
+        "returncode": int(returncode),
+        "required_artifacts": required_records,
+        "source_empty": source_empty,
+        "semantic_evidence": {
+            "raw_token_trace_complete": raw_token_trace_complete,
+            "token_decode_reconciliation_complete": token_decode_reconciliation_complete,
+            "output_event_digest_complete": output_event_digest_complete,
+            "lifecycle_reconciliation_complete": lifecycle_reconciliation_complete,
+            "lifecycle_row_count": len(lifecycle_rows),
+            "inference_event_count": len(inference_events),
+            "schedule_trace_row_count": len(trace_rows),
+            "trace_inference_equal": trace_inference_equal,
+            "theoretical_event_count": len(theoretical_event_rows),
+            "theoretical_note_count": len(actual_theoretical_notes),
+            "theoretical_semantic_equal": theoretical_semantic_equal,
+            "actual_model_event_count": len(actual_model_event_rows),
+            "combined_schedule_consistent": combined_schedule_consistent,
+            "combined_semantic_equal": combined_semantic_equal,
+        },
+        "errors": errors,
+    }
 
 
 def _is_lower_sha256(value: Any) -> bool:
@@ -525,13 +1621,18 @@ def _offline_postrun_gate(
         if not path.is_file():
             errors.append(f"missing offline {label}: {path}")
             continue
-        digest = file_sha256(path)
         size = path.stat().st_size
-        artifact_records[label] = {
-            "path": str(path), "size": size, "sha256": digest,
-        }
+        artifact_records[label] = _artifact_record(path, attempt_dir)
         if size <= 0:
             errors.append(f"offline {label} is empty: {path}")
+    for label, path in (
+        ("command", attempt_dir / "command.json"),
+        ("process_log", attempt_dir / "process.log"),
+    ):
+        if not path.is_file():
+            errors.append(f"missing offline {label}: {path}")
+            continue
+        artifact_records[label] = _artifact_record(path, attempt_dir)
 
     run_config: dict[str, Any] = {}
     token_trace: dict[str, Any] = {}
@@ -803,7 +1904,7 @@ def _offline_postrun_gate(
 
     content_valid = not errors
     return {
-        "schema_version": "streammuse.melody_robustness.offline_gate.v1",
+        "schema_version": OFFLINE_ARTIFACT_CONTRACT_SCHEMA,
         "content_valid": content_valid,
         "operational_valid": content_valid,
         "returncode": int(returncode),
@@ -818,10 +1919,22 @@ def _offline_postrun_gate(
 
 
 def _rt_validity(attempt_dir: Path, returncode: int) -> tuple[bool, bool, dict[str, Any]]:
-    path = _find_single(attempt_dir, "validity.json")
+    try:
+        path = _find_single(attempt_dir, "validity.json")
+    except Exception as exc:
+        return False, False, {
+            "reason": f"invalid validity artifact: {type(exc).__name__}: {exc}",
+            "returncode": returncode,
+        }
     if path is None:
         return False, False, {"reason": "missing validity.json", "returncode": returncode}
-    validity = _read_json(path)
+    try:
+        validity = _read_json(path)
+    except Exception as exc:
+        return False, False, {
+            "reason": f"cannot parse validity.json: {type(exc).__name__}: {exc}",
+            "returncode": returncode,
+        }
     content = validity.get("content", {})
     operational = validity.get("operational", {})
     content_valid = bool(
@@ -1126,6 +2239,7 @@ def _execute_row(
     manifest_dir: Path, generate_url: str, dry_run: bool,
     campaign_binding: Mapping[str, Any] | None = None,
     force_attempt: bool = False,
+    attempt_id_override: str | None = None,
 ) -> dict[str, Any]:
     config = copy.deepcopy(dict(config))
     if isinstance(row.get("runtime_overrides"), Mapping):
@@ -1136,7 +2250,16 @@ def _execute_row(
         existing = _verified_existing_verdict(run_dir, campaign_binding)
         if existing is not None:
             return {**existing, "skipped_verified_existing": True}
-    attempt_id, attempt_dir = _next_attempt(run_dir)
+    if attempt_id_override is None:
+        attempt_id, attempt_dir = _next_attempt(run_dir)
+    else:
+        if not force_attempt:
+            raise ValueError("attempt_id_override requires force_attempt=True")
+        if re.fullmatch(r"attempt-[0-9]{3}", attempt_id_override) is None:
+            raise ValueError(f"invalid explicit attempt ID: {attempt_id_override!r}")
+        attempt_id = attempt_id_override
+        attempt_dir = run_dir / attempt_id
+        attempt_dir.mkdir(parents=False, exist_ok=False)
     midi, npz, _acc = _preflight_entry(row, manifest_dir)
     base_env = dict(os.environ)
     command: list[str]
@@ -1217,8 +2340,26 @@ def _execute_row(
         )
         validity["driver_input_gate"] = input_gate
         validity["driver_post_runtime_gate"] = post_runtime_gate
+        enforce_formal_contract = bool(
+            campaign_binding is not None
+            and not campaign_binding.get("qualification", False)
+        )
+        artifact_gate = _rt_postrun_artifact_gate(
+            attempt_dir,
+            row=row,
+            config=config,
+            returncode=returncode,
+            base_content_valid=bool(content_valid),
+            base_operational_valid=bool(operational_valid),
+            enforce_formal_contract=enforce_formal_contract,
+        )
+        write_canonical_json(attempt_dir / "rt_artifact_gate.json", artifact_gate)
+        validity["driver_artifact_gate"] = artifact_gate
         content_valid = bool(
-            content_valid and input_gate["valid"] and post_runtime_gate["valid"]
+            content_valid
+            and input_gate["valid"]
+            and post_runtime_gate["valid"]
+            and artifact_gate["content_valid"]
         )
         operational_valid = bool(operational_valid and content_valid)
     else:
@@ -1242,6 +2383,32 @@ def _execute_row(
         "pipeline": row["pipeline"], "content_valid": content_valid,
         "operational_valid": operational_valid, "validity": validity,
         "artifact_index": _hash_index(attempt_dir),
+        "required_artifact_contract": {
+            "schema_version": (
+                RT_ARTIFACT_CONTRACT_SCHEMA
+                if row["pipeline"] == "rt"
+                else OFFLINE_ARTIFACT_CONTRACT_SCHEMA
+            ),
+            "enforced": bool(
+                row["pipeline"] == "offline"
+                or (
+                    campaign_binding is not None
+                    and not campaign_binding.get("qualification", False)
+                )
+            ),
+            "gate_path": (
+                "rt_artifact_gate.json"
+                if row["pipeline"] == "rt"
+                else "offline_post_run_gate.json"
+            ),
+            "required_labels": sorted(
+                (
+                    RT_REQUIRED_ARTIFACTS
+                    if row["pipeline"] == "rt"
+                    else OFFLINE_REQUIRED_ARTIFACTS
+                )
+            ),
+        },
         **(
             _verdict_binding_fields(campaign_binding)
             if campaign_binding is not None
@@ -1359,8 +2526,14 @@ def command_run(args: argparse.Namespace) -> None:
     config_path = Path(args.config).resolve()
     schedule_path = Path(args.schedule).resolve()
     config = _read_json(config_path)
+    if args.allow_dirty and args.qualification:
+        raise ValueError("--allow-dirty is forbidden for formal qualification")
     _require_dedicated_loopback(args.server_url)
-    validate_campaign_config(config, require_frozen=not args.qualification)
+    validate_campaign_config(
+        config,
+        require_frozen=not args.qualification,
+        verify_attestations=True,
+    )
     if args.qualification:
         if config.get("status") != "qualification_candidate":
             raise ValueError("--qualification requires a qualification candidate config")
@@ -1445,68 +2618,260 @@ def command_run(args: argparse.Namespace) -> None:
         )
         _wait_for_health(_server_base(args.server_url), args.server_start_timeout)
     try:
-        selected = rows
-        if args.run_id:
-            selected = [row for row in rows if row["run_id"] == args.run_id]
-            if len(selected) != 1:
-                raise KeyError(f"unknown run_id: {args.run_id}")
-        elif args.limit is not None:
-            selected = rows[: args.limit]
-        results = []
-        for row in selected:
-            if row["pipeline"] == "rt" and process is None and not args.dry_run:
-                ensure_server()
-            if row["pipeline"] == "offline" and process is not None:
-                raise RuntimeError(
-                    "schedule returned to offline after starting the GPU server; "
-                    "this would run two model processes concurrently"
-                )
-            results.append(
-                _execute_row(
-                    row, config, output_root=output_root,
-                    manifest_dir=manifest_path.parent, generate_url=args.server_url,
-                    dry_run=bool(args.dry_run), campaign_binding=campaign_binding,
-                )
-            )
+        results: list[dict[str, Any]] = []
         if not args.dry_run and not args.qualification:
-            failed_blocks = {
-                (str(row["pipeline"]), str(row["song"]), int(row["sample_seed"]))
-                for row, result in zip(selected, results)
-                if not result.get("content_valid", False)
-            }
-            max_retries = int(config["validity"]["retry"]["content_failure_max_retries"])
-            for retry_index in range(max_retries):
-                if not failed_blocks:
-                    break
-                stop_server()
-                next_failed: set[tuple[str, str, int]] = set()
-                for pipeline in ("offline", "rt"):
-                    block_keys = sorted(key for key in failed_blocks if key[0] == pipeline)
-                    if pipeline == "rt" and block_keys:
+            blocks = _formal_retry_blocks(rows)
+            maximum_attempts = 1 + int(
+                config["validity"]["retry"]["content_failure_max_retries"]
+            )
+            # This is deliberately global, including blocks not selected by a
+            # resume-oriented --run-id/--limit invocation.  No new directory is
+            # created until every existing immutable attempt is re-verified.
+            states = _preaudit_formal_retry_blocks(
+                blocks=blocks,
+                output_root=output_root,
+                campaign_binding=campaign_binding,
+                allow_partial_latest=True,
+                maximum_attempts=maximum_attempts,
+            )
+            selected_keys = _selected_formal_block_keys(
+                rows=rows,
+                run_id=args.run_id,
+                limit=args.limit,
+            )
+            for key, block_rows in blocks:
+                if key not in selected_keys:
+                    continue
+                if key[0] == "offline" and process is not None:
+                    raise RuntimeError(
+                        "schedule returned to offline after starting the GPU server; "
+                        "this would run two model processes concurrently"
+                    )
+                state = states[key]
+                executed_any = False
+                previous_action_attempt: str | None = None
+                while True:
+                    action = _formal_retry_action(
+                        state, maximum_attempts=maximum_attempts
+                    )
+                    if action is None:
+                        break
+                    if key[0] == "rt":
+                        if previous_action_attempt is not None:
+                            # A retry attempt gets a fresh server process.  A
+                            # resumed partial highest attempt starts with the
+                            # fresh process owned by this invocation.
+                            stop_server()
                         ensure_server()
-                    for block_key in block_keys:
-                        block_rows = [
-                            row for row in rows
-                            if (row["pipeline"], row["song"], int(row["sample_seed"])) == block_key
-                        ]
-                        if len(block_rows) != 8:
-                            raise RuntimeError(f"matched retry block must contain 8 runs: {block_key}")
-                        block_results = [
-                            _execute_row(
-                                row, config, output_root=output_root,
-                                manifest_dir=manifest_path.parent, generate_url=args.server_url,
-                                dry_run=False, campaign_binding=campaign_binding,
-                                force_attempt=True,
-                            )
-                            for row in block_rows
-                        ]
-                        results.extend(block_results)
-                        if any(not result.get("content_valid", False) for result in block_results):
-                            next_failed.add(block_key)
-                failed_blocks = next_failed
+                    for row in action["rows"]:
+                        _execute_row(
+                            row,
+                            config,
+                            output_root=output_root,
+                            manifest_dir=manifest_path.parent,
+                            generate_url=args.server_url,
+                            dry_run=False,
+                            campaign_binding=campaign_binding,
+                            force_attempt=True,
+                            attempt_id_override=str(action["attempt_id"]),
+                        )
+                        executed_any = True
+                    previous_action_attempt = str(action["attempt_id"])
+                    state = _inspect_formal_retry_block(
+                        key=key,
+                        block_rows=block_rows,
+                        output_root=output_root,
+                        campaign_binding=campaign_binding,
+                        allow_partial_latest=False,
+                        maximum_attempts=maximum_attempts,
+                    )
+                highest = state.get("highest_attempt_id")
+                if not isinstance(highest, str):
+                    raise RuntimeError(f"selected formal block produced no attempt: {key!r}")
+                for row in block_rows:
+                    verdict = dict(state["histories"][str(row["run_id"])][highest])
+                    if not executed_any:
+                        verdict["skipped_verified_existing"] = True
+                    results.append(verdict)
+        else:
+            selected = rows
+            if args.run_id:
+                selected = [row for row in rows if row["run_id"] == args.run_id]
+                if len(selected) != 1:
+                    raise KeyError(f"unknown run_id: {args.run_id}")
+            elif args.limit is not None:
+                if args.limit < 0:
+                    raise ValueError("--limit must be non-negative")
+                selected = rows[: args.limit]
+            for row in selected:
+                if row["pipeline"] == "rt" and process is None and not args.dry_run:
+                    ensure_server()
+                if row["pipeline"] == "offline" and process is not None:
+                    raise RuntimeError(
+                        "schedule returned to offline after starting the GPU server; "
+                        "this would run two model processes concurrently"
+                    )
+                results.append(
+                    _execute_row(
+                        row, config, output_root=output_root,
+                        manifest_dir=manifest_path.parent, generate_url=args.server_url,
+                        dry_run=bool(args.dry_run), campaign_binding=campaign_binding,
+                    )
+                )
         write_canonical_json(output_root / "last_execution.json", {"results": results})
     finally:
         stop_server()
+
+
+def _formal_listening_selectors(
+    selection: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return the unique formal model-output selectors used by listening."""
+    schema = selection.get("schema_version")
+    selectors: list[dict[str, Any]] = []
+    if schema == "streammuse.melody_robustness.listening_triangle_selection.v2":
+        trials = selection.get("trials", selection.get("scored_trials"))
+        if not isinstance(trials, list):
+            raise ValueError("triangle selection lacks scored trials")
+        for trial in trials:
+            if not isinstance(trial, Mapping):
+                raise ValueError("triangle listening trial is not an object")
+            sources = trial.get("sources")
+            if not isinstance(sources, Mapping):
+                raise ValueError("triangle listening trial lacks sources")
+            for side in ("a", "b"):
+                source = sources.get(side)
+                if not isinstance(source, Mapping):
+                    raise ValueError(f"triangle listening trial lacks source {side}")
+                if source.get("kind") != "formal":
+                    continue
+                selectors.append(
+                    {
+                        "formal_pipeline": source.get("formal_pipeline"),
+                        "source_artifact": source.get("source_artifact"),
+                        "presentation": source.get("presentation"),
+                        "song": source.get("song"),
+                        "condition": source.get("condition"),
+                        "perturb_seed": source.get("perturb_seed"),
+                        "sample_seed": source.get("sample_seed"),
+                    }
+                )
+    else:
+        clips = selection.get("clips")
+        if not isinstance(clips, list):
+            raise ValueError("listening selection lacks clips")
+        for clip in clips:
+            if not isinstance(clip, Mapping):
+                raise ValueError("listening selection clip is not an object")
+            pipeline = clip.get("pipeline")
+            if pipeline not in {"rt_theoretical", "rt_combined"}:
+                continue
+            selectors.append(
+                {
+                    "formal_pipeline": "rt",
+                    "source_artifact": (
+                        "theoretical_model"
+                        if pipeline == "rt_theoretical"
+                        else "combined"
+                    ),
+                    "presentation": clip.get("block"),
+                    "song": clip.get("song"),
+                    "condition": clip.get("condition"),
+                    "perturb_seed": clip.get("perturb_seed"),
+                    "sample_seed": clip.get("sample_seed"),
+                }
+            )
+    unique: dict[str, dict[str, Any]] = {}
+    for selector in selectors:
+        if selector["formal_pipeline"] != "rt":
+            raise ValueError("listening source must use the formal RT pipeline")
+        if selector["source_artifact"] not in {"theoretical_model", "combined"}:
+            raise ValueError("listening source artifact is unsupported")
+        key = json.dumps(selector, sort_keys=True, separators=(",", ":"))
+        unique[key] = selector
+    return [unique[key] for key in sorted(unique)]
+
+
+def _listening_source_readiness(
+    *,
+    selection: Mapping[str, Any],
+    schedule: list[dict[str, Any]],
+    output_root: Path,
+    campaign_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    selectors = _formal_listening_selectors(selection)
+    rows: list[dict[str, Any]] = []
+    for selector in selectors:
+        matches = [
+            row
+            for row in schedule
+            if row.get("pipeline") == selector["formal_pipeline"]
+            and row.get("song") == selector["song"]
+            and row.get("condition") == selector["condition"]
+            and row.get("perturb_seed") == selector["perturb_seed"]
+            and row.get("sample_seed") == selector["sample_seed"]
+        ]
+        result: dict[str, Any] = {"selector": selector, "ready": False}
+        if len(matches) != 1:
+            result["reason"] = f"selector matched {len(matches)} formal schedule rows"
+            rows.append(result)
+            continue
+        schedule_row = matches[0]
+        result["run_id"] = schedule_row["run_id"]
+        run_dir = output_root / "runs" / str(schedule_row["run_id"])
+        verdict = _verified_existing_verdict(run_dir, campaign_binding)
+        if verdict is None:
+            result["reason"] = "formal attempt/verdict/artifact contract is not valid"
+            rows.append(result)
+            continue
+        attempt = run_dir / str(verdict["attempt_id"])
+        gate_path = attempt / "rt_artifact_gate.json"
+        try:
+            gate = _read_json(gate_path)
+            artifact_label = (
+                "theoretical_model_midi"
+                if selector["source_artifact"] == "theoretical_model"
+                else "combined_midi"
+            )
+            record = gate["required_artifacts"][artifact_label]
+            if not isinstance(record, Mapping):
+                raise ValueError("listening source record is not an object")
+            artifact_path = (attempt / str(record["path"])).resolve()
+            if (
+                not artifact_path.is_relative_to(attempt.resolve())
+                or not artifact_path.is_file()
+                or artifact_path.stat().st_size != record.get("size")
+                or file_sha256(artifact_path) != record.get("sha256")
+            ):
+                raise ValueError("listening source artifact size/hash mismatch")
+        except Exception as exc:
+            result["reason"] = (
+                f"cannot resolve verified listening source: {type(exc).__name__}: {exc}"
+            )
+            rows.append(result)
+            continue
+        result.update(
+            {
+                "ready": True,
+                "attempt_id": verdict["attempt_id"],
+                "operational_valid": bool(verdict.get("operational_valid")),
+                "source_empty": bool(gate.get("source_empty")),
+                "artifact": dict(record),
+            }
+        )
+        rows.append(result)
+    ready_count = sum(row["ready"] for row in rows)
+    return {
+        "schema_version": (
+            "streammuse.melody_robustness.listening_source_readiness.v1"
+        ),
+        "selection_schema_version": selection.get("schema_version"),
+        "expected_unique_sources": len(selectors),
+        "ready_sources": ready_count,
+        "not_ready_sources": len(selectors) - ready_count,
+        "ready": bool(selectors) and ready_count == len(selectors),
+        "sources": rows,
+    }
 
 
 def command_audit(args: argparse.Namespace) -> None:
@@ -1525,7 +2890,9 @@ def command_audit(args: argparse.Namespace) -> None:
     validate_staged_input_manifest(
         _read_json(manifest_path), manifest_path=manifest_path, verify_files=True
     )
-    _validate_frozen_listening_selection(config, _read_json(manifest_path))
+    selection_path = _validate_frozen_listening_selection(
+        config, _read_json(manifest_path)
+    )
     _verify_file(
         Path(config["checkpoint"]["path"]).resolve(),
         config["checkpoint"]["sha256"],
@@ -1553,6 +2920,35 @@ def command_audit(args: argparse.Namespace) -> None:
         path.name for path in runs_dir.iterdir() if path.is_dir()
     } if runs_dir.is_dir() else set()
     extra_run_ids = sorted(actual_run_ids - expected_run_ids)
+    retry_blocks = _formal_retry_blocks(schedule)
+    block_states: dict[tuple[str, str, int], dict[str, Any]] = {}
+    attempt_block_errors: list[dict[str, Any]] = []
+    for key, block_rows in retry_blocks:
+        try:
+            block_states[key] = _inspect_formal_retry_block(
+                key=key,
+                block_rows=block_rows,
+                output_root=root,
+                campaign_binding=binding,
+                allow_partial_latest=False,
+                maximum_attempts=(
+                    1
+                    + int(
+                        config["validity"]["retry"][
+                            "content_failure_max_retries"
+                        ]
+                    )
+                ),
+            )
+        except Exception as exc:
+            attempt_block_errors.append(
+                {
+                    "pipeline": key[0],
+                    "song": key[1],
+                    "sample_seed": key[2],
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
     rows: list[dict[str, Any]] = []
     for expected in schedule:
         run_dir = root / "runs" / expected["run_id"]
@@ -1563,7 +2959,13 @@ def command_audit(args: argparse.Namespace) -> None:
         verdict = _verified_existing_verdict(run_dir, binding)
         if verdict is not None and verdict.get("pipeline") != expected["pipeline"]:
             verdict = None
-        attempts = len(list(run_dir.glob("attempt-*")))
+        try:
+            attempt_ids = _attempt_directory_ids(run_dir)
+        except Exception:
+            attempt_ids = sorted(
+                path.name for path in run_dir.glob("attempt-*") if path.is_dir()
+            )
+        attempts = len(attempt_ids)
         if verdict is None:
             rows.append(
                 {
@@ -1572,7 +2974,9 @@ def command_audit(args: argparse.Namespace) -> None:
                     "status": "invalid",
                     "operational_valid": False,
                     "empty_success": False,
+                    "source_empty": False,
                     "attempts": attempts,
+                    "attempt_ids": attempt_ids,
                     "reason": "latest verdict or indexed artifacts failed strict verification",
                 }
             )
@@ -1587,13 +2991,26 @@ def command_audit(args: argparse.Namespace) -> None:
                     .get("content", {})
                     .get("empty_success", False)
                 ),
+                "source_empty": bool(
+                    verdict.get("validity", {})
+                    .get("driver_artifact_gate", {})
+                    .get("source_empty", False)
+                ),
                 "attempts": attempts,
+                "attempt_ids": attempt_ids,
             }
         )
+    listening_readiness = _listening_source_readiness(
+        selection=_read_json(selection_path),
+        schedule=schedule,
+        output_root=root,
+        campaign_binding=binding,
+    )
     summary = {
         "campaign_config_sha256": binding["campaign_config_sha256"],
         "run_schedule_sha256": binding["run_schedule_sha256"],
         "campaign_binding_sha256": binding["campaign_binding_sha256"],
+        "qualification_result_sha256": binding["qualification_result_sha256"],
         "expected": len(schedule), "present": sum(row["status"] != "missing" for row in rows),
         "content_valid": sum(row["status"] == "valid" for row in rows),
         "missing": sum(row["status"] == "missing" for row in rows),
@@ -1602,7 +3019,22 @@ def command_audit(args: argparse.Namespace) -> None:
         "operational_invalid": sum(
             row["status"] == "valid" and not row.get("operational_valid", False) for row in rows
         ),
+        "source_empty": sum(
+            row["status"] == "valid" and row.get("source_empty", False)
+            for row in rows
+        ),
         "extra_run_ids": extra_run_ids,
+        "attempt_block_errors": attempt_block_errors,
+        "retry_blocks": [
+            {
+                "pipeline": key[0],
+                "song": key[1],
+                "sample_seed": key[2],
+                "attempt_ids": state["attempt_ids"],
+            }
+            for key, state in block_states.items()
+        ],
+        "listening_source_readiness": listening_readiness,
         "runs": rows,
     }
     write_canonical_json(Path(args.output), summary)
@@ -1611,6 +3043,8 @@ def command_audit(args: argparse.Namespace) -> None:
         or summary["missing"]
         or summary["invalid"]
         or extra_run_ids
+        or attempt_block_errors
+        or not listening_readiness["ready"]
     ):
         raise SystemExit(2)
 
@@ -1634,7 +3068,11 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--run-id")
     run.add_argument("--limit", type=int)
     run.add_argument("--dry-run", action="store_true")
-    run.add_argument("--allow-dirty", action="store_true", help="qualification/development only")
+    run.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="development dry-runs only; formal and qualification runs reject it",
+    )
     run.add_argument(
         "--qualification", action="store_true",
         help="accept a pre-formal qualification schedule and candidate config",

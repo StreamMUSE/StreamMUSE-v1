@@ -56,6 +56,7 @@ cp_transformer_pt.py
 /logs/
 /output/
 /outputs/
+/task_runs/
 aria-dataset
 POP909-Dataset
 /test/

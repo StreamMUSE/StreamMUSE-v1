@@ -986,16 +986,23 @@ def test_stop_is_idempotent_after_automatic_drain() -> None:
 
 
 @pytest.mark.parametrize(
-    ("corrupt_digest", "corrupt_request_id", "expected_valid"),
+    (
+        "corrupt_digest",
+        "corrupt_request_id",
+        "corrupt_trace_availability",
+        "expected_valid",
+    ),
     [
-        (False, False, True),
-        (True, False, False),
-        (False, True, False),
+        (False, False, False, True),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
     ],
 )
 def test_http_response_metadata_is_verified_in_content_gate(
     corrupt_digest: bool,
     corrupt_request_id: bool,
+    corrupt_trace_availability: bool,
     expected_valid: bool,
 ) -> None:
     def digest(value) -> str:
@@ -1027,6 +1034,8 @@ def test_http_response_metadata_is_verified_in_content_gate(
             self.cumulative.extend(increment)
             raw_tokens = [1, 2]
             structural_tokens = [258]
+            token_decode_beats = []
+            token_decode_initial_active_pitches = []
             self.metadata = {
                 "request_id": "stale-request" if corrupt_request_id else self.next_request_id,
                 "session_id": self._session_id,
@@ -1038,10 +1047,19 @@ def test_http_response_metadata_is_verified_in_content_gate(
                 "raw_token_digest": digest(
                     {"raw": raw_tokens, "structural": structural_tokens}
                 ),
+                "token_decode_beats": token_decode_beats,
+                "token_decode_initial_active_pitches": token_decode_initial_active_pitches,
+                "token_decode_digest": digest(
+                    {
+                        "initial_active_pitches": token_decode_initial_active_pitches,
+                        "beats": token_decode_beats,
+                    }
+                ),
                 "prompt_token_digest": digest([]),
-                "part0_tokens": [],
-                "part0_token_digest": digest([]),
-                "input_increment_digest": "bad" if corrupt_digest else digest(increment),
+                    "part0_tokens": [],
+                    "part0_token_digest": digest([]),
+                    "part0_trace_available": not corrupt_trace_availability,
+                    "input_increment_digest": "bad" if corrupt_digest else digest(increment),
                 "input_cumulative_digest": digest(self.cumulative),
                 "part0_roll_digest": digest(self.cumulative),
                 "part0_roll_shape": [2, 88, 4],
@@ -1078,4 +1096,6 @@ def test_http_response_metadata_is_verified_in_content_gate(
 
     assert output.validity["content"]["valid"] is expected_valid
     invalid = output.validity["content"]["metadata_invalid_request_ids"]
-    assert bool(invalid) is (corrupt_digest or corrupt_request_id)
+    assert bool(invalid) is (
+        corrupt_digest or corrupt_request_id or corrupt_trace_availability
+    )

@@ -107,8 +107,16 @@ def load_midi_roll(
     return Roll(horizon, frozenset(sustain), frozenset(onsets))
 
 
-def write_roll_midi(roll: Roll, path: str | Path, *, bpm: int = 120) -> None:
+def write_roll_midi(
+    roll: Roll,
+    path: str | Path,
+    *,
+    bpm: int = 120,
+    velocity: int = 80,
+) -> None:
     """Write a deterministic canonical MIDI from a sparse sustain roll."""
+    if isinstance(velocity, bool) or not isinstance(velocity, int) or not 1 <= velocity <= 127:
+        raise ValueError("MIDI velocity must be an integer in [1, 127]")
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     source_tpb = 480
@@ -124,7 +132,13 @@ def write_roll_midi(roll: Roll, path: str | Path, *, bpm: int = 120) -> None:
         start = previous = ordered[0]
         for tick in ordered[1:] + [roll.end_tick + 1]:
             if tick != previous + 1 or (tick, pitch) in roll.onsets:
-                events.append((start * step, 1, mido.Message("note_on", note=pitch, velocity=80)))
+                events.append(
+                    (
+                        start * step,
+                        1,
+                        mido.Message("note_on", note=pitch, velocity=velocity),
+                    )
+                )
                 events.append(((previous + 1) * step, 0, mido.Message("note_off", note=pitch, velocity=0)))
                 start = tick
             previous = tick

@@ -747,6 +747,7 @@ def test_generation_metadata_keeps_full_input_digest_after_prompt_history_trim(m
     # substitute an event-table digest and pretend that it passed the formal
     # part0 converter gate.
     assert metadata_rows[-1]["part0_roll_digest"] is None
+    assert metadata_rows[-1]["part0_trace_available"] is False
     assert metadata_rows[-1]["part0_roll_shape"] == []
     assert metadata_rows[-1]["part0_roll_digest"] != metadata_rows[-1][
         "input_cumulative_digest"

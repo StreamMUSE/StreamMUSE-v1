@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -167,29 +168,56 @@ class SessionLoggerOutputSink:
         if not self.include_midi:
             return
 
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        # An empty schedule trace is a required, meaningful artifact: it proves
+        # that the exporter observed no model events instead of silently losing
+        # a missing trace file.
+        self._schedule_trace_path.touch(exist_ok=True)
         events: list[MusicalEvent] = []
-        trace_lines = (
-            self._schedule_trace_path.read_text(encoding="utf-8").splitlines()
-            if self._schedule_trace_path.exists()
-            else []
-        )
-        for line in trace_lines:
+        trace_lines = self._schedule_trace_path.read_text(encoding="utf-8").splitlines()
+        parsed_row_count = 0
+        forced_note_off_count = 0
+        for line_number, line in enumerate(trace_lines, start=1):
             if not line.strip():
                 continue
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid model schedule trace JSON at line {line_number}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"model schedule trace row {line_number} must be an object"
+                )
+            parsed_row_count += 1
             if row.get("policy") == "forced_note_off":
+                forced_note_off_count += 1
                 continue
             event_type = row.get("type")
             logical_tick = row.get("logical_tick")
             if event_type not in {"note_on", "note_off"} or logical_tick is None:
+                raise ValueError(
+                    f"model schedule trace row {line_number} lacks event semantics"
+                )
+            action = row.get("action")
+            if action not in {"scheduled", "dropped"}:
+                raise ValueError(
+                    f"model schedule trace row {line_number} has invalid action"
+                )
+            pitch = int(row.get("pitch", -1))
+            # Placeholder rows carry pitch=-1 and intentionally do not become
+            # audible MIDI notes.
+            if pitch == -1:
                 continue
+            if not 0 <= pitch <= 127:
+                raise ValueError(
+                    f"model schedule trace row {line_number} has invalid pitch"
+                )
             events.append(
                 MusicalEvent(
                     tick=int(logical_tick),
-                    pitch=int(row.get("pitch", 0)),
+                    pitch=pitch,
                     event_type=(EventType.NOTE_ON if event_type == "note_on" else EventType.NOTE_OFF),
                     velocity=int(row.get("velocity", 0 if event_type == "note_off" else 80)),
                     channel=int(row.get("channel", 0)),
@@ -219,20 +247,32 @@ class SessionLoggerOutputSink:
         for event in events:
             sink.output_event(event, "model")
         sink.close()
-        self._theoretical_summary_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "event_count": len(events),
-                    "empty": not events,
-                    "midi_path": self._theoretical_midi_path.name,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
+        # Parse the file we actually wrote rather than inferring success from
+        # the in-memory event list.  This also makes a valid empty MIDI an
+        # explicit success artifact.
+        import pretty_midi
+
+        exported = pretty_midi.PrettyMIDI(str(self._theoretical_midi_path))
+        note_count = sum(len(instrument.notes) for instrument in exported.instruments)
+        trace_sha256 = hashlib.sha256(self._schedule_trace_path.read_bytes()).hexdigest()
+        summary = {
+            "schema_version": 2,
+            "export_status": "success",
+            "trace_path": self._schedule_trace_path.name,
+            "trace_sha256": trace_sha256,
+            "trace_row_count": parsed_row_count,
+            "forced_note_off_excluded_count": forced_note_off_count,
+            "event_count": len(events),
+            "note_count": note_count,
+            "empty": note_count == 0,
+            "midi_path": self._theoretical_midi_path.name,
+        }
+        tmp_path = self._theoretical_summary_path.with_suffix(".json.tmp")
+        tmp_path.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        tmp_path.replace(self._theoretical_summary_path)
 
     def save_metrics(self, session_config: Dict[str, Any]) -> None:
         self._session_config = dict(session_config)
@@ -248,13 +288,19 @@ class SessionLoggerOutputSink:
             self.json_sink.save_metrics(self._session_config)
             self._metrics_saved = True
 
-        if self.midi_sink:
-            self.midi_sink.close()
+        first_error: Exception | None = None
         try:
+            if self.midi_sink:
+                self.midi_sink.close()
             self._write_theoretical_model_midi()
-        except Exception:
-            # The actual playback MIDI is already written; theoretical MIDI is diagnostic.
-            pass
-        if self.json_sink:
-            self.json_sink.close()
+        except Exception as exc:
+            first_error = exc
+        try:
+            if self.json_sink:
+                self.json_sink.close()
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
         self._closed = True
+        if first_error is not None:
+            raise first_error

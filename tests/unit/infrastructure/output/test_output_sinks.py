@@ -357,11 +357,47 @@ def test_session_logger_writes_valid_empty_theoretical_midi_and_summary(tmp_path
     theoretical = pretty_midi.PrettyMIDI(str(theoretical_path))
     assert sum(len(instrument.notes) for instrument in theoretical.instruments) == 0
     summary = json.loads((tmp_path / "theoretical_model_summary.json").read_text())
+    assert summary["schema_version"] == 2
+    assert summary["export_status"] == "success"
     assert summary["event_count"] == 0
+    assert summary["note_count"] == 0
     assert summary["empty"] is True
+    assert (tmp_path / "model_schedule_trace.jsonl").read_bytes() == b""
     assert json.loads((tmp_path / "validity.json").read_text())["content"]["valid"] is True
     lifecycle = json.loads((tmp_path / "request_lifecycle.jsonl").read_text())
     assert lifecycle["empty_success"] is True
+
+
+def test_session_logger_theoretical_export_failure_is_not_silently_swallowed(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=True,
+        include_json=True,
+        bpm=120.0,
+        ticks_per_beat=4,
+    )
+    sink.log_model_schedule(
+        [
+            {
+                "type": "note_on",
+                "pitch": 60,
+                "logical_tick": 0,
+                "scheduled_tick": 0,
+                "action": "scheduled",
+                "policy": "future_note",
+            }
+        ]
+    )
+    with (tmp_path / "model_schedule_trace.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write("{not-json}\n")
+
+    with pytest.raises(ValueError, match="invalid model schedule trace JSON"):
+        sink.close()
+
+    # The JSON sink is still closed so the failed attempt keeps its diagnostic
+    # evidence, but no success summary can be mistaken for a valid export.
+    assert (tmp_path / "inferences.json").is_file()
+    assert not (tmp_path / "theoretical_model_summary.json").exists()
 
 
 def test_composite_output_sink_fans_out_model_schedule_trace(tmp_path):

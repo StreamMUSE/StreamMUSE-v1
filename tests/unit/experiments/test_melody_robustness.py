@@ -6,6 +6,7 @@ from collections import Counter
 import pytest
 
 from streammuse.experiments.melody_robustness import (
+    ATTESTATION_BUNDLE_SCHEMA_VERSION,
     CAMPAIGN_SCHEMA_VERSION,
     CONDITION_TABLE,
     RUN_SCHEMA_VERSION,
@@ -18,21 +19,66 @@ from streammuse.experiments.melody_robustness import (
 )
 
 
-SONGS = tuple(f"song-{index}" for index in range(1, 6))
+SONGS = tuple(str(index) for index in range(1, 6))
+
+
+def _attestation_records() -> dict:
+    return {
+        "schema_version": ATTESTATION_BUNDLE_SCHEMA_VERSION,
+        "code_identity": {
+            "path": "campaign/code_identity.json",
+            "sha256": "1" * 64,
+        },
+        "checkpoint_identity": {
+            "path": "campaign/checkpoint_identity.json",
+            "sha256": "2" * 64,
+        },
+        "environment": {
+            "path": "campaign/environment.json",
+            "sha256": "3" * 64,
+        },
+        "qualification_spec": {
+            "path": "campaign/qualification_spec.json",
+            "sha256": "4" * 64,
+        },
+    }
 
 
 def _raw_campaign_config() -> dict:
     config = default_campaign_config(
-        code_identity="test-code-sha",
+        code_identity="a" * 40,
         checkpoint_path="models/test.safetensors",
         checkpoint_sha256="c" * 64,
         input_manifest_path="campaign/input_manifest.json",
-        input_manifest_sha256="m" * 64,
+        input_manifest_sha256="d" * 64,
+        attestation=_attestation_records(),
         playback_tempo=60,
         tail_beats=24,
     )
+    config["qualification"] = {
+        "dense_song": "2",
+        "tail_songs": ["2", "4"],
+        "sample_seed": SEEDS["sample"][0],
+        "perturb_seed": SEEDS["perturb"][0],
+        "tempo_candidates": [60, 30],
+        "tail_candidates": [8, 16, 24],
+        "decision_order": ["determinism", "static_input_gate", "tempo", "tail"],
+    }
+    config["status"] = "qualified_frozen"
+    config["qualification_candidate"] = {
+        "path": "campaign/qualification_config.json",
+        "sha256": "e" * 64,
+    }
+    config["qualification_result"] = {
+        "path": "campaign/qualification_result.json",
+        "sha256": "f" * 64,
+    }
     config["listening"]["selection_manifest_path"] = "campaign/listening.json"
-    config["listening"]["selection_manifest_sha256"] = "l" * 64
+    config["listening"]["selection_manifest_sha256"] = "b" * 64
+    config["listening"]["renderer_identity"] = {
+        "path": "campaign/triangle_renderer_identity.json",
+        "sha256": "9" * 64,
+    }
     return config
 
 
@@ -159,6 +205,13 @@ def test_valid_40_entry_manifest_builds_reproducible_160_run_schedule():
         lambda value: value["listening"].update(render_bpm=60),
         lambda value: value["checkpoint"].update(sha256=""),
         lambda value: value["input_manifest"].update(sha256=""),
+        lambda value: value.pop("attestation"),
+        lambda value: value["attestation"].pop("environment"),
+        lambda value: value.pop("qualification_result"),
+        lambda value: value["qualification"].update(tempo_candidates=[60]),
+        lambda value: value["qualification"].update(dense_song="1"),
+        lambda value: value["qualification"].update(tail_songs=["4", "2"]),
+        lambda value: value["qualification"].update(tail_songs=["2", "3"]),
     ],
 )
 def test_campaign_config_rejects_mutated_frozen_fields(mutate):

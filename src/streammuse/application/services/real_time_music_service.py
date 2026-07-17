@@ -305,6 +305,7 @@ class RealTimeMusicService:
                 "input_increment_digest": increment_digest,
                 "input_cumulative_digest": cumulative_digest,
                 "raw_token_digest": None,
+                "token_decode_digest": None,
                 "response_metadata_status": "pending",
             }
         self._log_lifecycle("expected", request=request)
@@ -401,6 +402,21 @@ class RealTimeMusicService:
             normalized["raw_token_digest_verified"] = (
                 supplied_digest is None or str(supplied_digest) == computed_digest
             )
+        token_decode_beats = normalized.get("token_decode_beats")
+        token_decode_initial = normalized.get("token_decode_initial_active_pitches")
+        if isinstance(token_decode_beats, list) and isinstance(token_decode_initial, list):
+            canonical_decode = json.dumps(
+                {
+                    "initial_active_pitches": token_decode_initial,
+                    "beats": token_decode_beats,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            computed_decode_digest = hashlib.sha256(canonical_decode).hexdigest()
+            normalized["token_decode_digest_verified"] = (
+                normalized.get("token_decode_digest") == computed_decode_digest
+            )
         part0_tokens = normalized.get("part0_tokens")
         if isinstance(part0_tokens, list):
             canonical_part0 = json.dumps(
@@ -446,9 +462,13 @@ class RealTimeMusicService:
             "raw_tokens",
             "structural_tokens",
             "raw_token_digest",
+            "token_decode_beats",
+            "token_decode_initial_active_pitches",
+            "token_decode_digest",
             "prompt_token_digest",
             "part0_tokens",
             "part0_token_digest",
+            "part0_trace_available",
             "input_increment_digest",
             "input_cumulative_digest",
             "part0_roll_digest",
@@ -461,6 +481,7 @@ class RealTimeMusicService:
             "empty_success",
             "context_start_tick",
         }
+        part0_trace_available = metadata.get("part0_trace_available") is True
         checks: dict[str, bool] = {
             "metadata_available": available,
             "required_keys_present": required_keys.issubset(metadata),
@@ -477,23 +498,48 @@ class RealTimeMusicService:
                 metadata.get("input_cumulative_digest") == request.input_cumulative_digest
             ),
             "raw_token_digest_verified": bool(metadata.get("raw_token_digest_verified")),
+            "token_decode_digest_verified": bool(
+                metadata.get("token_decode_digest_verified")
+            ),
             "part0_token_digest_verified": bool(
                 metadata.get("part0_token_digest_verified")
             ),
-            "part0_roll_digest_present": bool(metadata.get("part0_roll_digest")),
+            "part0_trace_availability_declared": isinstance(
+                metadata.get("part0_trace_available"), bool
+            ),
+            "part0_trace_unavailable_is_empty": (
+                part0_trace_available
+                or (
+                    metadata.get("part0_roll_digest") is None
+                    and metadata.get("part0_roll_shape") == []
+                    and metadata.get("part0_roll_bytes_sha256") is None
+                    and metadata.get("part0_roll_start_tick") is None
+                    and metadata.get("part0_roll_end_tick") is None
+                    and metadata.get("context_start_tick") is None
+                )
+            ),
+            "part0_roll_digest_present": (
+                not part0_trace_available or bool(metadata.get("part0_roll_digest"))
+            ),
             "part0_roll_shape_valid": (
-                isinstance(metadata.get("part0_roll_shape"), list)
-                and len(metadata["part0_roll_shape"]) == 3
-                and list(metadata["part0_roll_shape"][:2]) == [2, 88]
-                and int(metadata["part0_roll_shape"][2]) > 0
+                not part0_trace_available
+                or (
+                    isinstance(metadata.get("part0_roll_shape"), list)
+                    and len(metadata["part0_roll_shape"]) == 3
+                    and list(metadata["part0_roll_shape"][:2]) == [2, 88]
+                    and int(metadata["part0_roll_shape"][2]) > 0
+                )
             ),
             "part0_roll_window_valid": (
-                metadata.get("part0_roll_start_tick") is not None
-                and metadata.get("part0_roll_end_tick") is not None
-                and int(metadata["part0_roll_start_tick"])
-                == int(metadata.get("context_start_tick", -1))
-                and int(metadata["part0_roll_end_tick"])
-                > int(metadata["part0_roll_start_tick"])
+                not part0_trace_available
+                or (
+                    metadata.get("part0_roll_start_tick") is not None
+                    and metadata.get("part0_roll_end_tick") is not None
+                    and int(metadata["part0_roll_start_tick"])
+                    == int(metadata.get("context_start_tick", -1))
+                    and int(metadata["part0_roll_end_tick"])
+                    > int(metadata["part0_roll_start_tick"])
+                )
             ),
             "effective_bpm_matches": (
                 expected_model_bpm is None
@@ -1515,7 +1561,13 @@ class RealTimeMusicService:
                             empty_success=empty_success,
                             response_metadata_status=response_metadata.get("metadata_status"),
                             raw_token_digest=response_metadata.get("raw_token_digest"),
+                            token_decode_digest=response_metadata.get(
+                                "token_decode_digest"
+                            ),
                             raw_token_count=response_metadata.get("raw_token_count"),
+                            output_event_digest=response_metadata.get(
+                                "output_event_digest"
+                            ),
                             engine_request_id=response_metadata.get("request_id"),
                             session_epoch=response_metadata.get("session_epoch"),
                             effective_seed=response_metadata.get("effective_seed"),

@@ -9,7 +9,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import torch
@@ -34,6 +34,82 @@ class SessionStateError(RuntimeError):
 TIMESTEPS_PER_BEAT = 4
 DEFAULT_PROMPT_CONTEXT_BEATS = 128
 DEFAULT_HISTORY_MAX_TICKS = DEFAULT_PROMPT_CONTEXT_BEATS * TIMESTEPS_PER_BEAT
+
+
+def decode_part1_token_trace(
+    beat_records: Sequence[Mapping[str, Any]],
+    *,
+    initial_active_pitches: Sequence[int] = (),
+) -> List[EventPayload]:
+    """Independently decode persisted per-beat part-1 tokens into wire events.
+
+    The formal artifact gate calls this function on the immutable inference
+    trace.  It uses only the persisted raw/structural token partitions and
+    start ticks, not the server's already-decoded accompaniment payload.
+    """
+
+    from streammuse.infrastructure.inference.lekai_model.MidiConverter import (
+        MidiConverter,
+    )
+    from streammuse.infrastructure.inference.lekai_model.inference_adapter import (
+        beats_to_pianoroll,
+    )
+    from streammuse.infrastructure.inference.lekai_model.my_tokenizer import (
+        PianoRollTokenizer,
+    )
+
+    tokenizer = PianoRollTokenizer(patch_h=1, patch_w=4)
+    converter = MidiConverter(ticks_per_beat=TIMESTEPS_PER_BEAT)
+    active = {int(pitch) for pitch in initial_active_pitches}
+    decoded: List[EventPayload] = []
+    previous_start: int | None = None
+    for index, record in enumerate(beat_records):
+        if set(record) != {"target_beat", "start_tick", "raw_tokens", "boundary_tokens"}:
+            raise ValueError(f"token-decode beat {index} has unexpected fields")
+        target_beat = record.get("target_beat")
+        start_tick = record.get("start_tick")
+        raw = record.get("raw_tokens")
+        boundary = record.get("boundary_tokens")
+        if (
+            isinstance(target_beat, bool)
+            or not isinstance(target_beat, int)
+            or isinstance(start_tick, bool)
+            or not isinstance(start_tick, int)
+            or start_tick != target_beat * TIMESTEPS_PER_BEAT
+            or not isinstance(raw, list)
+            or not isinstance(boundary, list)
+            or any(isinstance(token, bool) or not isinstance(token, int) for token in raw + boundary)
+        ):
+            raise ValueError(f"token-decode beat {index} is malformed")
+        if previous_start is not None and start_tick != previous_start + TIMESTEPS_PER_BEAT:
+            raise ValueError("token-decode beat starts are not contiguous")
+        previous_start = start_tick
+        playable_raw = [token for token in raw if token != 258]
+        playback_source = boundary if playable_raw == [255] and boundary else raw
+        playable = [token for token in playback_source if token != 258]
+        pianoroll = beats_to_pianoroll(
+            [playable],
+            tokenizer=tokenizer,
+            timesteps_per_beat=TIMESTEPS_PER_BEAT,
+        )
+        if tuple(int(value) for value in pianoroll.shape) != (2, 88, TIMESTEPS_PER_BEAT):
+            raise ValueError(f"token-decode beat {index} has invalid pianoroll shape")
+        events, active = converter.pianoroll_to_events(
+            pianoroll=pianoroll,
+            start_tick=start_tick,
+            close_at_end=False,
+            active_pitches=active,
+        )
+        decoded.extend(
+            {
+                "type": str(event["type"]),
+                "pitch": int(event["pitch"]),
+                "tick": int(event["tick"]),
+                "velocity": int(event.get("velocity", 100)),
+            }
+            for event in events
+        )
+    return decoded
 
 
 @dataclass(frozen=True)
@@ -701,6 +777,7 @@ class LekaiHttpBackend:
         raw_response_tokens: List[int] = []
         structural_tokens: List[int] = []
         part0_tokens: List[int] = []
+        token_decode_beats: List[Dict[str, Any]] = []
         self._current_generation_trace = {}
 
         from streammuse.infrastructure.inference.lekai_model.PianoDataset import encode_bpm
@@ -793,6 +870,7 @@ class LekaiHttpBackend:
 
         generated_events: List[EventPayload] = []
         running_active = set(self._active_pitches)
+        token_decode_initial_active_pitches = sorted(running_active)
 
         try:
             rt_temperature = float(os.environ.get("LEKAI_RT_TEMPERATURE", "0.8"))
@@ -883,6 +961,18 @@ class LekaiHttpBackend:
             ):
                 playback_source_tokens = boundary_tokens
             playable_beat_tokens = self._playable_part1_tokens(playback_source_tokens)
+            token_decode_beats.append(
+                {
+                    "target_beat": int(target_beat),
+                    "start_tick": int(beat_start_tick),
+                    "raw_tokens": [int(token) for token in generated_beat_tokens],
+                    "boundary_tokens": (
+                        [int(token) for token in boundary_tokens]
+                        if boundary_tokens is not None
+                        else []
+                    ),
+                }
+            )
             beat_pianoroll = beats_to_pianoroll(
                 [playable_beat_tokens],
                 tokenizer=self._tokenizer,
@@ -970,6 +1060,8 @@ class LekaiHttpBackend:
         self._current_generation_trace = {
             "raw_tokens": raw_response_tokens,
             "structural_tokens": structural_tokens,
+            "token_decode_beats": token_decode_beats,
+            "token_decode_initial_active_pitches": token_decode_initial_active_pitches,
             "prompt_tokens": [int(token) for token in full_prompt_tokens],
             "part0_tokens": part0_tokens,
             "part0_roll": part0_roll,
@@ -1058,6 +1150,17 @@ class LekaiHttpBackend:
             ]
             prompt_tokens = [int(token) for token in trace.get("prompt_tokens", [])]
             part0_tokens = [int(token) for token in trace.get("part0_tokens", [])]
+            token_decode_beats = [
+                dict(record) for record in trace.get("token_decode_beats", [])
+            ]
+            token_decode_initial_active_pitches = [
+                int(pitch)
+                for pitch in trace.get("token_decode_initial_active_pitches", [])
+            ]
+            token_decode_payload = {
+                "initial_active_pitches": token_decode_initial_active_pitches,
+                "beats": token_decode_beats,
+            }
             raw_part0_roll = trace.get("part0_roll")
             if isinstance(raw_part0_roll, np.ndarray):
                 canonical_roll = np.ascontiguousarray(raw_part0_roll, dtype=np.uint8)
@@ -1091,9 +1194,13 @@ class LekaiHttpBackend:
                 "raw_token_digest": self._canonical_sha256(
                     {"raw": raw_tokens, "structural": structural_tokens}
                 ),
+                "token_decode_beats": token_decode_beats,
+                "token_decode_initial_active_pitches": token_decode_initial_active_pitches,
+                "token_decode_digest": self._canonical_sha256(token_decode_payload),
                 "prompt_token_digest": self._canonical_sha256(prompt_tokens),
                 "part0_tokens": part0_tokens,
                 "part0_token_digest": self._canonical_sha256(part0_tokens),
+                "part0_trace_available": isinstance(raw_part0_roll, np.ndarray),
                 "input_increment_digest": self._canonical_sha256(input_increment),
                 "input_cumulative_digest": self._canonical_sha256(cumulative_input),
                 # Digest the exact 2x88xT array supplied to the part0 encoder;
@@ -1104,7 +1211,21 @@ class LekaiHttpBackend:
                 "part0_roll_bytes_sha256": part0_roll_bytes_sha256,
                 "part0_roll_start_tick": trace.get("part0_roll_start_tick"),
                 "part0_roll_end_tick": trace.get("part0_roll_end_tick"),
-                "output_event_digest": self._canonical_sha256(accompaniment),
+                # Bind the digest to the exact decoded event projection that the
+                # HTTP client turns into MusicalEvent objects and the full
+                # inference trace persists.  A missing wire velocity decodes to
+                # 100, so normalize that default before hashing.
+                "output_event_digest": self._canonical_sha256(
+                    [
+                        {
+                            "type": str(event["type"]),
+                            "pitch": int(event["pitch"]),
+                            "tick": int(event["tick"]),
+                            "velocity": int(event.get("velocity", 100)),
+                        }
+                        for event in accompaniment
+                    ]
+                ),
                 "empty_success": len(accompaniment) == 0,
                 "context_start_tick": trace.get("context_start_tick"),
             }

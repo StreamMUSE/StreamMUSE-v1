@@ -10,11 +10,33 @@ import pytest
 from streammuse.experiments.melody_robustness import (
     SEEDS,
     build_run_schedule,
-    default_campaign_config,
     file_sha256,
     write_canonical_json,
     write_jsonl,
 )
+
+
+def test_fluidsynth_root_is_forwarded_to_local_wrapper_environment(
+    load_script, tmp_path
+):
+    listening = load_script("prepare_robustness_listening")
+    root = tmp_path / "rootfs"
+    binary = tmp_path / "local_fluidsynth.sh"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+    (root / "usr" / "lib" / "x86_64-linux-gnu" / "pulseaudio").mkdir(
+        parents=True
+    )
+
+    environment, _provenance = listening._fluidsynth_environment(
+        argparse.Namespace(
+            fluidsynth=str(binary),
+            fluidsynth_root=str(root),
+            fluidsynth_lib_dir=None,
+        )
+    )
+
+    assert environment["STREAMMUSE_FLUIDSYNTH_ROOT"] == str(root.resolve())
 
 
 def _freeze(listening, fixture, output, **overrides):
@@ -46,7 +68,7 @@ def test_freeze_selection_is_exactly_24_with_two_literal_repeats_and_fixed_blind
     assert first_path.read_bytes() == second_path.read_bytes()
     assert first["clip_count"] == 24
     assert first["analysis_horizons_ticks"] == {
-        f"song-{index}": 240 for index in range(1, 6)
+        str(index): 240 for index in range(1, 6)
     }
     assert len(first["clips"]) == 24
     assert len({clip["sample_id"] for clip in first["clips"]}) == 24
@@ -133,45 +155,16 @@ def test_build_rejects_selection_manifest_or_excerpt_drift_before_creating_packa
     selection = _freeze(listening, robustness_fixture, selection_path)
     selection["clips"][0]["excerpt_end_model_beat"] -= 1
     selection_path.write_text(json.dumps(selection), encoding="utf-8")
-    package = tmp_path / "package"
     input_manifest = json.loads(
         robustness_fixture.input_manifest.read_text(encoding="utf-8")
     )
-    config = default_campaign_config(
-        code_identity="a" * 40,
-        checkpoint_path=str(robustness_fixture.checkpoint),
-        checkpoint_sha256=file_sha256(robustness_fixture.checkpoint),
-        input_manifest_path=str(robustness_fixture.input_manifest),
-        input_manifest_sha256=file_sha256(robustness_fixture.input_manifest),
-        playback_tempo=60,
-        tail_beats=24,
-    )
-    config["listening"]["selection_manifest_path"] = str(selection_path)
-    config["listening"]["selection_manifest_sha256"] = file_sha256(selection_path)
-    config_path = tmp_path / "campaign.json"
-    write_canonical_json(config_path, config)
-    schedule = tmp_path / "schedule.jsonl"
-    write_jsonl(schedule, build_run_schedule(input_manifest, config))
-
     with pytest.raises(ValueError, match="listening selection manifest mismatch"):
-        listening.build_package(
-            argparse.Namespace(
-                config=str(config_path),
-                config_sha256=file_sha256(config_path),
-                selection=str(selection_path),
-                schedule=str(schedule),
-                schedule_sha256=file_sha256(schedule),
-                output_root=str(tmp_path / "runs"),
-                controls_root=str(tmp_path / "controls"),
-                package_dir=str(package),
-                soundfont=None,
-                fluidsynth="fluidsynth",
-                sample_rate=44100,
-                gain=0.5,
-                midi_only=True,
-            )
+        listening.validate_listening_selection_manifest(
+            selection,
+            input_manifest,
+            manifest_path=robustness_fixture.input_manifest,
+            verify_files=True,
         )
-    assert not package.exists()
 
 
 def test_listening_source_verdict_and_artifact_index_fail_closed_after_tampering(

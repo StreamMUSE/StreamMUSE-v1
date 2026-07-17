@@ -5,14 +5,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
 from streammuse.experiments.melody_robustness import (
+    ATTESTATION_BUNDLE_SCHEMA_VERSION,
+    CHECKPOINT_IDENTITY_SCHEMA_VERSION,
+    CODE_IDENTITY_SCHEMA_VERSION,
+    ENVIRONMENT_IDENTITY_SCHEMA_VERSION,
+    QUALIFICATION_DECISION_ORDER,
+    QUALIFICATION_DENSE_SONG,
+    QUALIFICATION_TAIL_CANDIDATES,
+    QUALIFICATION_TAIL_SONGS,
+    QUALIFICATION_TEMPO_CANDIDATES,
+    LISTENING_SCHEMA_VERSION,
+    TRIANGLE_LISTENING_SCHEMA_VERSION,
+    build_qualification_artifact_evidence,
     build_qualification_schedule,
     default_campaign_config,
+    derive_qualification_decision,
     file_sha256,
+    qualification_config_contract,
+    qualification_spec_contract,
     read_jsonl,
+    validate_campaign_attestation,
     validate_campaign_config,
     validate_frozen_qualification,
     validate_listening_selection_manifest,
@@ -22,7 +42,9 @@ from streammuse.experiments.melody_robustness import (
     write_canonical_json,
     write_jsonl,
 )
-from streammuse.experiments.robustness_metrics import load_midi_roll
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -30,6 +52,189 @@ def _read(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected object: {path}")
     return value
+
+
+def _git(*args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _file_record(path: Path) -> dict[str, str]:
+    resolved = path.resolve()
+    return {"path": str(resolved), "sha256": file_sha256(resolved)}
+
+
+def _attestation_records(directory: Path) -> dict[str, Any]:
+    root = directory.resolve()
+    return {
+        "schema_version": ATTESTATION_BUNDLE_SCHEMA_VERSION,
+        "code_identity": _file_record(root / "code_identity.json"),
+        "checkpoint_identity": _file_record(root / "checkpoint_identity.json"),
+        "environment": _file_record(root / "environment.json"),
+        "qualification_spec": _file_record(root / "qualification_spec.json"),
+    }
+
+
+def _nvidia_smi_identity() -> dict[str, Any]:
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,uuid,name,memory.total,driver_version",
+            "--format=csv,noheader,nounits",
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    rows: list[dict[str, Any]] = []
+    drivers: set[str] = set()
+    for raw in result.stdout.splitlines():
+        if not raw.strip():
+            continue
+        fields = [field.strip() for field in raw.split(",", maxsplit=4)]
+        if len(fields) != 5:
+            raise RuntimeError(f"unexpected nvidia-smi identity row: {raw!r}")
+        index, uuid, name, memory_mib, driver = fields
+        rows.append(
+            {
+                "physical_index": int(index),
+                "uuid": uuid,
+                "name": name,
+                "memory_total_mib": int(memory_mib),
+            }
+        )
+        drivers.add(driver)
+    if not rows or len(drivers) != 1:
+        raise RuntimeError("nvidia-smi must report GPUs with one driver version")
+    return {"driver_version": next(iter(drivers)), "gpus": rows}
+
+
+def _environment_identity(code_identity: str) -> dict[str, Any]:
+    import torch
+
+    if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+        raise RuntimeError("formal attestation requires at least one CUDA GPU")
+    gpus = []
+    for index in range(torch.cuda.device_count()):
+        properties = torch.cuda.get_device_properties(index)
+        raw_uuid = getattr(properties, "uuid", None)
+        gpus.append(
+            {
+                "visible_index": index,
+                "name": str(properties.name),
+                "uuid": None if raw_uuid is None else str(raw_uuid),
+                "total_memory_bytes": int(properties.total_memory),
+                "compute_capability": [
+                    int(properties.major),
+                    int(properties.minor),
+                ],
+            }
+        )
+    uv_lock = ROOT / "uv.lock"
+    pyproject = ROOT / "pyproject.toml"
+    if not uv_lock.is_file() or not pyproject.is_file():
+        raise FileNotFoundError("attestation requires repository uv.lock and pyproject.toml")
+    return {
+        "schema_version": ENVIRONMENT_IDENTITY_SCHEMA_VERSION,
+        "code_identity": code_identity,
+        "dependency_files": {
+            "uv_lock": _file_record(uv_lock),
+            "pyproject": _file_record(pyproject),
+        },
+        "python": {
+            "implementation": platform.python_implementation(),
+            "version": sys.version,
+            "version_info": [
+                int(sys.version_info.major),
+                int(sys.version_info.minor),
+                int(sys.version_info.micro),
+            ],
+            "executable": str(Path(sys.executable).resolve()),
+        },
+        "torch": {
+            "version": str(torch.__version__),
+            "cuda_version": (
+                None if torch.version.cuda is None else str(torch.version.cuda)
+            ),
+            "cudnn_version": torch.backends.cudnn.version(),
+            "cuda_available": True,
+        },
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "gpus": gpus,
+        "nvidia_smi": _nvidia_smi_identity(),
+    }
+
+
+def attest(args: argparse.Namespace) -> None:
+    """Freeze clean code, checkpoint, dependency/runtime, GPU, and qual spec."""
+
+    checkpoint = Path(args.checkpoint).resolve()
+    if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
+        raise FileNotFoundError(f"checkpoint is missing or empty: {checkpoint}")
+    commit = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain")
+    if status:
+        raise RuntimeError("formal attestation requires a clean worktree")
+    output = Path(args.output_dir).resolve()
+    destinations = {
+        "code_identity": output / "code_identity.json",
+        "checkpoint_identity": output / "checkpoint_identity.json",
+        "environment": output / "environment.json",
+        "qualification_spec": output / "qualification_spec.json",
+    }
+    existing = [
+        path
+        for path in destinations.values()
+        if path.exists() or path.with_name(path.name + ".sha256").exists()
+    ]
+    if existing:
+        raise FileExistsError(f"attestation outputs already exist: {existing}")
+    code_payload = {
+        "schema_version": CODE_IDENTITY_SCHEMA_VERSION,
+        "repository_root": str(ROOT.resolve()),
+        "git_commit": commit,
+        "git_clean": True,
+        "git_status_porcelain": "",
+    }
+    checkpoint_payload = {
+        "schema_version": CHECKPOINT_IDENTITY_SCHEMA_VERSION,
+        "path": str(checkpoint),
+        "sha256": file_sha256(checkpoint),
+        "size_bytes": checkpoint.stat().st_size,
+    }
+    write_canonical_json(destinations["code_identity"], code_payload)
+    write_canonical_json(destinations["checkpoint_identity"], checkpoint_payload)
+    write_canonical_json(
+        destinations["environment"], _environment_identity(commit)
+    )
+    write_canonical_json(
+        destinations["qualification_spec"], qualification_spec_contract()
+    )
+    records = _attestation_records(output)
+    validate_campaign_attestation(
+        records,
+        code_identity=commit,
+        checkpoint={"path": str(checkpoint), "sha256": file_sha256(checkpoint)},
+        qualification=qualification_config_contract(),
+        verify_files=True,
+    )
+    print(
+        json.dumps(
+            {
+                "output_dir": str(output),
+                "code_identity": commit,
+                "attestation": records,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def plan(args: argparse.Namespace) -> None:
@@ -40,28 +245,43 @@ def plan(args: argparse.Namespace) -> None:
         manifest, manifest_path=manifest_path, verify_files=True
     )
     songs = {str(entry.get("song", entry.get("source_stem"))) for entry in manifest["entries"]}
-    if args.dense_song not in songs:
-        raise ValueError(f"dense song is not in input manifest: {args.dense_song}")
-    if len(args.tail_song) != 2 or len(set(args.tail_song)) != 2:
-        raise ValueError("qualification requires exactly two distinct --tail-song values")
-    if not set(args.tail_song).issubset(songs):
-        raise ValueError(f"tail songs are not in input manifest: {args.tail_song}")
+    if args.dense_song != QUALIFICATION_DENSE_SONG:
+        raise ValueError(
+            f"qualification dense song is fixed to {QUALIFICATION_DENSE_SONG!r}"
+        )
+    if args.tail_song != list(QUALIFICATION_TAIL_SONGS):
+        raise ValueError(
+            "qualification tail songs are fixed in order to "
+            f"{list(QUALIFICATION_TAIL_SONGS)!r}"
+        )
+    if args.dense_song not in songs or not set(args.tail_song).issubset(songs):
+        raise ValueError("fixed qualification songs are not in the input manifest")
+    qualification = qualification_config_contract()
+    attestation = _attestation_records(Path(args.attestation_dir))
+    checkpoint_record = {
+        "path": str(checkpoint),
+        "sha256": file_sha256(checkpoint),
+    }
+    validate_campaign_attestation(
+        attestation,
+        code_identity=args.code_identity,
+        checkpoint=checkpoint_record,
+        qualification=qualification,
+        verify_files=True,
+    )
     config = default_campaign_config(
         code_identity=args.code_identity,
         checkpoint_path=str(checkpoint), checkpoint_sha256=file_sha256(checkpoint),
         input_manifest_path=str(manifest_path), input_manifest_sha256=file_sha256(manifest_path),
+        attestation=attestation,
         playback_tempo=60, tail_beats=24,
     )
     # Candidate config is executable only with driver --qualification; it is
     # explicitly not the final C5 freeze.
-    config["qualification"] = {
-        "dense_song": args.dense_song, "tail_songs": args.tail_song,
-        "sample_seed": int(config["seeds"]["sample"][0]),
-        "perturb_seed": int(config["seeds"]["perturb"][0]),
-        "tempo_candidates": [60, 30], "tail_candidates": [8, 16, 24],
-        "decision_order": ["determinism", "static_input_gate", "tempo", "tail"],
-    }
-    validate_campaign_config(config, require_frozen=False)
+    config["qualification"] = qualification
+    validate_campaign_config(
+        config, require_frozen=False, verify_attestations=True
+    )
     config_path = Path(args.output_dir).resolve() / "qualification_config.json"
     write_canonical_json(config_path, config)
     rows = build_qualification_schedule(manifest, config)
@@ -70,10 +290,15 @@ def plan(args: argparse.Namespace) -> None:
     write_canonical_json(Path(args.output_dir).resolve() / "qualification_plan.json", {
         "config_path": str(config_path), "config_sha256": file_sha256(config_path),
         "schedule_path": str(schedule_path), "schedule_sha256": file_sha256(schedule_path),
+        "attestation": config["attestation"],
         "row_count": len(rows), "rows": [
             {key: row.get(key) for key in ("run_id", "qualification_kind", "qualification_replicate", "song", "condition", "pipeline", "runtime_overrides")}
             for row in rows
         ],
+        "execution_semantics": (
+            "all 20 rows are pre-run; decision_order controls artifact-derived "
+            "evaluation only and is not execution short-circuiting"
+        ),
         "execute_command": (
             "python scripts/run_perturbation_matrix.py run --qualification "
             f"--config {config_path} --config-sha256 {file_sha256(config_path)} "
@@ -125,123 +350,19 @@ def _attempt(
         root / "runs" / str(row["run_id"]),
         row,
         binding,
+        expected_attempt_id="attempt-001",
+        forbid_other_attempts=True,
     )
     return attempt, verdict
-
-
-def _single(root: Path, pattern: str) -> Path:
-    matches = list(root.rglob(pattern))
-    if len(matches) != 1:
-        raise RuntimeError(f"expected one {pattern} beneath {root}, got {matches}")
-    return matches[0]
-
-
-def _offline_tokens(attempt: Path) -> list[int]:
-    payload = _read(_single(attempt, "*_tokens.json"))
-    return [int(value) for value in payload["sampled_tokens"]]
-
-
-def _rt_trace_signature(attempt: Path) -> list[dict[str, Any]]:
-    validity = _read(_single(attempt, "validity.json"))
-    content = validity.get("content", {})
-    if (
-        content.get("request_tick_contract_valid") is not True
-        or float(content.get("analysis_request_coverage", 0.0)) != 1.0
-    ):
-        return []
-    requests = sorted(
-        validity.get("requests", []),
-        key=lambda row: int(row["generation_start_tick"]),
-    )
-    fields = (
-        "generation_start_tick",
-        "raw_token_digest",
-        "input_increment_digest",
-        "input_cumulative_digest",
-        "part0_roll_digest",
-        "part0_token_digest",
-        "context_start_tick",
-    )
-    signature = [{field: row.get(field) for field in fields} for row in requests]
-    if not signature:
-        return []
-    for row in signature:
-        for field in fields:
-            value = row[field]
-            if field == "generation_start_tick":
-                if isinstance(value, bool) or not isinstance(value, int):
-                    return []
-            elif field == "context_start_tick":
-                if isinstance(value, bool) or not isinstance(value, int):
-                    return []
-            elif not isinstance(value, str) or not value.strip():
-                return []
-    return signature
-
-
-def _static_gate_errors(static: Mapping[str, Any], config: Mapping[str, Any]) -> list[str]:
-    errors: list[str] = []
-    expected = {
-        "schema_version": "streammuse.midi_to_npz_summary.v1",
-        "status": "ok",
-        "expected": 40,
-        "converted": 40,
-        "skipped": 0,
-        "exact_stem_set": True,
-        "ticks_per_beat": 4,
-        "updated_manifest_sha256": config["input_manifest"]["sha256"],
-    }
-    for field, wanted in expected.items():
-        if static.get(field) != wanted:
-            errors.append(
-                f"static summary {field}: expected={wanted!r}, got={static.get(field)!r}"
-            )
-    if static.get("errors") != []:
-        errors.append("static summary contains conversion errors")
-    manifest = _read(Path(config["input_manifest"]["path"]).resolve())
-    entries = {
-        str(entry.get("stem", entry.get("input_id"))): entry
-        for entry in manifest["entries"]
-    }
-    results = static.get("results")
-    if not isinstance(results, list) or len(results) != 40:
-        errors.append("static summary must contain 40 per-input results")
-        return errors
-    result_stems = [str(row.get("stem")) for row in results if isinstance(row, Mapping)]
-    if sorted(result_stems) != sorted(entries):
-        errors.append("static summary result stem set differs from frozen input manifest")
-    for row in results:
-        if not isinstance(row, Mapping):
-            errors.append("static summary result is not an object")
-            continue
-        stem = str(row.get("stem"))
-        entry = entries.get(stem)
-        roll = row.get("roll_gate")
-        if row.get("status") != "converted" or not isinstance(roll, Mapping):
-            errors.append(f"{stem}: missing converted roll gate")
-            continue
-        if int(roll.get("differing_cells", -1)) != 0:
-            errors.append(f"{stem}: MIDI/NPZ roll differs")
-        if entry is not None:
-            if int(roll.get("horizon_ticks", -1)) != int(
-                entry["validation_horizon_ticks"]
-            ):
-                errors.append(f"{stem}: validation horizon mismatch")
-            npz = entry.get("npz", entry.get("paths", {}).get("npz", {}))
-            if row.get("npz_sha256") != npz.get("sha256"):
-                errors.append(f"{stem}: NPZ hash mismatch")
-    return errors
-
-
-def _roll_identity(left: Path, right: Path, end: int) -> bool:
-    return load_midi_roll(left, end_tick=end) == load_midi_roll(right, end_tick=end)
 
 
 def evaluate(args: argparse.Namespace) -> None:
     config_path = Path(args.config).resolve()
     schedule_path = Path(args.schedule).resolve()
     config = _read(config_path)
-    validate_campaign_config(config, require_frozen=False)
+    validate_campaign_config(
+        config, require_frozen=False, verify_attestations=True
+    )
     if config.get("status") != "qualification_candidate":
         raise ValueError("qualification evaluation requires a candidate config")
     if file_sha256(config_path) != args.config_sha256:
@@ -267,11 +388,26 @@ def evaluate(args: argparse.Namespace) -> None:
         schedule_path=schedule_path,
         config=config,
     )
-    grouped: dict[str, list[tuple[dict[str, Any], Path, dict[str, Any]]]] = {}
+    runs_root = root / "runs"
+    if not runs_root.is_dir():
+        raise FileNotFoundError(f"qualification runs directory missing: {runs_root}")
+    actual_run_directories = {
+        path.name for path in runs_root.iterdir() if path.is_dir()
+    }
+    expected_run_directories = {str(row["run_id"]) for row in rows}
+    if actual_run_directories != expected_run_directories:
+        raise RuntimeError(
+            "qualification run directory set is not the canonical 20-run design: "
+            f"missing={sorted(expected_run_directories - actual_run_directories)}, "
+            f"extra={sorted(actual_run_directories - expected_run_directories)}"
+        )
+    attempts: dict[str, tuple[Path, Mapping[str, Any]]] = {}
     run_evidence: list[dict[str, Any]] = []
     for row in rows:
         attempt, verdict = _attempt(root, row, binding)
-        grouped.setdefault(row["qualification_kind"], []).append((row, attempt, verdict))
+        if attempt.name != "attempt-001":
+            raise RuntimeError("qualification accepts only attempt-001")
+        attempts[str(row["run_id"])] = (attempt, verdict)
         immutable_verdict = attempt / "verdict.json"
         run_evidence.append(
             {
@@ -283,101 +419,19 @@ def evaluate(args: argparse.Namespace) -> None:
                 },
             }
         )
-    off_runs = grouped["determinism_offline"]
-    rt_runs = grouped["determinism_rt"]
-    offline_deterministic = False
-    if len(off_runs) == 2:
-        offline_tokens = [_offline_tokens(item[1]) for item in off_runs]
-        offline_deterministic = bool(
-            all(item[2].get("content_valid") for item in off_runs)
-            and all(tokens for tokens in offline_tokens)
-            and offline_tokens[0] == offline_tokens[1]
-            and file_sha256(_single(off_runs[0][1], "*_generated.mid"))
-            == file_sha256(_single(off_runs[1][1], "*_generated.mid"))
-        )
-    rt_deterministic = False
-    if len(rt_runs) == 2:
-        rt_digests = [_rt_trace_signature(item[1]) for item in rt_runs]
-        valid_digests = all(rt_digests)
-        rt_end = int(rt_runs[0][0]["input"]["analysis_end_tick"])
-        rt_deterministic = bool(
-            all(item[2].get("content_valid") for item in rt_runs)
-            and valid_digests
-            and rt_digests[0] == rt_digests[1]
-            and _roll_identity(
-                _single(rt_runs[0][1], "theoretical_model.mid"),
-                _single(rt_runs[1][1], "theoretical_model.mid"), rt_end,
-            )
-        )
     static_path = Path(args.static_summary).resolve()
     static = _read(static_path)
-    static_errors = _static_gate_errors(static, config)
-    static_valid = not static_errors
-    tempo_checks = {}
-    selected_tempo = None
-    for tempo in (60, 30):
-        attempts = grouped[f"tempo_{tempo}"]
-        passed = len(attempts) == 2 and all(
-            bool(verdict.get("content_valid")) and bool(verdict.get("operational_valid"))
-            for _row_value, _attempt_value, verdict in attempts
-        )
-        tempo_checks[str(tempo)] = passed
-        if selected_tempo is None and passed:
-            selected_tempo = tempo
-    tail_checks: dict[str, Any] = {}
-    selected_by_song: dict[str, int | None] = {}
-    for song in config["qualification"]["tail_songs"]:
-        attempts = grouped[f"tail_{selected_tempo}_{song}"] if selected_tempo is not None else []
-        if not attempts:
-            selected_by_song[song] = None
-            tail_checks[song] = {
-                "content_valid": False,
-                "trace_and_coverage_valid": False,
-                "8_eq_16": False,
-                "16_eq_24": False,
-                "decision": None,
-                "reason": "no_selected_tempo_tail_runs",
-            }
-            continue
-        by_tail = {int(row["runtime_overrides"]["tail_beats"]): (row, attempt, verdict) for row, attempt, verdict in attempts}
-        valid = all(bool(item[2].get("content_valid")) for item in by_tail.values())
-        end = int(next(iter(by_tail.values()))[0]["input"]["analysis_end_tick"])
-        paths = {tail: _single(item[1], "theoretical_model.mid") for tail, item in by_tail.items()}
-        signatures = {tail: _rt_trace_signature(item[1]) for tail, item in by_tail.items()}
-        trace_valid = all(signatures.values())
-        eq_8_16 = bool(
-            valid and trace_valid and signatures[8] == signatures[16]
-            and _roll_identity(paths[8], paths[16], end)
-        )
-        eq_16_24 = bool(
-            valid and trace_valid and signatures[16] == signatures[24]
-            and _roll_identity(paths[16], paths[24], end)
-        )
-        if eq_8_16 and eq_16_24:
-            decision = 8
-        elif eq_16_24:
-            decision = 16
-        else:
-            decision = None
-        selected_by_song[song] = decision
-        tail_checks[song] = {
-            "content_valid": valid,
-            "trace_and_coverage_valid": trace_valid,
-            "8_eq_16": eq_8_16,
-            "16_eq_24": eq_16_24,
-            "decision": decision,
-        }
-    selected_tail = (
-        max(int(value) for value in selected_by_song.values() if value is not None)
-        if selected_by_song and all(value is not None for value in selected_by_song.values()) else None
+    artifact_evidence = build_qualification_artifact_evidence(
+        config,
+        rows,
+        static,
+        attempts,
     )
-    passed = bool(
-        offline_deterministic and rt_deterministic and static_valid
-        and selected_tempo is not None and selected_tail is not None
-    )
+    decision = derive_qualification_decision(artifact_evidence)
+    static_decision = decision["static_input_gate"]
     result = {
         "schema_version": "streammuse.melody_robustness.qualification.v1",
-        "passed": passed,
+        "development_only": bool(getattr(args, "development_only", False)),
         "candidate_config": {
             "path": str(config_path),
             "sha256": file_sha256(config_path),
@@ -392,17 +446,17 @@ def evaluate(args: argparse.Namespace) -> None:
             "sha256": binding["campaign_binding_sha256"],
         },
         "run_evidence": run_evidence,
-        "offline_deterministic": offline_deterministic,
-        "rt_deterministic": rt_deterministic,
         "static_input_gate": {
-            "valid": static_valid,
-            "errors": static_errors,
+            "valid": static_decision["valid"],
+            "errors": static_decision["errors"],
             "summary_path": str(static_path),
             "sha256": file_sha256(static_path),
         },
-        "tempo": {"checks": tempo_checks, "selected": selected_tempo},
-        "tail": {"checks": tail_checks, "selected": selected_tail},
-        "rule": "8=16=24->8; 16=24->16; otherwise stop_and_investigate",
+        **{
+            key: value
+            for key, value in decision.items()
+            if key != "static_input_gate"
+        },
     }
     validate_qualification_result(
         result,
@@ -411,7 +465,7 @@ def evaluate(args: argparse.Namespace) -> None:
         require_passed=False,
     )
     write_canonical_json(Path(args.output), result)
-    if not passed:
+    if not decision["passed"]:
         raise SystemExit(2)
 
 
@@ -420,10 +474,14 @@ def freeze(args: argparse.Namespace) -> None:
     result_path = Path(args.qualification_result).resolve()
     listening_path = Path(args.listening_manifest).resolve()
     config = _read(candidate_path)
-    validate_campaign_config(config, require_frozen=False)
+    validate_campaign_config(
+        config, require_frozen=False, verify_attestations=True
+    )
     if config.get("status") != "qualification_candidate":
         raise RuntimeError("C5 freeze requires a qualification candidate config")
     result = _read(result_path)
+    if result.get("development_only") is True:
+        raise RuntimeError("development-only qualification can never be frozen")
     if not result.get("passed"):
         raise RuntimeError("cannot freeze a failed qualification")
     if result.get("candidate_config_sha256") != file_sha256(candidate_path):
@@ -436,12 +494,41 @@ def freeze(args: argparse.Namespace) -> None:
     )
     listening = _read(listening_path)
     manifest_path = Path(config["input_manifest"]["path"]).resolve()
-    validate_listening_selection_manifest(
-        listening,
-        _read(manifest_path),
-        manifest_path=manifest_path,
-        verify_files=True,
-    )
+    listening_schema = listening.get("schema_version")
+    config_listening_schema = config.get("listening", {}).get("schema_version")
+    if listening_schema == TRIANGLE_LISTENING_SCHEMA_VERSION:
+        if config_listening_schema != TRIANGLE_LISTENING_SCHEMA_VERSION:
+            raise RuntimeError("triangle selection does not match candidate listening contract")
+        # Lazy import avoids making the historical v1 qualification/read path
+        # depend on the v2 listening workflow module.
+        from streammuse.experiments.triangle_listening import (
+            validate_triangle_renderer_identity,
+            validate_triangle_selection_manifest,
+        )
+
+        validate_triangle_selection_manifest(
+            listening,
+            _read(manifest_path),
+            manifest_path=manifest_path,
+            verify_files=True,
+        )
+        raw_renderer_path = getattr(args, "renderer_identity", None)
+        if not raw_renderer_path:
+            raise ValueError("triangle C5 freeze requires --renderer-identity")
+        renderer_path = Path(raw_renderer_path).resolve()
+        renderer_identity = _read(renderer_path)
+        validate_triangle_renderer_identity(renderer_identity, verify_files=True)
+    elif listening_schema == LISTENING_SCHEMA_VERSION:
+        if config_listening_schema not in {None, LISTENING_SCHEMA_VERSION}:
+            raise RuntimeError("legacy selection does not match candidate listening contract")
+        validate_listening_selection_manifest(
+            listening,
+            _read(manifest_path),
+            manifest_path=manifest_path,
+            verify_files=True,
+        )
+    else:
+        raise ValueError(f"unsupported listening selection schema: {listening_schema!r}")
     config["status"] = "qualified_frozen"
     config["runtime"]["playback_tempo"] = int(result["tempo"]["selected"])
     config["runtime"]["tail_beats"] = int(result["tail"]["selected"])
@@ -455,6 +542,11 @@ def freeze(args: argparse.Namespace) -> None:
     }
     config["listening"]["selection_manifest_path"] = str(listening_path)
     config["listening"]["selection_manifest_sha256"] = file_sha256(listening_path)
+    if listening_schema == TRIANGLE_LISTENING_SCHEMA_VERSION:
+        config["listening"]["renderer_identity"] = {
+            "path": str(renderer_path),
+            "sha256": file_sha256(renderer_path),
+        }
     validate_campaign_config(config)
     validate_frozen_qualification(config, verify_files=True)
     write_canonical_json(Path(args.output), config)
@@ -463,10 +555,18 @@ def freeze(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    attestation = sub.add_parser(
+        "attest",
+        help="freeze clean code/checkpoint/dependency/CUDA/GPU qualification identity",
+    )
+    attestation.add_argument("--checkpoint", required=True)
+    attestation.add_argument("--output-dir", required=True)
+    attestation.set_defaults(func=attest)
     make = sub.add_parser("plan")
     make.add_argument("--checkpoint", required=True)
     make.add_argument("--input-manifest", required=True)
     make.add_argument("--code-identity", required=True)
+    make.add_argument("--attestation-dir", required=True)
     make.add_argument("--dense-song", required=True)
     make.add_argument("--tail-song", action="append", required=True)
     make.add_argument("--output-dir", required=True)
@@ -479,11 +579,20 @@ def parse_args() -> argparse.Namespace:
     check.add_argument("--output-root", required=True)
     check.add_argument("--static-summary", required=True)
     check.add_argument("--output", required=True)
+    check.add_argument(
+        "--development-only",
+        action="store_true",
+        help="mark a clean smoke evaluation as permanently ineligible for C5 freeze",
+    )
     check.set_defaults(func=evaluate)
     final = sub.add_parser("freeze")
     final.add_argument("--candidate-config", required=True)
     final.add_argument("--qualification-result", required=True)
     final.add_argument("--listening-manifest", required=True)
+    final.add_argument(
+        "--renderer-identity",
+        help="required for triangle v2; hash-pinned FluidSynth/soundfont identity",
+    )
     final.add_argument("--output", required=True)
     final.set_defaults(func=freeze)
     return parser.parse_args()
