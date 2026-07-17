@@ -38,6 +38,7 @@ from streammuse.experiments.triangle_listening import (
     TRIANGLE_SELECTION_SCHEMA_VERSION,
     TRIANGLE_SYNTH_GAIN,
     TRIANGLE_TRIAL_COUNT,
+    formal_listening_selectors,
     progress_summary as triangle_progress_summary,
     validate_response_ledger as validate_triangle_response_ledger,
     validate_snapshot as validate_triangle_snapshot,
@@ -712,17 +713,10 @@ def _validate_audit_schedule(
 
 
 def _formal_listening_sources(selection: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    unique: dict[str, dict[str, Any]] = {}
-    trials = selection.get("trials")
-    if not isinstance(trials, list):
-        raise RuntimeError("listening selection trials must be a list")
-    for trial in trials:
-        if not isinstance(trial, Mapping) or not isinstance(trial.get("sources"), Mapping):
-            raise RuntimeError("listening selection trial lacks source selectors")
-        for source in trial["sources"].values():
-            if isinstance(source, Mapping) and source.get("kind") == "formal":
-                frozen = dict(source)
-                unique[canonical_sha256(frozen)] = frozen
+    unique = {
+        canonical_sha256(selector): selector
+        for selector in formal_listening_selectors(selection)
+    }
     if not unique:
         raise RuntimeError("listening selection contains no formal generated sources")
     return unique

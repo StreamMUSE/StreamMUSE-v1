@@ -117,6 +117,83 @@ KNOWN_DIFFERENT_RECIPE = {
 }
 
 
+def formal_listening_selectors(
+    selection: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return the canonical unique formal-output selectors used by listening.
+
+    A triangle source also contains selection-only metadata such as ``kind``.
+    Campaign readiness, however, is bound to the seven fields that identify a
+    generated accompaniment in the formal schedule. Keeping that projection
+    here prevents the campaign auditor and report builder from hashing subtly
+    different selector objects.
+    """
+
+    schema = selection.get("schema_version")
+    selectors: list[dict[str, Any]] = []
+    if schema == TRIANGLE_SELECTION_SCHEMA_VERSION:
+        trials = selection.get("trials", selection.get("scored_trials"))
+        if not isinstance(trials, list):
+            raise ValueError("triangle selection lacks scored trials")
+        for trial in trials:
+            if not isinstance(trial, Mapping):
+                raise ValueError("triangle listening trial is not an object")
+            sources = trial.get("sources")
+            if not isinstance(sources, Mapping):
+                raise ValueError("triangle listening trial lacks sources")
+            for side in ("a", "b"):
+                source = sources.get(side)
+                if not isinstance(source, Mapping):
+                    raise ValueError(f"triangle listening trial lacks source {side}")
+                if source.get("kind") != "formal":
+                    continue
+                selectors.append(
+                    {
+                        "formal_pipeline": source.get("formal_pipeline"),
+                        "source_artifact": source.get("source_artifact"),
+                        "presentation": source.get("presentation"),
+                        "song": source.get("song"),
+                        "condition": source.get("condition"),
+                        "perturb_seed": source.get("perturb_seed"),
+                        "sample_seed": source.get("sample_seed"),
+                    }
+                )
+    else:
+        clips = selection.get("clips")
+        if not isinstance(clips, list):
+            raise ValueError("listening selection lacks clips")
+        for clip in clips:
+            if not isinstance(clip, Mapping):
+                raise ValueError("listening selection clip is not an object")
+            pipeline = clip.get("pipeline")
+            if pipeline not in {"rt_theoretical", "rt_combined"}:
+                continue
+            selectors.append(
+                {
+                    "formal_pipeline": "rt",
+                    "source_artifact": (
+                        "theoretical_model"
+                        if pipeline == "rt_theoretical"
+                        else "combined"
+                    ),
+                    "presentation": clip.get("block"),
+                    "song": clip.get("song"),
+                    "condition": clip.get("condition"),
+                    "perturb_seed": clip.get("perturb_seed"),
+                    "sample_seed": clip.get("sample_seed"),
+                }
+            )
+    unique: dict[str, dict[str, Any]] = {}
+    for selector in selectors:
+        if selector["formal_pipeline"] != "rt":
+            raise ValueError("listening source must use the formal RT pipeline")
+        if selector["source_artifact"] not in {"theoretical_model", "combined"}:
+            raise ValueError("listening source artifact is unsupported")
+        key = json.dumps(selector, sort_keys=True, separators=(",", ":"))
+        unique[key] = selector
+    return [unique[key] for key in sorted(unique)]
+
+
 def triangle_listening_attempt_id(number: int) -> str:
     if isinstance(number, bool) or not isinstance(number, int) or number < 1 or number > 999:
         raise ValueError("listening attempt number must be an integer in 1..999")

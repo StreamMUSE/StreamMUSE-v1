@@ -46,6 +46,7 @@ from streammuse.experiments.melody_robustness import (
     write_canonical_json,
     write_jsonl,
 )
+from streammuse.experiments.triangle_listening import formal_listening_selectors
 from streammuse.infrastructure.inference.lekai_http_backend import (
     decode_part1_token_trace,
 )
@@ -2726,70 +2727,9 @@ def command_run(args: argparse.Namespace) -> None:
 def _formal_listening_selectors(
     selection: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    """Return the unique formal model-output selectors used by listening."""
-    schema = selection.get("schema_version")
-    selectors: list[dict[str, Any]] = []
-    if schema == "streammuse.melody_robustness.listening_triangle_selection.v2":
-        trials = selection.get("trials", selection.get("scored_trials"))
-        if not isinstance(trials, list):
-            raise ValueError("triangle selection lacks scored trials")
-        for trial in trials:
-            if not isinstance(trial, Mapping):
-                raise ValueError("triangle listening trial is not an object")
-            sources = trial.get("sources")
-            if not isinstance(sources, Mapping):
-                raise ValueError("triangle listening trial lacks sources")
-            for side in ("a", "b"):
-                source = sources.get(side)
-                if not isinstance(source, Mapping):
-                    raise ValueError(f"triangle listening trial lacks source {side}")
-                if source.get("kind") != "formal":
-                    continue
-                selectors.append(
-                    {
-                        "formal_pipeline": source.get("formal_pipeline"),
-                        "source_artifact": source.get("source_artifact"),
-                        "presentation": source.get("presentation"),
-                        "song": source.get("song"),
-                        "condition": source.get("condition"),
-                        "perturb_seed": source.get("perturb_seed"),
-                        "sample_seed": source.get("sample_seed"),
-                    }
-                )
-    else:
-        clips = selection.get("clips")
-        if not isinstance(clips, list):
-            raise ValueError("listening selection lacks clips")
-        for clip in clips:
-            if not isinstance(clip, Mapping):
-                raise ValueError("listening selection clip is not an object")
-            pipeline = clip.get("pipeline")
-            if pipeline not in {"rt_theoretical", "rt_combined"}:
-                continue
-            selectors.append(
-                {
-                    "formal_pipeline": "rt",
-                    "source_artifact": (
-                        "theoretical_model"
-                        if pipeline == "rt_theoretical"
-                        else "combined"
-                    ),
-                    "presentation": clip.get("block"),
-                    "song": clip.get("song"),
-                    "condition": clip.get("condition"),
-                    "perturb_seed": clip.get("perturb_seed"),
-                    "sample_seed": clip.get("sample_seed"),
-                }
-            )
-    unique: dict[str, dict[str, Any]] = {}
-    for selector in selectors:
-        if selector["formal_pipeline"] != "rt":
-            raise ValueError("listening source must use the formal RT pipeline")
-        if selector["source_artifact"] not in {"theoretical_model", "combined"}:
-            raise ValueError("listening source artifact is unsupported")
-        key = json.dumps(selector, sort_keys=True, separators=(",", ":"))
-        unique[key] = selector
-    return [unique[key] for key in sorted(unique)]
+    """Compatibility wrapper around the shared canonical projection."""
+
+    return formal_listening_selectors(selection)
 
 
 def _listening_source_readiness(

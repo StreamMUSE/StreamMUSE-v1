@@ -461,6 +461,9 @@ def _campaign_audit_reverify_fixture(report, tmp_path, monkeypatch):
         "perturb_seed": 11,
         "sample_seed": 22,
     }
+    readiness_selector = {
+        field: value for field, value in selector.items() if field != "kind"
+    }
     schedule = [
         {
             "run_id": "run-1",
@@ -495,7 +498,7 @@ def _campaign_audit_reverify_fixture(report, tmp_path, monkeypatch):
         "ready": True,
         "sources": [
             {
-                "selector": selector,
+                "selector": readiness_selector,
                 "ready": True,
                 "run_id": "run-1",
                 "attempt_id": "attempt-001",
