@@ -10,8 +10,10 @@ import argparse
 import csv
 import importlib.util
 import json
+import math
 import os
 import platform
+import random
 import re
 import resource
 import shutil
@@ -23,7 +25,7 @@ import time
 import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Callable, Iterable, Literal, Sequence
 
 
 Kind = Literal["stt", "tts"]
@@ -39,6 +41,14 @@ DEFAULT_PHRASES = (
     "hello world",
     "animal name",
     "coffee cup",
+)
+DEFAULT_SWEEP_WORD_COUNTS = (1, 2, 4, 8, 16, 32, 64)
+_LENGTH_SWEEP_STREAMS = (
+    "cat watches soft rain fall across the quiet garden beside a warm window while evening lights glow over the small street after sunset today",
+    "dog follows bright leaves along the calm river near the old bridge while gentle wind moves through tall trees before dinner tonight",
+    "bird carries a small twig toward the hidden nest above green branches as morning sun reaches the peaceful park beside our familiar school",
+    "child finds red shells beside clear water on a sandy beach then walks slowly home with a cheerful friend before lunch today",
+    "friend brings fresh bread from the local market through the busy square and shares a warm meal with family after a long afternoon outside",
 )
 
 
@@ -71,6 +81,156 @@ class SampleInfo:
     frame_count: int
 
 
+@dataclass(frozen=True)
+class SweepPhrase:
+    phrase_id: str
+    text: str
+    word_count: int
+
+
+@dataclass(frozen=True)
+class SweepTrial:
+    kind: Kind
+    phrase_id: str
+    text: str
+    word_count: int
+    repeat_index: int
+    latency_ms: float
+    audio_duration_s: float | None
+    output: str
+    error: str | None = None
+
+    @property
+    def real_time_factor(self) -> float | None:
+        if self.audio_duration_s is None or self.audio_duration_s <= 0:
+            return None
+        return self.latency_ms / (self.audio_duration_s * 1000.0)
+
+
+@dataclass(frozen=True)
+class SweepRunResult:
+    device: str
+    technology: str
+    kind: Kind
+    setup_ms: float | None
+    first_request_ms: float | None
+    trials: tuple[SweepTrial, ...]
+
+
+def sweep_run_result_from_payload(
+    *,
+    device: str,
+    technology: str,
+    kind: Kind,
+    payload: dict[str, Any],
+) -> SweepRunResult:
+    duration_key = "input_audio_duration_s" if kind == "stt" else "audio_duration_s"
+    trials = tuple(
+        SweepTrial(
+            kind=kind,
+            phrase_id=str(row["phrase_id"]),
+            text=str(row["text"]),
+            word_count=int(row["word_count"]),
+            repeat_index=int(row["repeat_index"]),
+            latency_ms=float(row["latency_ms"]),
+            audio_duration_s=float(row[duration_key]) if row.get(duration_key) is not None else None,
+            output=str(row.get("output", "")),
+            error=str(row["error"]) if row.get("error") else None,
+        )
+        for row in payload.get("rows", [])
+    )
+    setup_ms = payload.get("setup_ms")
+    first_request_ms = payload.get("first_request_ms")
+    return SweepRunResult(
+        device=device,
+        technology=technology,
+        kind=kind,
+        setup_ms=float(setup_ms) if setup_ms is not None else None,
+        first_request_ms=float(first_request_ms) if first_request_ms is not None else None,
+        trials=trials,
+    )
+
+
+def build_length_sweep_phrases(
+    word_counts: tuple[int, ...] = DEFAULT_SWEEP_WORD_COUNTS,
+    *,
+    variants_per_length: int = 5,
+) -> tuple[SweepPhrase, ...]:
+    if variants_per_length < 1 or variants_per_length > len(_LENGTH_SWEEP_STREAMS):
+        raise ValueError(f"variants_per_length must be between 1 and {len(_LENGTH_SWEEP_STREAMS)}")
+    if any(word_count < 1 for word_count in word_counts):
+        raise ValueError("word_counts must contain positive integers")
+
+    phrases: list[SweepPhrase] = []
+    for word_count in word_counts:
+        for variant, stream in enumerate(_LENGTH_SWEEP_STREAMS[:variants_per_length], start=1):
+            tokens = stream.split()
+            repeated = (tokens * ((word_count + len(tokens) - 1) // len(tokens)))[:word_count]
+            phrases.append(SweepPhrase(f"w{word_count}-v{variant}", " ".join(repeated), word_count))
+    return tuple(phrases)
+
+
+def build_length_sweep_schedule(
+    phrases: Sequence[SweepPhrase],
+    *,
+    repetitions: int,
+    seed: int,
+) -> tuple[tuple[SweepPhrase, int], ...]:
+    if repetitions < 1:
+        raise ValueError("repetitions must be positive")
+    schedule = [(phrase, repeat_index) for phrase in phrases for repeat_index in range(1, repetitions + 1)]
+    random.Random(seed).shuffle(schedule)
+    return tuple(schedule)
+
+
+def nearest_rank_percentile(values: Sequence[float], percentile: float) -> float:
+    if not values:
+        raise ValueError("values must not be empty")
+    if not 0.0 < percentile <= 1.0:
+        raise ValueError("percentile must be in (0.0, 1.0]")
+    ordered = sorted(values)
+    index = max(0, math.ceil(percentile * len(ordered)) - 1)
+    return ordered[index]
+
+
+def summarize_sweep_trials(trials: Sequence[SweepTrial]) -> dict[str, Any]:
+    successful = [trial for trial in trials if trial.error is None]
+    if not successful:
+        return {"runs": 0, "by_word_count": {}}
+
+    kind = successful[0].kind
+    by_word_count: dict[str, dict[str, Any]] = {}
+    for word_count in sorted({trial.word_count for trial in successful}):
+        bucket = [trial for trial in successful if trial.word_count == word_count]
+        latencies = [trial.latency_ms for trial in bucket]
+        audio_durations = [trial.audio_duration_s for trial in bucket if trial.audio_duration_s is not None]
+        row: dict[str, Any] = {
+            "runs": len(bucket),
+            "latency_mean_ms": round(statistics.fmean(latencies), 3),
+            "latency_p50_ms": round(statistics.median(latencies), 3),
+            "latency_p95_ms": round(nearest_rank_percentile(latencies, 0.95), 3),
+            "latency_max_ms": round(max(latencies), 3),
+            "audio_duration_mean_s": round(statistics.fmean(audio_durations), 6) if audio_durations else None,
+        }
+        if kind == "tts":
+            rtfs = [trial.real_time_factor for trial in bucket if trial.real_time_factor is not None]
+            row.update(
+                {
+                    "generation_mean_ms": row["latency_mean_ms"],
+                    "generation_p50_ms": row["latency_p50_ms"],
+                    "generation_p95_ms": row["latency_p95_ms"],
+                    "generation_max_ms": row["latency_max_ms"],
+                    "rtf_p50": round(statistics.median(rtfs), 6) if rtfs else None,
+                    "rtf_p95": round(nearest_rank_percentile(rtfs, 0.95), 6) if rtfs else None,
+                }
+            )
+        else:
+            row["transcription_p50_ms"] = row["latency_p50_ms"]
+            row["transcription_p95_ms"] = row["latency_p95_ms"]
+        by_word_count[str(word_count)] = row
+    return {"kind": kind, "runs": len(successful), "by_word_count": by_word_count}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default=platform.node() or platform.system().lower())
@@ -80,11 +240,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kinds", default="stt,tts", help="Comma-separated: stt,tts")
     parser.add_argument("--stt-backends", default="whisper_cpp,faster_whisper,sherpa_onnx")
     parser.add_argument("--tts-backends", default="system_tts,piper,kokoro,sherpa_onnx")
+    parser.add_argument("--length-sweep", action="store_true", help="Run the reproducible 1-64 word latency sweep.")
+    parser.add_argument("--word-counts", default=",".join(str(value) for value in DEFAULT_SWEEP_WORD_COUNTS))
+    parser.add_argument("--variants-per-length", type=int, default=5)
+    parser.add_argument("--repetitions", type=int, default=10)
+    parser.add_argument("--warmup-requests", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=20260717)
     args = parser.parse_args(argv)
 
-    phrases = tuple(part.strip() for part in str(args.phrases).split(",") if part.strip())
-    run_dir = Path(args.output_dir).expanduser().resolve() / time.strftime("voice_microbench_%Y%m%d-%H%M%S")
+    run_prefix = "voice_length_sweep" if args.length_sweep else "voice_microbench"
+    run_dir = Path(args.output_dir).expanduser().resolve() / time.strftime(f"{run_prefix}_%Y%m%d-%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
+    if args.length_sweep:
+        return _run_length_sweep(args, run_dir)
+
+    phrases = tuple(part.strip() for part in str(args.phrases).split(",") if part.strip())
     samples_dir = Path(args.samples_dir).expanduser().resolve() if args.samples_dir else run_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,6 +277,308 @@ def main(argv: list[str] | None = None) -> int:
     print(render_markdown_table("STT", [result for result in results if result.kind == "stt"]))
     print(render_markdown_table("TTS", [result for result in results if result.kind == "tts"]))
     return 0
+
+
+def _run_length_sweep(args: argparse.Namespace, run_dir: Path) -> int:
+    word_counts = _parse_positive_int_csv(args.word_counts, option="--word-counts")
+    phrases = build_length_sweep_phrases(word_counts, variants_per_length=args.variants_per_length)
+    schedule = build_length_sweep_schedule(phrases, repetitions=args.repetitions, seed=args.seed)
+    requests = tuple(
+        {
+            "phrase_id": phrase.phrase_id,
+            "text": phrase.text,
+            "word_count": phrase.word_count,
+            "repeat_index": repeat_index,
+        }
+        for phrase, repeat_index in schedule
+    )
+    warmup_requests = _select_warmup_requests(requests, args.warmup_requests)
+    kinds = {part.strip() for part in str(args.kinds).split(",") if part.strip()}
+    unsupported_kinds = kinds.difference({"stt", "tts"})
+    if unsupported_kinds:
+        raise ValueError(f"unknown sweep kinds: {', '.join(sorted(unsupported_kinds))}")
+
+    results: list[SweepRunResult] = []
+    sample_rows: list[dict[str, Any]] = []
+    if "stt" in kinds:
+        samples_dir = Path(args.samples_dir).expanduser().resolve() if args.samples_dir else run_dir / "samples"
+        samples = ensure_length_sweep_samples(
+            phrases,
+            samples_dir,
+            require_existing=args.samples_dir is not None,
+        )
+        samples_by_phrase_id = {phrase_id: sample for phrase_id, _, sample in samples}
+        sample_rows = [
+            {
+                "phrase_id": phrase_id,
+                "text": phrase.text,
+                "word_count": phrase.word_count,
+                "path": str(sample.path),
+                "audio_duration_s": sample.duration_s,
+                "sample_rate_hz": sample.sample_rate_hz,
+            }
+            for phrase_id, phrase, sample in samples
+        ]
+        stt_requests = tuple(
+            {
+                **request,
+                "path": str(samples_by_phrase_id[str(request["phrase_id"])].path),
+                "input_audio_duration_s": samples_by_phrase_id[str(request["phrase_id"])].duration_s,
+            }
+            for request in requests
+        )
+        stt_warmups = _select_warmup_requests(stt_requests, args.warmup_requests)
+        for backend in _split_csv(args.stt_backends):
+            if backend != "faster_whisper":
+                raise ValueError("--length-sweep currently supports only --stt-backends faster_whisper")
+            results.append(
+                run_faster_whisper_length_sweep(
+                    device=args.device,
+                    requests=stt_requests,
+                    warmup_requests=stt_warmups,
+                )
+            )
+
+    if "tts" in kinds:
+        for backend in _split_csv(args.tts_backends):
+            if backend == "espeak_ng":
+                results.append(
+                    run_espeak_ng_length_sweep(
+                        device=args.device,
+                        requests=requests,
+                        warmup_requests=warmup_requests,
+                        output_dir=run_dir / "tts" / backend,
+                    )
+                )
+            elif backend == "piper":
+                results.append(
+                    run_piper_length_sweep(
+                        device=args.device,
+                        requests=requests,
+                        warmup_requests=warmup_requests,
+                        output_dir=run_dir / "tts" / backend,
+                    )
+                )
+            else:
+                raise ValueError("--length-sweep currently supports only --tts-backends espeak_ng,piper")
+
+    plot_paths = write_length_sweep_outputs(run_dir, results)
+    _augment_length_sweep_manifest(
+        run_dir,
+        {
+            "word_counts": list(word_counts),
+            "variants_per_length": args.variants_per_length,
+            "repetitions": args.repetitions,
+            "warmup_requests": args.warmup_requests,
+            "seed": args.seed,
+            "runner_python": _benchmark_python(),
+            "samples": sample_rows,
+        },
+    )
+    print(f"wrote: {run_dir}")
+    print(f"warmed trials: {sum(len(result.trials) for result in results)}")
+    for path in plot_paths:
+        print(f"plot: {path}")
+    return 0
+
+
+def _parse_positive_int_csv(raw: str, *, option: str) -> tuple[int, ...]:
+    try:
+        values = tuple(int(part.strip()) for part in str(raw).split(",") if part.strip())
+    except ValueError as exc:
+        raise ValueError(f"{option} must be a comma-separated list of positive integers") from exc
+    if not values or any(value < 1 for value in values):
+        raise ValueError(f"{option} must contain at least one positive integer")
+    return values
+
+
+def _select_warmup_requests(requests: Sequence[dict[str, Any]], count: int) -> tuple[dict[str, Any], ...]:
+    if count < 0:
+        raise ValueError("warmup request count must not be negative")
+    if not requests:
+        raise ValueError("cannot select warmups without requests")
+    return tuple(requests[index % len(requests)] for index in range(1, count + 1))
+
+
+def ensure_length_sweep_samples(
+    phrases: Sequence[SweepPhrase],
+    samples_dir: Path,
+    *,
+    require_existing: bool = False,
+) -> tuple[tuple[str, SweepPhrase, SampleInfo], ...]:
+    rows: list[tuple[str, SweepPhrase, SampleInfo]] = []
+    for phrase in phrases:
+        path = samples_dir / f"{phrase.phrase_id}.wav"
+        if not path.exists():
+            if require_existing:
+                raise FileNotFoundError(f"required length-sweep sample is missing: {path}")
+            _write_sample_wav(phrase.text, path)
+        rows.append((phrase.phrase_id, phrase, _sample_info(phrase.text, path)))
+    return tuple(rows)
+
+
+def run_faster_whisper_length_sweep(
+    *,
+    device: str,
+    requests: Sequence[dict[str, Any]],
+    warmup_requests: Sequence[dict[str, Any]],
+) -> SweepRunResult:
+    if not requests:
+        raise ValueError("faster-whisper sweep needs at least one request")
+    model = os.environ.get("FASTER_WHISPER_MODEL", "tiny.en")
+    inference_device = os.environ.get("FASTER_WHISPER_DEVICE", "auto")
+    compute_type = os.environ.get("FASTER_WHISPER_COMPUTE_TYPE", "int8")
+    payload = _run_sweep_json_command(
+        [
+            _benchmark_python(),
+            "-c",
+            build_faster_whisper_length_sweep_code(
+                model=model,
+                device=inference_device,
+                compute_type=compute_type,
+                first_request=requests[0],
+                warmup_requests=warmup_requests,
+                requests=requests,
+            ),
+        ]
+    )
+    return sweep_run_result_from_payload(
+        device=device,
+        technology=f"faster-whisper {model} {inference_device} {compute_type}",
+        kind="stt",
+        payload=payload,
+    )
+
+
+def run_piper_length_sweep(
+    *,
+    device: str,
+    requests: Sequence[dict[str, Any]],
+    warmup_requests: Sequence[dict[str, Any]],
+    output_dir: Path,
+) -> SweepRunResult:
+    if not requests:
+        raise ValueError("Piper sweep needs at least one request")
+    model = os.environ.get("PIPER_MODEL")
+    if not model:
+        raise RuntimeError("PIPER_MODEL must identify a Piper .onnx voice model")
+    espeak_data_dir = _piper_espeak_data_dir_for_benchmark_python()
+    if espeak_data_dir is None:
+        raise RuntimeError("Piper espeak-ng-data directory was not found; set PIPER_ESPEAK_DATA_DIR")
+    payload = _run_sweep_json_command(
+        [
+            _benchmark_python(),
+            "-c",
+            build_piper_length_sweep_code(
+                model_path=Path(model),
+                espeak_data_dir=espeak_data_dir,
+                output_dir=output_dir,
+                first_request=requests[0],
+                warmup_requests=warmup_requests,
+                requests=requests,
+            ),
+        ]
+    )
+    return sweep_run_result_from_payload(
+        device=device,
+        technology=f"Piper {Path(model).stem}",
+        kind="tts",
+        payload=payload,
+    )
+
+
+def run_espeak_ng_length_sweep(
+    *,
+    device: str,
+    requests: Sequence[dict[str, Any]],
+    warmup_requests: Sequence[dict[str, Any]],
+    output_dir: Path,
+) -> SweepRunResult:
+    if not requests:
+        raise ValueError("espeak-ng sweep needs at least one request")
+    command = shutil.which("espeak-ng") or shutil.which("espeak")
+    if not command:
+        raise RuntimeError("espeak-ng/espeak command was not found")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def synthesize(request: dict[str, Any], index: int) -> SweepTrial:
+        output_path = output_dir / f"{index:04d}.wav"
+        measurement = _run_command([command, "-w", str(output_path), str(request["text"])], sample=str(request["text"]))
+        duration = audio_duration_s(output_path) if measurement.ok else None
+        return SweepTrial(
+            kind="tts",
+            phrase_id=str(request["phrase_id"]),
+            text=str(request["text"]),
+            word_count=int(request["word_count"]),
+            repeat_index=int(request["repeat_index"]),
+            latency_ms=measurement.latency_ms,
+            audio_duration_s=duration,
+            output=str(output_path),
+            error=measurement.error,
+        )
+
+    first_request = synthesize(requests[0], 0)
+    for index, request in enumerate(warmup_requests, start=-len(warmup_requests)):
+        synthesize(request, index)
+    trials = tuple(synthesize(request, index) for index, request in enumerate(requests, start=1))
+    return SweepRunResult(
+        device=device,
+        technology=Path(command).name,
+        kind="tts",
+        setup_ms=None,
+        first_request_ms=first_request.latency_ms,
+        trials=trials,
+    )
+
+
+def _benchmark_python() -> str:
+    return os.environ.get("VOICE_BENCH_PYTHON", sys.executable)
+
+
+def _piper_espeak_data_dir_for_benchmark_python() -> Path | None:
+    override = os.environ.get("PIPER_ESPEAK_DATA_DIR")
+    if override:
+        path = Path(override)
+        return path if path.exists() else None
+    if _benchmark_python() == sys.executable:
+        return _piper_espeak_data_dir()
+    probe = (
+        "import importlib.util\n"
+        "from pathlib import Path\n"
+        "spec=importlib.util.find_spec('piper')\n"
+        "print(Path(spec.origin).parent / 'espeak-ng-data' if spec and spec.origin else '')\n"
+    )
+    proc = subprocess.run([_benchmark_python(), "-c", probe], text=True, capture_output=True, check=False)
+    path = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
+    return path if path is not None and path.exists() else None
+
+
+def _run_sweep_json_command(command: list[str]) -> dict[str, Any]:
+    proc = subprocess.run(
+        command,
+        text=True,
+        capture_output=True,
+        timeout=float(os.environ.get("VOICE_BENCH_TIMEOUT_S", "900")),
+        check=False,
+    )
+    output = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        detail = (proc.stderr or output).strip()
+        raise RuntimeError(f"sweep backend failed ({proc.returncode}): {detail}")
+    try:
+        payload = json.loads(output.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"sweep backend did not emit JSON: {output or proc.stderr}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        raise RuntimeError("sweep backend emitted an invalid JSON payload")
+    return payload
+
+
+def _augment_length_sweep_manifest(run_dir: Path, benchmark: dict[str, Any]) -> None:
+    path = run_dir / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["benchmark"] = benchmark
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def _split_csv(raw: str) -> tuple[str, ...]:
@@ -397,6 +869,243 @@ def write_outputs(run_dir: Path, results: list[BackendResult], samples: tuple[Sa
             writer.writerow({field: row.get(field) for field in writer.fieldnames})
 
 
+def write_length_sweep_outputs(run_dir: Path, results: Sequence[SweepRunResult]) -> tuple[Path, ...]:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 1,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "host": platform.node(),
+        "platform": platform.platform(),
+        "python": sys.version,
+        "runs": [
+            {
+                "device": result.device,
+                "technology": result.technology,
+                "kind": result.kind,
+                "setup_ms": result.setup_ms,
+                "first_request_ms": result.first_request_ms,
+                "warmed_trials": len(result.trials),
+            }
+            for result in results
+        ],
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    raw_payload = {"runs": [asdict(result) for result in results]}
+    (run_dir / "length_sweep_trials.json").write_text(json.dumps(raw_payload, indent=2), encoding="utf-8")
+
+    summaries = [
+        {
+            "device": result.device,
+            "technology": result.technology,
+            "kind": result.kind,
+            "setup_ms": result.setup_ms,
+            "first_request_ms": result.first_request_ms,
+            **summarize_sweep_trials(result.trials),
+        }
+        for result in results
+    ]
+    (run_dir / "length_sweep_summary.json").write_text(json.dumps({"runs": summaries}, indent=2), encoding="utf-8")
+
+    with (run_dir / "length_sweep_trials.csv").open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = [
+            "device",
+            "technology",
+            "kind",
+            "setup_ms",
+            "first_request_ms",
+            "phrase_id",
+            "text",
+            "word_count",
+            "repeat_index",
+            "latency_ms",
+            "audio_duration_s",
+            "real_time_factor",
+            "output",
+            "error",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            for trial in result.trials:
+                writer.writerow(
+                    {
+                        "device": result.device,
+                        "technology": result.technology,
+                        "kind": result.kind,
+                        "setup_ms": result.setup_ms,
+                        "first_request_ms": result.first_request_ms,
+                        **asdict(trial),
+                        "real_time_factor": trial.real_time_factor,
+                    }
+                )
+
+    report_lines = [
+        "# Voice Length-Sweep Report",
+        "",
+        "| device | backend | kind | setup ms | first request ms | warmed trials |",
+        "|---|---|---|---:|---:|---:|",
+    ]
+    for result in results:
+        report_lines.append(
+            f"| {result.device} | {result.technology} | {result.kind} | {_fmt(result.setup_ms)} | "
+            f"{_fmt(result.first_request_ms)} | {len(result.trials)} |"
+        )
+    report_lines.extend(["", "The plots show individual warmed trials, p50, and p95. TTS generation time and audio duration use separate plots."])
+    (run_dir / "length_sweep_report.md").write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+
+    plots_dir = run_dir / "plots"
+    plot_paths: list[Path] = []
+    for result in results:
+        plot_paths.extend(render_length_sweep_plots(result, plots_dir))
+    return tuple(plot_paths)
+
+
+def render_length_sweep_plots(result: SweepRunResult, plots_dir: Path) -> tuple[Path, ...]:
+    if not result.trials:
+        return ()
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    summary = summarize_sweep_trials(result.trials)["by_word_count"]
+    word_ticks = [float(word_count) for word_count in summary]
+    suffix = "" if result.kind not in {"stt", "tts"} else ""
+    prefix = f"{result.device} | {result.technology}"
+    paths: list[Path] = []
+
+    if result.kind == "stt":
+        path = plots_dir / f"stt_latency_by_words{suffix}.png"
+        _plot_trials_and_summary(
+            plt,
+            result.trials,
+            x_values=[float(trial.word_count) for trial in result.trials],
+            trial_y_values=[trial.latency_ms for trial in result.trials],
+            summary_x_values=[float(word_count) for word_count in summary],
+            p50_values=[summary[word_count]["latency_p50_ms"] for word_count in summary],
+            p95_values=[summary[word_count]["latency_p95_ms"] for word_count in summary],
+            title=f"{prefix}: STT latency by words",
+            x_label="Input words",
+            y_label="Transcription latency (ms)",
+            path=path,
+            x_tick_values=word_ticks,
+        )
+        paths.append(path)
+
+        path = plots_dir / f"stt_latency_by_audio_duration{suffix}.png"
+        with_duration = [trial for trial in result.trials if trial.audio_duration_s is not None]
+        _plot_trials_and_summary(
+            plt,
+            with_duration,
+            x_values=[float(trial.audio_duration_s) for trial in with_duration],
+            trial_y_values=[trial.latency_ms for trial in with_duration],
+            summary_x_values=[summary[word_count]["audio_duration_mean_s"] for word_count in summary],
+            p50_values=[summary[word_count]["latency_p50_ms"] for word_count in summary],
+            p95_values=[summary[word_count]["latency_p95_ms"] for word_count in summary],
+            title=f"{prefix}: STT latency by input audio duration",
+            x_label="Input audio duration (s)",
+            y_label="Transcription latency (ms)",
+            path=path,
+        )
+        paths.append(path)
+    elif result.kind == "tts":
+        path = plots_dir / f"tts_generation_by_words{suffix}.png"
+        _plot_trials_and_summary(
+            plt,
+            result.trials,
+            x_values=[float(trial.word_count) for trial in result.trials],
+            trial_y_values=[trial.latency_ms for trial in result.trials],
+            summary_x_values=[float(word_count) for word_count in summary],
+            p50_values=[summary[word_count]["generation_p50_ms"] for word_count in summary],
+            p95_values=[summary[word_count]["generation_p95_ms"] for word_count in summary],
+            title=f"{prefix}: TTS generation time by words",
+            x_label="Input words",
+            y_label="Generation time (ms)",
+            path=path,
+            x_tick_values=word_ticks,
+        )
+        paths.append(path)
+
+        path = plots_dir / f"tts_audio_duration_by_words{suffix}.png"
+        with_duration = [trial for trial in result.trials if trial.audio_duration_s is not None]
+        _plot_trials_and_summary(
+            plt,
+            with_duration,
+            x_values=[float(trial.word_count) for trial in with_duration],
+            trial_y_values=[float(trial.audio_duration_s) for trial in with_duration],
+            summary_x_values=[float(word_count) for word_count in summary],
+            p50_values=[summary[word_count]["audio_duration_mean_s"] for word_count in summary],
+            p95_values=[summary[word_count]["audio_duration_mean_s"] for word_count in summary],
+            title=f"{prefix}: generated audio duration by words",
+            x_label="Input words",
+            y_label="Generated audio duration (s)",
+            path=path,
+            x_tick_values=word_ticks,
+            p95_label="Mean duration",
+        )
+        paths.append(path)
+
+        path = plots_dir / f"tts_rtf_by_words{suffix}.png"
+        with_rtf = [trial for trial in result.trials if trial.real_time_factor is not None]
+        _plot_trials_and_summary(
+            plt,
+            with_rtf,
+            x_values=[float(trial.word_count) for trial in with_rtf],
+            trial_y_values=[float(trial.real_time_factor) for trial in with_rtf],
+            summary_x_values=[float(word_count) for word_count in summary],
+            p50_values=[summary[word_count]["rtf_p50"] for word_count in summary],
+            p95_values=[summary[word_count]["rtf_p95"] for word_count in summary],
+            title=f"{prefix}: TTS real-time factor by words",
+            x_label="Input words",
+            y_label="Generation time / audio duration",
+            path=path,
+            x_tick_values=word_ticks,
+        )
+        paths.append(path)
+    return tuple(paths)
+
+
+def _plot_trials_and_summary(
+    plt: Any,
+    trials: Sequence[SweepTrial],
+    *,
+    x_values: Sequence[float],
+    trial_y_values: Sequence[float],
+    summary_x_values: Sequence[float | None],
+    p50_values: Sequence[float | None],
+    p95_values: Sequence[float | None],
+    title: str,
+    x_label: str,
+    y_label: str,
+    path: Path,
+    x_tick_values: Sequence[float] | None = None,
+    p95_label: str = "p95",
+) -> None:
+    figure, axis = plt.subplots(figsize=(8.0, 4.8), constrained_layout=True)
+    axis.scatter(x_values, trial_y_values, alpha=0.2, s=18, color="#4C78A8", label="Warmed trials")
+    points = [
+        (x, p50, p95)
+        for x, p50, p95 in zip(summary_x_values, p50_values, p95_values)
+        if x is not None and p50 is not None and p95 is not None
+    ]
+    if points:
+        summary_x, p50, p95 = zip(*points)
+        axis.plot(summary_x, p50, marker="o", color="#F58518", label="p50")
+        axis.plot(summary_x, p95, marker="s", linestyle="--", color="#54A24B", label=p95_label)
+    if x_tick_values:
+        ticks = sorted(set(x_tick_values))
+        axis.set_xticks(ticks)
+        axis.set_xlim(0, ticks[-1] * 1.05)
+    axis.set_title(title)
+    axis.set_xlabel(x_label)
+    axis.set_ylabel(y_label)
+    axis.grid(True, alpha=0.25)
+    axis.legend()
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
 def _run_system_tts(text: str, output_dir: Path, index: int) -> Measurement:
     output_dir.mkdir(parents=True, exist_ok=True)
     system = platform.system().lower()
@@ -468,6 +1177,54 @@ def build_piper_tts_batch_code(
         "            wav_file.writeframes(chunk.audio_int16_bytes)\n"
         "    rows.append({'sample': text, 'latency_ms': (time.perf_counter()-start)*1000.0, 'output': out})\n"
         "print(json.dumps({'setup_ms': setup_ms, 'rows': rows}))\n"
+    )
+
+
+def build_piper_length_sweep_code(
+    *,
+    model_path: Path,
+    espeak_data_dir: Path,
+    output_dir: Path,
+    first_request: dict[str, Any],
+    warmup_requests: Sequence[dict[str, Any]],
+    requests: Sequence[dict[str, Any]],
+) -> str:
+    return (
+        "import json, time, wave\n"
+        "from pathlib import Path\n"
+        "from piper import PiperVoice\n"
+        "setup_start=time.perf_counter()\n"
+        f"voice=PiperVoice.load({str(model_path)!r}, espeak_data_dir={str(espeak_data_dir)!r})\n"
+        "setup_ms=(time.perf_counter()-setup_start)*1000.0\n"
+        f"out_dir=Path({str(output_dir)!r})\n"
+        "out_dir.mkdir(parents=True, exist_ok=True)\n"
+        f"first_request={dict(first_request)!r}\n"
+        f"warmup_requests={list(warmup_requests)!r}\n"
+        f"requests={list(requests)!r}\n"
+        "def synthesize(request, index):\n"
+        "    path=out_dir/f'{index:04d}.wav'\n"
+        "    start=time.perf_counter()\n"
+        "    frame_count=0\n"
+        "    sample_rate=None\n"
+        "    with wave.open(str(path), 'wb') as wav_file:\n"
+        "        params_set=False\n"
+        "        for chunk in voice.synthesize(request['text']):\n"
+        "            if not params_set:\n"
+        "                wav_file.setframerate(chunk.sample_rate)\n"
+        "                wav_file.setsampwidth(chunk.sample_width)\n"
+        "                wav_file.setnchannels(chunk.sample_channels)\n"
+        "                sample_rate=chunk.sample_rate\n"
+        "                params_set=True\n"
+        "            wav_file.writeframes(chunk.audio_int16_bytes)\n"
+        "            frame_count += len(chunk.audio_int16_bytes)//(chunk.sample_width*chunk.sample_channels)\n"
+        "    if sample_rate is None:\n"
+        "        raise RuntimeError('Piper produced no audio')\n"
+        "    return {**request, 'latency_ms': (time.perf_counter()-start)*1000.0, 'audio_duration_s': frame_count/sample_rate, 'output': str(path)}\n"
+        "first_request_ms=synthesize(first_request, 0)['latency_ms']\n"
+        "for index, request in enumerate(warmup_requests, start=-len(warmup_requests)):\n"
+        "    synthesize(request, index)\n"
+        "rows=[synthesize(request, index) for index, request in enumerate(requests, start=1)]\n"
+        "print(json.dumps({'setup_ms': setup_ms, 'first_request_ms': first_request_ms, 'rows': rows}))\n"
     )
 
 
@@ -635,6 +1392,37 @@ def _run_faster_whisper_stt_batch(sample_paths: tuple[Path, ...], output_dir: Pa
     return _run_json_batch_command([sys.executable, "-c", code])
 
 
+def build_faster_whisper_length_sweep_code(
+    *,
+    model: str,
+    device: str,
+    compute_type: str,
+    first_request: dict[str, Any],
+    warmup_requests: Sequence[dict[str, Any]],
+    requests: Sequence[dict[str, Any]],
+) -> str:
+    return (
+        "import json, time\n"
+        "from faster_whisper import WhisperModel\n"
+        "setup_start=time.perf_counter()\n"
+        f"model=WhisperModel({model!r}, device={device!r}, compute_type={compute_type!r})\n"
+        "setup_ms=(time.perf_counter()-setup_start)*1000.0\n"
+        f"first_request={dict(first_request)!r}\n"
+        f"warmup_requests={list(warmup_requests)!r}\n"
+        f"requests={list(requests)!r}\n"
+        "def transcribe(request):\n"
+        "    start=time.perf_counter()\n"
+        "    segments,_=model.transcribe(request['path'], beam_size=1, vad_filter=False)\n"
+        "    text=' '.join(segment.text.strip() for segment in segments)\n"
+        "    return {**request, 'latency_ms': (time.perf_counter()-start)*1000.0, 'output': text}\n"
+        "first_request_ms=transcribe(first_request)['latency_ms']\n"
+        "for request in warmup_requests:\n"
+        "    transcribe(request)\n"
+        "rows=[transcribe(request) for request in requests]\n"
+        "print(json.dumps({'setup_ms': setup_ms, 'first_request_ms': first_request_ms, 'rows': rows}))\n"
+    )
+
+
 def _run_sherpa_stt(wav_path: Path, output_dir: Path, index: int) -> Measurement:
     if importlib.util.find_spec("sherpa_onnx") is None:
         return Measurement(0.0, None, _gpu_memory_mb(), False, "", "sherpa_onnx package not installed", str(wav_path))
@@ -772,6 +1560,15 @@ def _write_placeholder_wav(path: Path) -> None:
         handle.writeframes(b"\x00\x00" * frames)
 
 
+def audio_duration_s(path: Path) -> float:
+    with wave.open(str(path), "rb") as handle:
+        frame_count = int(handle.getnframes())
+        sample_rate = int(handle.getframerate())
+    if sample_rate <= 0:
+        raise ValueError(f"WAV has invalid sample rate: {path}")
+    return round(frame_count / float(sample_rate), 6)
+
+
 def _sample_info(phrase: str, path: Path) -> SampleInfo:
     with wave.open(str(path), "rb") as handle:
         frame_count = int(handle.getnframes())
@@ -779,7 +1576,7 @@ def _sample_info(phrase: str, path: Path) -> SampleInfo:
     return SampleInfo(
         phrase=phrase,
         path=path,
-        duration_s=round(frame_count / float(sample_rate), 6),
+        duration_s=audio_duration_s(path),
         sample_rate_hz=sample_rate,
         frame_count=frame_count,
     )

@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 _MODULE_PATH = Path(__file__).resolve().parents[3] / "scripts" / "voice_microbench.py"
 _SPEC = importlib.util.spec_from_file_location("voice_microbench", _MODULE_PATH)
@@ -182,3 +184,167 @@ def test_summarize_measurements_with_setup_separates_load_and_warmup() -> None:
     assert summary["setup_ms"] == 500.0
     assert summary["first_run_ms"] == 100.0
     assert summary["steady_state_mean_ms"] == 30.0
+
+
+def test_build_length_sweep_phrases_has_requested_variants_and_exact_word_counts() -> None:
+    phrases = voice_microbench.build_length_sweep_phrases((1, 2, 4), variants_per_length=5)
+
+    assert len(phrases) == 15
+    assert {phrase.word_count for phrase in phrases} == {1, 2, 4}
+    assert all(len(phrase.text.split()) == phrase.word_count for phrase in phrases)
+    assert len({phrase.phrase_id for phrase in phrases}) == len(phrases)
+
+
+def test_summarize_sweep_trials_separates_tts_generation_time_from_audio_duration() -> None:
+    trials = (
+        voice_microbench.SweepTrial(
+            kind="tts",
+            phrase_id="w1-v1",
+            text="cat",
+            word_count=1,
+            repeat_index=1,
+            latency_ms=20.0,
+            audio_duration_s=0.5,
+            output="one.wav",
+        ),
+        voice_microbench.SweepTrial(
+            kind="tts",
+            phrase_id="w1-v1",
+            text="cat",
+            word_count=1,
+            repeat_index=2,
+            latency_ms=40.0,
+            audio_duration_s=0.5,
+            output="two.wav",
+        ),
+    )
+
+    summary = voice_microbench.summarize_sweep_trials(trials)
+
+    bucket = summary["by_word_count"]["1"]
+    assert bucket["generation_p50_ms"] == 30.0
+    assert bucket["generation_p95_ms"] == 40.0
+    assert bucket["audio_duration_mean_s"] == 0.5
+    assert bucket["rtf_p50"] == 0.06
+
+
+def test_build_length_sweep_schedule_is_deterministic_and_repeats_every_phrase() -> None:
+    phrases = voice_microbench.build_length_sweep_phrases((1, 2), variants_per_length=2)
+
+    first = voice_microbench.build_length_sweep_schedule(phrases, repetitions=3, seed=42)
+    second = voice_microbench.build_length_sweep_schedule(phrases, repetitions=3, seed=42)
+
+    assert first == second
+    assert len(first) == 12
+    assert {(phrase.phrase_id, repeat_index) for phrase, repeat_index in first} == {
+        (phrase.phrase_id, repeat_index) for phrase in phrases for repeat_index in range(1, 4)
+    }
+
+
+def test_write_length_sweep_outputs_creates_raw_data_summary_and_tts_plots(tmp_path: Path) -> None:
+    result = voice_microbench.SweepRunResult(
+        device="test-mac",
+        technology="espeak-ng",
+        kind="tts",
+        setup_ms=None,
+        first_request_ms=50.0,
+        trials=(
+            voice_microbench.SweepTrial(
+                kind="tts",
+                phrase_id="w1-v1",
+                text="cat",
+                word_count=1,
+                repeat_index=1,
+                latency_ms=20.0,
+                audio_duration_s=0.4,
+                output="cat.wav",
+            ),
+        ),
+    )
+
+    paths = voice_microbench.write_length_sweep_outputs(tmp_path, (result,))
+
+    assert (tmp_path / "manifest.json").exists()
+    assert (tmp_path / "length_sweep_trials.json").exists()
+    assert (tmp_path / "length_sweep_trials.csv").exists()
+    assert (tmp_path / "length_sweep_summary.json").exists()
+    assert (tmp_path / "length_sweep_report.md").exists()
+    assert {path.name for path in paths} == {
+        "tts_generation_by_words.png",
+        "tts_audio_duration_by_words.png",
+        "tts_rtf_by_words.png",
+    }
+
+
+def test_faster_whisper_length_sweep_code_loads_once_and_separates_first_request() -> None:
+    code = voice_microbench.build_faster_whisper_length_sweep_code(
+        model="tiny.en",
+        device="cpu",
+        compute_type="int8",
+        first_request={"phrase_id": "w1-v1", "path": "/tmp/cat.wav"},
+        warmup_requests=({"phrase_id": "w1-v1", "path": "/tmp/cat.wav"},),
+        requests=({"phrase_id": "w1-v1", "path": "/tmp/cat.wav"},),
+    )
+
+    assert "model=WhisperModel('tiny.en', device='cpu', compute_type='int8')" in code
+    assert "first_request_ms" in code
+    assert "setup_ms" in code
+    assert "rows=[transcribe(request) for request in requests]" in code
+
+
+def test_piper_length_sweep_code_loads_once_and_records_audio_duration() -> None:
+    code = voice_microbench.build_piper_length_sweep_code(
+        model_path=Path("/tmp/voice.onnx"),
+        espeak_data_dir=Path("/tmp/espeak-ng-data"),
+        output_dir=Path("/tmp/output"),
+        first_request={"phrase_id": "w1-v1", "text": "cat"},
+        warmup_requests=({"phrase_id": "w1-v1", "text": "cat"},),
+        requests=({"phrase_id": "w1-v1", "text": "cat"},),
+    )
+
+    assert "voice=PiperVoice.load('/tmp/voice.onnx', espeak_data_dir='/tmp/espeak-ng-data')" in code
+    assert "audio_duration_s" in code
+    assert "first_request_ms" in code
+    assert "rows=[synthesize(request, index)" in code
+
+
+def test_sweep_run_result_from_payload_preserves_stt_input_duration_and_transcript() -> None:
+    result = voice_microbench.sweep_run_result_from_payload(
+        device="h200",
+        technology="faster-whisper tiny.en float16",
+        kind="stt",
+        payload={
+            "setup_ms": 10.0,
+            "first_request_ms": 20.0,
+            "rows": [
+                {
+                    "phrase_id": "w1-v1",
+                    "text": "cat",
+                    "word_count": 1,
+                    "repeat_index": 1,
+                    "input_audio_duration_s": 0.5,
+                    "latency_ms": 30.0,
+                    "output": "cat",
+                }
+            ],
+        },
+    )
+
+    assert result.setup_ms == 10.0
+    assert result.first_request_ms == 20.0
+    assert result.trials[0].audio_duration_s == 0.5
+    assert result.trials[0].output == "cat"
+
+
+def test_audio_duration_s_reads_wav_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "sample.wav"
+    voice_microbench._write_placeholder_wav(path)
+
+    assert voice_microbench.audio_duration_s(path) == 0.25
+
+
+def test_length_sweep_refuses_to_generate_missing_files_in_an_explicit_samples_directory(tmp_path: Path) -> None:
+    phrase = voice_microbench.SweepPhrase(phrase_id="w1-v1", text="cat", word_count=1)
+
+    with pytest.raises(FileNotFoundError, match="w1-v1.wav"):
+        voice_microbench.ensure_length_sweep_samples((phrase,), tmp_path, require_existing=True)
