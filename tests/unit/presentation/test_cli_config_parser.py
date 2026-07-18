@@ -20,6 +20,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "midi_device_name": None,
         "midi_file_path": None,
         "midi_file_delay_ticks": 0,
+        "midi_file_trim_leading_rest": False,
         "injection_file": None,
         "injection_length": 0,
         "inject_acc_file": None,
@@ -41,6 +42,8 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "model_max_seq_len_frames": 96,
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
+        "prompt_length_ticks": 32,
+        "continuation_mode": "standard",
         "model_condition_bpm": None,
         "rap_topic": None,
         "rap_pattern": "boom_bap",
@@ -67,6 +70,7 @@ def test_parse_args_defaults() -> None:
     assert config.tempo.ticks_per_beat == 4
     assert config.tempo.beats_per_bar == 4
     assert config.input.type == "midi_device"
+    assert config.input.midi_file_trim_leading_rest is False
     assert config.input.injection_file is None
     assert config.input.injection_length_ticks == 0
     assert config.input.injection_acc_file is None
@@ -80,11 +84,13 @@ def test_parse_args_defaults() -> None:
     assert config.inference.server_generate_url == "http://localhost:8000/generate_accompaniment"
     assert config.inference.generation_interval_ticks == 2
     assert config.inference.generation_length_frames == 20
+    assert config.inference.prompt_length_ticks == 32
     assert config.inference.model_condition_bpm is None
     assert config.rap.topic is None
     assert config.rap.pattern == "boom_bap"
     assert config.rap.lookahead_bars == 2
     assert config.count_in_beats == 0
+    assert config.continuation_mode == "standard"
     assert config.input_snap_forward_fraction == 0.4
 
 
@@ -184,6 +190,7 @@ def test_args_to_config_midi_file() -> None:
         input_mode="midi_file",
         midi_file_path="/path/to/song.mid",
         midi_file_delay_ticks=8,
+        midi_file_trim_leading_rest=True,
         output_type="midi_file",
         midi_file_output_path="/path/to/output.mid",
         inference_log_detail="full",
@@ -194,6 +201,7 @@ def test_args_to_config_midi_file() -> None:
     assert config.input.type == "midi_file"
     assert config.input.midi_file_path == "/path/to/song.mid"
     assert config.input.midi_file_delay_ticks == 8
+    assert config.input.midi_file_trim_leading_rest is True
     assert config.output.type == "midi_file"
     assert config.output.midi_file_output_path == "/path/to/output.mid"
     assert config.output.inference_log_detail == "full"
@@ -221,6 +229,28 @@ def test_args_to_config_clamps_negative_count_in() -> None:
     args = _make_args(count_in_beats=-2)
     config = args_to_config(args)
     assert config.count_in_beats == 0
+
+
+def test_args_to_config_prompt_continuation_mode() -> None:
+    config = args_to_config(
+        _make_args(
+            continuation_mode="prompt_continuation",
+            prompt_length_ticks=64,
+        )
+    )
+
+    assert config.continuation_mode == "prompt_continuation"
+    assert config.inference.prompt_length_ticks == 64
+
+
+def test_args_to_config_rejects_rap_with_prompt_continuation() -> None:
+    with pytest.raises(ValueError, match="rap.*prompt_continuation"):
+        args_to_config(
+            _make_args(
+                continuation_mode="prompt_continuation",
+                rap_topic="space travel",
+            )
+        )
 
 
 def test_args_to_config_clamps_input_snap_forward_fraction() -> None:
