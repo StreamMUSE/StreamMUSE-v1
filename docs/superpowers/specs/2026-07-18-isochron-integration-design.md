@@ -13,7 +13,9 @@ characterization tests.
 - The existing 15 failing pytest node IDs are an accepted baseline and are not
   part of this work.
 - Every integration checkpoint must introduce zero new failing node IDs, zero
-  new collection errors, and zero new skips.
+  new collection errors, and must not turn any previously passing test into a
+  skip. Newly ported Isochron tests may retain their documented environment-gated
+  skips.
 - Standard inference remains the default. Prompt continuation is enabled only
   by explicit configuration.
 - Existing deterministic session metadata, raw-token history, request lifecycle,

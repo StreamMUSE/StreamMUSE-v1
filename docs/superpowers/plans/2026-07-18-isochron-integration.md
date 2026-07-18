@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Freeze the 15 failing node IDs at `1734ea9b`; introduce no new failures, collection errors, or skips.
+- Freeze the 15 failing node IDs at `1734ea9b`; introduce no new failures or collection errors, and do not turn previously passing tests into skips. Newly ported environment-gated Isochron tests may retain their existing skips.
 - Do not change code or tests solely to repair those baseline failures.
 - Standard inference remains the default and must preserve current construction arguments.
 - Prompt continuation is opt-in; Rap plus prompt continuation is rejected explicitly.
