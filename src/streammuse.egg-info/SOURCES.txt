@@ -17,6 +17,11 @@ src/streammuse/application/factories/__init__.py
 src/streammuse/application/factories/inference_factory.py
 src/streammuse/application/factories/input_factory.py
 src/streammuse/application/factories/output_factory.py
+src/streammuse/application/rap/__init__.py
+src/streammuse/application/rap/alignment.py
+src/streammuse/application/rap/realtime.py
+src/streammuse/application/rap/rhythm.py
+src/streammuse/application/rap/service.py
 src/streammuse/application/runtime/__init__.py
 src/streammuse/application/runtime/builder.py
 src/streammuse/application/runtime/session.py
@@ -43,6 +48,9 @@ src/streammuse/domain/logging/session_manager.py
 src/streammuse/domain/musical/__init__.py
 src/streammuse/domain/musical/converters.py
 src/streammuse/domain/musical/events.py
+src/streammuse/domain/rap/__init__.py
+src/streammuse/domain/rap/models.py
+src/streammuse/domain/rap/prosody.py
 src/streammuse/domain/tasks/__init__.py
 src/streammuse/domain/tasks/animal_naming.py
 src/streammuse/domain/tasks/models.py
@@ -106,6 +114,8 @@ src/streammuse/infrastructure/output/metronome.py
 src/streammuse/infrastructure/output/midi_file.py
 src/streammuse/infrastructure/output/session_logger.py
 src/streammuse/infrastructure/output/websocket.py
+src/streammuse/infrastructure/rap/__init__.py
+src/streammuse/infrastructure/rap/generators.py
 src/streammuse/infrastructure/storage/__init__.py
 src/streammuse/infrastructure/storage/prompt_repository.py
 src/streammuse/presentation/__init__.py
@@ -115,6 +125,8 @@ src/streammuse/presentation/cli/config_parser.py
 src/streammuse/presentation/debug/__init__.py
 src/streammuse/presentation/debug/cli.py
 src/streammuse/presentation/debug/server.py
+src/streammuse/presentation/rap/__init__.py
+src/streammuse/presentation/rap/cli.py
 src/streammuse/presentation/task/__init__.py
 src/streammuse/presentation/task/cli.py
 src/streammuse/presentation/web/__init__.py

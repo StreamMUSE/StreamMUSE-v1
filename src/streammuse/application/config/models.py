@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 
@@ -19,6 +19,8 @@ InferenceLogDetail = Literal["summary", "full"]
 SessionArtifactTier = Literal["normal", "debug"]
 InferenceType = Literal["http", "stanley"]
 ModelName = Literal["stanley", "lekai"]
+RapPattern = Literal["boom_bap", "straight_8", "trap_sparse"]
+RapGenerator = Literal["phrase_bank", "local_chat"]
 
 
 @dataclass(frozen=True)
@@ -63,10 +65,25 @@ class InferenceConfig:
 
 
 @dataclass(frozen=True)
+class RapConfig:
+    """Optional rolling beat-aligned text layer for the real-time CLI."""
+
+    topic: Optional[str] = None
+    pattern: RapPattern = "boom_bap"
+    generator: RapGenerator = "phrase_bank"
+    lookahead_bars: int = 2
+    candidate_count: int = 12
+    model_url: str = "http://localhost:8000/v1"
+    model: str = "local-model"
+    timeout_s: float = 5.0
+
+
+@dataclass(frozen=True)
 class ApplicationConfig:
     tempo: TempoConfig = TempoConfig()
     input: InputConfig = InputConfig()
     output: OutputConfig = OutputConfig()
     inference: InferenceConfig = InferenceConfig()
+    rap: RapConfig = field(default_factory=RapConfig)
     count_in_beats: int = 0
     input_snap_forward_fraction: float = 0.4

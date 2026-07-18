@@ -12,8 +12,10 @@ from streammuse.application.config import (
     InferenceConfig,
     InputConfig,
     OutputConfig,
+    RapConfig,
     TempoConfig,
 )
+from streammuse.application.rap.rhythm import available_patterns
 
 
 def parse_args() -> argparse.Namespace:
@@ -139,6 +141,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    # Optional beat-aligned rap text layer
+    parser.add_argument("--rap-topic", type=str, default=None, help="Enable live rap text for this topic")
+    parser.add_argument("--rap-pattern", choices=available_patterns(), default="boom_bap", help="Rap rhythm preset")
+    parser.add_argument(
+        "--rap-generator",
+        choices=("phrase_bank", "local_chat"),
+        default="phrase_bank",
+        help="Lyric candidate source",
+    )
+    parser.add_argument("--rap-lookahead-bars", type=int, default=2, help="Future bars kept ready")
+    parser.add_argument("--rap-candidate-count", type=int, default=12, help="Candidates scored per lyric request")
+    parser.add_argument("--rap-model-url", type=str, default="http://localhost:8000/v1", help="OpenAI-compatible rap model URL")
+    parser.add_argument("--rap-model", type=str, default="local-model", help="Rap model name")
+    parser.add_argument("--rap-timeout-s", type=float, default=5.0, help="Rap model request timeout in seconds")
+
     # Runtime options
     parser.add_argument(
         "--count-in-beats",
@@ -255,11 +272,25 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         ),
     )
 
+    raw_topic = getattr(args, "rap_topic", None)
+    rap_topic = str(raw_topic).strip() if raw_topic is not None else None
+    rap_config = RapConfig(
+        topic=rap_topic or None,
+        pattern=getattr(args, "rap_pattern", "boom_bap"),  # type: ignore[arg-type]
+        generator=getattr(args, "rap_generator", "phrase_bank"),  # type: ignore[arg-type]
+        lookahead_bars=max(1, int(getattr(args, "rap_lookahead_bars", 2) or 0)),
+        candidate_count=max(1, int(getattr(args, "rap_candidate_count", 12) or 0)),
+        model_url=str(getattr(args, "rap_model_url", "http://localhost:8000/v1")),
+        model=str(getattr(args, "rap_model", "local-model")),
+        timeout_s=max(0.1, float(getattr(args, "rap_timeout_s", 5.0) or 0.0)),
+    )
+
     return ApplicationConfig(
         tempo=tempo,
         input=input_config,
         output=output_config,
         inference=inference_config,
+        rap=rap_config,
         count_in_beats=max(0, int(getattr(args, "count_in_beats", 0) or 0)),
         input_snap_forward_fraction=clamp_snap_forward_fraction(
             float(getattr(args, "input_snap_forward_fraction", 0.4))
