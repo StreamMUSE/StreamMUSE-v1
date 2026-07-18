@@ -693,4 +693,3 @@ class PianoMusicTokenizer:
             f"img_h={v.img_h}, "
             f"empty_marker={v.empty_marker})"
         )
-

@@ -37,7 +37,7 @@ class TrainingConfig:
 @dataclass
 class ModelConfig:
     """模型架构配置"""
-    # Token-level GPT配置  
+    # Token-level GPT配置
     vocab_size: int = 268
     hidden_size: int = 768  #
     num_hidden_layers: int = 16

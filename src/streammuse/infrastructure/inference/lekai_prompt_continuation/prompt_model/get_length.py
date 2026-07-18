@@ -18,7 +18,7 @@ def process_single_file_length(file_name, data_dir, patch_h, patch_w):
         num_measures = metadata['num_measures']
 
         tokenizer = PianoMusicTokenizer()
-  
+
         measures = [save_dict[f'measure_{i}'] for i in range(num_measures)]
         total_tokens = tokenizer.estimate_sequence_length(measures)
 
