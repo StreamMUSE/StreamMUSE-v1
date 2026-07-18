@@ -22,30 +22,14 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, List, Optional
+from typing import AsyncIterator, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
-from streammuse.application.factories import (
-    InferenceEngineFactory,
-    InputSourceFactory,
-)
-from streammuse.application.services.real_time_music_service import RealTimeMusicService
-from streammuse.domain.logging import SessionManager
-from streammuse.domain.timing import PlaybackScheduler, Tempo
-from streammuse.infrastructure.output import (
-    AudioOutputConfig,
-    AudioOutputSink,
-    CompositeOutputSink,
-    ConsoleOutputConfig,
-    ConsoleOutputSink,
-    MidiFileOutputConfig,
-    MidiFileOutputSink,
-    WebSocketOutputSink,
-)
+from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
+from streammuse.infrastructure.output import CompositeOutputSink, WebSocketOutputSink
 from streammuse.presentation.cli.config_parser import args_to_config, parse_args
 
 
@@ -56,7 +40,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 # ---------------------------------------------------------------------------
 
 _ws_sink: Optional[WebSocketOutputSink] = None
-_service: Optional[RealTimeMusicService] = None
+_runtime: Optional[RuntimeSession] = None
+_service: Optional[object] = None
 _composite_sink: Optional[CompositeOutputSink] = None
 _connections: List[WebSocket] = []
 _broadcaster_stop: Optional[asyncio.Event] = None
@@ -110,7 +95,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def _shutdown_service() -> None:
     """Stop the realtime service and close the output sink. Safe to call twice."""
-    global _service, _composite_sink
+    global _runtime, _service, _composite_sink
+    if _runtime is not None:
+        try:
+            _runtime.stop()
+        finally:
+            _runtime.cleanup()
+        _runtime = None
+        _service = None
+        _composite_sink = None
+        return
     if _service is not None and _service.running:
         try:
             _service.stop()
@@ -172,106 +166,25 @@ def create_app() -> FastAPI:
 # Boot
 # ---------------------------------------------------------------------------
 
-def _build_composite(
-    *,
-    session_manager: SessionManager,
-    bpm: float,
-    ticks_per_beat: int,
-    midi_out_port: Optional[str],
-) -> tuple[CompositeOutputSink, WebSocketOutputSink]:
-    """Build the viewer's output composite directly.
-
-    Returns the composite plus a reference to the embedded WebSocketOutputSink
-    so the broadcaster can drain it without walking the composite tree.
-
-    Order matters only for human-visible side effects (console log order).
-    Functionally each sink is independent.
-    """
-    ws_sink = WebSocketOutputSink()
-    auto_midi = MidiFileOutputSink(
-        MidiFileOutputConfig(
-            bpm=float(bpm),
-            ticks_per_beat=int(ticks_per_beat),
-            output_path=str(session_manager.get_session_dir() / "combined.mid"),
-        )
-    )
-    sinks: List[Any] = [ws_sink, auto_midi, ConsoleOutputSink(ConsoleOutputConfig())]
-
-    if midi_out_port:
-        try:
-            audio_sink = AudioOutputSink(AudioOutputConfig(port_name=midi_out_port))
-            # Eagerly open the port so a bad name fails fast at boot.
-            audio_sink._ensure_port()  # noqa: SLF001
-            sinks.append(audio_sink)
-            print(f"  Audio output: {midi_out_port}", file=sys.stderr, flush=True)
-        except Exception as exc:
-            print(
-                f"  Audio output: DISABLED — could not open '{midi_out_port}': {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    return CompositeOutputSink(sinks), ws_sink
-
 
 def main() -> int:
     """Entry point for `streammuse-web`."""
-    global _ws_sink, _service, _composite_sink
+    global _runtime, _ws_sink, _service, _composite_sink
 
     import uvicorn
 
     args = parse_args()
     config = args_to_config(args)
 
-    input_snap_forward_fraction = effective_input_snap_forward_fraction(
-        config.input.type,
-        config.input_snap_forward_fraction,
-    )
+    runtime = RuntimeSessionBuilder(config=config, log_dir=args.log_dir).build_web()
+    session_manager = runtime.session_manager
+    assert session_manager is not None
+    composite = runtime.output_sink
+    ws_sink = runtime.websocket_sink
+    assert isinstance(ws_sink, WebSocketOutputSink)
+    service = runtime.service
 
-    session_manager = SessionManager(args.log_dir)
-    session_manager.create_session_directory()
-    session_config = {
-        "tempo_bpm": config.tempo.bpm,
-        "ticks_per_beat": config.tempo.ticks_per_beat,
-        "beats_per_bar": config.tempo.beats_per_bar,
-        "input_type": config.input.type,
-        "inference_type": config.inference.type,
-        "generation_interval_ticks": config.inference.generation_interval_ticks,
-        "generation_length_frames": config.inference.generation_length_frames,
-        "input_snap_forward_fraction": input_snap_forward_fraction,
-    }
-    session_manager.save_config(session_config)
-
-    composite, ws_sink = _build_composite(
-        session_manager=session_manager,
-        bpm=config.tempo.bpm,
-        ticks_per_beat=config.tempo.ticks_per_beat,
-        midi_out_port=config.output.midi_out_port,
-    )
-
-    inference_engine = InferenceEngineFactory.create(config)
-    input_source = InputSourceFactory.create(config)
-    tempo = Tempo(
-        bpm=config.tempo.bpm,
-        ticks_per_beat=config.tempo.ticks_per_beat,
-        beats_per_bar=config.tempo.beats_per_bar,
-    )
-    scheduler = PlaybackScheduler()
-    service = RealTimeMusicService(
-        input_source=input_source,
-        inference_engine=inference_engine,
-        output_sink=composite,
-        tempo=tempo,
-        scheduler=scheduler,
-        generation_interval_ticks=config.inference.generation_interval_ticks,
-        generation_length_frames=config.inference.generation_length_frames,
-        input_snap_forward_fraction=input_snap_forward_fraction,
-    )
-
-    # Broadcast the session config so the UI's initial state matches the
-    # service's actual configuration without waiting for the first tick.
-    composite.output_config(session_config)
-
+    _runtime = runtime
     _composite_sink = composite
     _ws_sink = ws_sink
     _service = service
@@ -289,7 +202,7 @@ def main() -> int:
         sys.exit(0)
     signal.signal(signal.SIGINT, _sigint)
 
-    service.start(max_ticks=None)
+    runtime.start(run_stop_tick=None)
 
     print("Starting StreamMUSE Viewer...", flush=True)
     print(f"  http://{host}:{port}/", flush=True)
