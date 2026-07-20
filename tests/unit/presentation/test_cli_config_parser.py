@@ -42,6 +42,14 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
         "model_condition_bpm": None,
+        "rap_topic": None,
+        "rap_pattern": "boom_bap",
+        "rap_generator": "phrase_bank",
+        "rap_lookahead_bars": 2,
+        "rap_candidate_count": 12,
+        "rap_model_url": "http://localhost:8000/v1",
+        "rap_model": "local-model",
+        "rap_timeout_s": 5.0,
         "count_in_beats": 0,
         "input_snap_forward_fraction": 0.4,
         "max_ticks": None,
@@ -73,6 +81,9 @@ def test_parse_args_defaults() -> None:
     assert config.inference.generation_interval_ticks == 2
     assert config.inference.generation_length_frames == 20
     assert config.inference.model_condition_bpm is None
+    assert config.rap.topic is None
+    assert config.rap.pattern == "boom_bap"
+    assert config.rap.lookahead_bars == 2
     assert config.count_in_beats == 0
     assert config.input_snap_forward_fraction == 0.4
 
@@ -215,6 +226,30 @@ def test_args_to_config_clamps_negative_count_in() -> None:
 def test_args_to_config_clamps_input_snap_forward_fraction() -> None:
     assert args_to_config(_make_args(input_snap_forward_fraction=-0.5)).input_snap_forward_fraction == 0.0
     assert args_to_config(_make_args(input_snap_forward_fraction=1.5)).input_snap_forward_fraction == 1.0
+
+
+def test_args_to_config_maps_rap_settings_and_clamps_positive_dimensions() -> None:
+    config = args_to_config(
+        _make_args(
+            rap_topic="space travel",
+            rap_pattern="trap_sparse",
+            rap_generator="local_chat",
+            rap_lookahead_bars=0,
+            rap_candidate_count=-4,
+            rap_model_url="http://chat.example/v1",
+            rap_model="rap-model",
+            rap_timeout_s=2.5,
+        )
+    )
+
+    assert config.rap.topic == "space travel"
+    assert config.rap.pattern == "trap_sparse"
+    assert config.rap.generator == "local_chat"
+    assert config.rap.lookahead_bars == 1
+    assert config.rap.candidate_count == 1
+    assert config.rap.model_url == "http://chat.example/v1"
+    assert config.rap.model == "rap-model"
+    assert config.rap.timeout_s == 2.5
 
 
 def test_args_to_config_injection_fields() -> None:

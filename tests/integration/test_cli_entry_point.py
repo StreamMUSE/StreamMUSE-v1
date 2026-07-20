@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import mido
 import pytest
 
-from streammuse.application.config import ApplicationConfig, InferenceConfig, InputConfig, OutputConfig, TempoConfig
+from streammuse.application.config import ApplicationConfig, InferenceConfig, InputConfig, OutputConfig, RapConfig, TempoConfig
 from streammuse.domain.musical import MusicalEvent
 from streammuse.presentation.cli.cli import main
 
@@ -260,3 +260,45 @@ def test_cli_injection_calls_clear_then_inject_and_then_creates_input(
     assert inference_engine.clear_history.call_count == 1
     assert inference_engine.inject_history.call_count == 1
     assert call_order == ["clear_history", "inject_history"]
+
+
+@patch("streammuse.presentation.cli.cli.RealTimeMusicService")
+@patch("streammuse.presentation.cli.cli._build_rap_controller")
+@patch("streammuse.presentation.cli.cli.InputSourceFactory")
+@patch("streammuse.presentation.cli.cli.OutputSinkFactory")
+@patch("streammuse.presentation.cli.cli.InferenceEngineFactory")
+@patch("streammuse.presentation.cli.cli.parse_args")
+def test_cli_passes_optional_rap_controller_to_realtime_service(
+    mock_parse_args,
+    mock_inference_factory,
+    mock_output_factory,
+    mock_input_factory,
+    mock_rap_controller_builder,
+    mock_service_cls,
+) -> None:
+    mock_args = MagicMock()
+    mock_args.max_ticks = 1
+    mock_args.log_dir = "logs"
+    mock_parse_args.return_value = mock_args
+
+    controller = MagicMock()
+    mock_rap_controller_builder.return_value = controller
+    service = MagicMock()
+    service.running = False
+    mock_service_cls.return_value = service
+    mock_input_factory.create.return_value = MockInputSource()
+    mock_output_factory.create.return_value = MockOutputSink()
+    mock_inference_factory.create.return_value = MockInferenceEngine()
+    config = ApplicationConfig(
+        tempo=TempoConfig(),
+        input=InputConfig(),
+        output=OutputConfig(),
+        inference=InferenceConfig(),
+        rap=RapConfig(topic="space travel"),
+    )
+
+    with patch("streammuse.presentation.cli.cli.args_to_config", return_value=config):
+        assert main() == 0
+
+    assert mock_rap_controller_builder.call_count == 1
+    assert mock_service_cls.call_args.kwargs["tick_observer"] is controller

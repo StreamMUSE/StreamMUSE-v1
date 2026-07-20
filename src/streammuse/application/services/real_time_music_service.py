@@ -11,7 +11,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Protocol
 
 from streammuse.application.services.input_timing import stamp_user_input_event
 from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
@@ -67,6 +67,19 @@ _INFERENCE_STOP = object()
 EventKey = tuple[int, int, int]
 
 
+class TickObserver(Protocol):
+    """Optional lifecycle hook for features sharing the musical tick clock."""
+
+    def start(self) -> None:
+        """Prepare work required before the first musical tick."""
+
+    def on_tick(self, tick: int) -> None:
+        """Observe one absolute musical tick."""
+
+    def close(self) -> None:
+        """Release any optional resources without raising."""
+
+
 @dataclass(frozen=True)
 class ScheduledModelEvent:
     event: MusicalEvent
@@ -112,6 +125,7 @@ class RealTimeMusicService:
         generation_length_frames: int = 20,
         count_in_beats: int = 0,
         input_snap_forward_fraction: float = 0.0,
+        tick_observer: TickObserver | None = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -133,6 +147,8 @@ class RealTimeMusicService:
         self._count_in_beats = int(count_in_beats)
         self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
         self._input_snap_forward_fraction = float(input_snap_forward_fraction)
+        self._tick_observer = tick_observer
+        self._tick_observer_closed = False
         self._now = now
         self._sleep = sleep
         self._monotonic = monotonic
@@ -781,6 +797,24 @@ class RealTimeMusicService:
         if delay > 0:
             self._sleep(delay)
 
+    def _start_tick_observer(self) -> None:
+        if self._tick_observer is None or self._tick_observer_closed:
+            return
+        try:
+            self._tick_observer.start()
+        except Exception as exc:
+            self._output.output_status("error", f"Tick observer startup error: {exc}")
+            self._tick_observer_closed = True
+
+    def _close_tick_observer(self) -> None:
+        if self._tick_observer is None or self._tick_observer_closed:
+            return
+        self._tick_observer_closed = True
+        try:
+            self._tick_observer.close()
+        except Exception as exc:
+            self._output.output_status("error", f"Tick observer shutdown error: {exc}")
+
     def _run_count_in(self) -> None:
         """Play metronome-only pre-roll before the musical timeline starts."""
         if self._count_in_ticks <= 0:
@@ -1372,6 +1406,11 @@ class RealTimeMusicService:
             # 2. Emit tick info.
             mt = MusicalTime.from_tick(tick, self._tempo)
             self._output.output_tick(tick=tick, bar=mt.bar, beat=mt.beat)
+            if self._tick_observer is not None and not self._tick_observer_closed:
+                try:
+                    self._tick_observer.on_tick(tick)
+                except Exception as exc:
+                    self._output.output_status("error", f"Tick observer error: {exc}")
 
             # 3. tick=0: fire once with full melody history (covers injected history).
             if tick == 0:
@@ -1810,6 +1849,7 @@ class RealTimeMusicService:
             run_stop_exclusive=True,
             drain_timeout_seconds=self._drain_timeout_seconds,
         )
+        self._start_tick_observer()
 
         self._input_thread = threading.Thread(target=self._input_worker, daemon=True)
         self._tick_thread = threading.Thread(
@@ -1826,6 +1866,7 @@ class RealTimeMusicService:
     def stop(self) -> None:
         """Idempotently stop production, drain pending work, and close resources."""
         self._stop_requested.set()
+        self._close_tick_observer()
         self._begin_draining("explicit_stop")
         try:
             self._input.close()

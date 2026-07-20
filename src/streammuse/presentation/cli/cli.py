@@ -18,9 +18,12 @@ from streammuse.domain.interfaces import InferenceEngine
 from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.application.services.real_time_music_service import RealTimeMusicService
+from streammuse.application.rap.realtime import RollingRapController
 from streammuse.domain.logging import SessionManager
 from streammuse.domain.timing import PlaybackScheduler, Tempo
 from streammuse.infrastructure.input.midi_file import MidiFileInput
+from streammuse.infrastructure.inference.local_chat_client import LocalChatModelClient, LocalChatModelClientConfig
+from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator
 from streammuse.presentation.cli.config_parser import args_to_config, env_to_config, parse_args
 
 
@@ -100,6 +103,47 @@ def _perform_injection(inference_engine: InferenceEngine, config: ApplicationCon
         return 0
 
 
+def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRapController | None:
+    """Assemble the optional text layer without widening output sink contracts."""
+    rap = config.rap
+    if not rap.topic:
+        return None
+
+    fallback = PhraseBankGenerator()
+    primary = None
+    close_primary = None
+    if rap.generator == "local_chat":
+        client = LocalChatModelClient(
+            LocalChatModelClientConfig(
+                base_url=rap.model_url,
+                model=rap.model,
+                timeout_s=rap.timeout_s,
+            )
+        )
+        primary = LocalChatCandidateGenerator(client, fallback)
+        close_primary = client.close
+
+    def emit(event) -> None:
+        suffix = "*" if event.syllable.stressed else ""
+        print(
+            f"[RAP B{event.slot.bar + 1} {event.slot.beat + 1}.{event.slot.tick_in_beat + 1}] "
+            f"{event.syllable.label}{suffix}",
+            flush=True,
+        )
+
+    return RollingRapController(
+        tempo=tempo,
+        topic=rap.topic,
+        pattern=rap.pattern,
+        fallback_generator=fallback,
+        primary_generator=primary,
+        candidate_count=rap.candidate_count,
+        lookahead_bars=rap.lookahead_bars,
+        emit=emit,
+        close_primary=close_primary,
+    )
+
+
 def main() -> int:
     """Main CLI entry point."""
     args = parse_args()
@@ -146,6 +190,11 @@ def main() -> int:
             "generation_interval_ticks": config.inference.generation_interval_ticks,
             "generation_length_frames": config.inference.generation_length_frames,
             "session_artifact_tier": config.output.session_artifact_tier,
+            "rap_enabled": config.rap.topic is not None,
+            "rap_topic": config.rap.topic,
+            "rap_pattern": config.rap.pattern,
+            "rap_generator": config.rap.generator,
+            "rap_lookahead_bars": config.rap.lookahead_bars,
         }
         if config.output.session_artifact_tier == "debug":
             session_manager.save_config(session_config)
@@ -173,6 +222,7 @@ def main() -> int:
         beats_per_bar=config.tempo.beats_per_bar,
     )
     scheduler = PlaybackScheduler()
+    rap_controller = _build_rap_controller(config, tempo)
 
     service = RealTimeMusicService(
         input_source=input_source,
@@ -184,6 +234,7 @@ def main() -> int:
         generation_length_frames=config.inference.generation_length_frames,
         count_in_beats=config.count_in_beats,
         input_snap_forward_fraction=input_snap_forward_fraction,
+        tick_observer=rap_controller,
     )
 
     def _save_history_logs(history_payload: object) -> None:
@@ -253,6 +304,11 @@ def main() -> int:
     print(f"  Inference: {config.inference.type}")
     print(f"  Generation interval: {config.inference.generation_interval_ticks} ticks")
     print(f"  Generation length: {config.inference.generation_length_frames} frames")
+    if config.rap.topic:
+        print(
+            f"  Rap: {config.rap.pattern} ({config.rap.generator}, "
+            f"{config.rap.lookahead_bars} bar lookahead)"
+        )
     if session_manager:
         print(f"  Logging: {session_manager.get_session_dir()}")
         print(f"  Session artifact tier: {config.output.session_artifact_tier}")

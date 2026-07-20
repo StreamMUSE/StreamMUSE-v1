@@ -76,6 +76,9 @@ prep_samples/
 inference_benchmark/temp/
 inference_benchmark/inputs/
 inference_benchmark/outputs/
+voice-bench-env*/
+voice_bench_models/
+voice_bench_runs/
 models/
 *.png
 *.npz

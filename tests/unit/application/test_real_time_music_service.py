@@ -78,6 +78,42 @@ def test_metronome_tick_is_emitted_in_playback_phase_before_music_events():
     ]
 
 
+def test_tick_observer_runs_immediately_after_tick_output():
+    calls = []
+
+    class _Output(NoopOutput):
+        def output_tick(self, tick, bar, beat):
+            calls.append(("output_tick", tick))
+
+    class _Observer:
+        def start(self):
+            calls.append(("start",))
+
+        def on_tick(self, tick):
+            calls.append(("observer_tick", tick))
+
+        def close(self):
+            calls.append(("close",))
+
+    observer = _Observer()
+    svc = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=_Output(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        tick_observer=observer,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    svc._runtime = SimpleNamespace(session_start_time=0.0)
+    svc._running = True
+
+    svc._tick_loop(max_ticks=1)
+
+    assert calls == [("output_tick", 0), ("observer_tick", 0)]
+
+
 def test_count_in_emits_metronome_only_before_timeline_starts():
     calls = []
 

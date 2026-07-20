@@ -5,8 +5,8 @@ from streammuse.application.config.models import (
     InferenceConfig,
     InputConfig,
     OutputConfig,
+    RapConfig,
     TempoConfig,
 )
 
-__all__ = ["ApplicationConfig", "TempoConfig", "InputConfig", "OutputConfig", "InferenceConfig"]
-
+__all__ = ["ApplicationConfig", "TempoConfig", "InputConfig", "OutputConfig", "InferenceConfig", "RapConfig"]
