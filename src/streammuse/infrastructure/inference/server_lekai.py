@@ -12,6 +12,12 @@ from streammuse.infrastructure.inference.lekai_http_backend import (
     LekaiHttpBackend,
     SessionStateError,
 )
+from streammuse.infrastructure.inference.lekai_prompt_continuation import (
+    LekaiPromptContinuationBackend,
+)
+from streammuse.infrastructure.inference.lekai_prompt_continuation.token_conversion import (
+    event_representation_summary,
+)
 
 
 class MelodyNoteEvent(BaseModel):
@@ -146,6 +152,65 @@ class RuntimeInfoResponse(BaseModel):
     boundary_generation_order: str
 
 
+class PromptContinuationStartRequest(BaseModel):
+    melody_notes: List[MelodyNoteEvent]
+    prompt_length_ticks: int = Field(gt=0)
+    generation_interval_ticks: int = Field(gt=0)
+    observed_until_tick: Optional[int] = Field(default=None, ge=0)
+    inference_mode: str = "sliding_window"
+    model_name: str = "lekai_prompt_continuation"
+    checkpoint_path: Optional[str] = None
+
+
+class PromptContinuationAppendMelodyRequest(BaseModel):
+    melody_notes: List[MelodyNoteEvent]
+    observed_until_tick: Optional[int] = Field(default=None, ge=0)
+
+
+class PromptContinuationStatusResponse(BaseModel):
+    phase: str
+    is_running: bool
+    is_failed: bool
+    error: Optional[str] = None
+    melody_event_count: int
+    accompaniment_event_count: int
+    prompt_length_ticks: int
+    generation_interval_ticks: int
+    continuation_calls: int
+    last_continuation_event_count: int = 0
+    last_continuation_note_on_count: int = 0
+    last_continuation_min_tick: Optional[int] = None
+    last_continuation_max_tick: Optional[int] = None
+    empty_continuation_output_streak: int = 0
+    melody_history_beats: int
+    accompaniment_history_beats: int
+    playable_lookahead_beats: int
+    target_playable_accompaniment_beats: int
+    beats_needed_for_playback: int
+    is_history_aligned: bool
+    is_playback_ready: bool
+
+
+class PromptContinuationPlayableResponse(BaseModel):
+    accompaniment: List[AccompanimentNoteEvent]
+    status: PromptContinuationStatusResponse
+    representation: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptContinuationRawHistoryResponse(BaseModel):
+    accompaniment: List[AccompanimentNoteEvent]
+    status: PromptContinuationStatusResponse
+    representation: dict[str, Any] = Field(default_factory=dict)
+
+
+LEKAI_MODEL_NAME = "lekai"
+LEKAI_PROMPT_CONTINUATION_MODEL_NAME = "lekai_prompt_continuation"
+_LEKAI_FIXED_BEAT_MODELS = {
+    LEKAI_MODEL_NAME,
+    LEKAI_PROMPT_CONTINUATION_MODEL_NAME,
+}
+
+
 def _debug_reset_enabled() -> bool:
     return os.environ.get("LEKAI_ENABLE_DEBUG_RESET", "false").strip().lower() in {
         "1",
@@ -156,7 +221,7 @@ def _debug_reset_enabled() -> bool:
 
 
 def _validate_lekai_constraints(model_name: str, generation_length_frames: int) -> None:
-    if model_name != "lekai":
+    if model_name not in _LEKAI_FIXED_BEAT_MODELS:
         return
     if generation_length_frames % 4 != 0:
         raise HTTPException(
@@ -170,17 +235,23 @@ def _validate_lekai_constraints(model_name: str, generation_length_frames: int) 
 
 app = FastAPI(title="StreamMUSE Lekai Inference Server")
 _ENV_CHECKPOINT_PATH = os.environ.get("LEKAI_CHECKPOINT_PATH")
+_ENV_PROMPT_CONTINUATION_CHECKPOINT_PATH = os.environ.get(
+    "LEKAI_PROMPT_CONTINUATION_CHECKPOINT_PATH"
+)
+_ENV_PROMPT_CHECKPOINT_PATH = os.environ.get("LEKAI_PROMPT_CHECKPOINT_PATH")
+_ENV_CONTINUATION_CHECKPOINT_PATH = os.environ.get(
+    "LEKAI_CONTINUATION_CHECKPOINT_PATH"
+)
 backend = LekaiHttpBackend(checkpoint_path=_ENV_CHECKPOINT_PATH)
+prompt_continuation_backend = LekaiPromptContinuationBackend(
+    checkpoint_path=_ENV_PROMPT_CONTINUATION_CHECKPOINT_PATH,
+    prompt_checkpoint_path=_ENV_PROMPT_CHECKPOINT_PATH,
+    continuation_checkpoint_path=_ENV_CONTINUATION_CHECKPOINT_PATH,
+)
 
 
-@app.post("/generate_accompaniment", response_model=AccompanimentResponse)
-async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResponse:
-    _validate_lekai_constraints(
-        model_name=request.model_name,
-        generation_length_frames=request.generation_length_frames,
-    )
-
-    melody_payload: List[EventPayload] = [
+def _melody_payload(notes: List[MelodyNoteEvent]) -> List[EventPayload]:
+    return [
         {
             "type": note.type,
             "pitch": int(note.pitch),
@@ -190,43 +261,241 @@ async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResp
             "program": int(note.program),
             **({"is_placeholder": True} if note.is_placeholder else {}),
         }
-        for note in request.melody_notes
+        for note in notes
     ]
 
-    try:
-        accompaniment, timings = backend.generate(
-            melody_events=melody_payload,
-            generation_start_tick=int(request.generation_start_tick),
-            generation_length_frames=int(request.generation_length_frames),
-            generation_interval_ticks=int(request.generation_interval_ticks),
-            prompt_length_ticks=(int(request.prompt_length_ticks) if request.prompt_length_ticks is not None else None),
-            inference_mode=request.inference_mode,
-            model_name=request.model_name,
-            checkpoint_path=request.checkpoint_path,
-            bpm=request.bpm,
-            input_file=request.input_file,
-            session_id=request.session_id,
-            session_epoch=request.session_epoch,
-            request_id=request.request_id,
-        )
-    except SessionStateError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    response_events = [
+def _accompaniment_response_events(
+    events: list[EventPayload],
+) -> list[AccompanimentNoteEvent]:
+    return [
         AccompanimentNoteEvent(
             type=str(event["type"]),
             pitch=int(event["pitch"]),
             tick=int(event["tick"]),
-            velocity=(int(event["velocity"]) if "velocity" in event else None),
+            velocity=(
+                int(event["velocity"])
+                if "velocity" in event and event["velocity"] is not None
+                else (0 if str(event.get("type", "")) == "note_off" else 100)
+            ),
         )
-        for event in accompaniment
+        for event in events
     ]
+
+
+def _event_representation(events: list[EventPayload]) -> dict[str, Any]:
+    return dict(event_representation_summary(events))
+
+
+def _scheduler_status_response(
+    status: dict[str, int | bool | str | None],
+) -> PromptContinuationStatusResponse:
+    return PromptContinuationStatusResponse(
+        phase=str(status["phase"]),
+        is_running=bool(status["is_running"]),
+        is_failed=bool(status["is_failed"]),
+        error=(str(status["error"]) if status.get("error") is not None else None),
+        melody_event_count=int(status["melody_event_count"]),
+        accompaniment_event_count=int(status["accompaniment_event_count"]),
+        prompt_length_ticks=int(status["prompt_length_ticks"]),
+        generation_interval_ticks=int(status["generation_interval_ticks"]),
+        continuation_calls=int(status["continuation_calls"]),
+        last_continuation_event_count=int(
+            status.get("last_continuation_event_count", 0) or 0
+        ),
+        last_continuation_note_on_count=int(
+            status.get("last_continuation_note_on_count", 0) or 0
+        ),
+        last_continuation_min_tick=(
+            int(status["last_continuation_min_tick"])
+            if status.get("last_continuation_min_tick") is not None
+            else None
+        ),
+        last_continuation_max_tick=(
+            int(status["last_continuation_max_tick"])
+            if status.get("last_continuation_max_tick") is not None
+            else None
+        ),
+        empty_continuation_output_streak=int(
+            status.get("empty_continuation_output_streak", 0) or 0
+        ),
+        melody_history_beats=int(status["melody_history_beats"]),
+        accompaniment_history_beats=int(status["accompaniment_history_beats"]),
+        playable_lookahead_beats=int(status["playable_lookahead_beats"]),
+        target_playable_accompaniment_beats=int(
+            status["target_playable_accompaniment_beats"]
+        ),
+        beats_needed_for_playback=int(status["beats_needed_for_playback"]),
+        is_history_aligned=bool(status["is_history_aligned"]),
+        is_playback_ready=bool(status["is_playback_ready"]),
+    )
+
+
+@app.post("/generate_accompaniment", response_model=AccompanimentResponse)
+async def generate_accompaniment(request: InferenceRequest) -> AccompanimentResponse:
+    _validate_lekai_constraints(
+        model_name=request.model_name,
+        generation_length_frames=request.generation_length_frames,
+    )
+
+    melody_payload = _melody_payload(request.melody_notes)
+
+    try:
+        if request.model_name == LEKAI_PROMPT_CONTINUATION_MODEL_NAME:
+            accompaniment, timings = prompt_continuation_backend.generate(
+                melody_events=melody_payload,
+                generation_start_tick=int(request.generation_start_tick),
+                generation_length_frames=int(request.generation_length_frames),
+                generation_interval_ticks=int(request.generation_interval_ticks),
+                prompt_length_ticks=(
+                    int(request.prompt_length_ticks)
+                    if request.prompt_length_ticks is not None
+                    else None
+                ),
+                inference_mode=request.inference_mode,
+                model_name=request.model_name,
+                checkpoint_path=request.checkpoint_path,
+            )
+            metadata: dict[str, Any] = {}
+        else:
+            accompaniment, timings = backend.generate(
+                melody_events=melody_payload,
+                generation_start_tick=int(request.generation_start_tick),
+                generation_length_frames=int(request.generation_length_frames),
+                generation_interval_ticks=int(request.generation_interval_ticks),
+                prompt_length_ticks=(
+                    int(request.prompt_length_ticks)
+                    if request.prompt_length_ticks is not None
+                    else None
+                ),
+                inference_mode=request.inference_mode,
+                model_name=request.model_name,
+                checkpoint_path=request.checkpoint_path,
+                bpm=request.bpm,
+                input_file=request.input_file,
+                session_id=request.session_id,
+                session_epoch=request.session_epoch,
+                request_id=request.request_id,
+            )
+            metadata = backend.consume_generation_metadata(request.request_id)
+    except SessionStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    response_events = _accompaniment_response_events(accompaniment)
 
     return AccompanimentResponse(
         accompaniment=response_events,
         timings=Timings(**timings),
         generation_start_tick=int(request.generation_start_tick),
-        metadata=backend.consume_generation_metadata(request.request_id),
+        metadata=metadata,
+    )
+
+
+@app.post(
+    "/prompt_continuation/start",
+    response_model=PromptContinuationStatusResponse,
+)
+async def prompt_continuation_start(
+    request: PromptContinuationStartRequest,
+) -> PromptContinuationStatusResponse:
+    if request.model_name != LEKAI_PROMPT_CONTINUATION_MODEL_NAME:
+        raise HTTPException(
+            status_code=422,
+            detail=f"model_name must be {LEKAI_PROMPT_CONTINUATION_MODEL_NAME}",
+        )
+    try:
+        status = prompt_continuation_backend.start_prompt_catchup(
+            melody_events=_melody_payload(request.melody_notes),
+            prompt_length_ticks=int(request.prompt_length_ticks),
+            generation_interval_ticks=int(request.generation_interval_ticks),
+            inference_mode=request.inference_mode,
+            model_name=request.model_name,
+            checkpoint_path=request.checkpoint_path,
+            observed_until_tick=(
+                int(request.observed_until_tick)
+                if request.observed_until_tick is not None
+                else None
+            ),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _scheduler_status_response(status)
+
+
+@app.post(
+    "/prompt_continuation/append_melody",
+    response_model=PromptContinuationStatusResponse,
+)
+async def prompt_continuation_append_melody(
+    request: PromptContinuationAppendMelodyRequest,
+) -> PromptContinuationStatusResponse:
+    status = prompt_continuation_backend.append_melody_events(
+        melody_events=_melody_payload(request.melody_notes),
+        observed_until_tick=(
+            int(request.observed_until_tick)
+            if request.observed_until_tick is not None
+            else None
+        ),
+    )
+    return _scheduler_status_response(status)
+
+
+@app.get(
+    "/prompt_continuation/status",
+    response_model=PromptContinuationStatusResponse,
+)
+async def prompt_continuation_status() -> PromptContinuationStatusResponse:
+    return _scheduler_status_response(
+        prompt_continuation_backend.scheduler_status()
+    )
+
+
+@app.get("/prompt_continuation/runtime_info")
+async def prompt_continuation_runtime_info() -> dict[str, object]:
+    return dict(prompt_continuation_backend.runtime_info())
+
+
+@app.get(
+    "/prompt_continuation/playable",
+    response_model=PromptContinuationPlayableResponse,
+)
+async def prompt_continuation_playable() -> PromptContinuationPlayableResponse:
+    status = prompt_continuation_backend.scheduler_status()
+    accompaniment = prompt_continuation_backend.playable_accompaniment()
+    return PromptContinuationPlayableResponse(
+        accompaniment=_accompaniment_response_events(accompaniment),
+        status=_scheduler_status_response(status),
+        representation=_event_representation(accompaniment),
+    )
+
+
+@app.get(
+    "/prompt_continuation/raw_history",
+    response_model=PromptContinuationRawHistoryResponse,
+)
+async def prompt_continuation_raw_history() -> PromptContinuationRawHistoryResponse:
+    status = prompt_continuation_backend.scheduler_status()
+    accompaniment = prompt_continuation_backend.raw_accompaniment_history()
+    return PromptContinuationRawHistoryResponse(
+        accompaniment=_accompaniment_response_events(accompaniment),
+        status=_scheduler_status_response(status),
+        representation=_event_representation(accompaniment),
+    )
+
+
+@app.get(
+    "/prompt_continuation/prompt_history",
+    response_model=PromptContinuationRawHistoryResponse,
+)
+async def prompt_continuation_prompt_history() -> PromptContinuationRawHistoryResponse:
+    status = prompt_continuation_backend.scheduler_status()
+    accompaniment = prompt_continuation_backend.prompt_accompaniment_history()
+    return PromptContinuationRawHistoryResponse(
+        accompaniment=_accompaniment_response_events(accompaniment),
+        status=_scheduler_status_response(status),
+        representation=_event_representation(accompaniment),
     )
 
 
@@ -246,18 +515,7 @@ async def reset_session(request: ResetSessionRequest) -> ResetSessionResponse:
 
 @app.post("/inject_notes", response_model=DirectInjectionResponse)
 async def inject_notes(request: DirectInjectionRequest) -> DirectInjectionResponse:
-    melody_payload: List[EventPayload] = [
-        {
-            "type": note.type,
-            "pitch": int(note.pitch),
-            "tick": int(note.tick),
-            "velocity": int(note.velocity),
-            "channel": int(note.channel),
-            "program": int(note.program),
-            **({"is_placeholder": True} if note.is_placeholder else {}),
-        }
-        for note in request.melody_notes
-    ]
+    melody_payload = _melody_payload(request.melody_notes)
     accompaniment_payload: List[EventPayload] = [
         {
             "type": note.type,
@@ -269,6 +527,11 @@ async def inject_notes(request: DirectInjectionRequest) -> DirectInjectionRespon
     ]
 
     result = backend.inject_history(
+        melody_events=melody_payload,
+        accompaniment_events=accompaniment_payload,
+        injection_length_ticks=int(request.injection_length_ticks),
+    )
+    prompt_continuation_backend.inject_history(
         melody_events=melody_payload,
         accompaniment_events=accompaniment_payload,
         injection_length_ticks=int(request.injection_length_ticks),
@@ -286,6 +549,7 @@ async def inject_notes(request: DirectInjectionRequest) -> DirectInjectionRespon
 @app.post("/clear_history", response_model=ClearHistoryResponse)
 async def clear_history() -> ClearHistoryResponse:
     result = backend.clear_history()
+    prompt_continuation_backend.clear_history()
     return ClearHistoryResponse(
         success=bool(result["success"]),
         message=str(result["message"]),

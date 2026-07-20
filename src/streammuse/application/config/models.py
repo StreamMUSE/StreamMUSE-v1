@@ -19,6 +19,7 @@ InferenceLogDetail = Literal["summary", "full"]
 SessionArtifactTier = Literal["normal", "debug"]
 InferenceType = Literal["http", "stanley"]
 ModelName = Literal["stanley", "lekai"]
+ContinuationMode = Literal["standard", "prompt_continuation"]
 RapPattern = Literal["boom_bap", "straight_8", "trap_sparse"]
 RapGenerator = Literal["phrase_bank", "local_chat"]
 
@@ -29,6 +30,7 @@ class InputConfig:
     midi_device_name: Optional[str] = None
     midi_file_path: Optional[str] = None
     midi_file_delay_ticks: int = 0
+    midi_file_trim_leading_rest: bool = False
     injection_file: Optional[str] = None
     injection_length_ticks: int = 0
     injection_acc_file: Optional[str] = None
@@ -58,6 +60,7 @@ class InferenceConfig:
     model_max_seq_len_frames: int = 96
     generation_length_frames: int = 20
     generation_interval_ticks: int = 2  # How often to trigger generation
+    prompt_length_ticks: int = 32
     # Model-conditioning tempo can intentionally differ from wall-clock
     # playback tempo (for example, robustness RT playback at 60 BPM while the
     # Lekai prompt remains conditioned at its trained 120 BPM).
@@ -85,5 +88,6 @@ class ApplicationConfig:
     output: OutputConfig = OutputConfig()
     inference: InferenceConfig = InferenceConfig()
     rap: RapConfig = field(default_factory=RapConfig)
+    continuation_mode: ContinuationMode = "standard"
     count_in_beats: int = 0
     input_snap_forward_fraction: float = 0.4

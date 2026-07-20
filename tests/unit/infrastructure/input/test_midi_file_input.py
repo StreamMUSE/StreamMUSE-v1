@@ -141,3 +141,32 @@ def test_midi_file_input_parsing_time_does_not_shift_schedule(tmp_path, monkeypa
     _ = list(src.read_events())
 
     assert sleeps[0] == pytest.approx(4 * cfg.seconds_per_tick() - 0.2)
+
+
+def test_midi_file_input_trim_leading_rest_preserves_preparse_clock_anchor(tmp_path):
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("note_on", note=64, velocity=64, time=1920))
+    track.append(mido.Message("note_off", note=64, velocity=0, time=120))
+
+    path = tmp_path / "leading_rest.mid"
+    mid.save(str(path))
+    sleeps = []
+    cfg = MidiFileInputConfig(
+        bpm=120.0,
+        ticks_per_beat=4,
+        trim_leading_rest=True,
+    )
+    src = MidiFileInput(
+        str(path),
+        config=cfg,
+        now=lambda: 0.0,
+        sleep=lambda delay: sleeps.append(delay),
+    )
+
+    events = list(src.read_events())
+
+    assert [event.pitch for event in events] == [64, 64]
+    assert sleeps
+    assert sleeps[0] == pytest.approx(1 * cfg.seconds_per_tick())

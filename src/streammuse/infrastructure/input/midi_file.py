@@ -19,6 +19,7 @@ class MidiFileInputConfig:
     program: Optional[int] = None
     max_tick: Optional[int] = None
     start_tick: int = 0
+    trim_leading_rest: bool = False
 
     def seconds_per_tick(self) -> float:
         return (60.0 / float(self.bpm)) / float(self.ticks_per_beat)
@@ -109,12 +110,23 @@ class MidiFileInput:
 
         # Build schedule: tick -> list[MusicalEvent]
         schedule: Dict[int, List[MusicalEvent]] = {}
-        start_tick = int(self._config.start_tick)
+        configured_start_tick = int(self._config.start_tick)
+        first_note_tick = min((int(note["tick"]) for note in notes), default=0)
+        start_tick = (
+            max(configured_start_tick, first_note_tick)
+            if self._config.trim_leading_rest
+            else configured_start_tick
+        )
         start_offset = int(self._config.delay_ticks)
         effective_notes = [n for n in notes if int(n["tick"]) >= start_tick]
 
         for n in effective_notes:
-            onset = int(n["tick"]) + start_offset
+            relative_tick = (
+                int(n["tick"]) - start_tick
+                if self._config.trim_leading_rest
+                else int(n["tick"])
+            )
+            onset = relative_tick + start_offset
             offset = onset + int(n["duration"])
 
             schedule.setdefault(onset, []).append(
@@ -149,4 +161,3 @@ class MidiFileInput:
 
     def close(self) -> None:
         self._closed = True
-

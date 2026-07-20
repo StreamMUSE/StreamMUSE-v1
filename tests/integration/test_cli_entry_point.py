@@ -102,9 +102,33 @@ class MockInferenceEngine:
         return {"success": True, "melody_history": [], "accompaniment_history": []}
 
 
-@patch("streammuse.presentation.cli.cli.InputSourceFactory")
-@patch("streammuse.presentation.cli.cli.OutputSinkFactory")
-@patch("streammuse.presentation.cli.cli.InferenceEngineFactory")
+@patch("streammuse.presentation.cli.cli.RuntimeSessionBuilder")
+@patch("streammuse.presentation.cli.cli.parse_args")
+def test_cli_main_builds_runtime_through_shared_builder(
+    mock_parse_args,
+    builder_cls,
+) -> None:
+    args = MagicMock()
+    args.log_dir = "logs"
+    args.max_ticks = 1
+    mock_parse_args.return_value = args
+    runtime = MagicMock()
+    runtime.running = False
+    runtime.session_manager = None
+    builder_cls.return_value.build_cli.return_value = runtime
+    config = ApplicationConfig()
+
+    with patch("streammuse.presentation.cli.cli.args_to_config", return_value=config):
+        assert main() == 0
+
+    builder_cls.assert_called_once()
+    runtime.start.assert_called_once()
+    runtime.stop.assert_called_once()
+
+
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.OutputSinkFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
 @patch("streammuse.presentation.cli.cli.parse_args")
 @patch("sys.argv", ["streammuse-cli", "--max-ticks", "1"])
 def test_cli_main_early_exit(
@@ -147,9 +171,9 @@ def test_cli_main_early_exit(
             pass  # Expected from signal handler
 
 
-@patch("streammuse.presentation.cli.cli.InputSourceFactory")
-@patch("streammuse.presentation.cli.cli.OutputSinkFactory")
-@patch("streammuse.presentation.cli.cli.InferenceEngineFactory")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.OutputSinkFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
 @patch("streammuse.presentation.cli.cli.parse_args")
 def test_cli_injection_rejects_non_midi_input_mode(
     mock_parse_args,
@@ -182,10 +206,10 @@ def test_cli_injection_rejects_non_midi_input_mode(
     mock_input_factory.create.assert_not_called()
 
 
-@patch("streammuse.presentation.cli.cli.RealTimeMusicService")
-@patch("streammuse.presentation.cli.cli.InputSourceFactory")
-@patch("streammuse.presentation.cli.cli.OutputSinkFactory")
-@patch("streammuse.presentation.cli.cli.InferenceEngineFactory")
+@patch("streammuse.application.runtime.builder.RealTimeMusicService")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.OutputSinkFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
 @patch("streammuse.presentation.cli.cli.parse_args")
 def test_cli_injection_calls_clear_then_inject_and_then_creates_input(
     mock_parse_args,
@@ -262,11 +286,11 @@ def test_cli_injection_calls_clear_then_inject_and_then_creates_input(
     assert call_order == ["clear_history", "inject_history"]
 
 
-@patch("streammuse.presentation.cli.cli.RealTimeMusicService")
+@patch("streammuse.application.runtime.builder.RealTimeMusicService")
 @patch("streammuse.presentation.cli.cli._build_rap_controller")
-@patch("streammuse.presentation.cli.cli.InputSourceFactory")
-@patch("streammuse.presentation.cli.cli.OutputSinkFactory")
-@patch("streammuse.presentation.cli.cli.InferenceEngineFactory")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.OutputSinkFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
 @patch("streammuse.presentation.cli.cli.parse_args")
 def test_cli_passes_optional_rap_controller_to_realtime_service(
     mock_parse_args,

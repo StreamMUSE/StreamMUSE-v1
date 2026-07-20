@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--midi-file-path", type=str, default=None, help="Path to MIDI file (for simulation)")
     parser.add_argument("--midi-file-delay-ticks", type=int, default=0, help="Delay before starting MIDI file playback")
     parser.add_argument(
+        "--midi-file-trim-leading-rest",
+        action="store_true",
+        help="Start MIDI-file playback from the first retained note instead of preserving leading silence",
+    )
+    parser.add_argument(
         "--injection-file",
         type=str,
         default=None,
@@ -132,6 +137,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generation-length-frames", type=int, default=20, help="Frames to generate per request")
     parser.add_argument("--generation-interval-ticks", type=int, default=2, help="Ticks between generation requests")
     parser.add_argument(
+        "--prompt-length-ticks",
+        type=int,
+        default=32,
+        help="Prompt window length for prompt-continuation mode",
+    )
+    parser.add_argument(
         "--model-condition-bpm",
         type=int,
         default=None,
@@ -157,6 +168,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rap-timeout-s", type=float, default=5.0, help="Rap model request timeout in seconds")
 
     # Runtime options
+    parser.add_argument(
+        "--continuation-mode",
+        choices=("standard", "prompt_continuation"),
+        default="standard",
+        help="Realtime continuation flow to run",
+    )
     parser.add_argument(
         "--count-in-beats",
         type=int,
@@ -236,6 +253,9 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         midi_device_name=args.midi_device_name,
         midi_file_path=args.midi_file_path,
         midi_file_delay_ticks=int(args.midi_file_delay_ticks),
+        midi_file_trim_leading_rest=bool(
+            getattr(args, "midi_file_trim_leading_rest", False)
+        ),
         injection_file=getattr(args, "injection_file", None),
         injection_length_ticks=int(getattr(args, "injection_length", 0) or 0),
         injection_acc_file=getattr(args, "inject_acc_file", None),
@@ -265,6 +285,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         model_max_seq_len_frames=int(args.model_max_seq_len_frames),
         generation_length_frames=int(args.generation_length_frames),
         generation_interval_ticks=int(args.generation_interval_ticks),
+        prompt_length_ticks=max(1, int(getattr(args, "prompt_length_ticks", 32))),
         model_condition_bpm=(
             int(args.model_condition_bpm)
             if getattr(args, "model_condition_bpm", None) is not None
@@ -285,12 +306,17 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         timeout_s=max(0.1, float(getattr(args, "rap_timeout_s", 5.0) or 0.0)),
     )
 
+    continuation_mode = getattr(args, "continuation_mode", "standard")
+    if continuation_mode == "prompt_continuation" and rap_config.topic:
+        raise ValueError("rap cannot be combined with prompt_continuation mode")
+
     return ApplicationConfig(
         tempo=tempo,
         input=input_config,
         output=output_config,
         inference=inference_config,
         rap=rap_config,
+        continuation_mode=continuation_mode,  # type: ignore[arg-type]
         count_in_beats=max(0, int(getattr(args, "count_in_beats", 0) or 0)),
         input_snap_forward_fraction=clamp_snap_forward_fraction(
             float(getattr(args, "input_snap_forward_fraction", 0.4))

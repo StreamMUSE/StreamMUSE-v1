@@ -2,6 +2,7 @@
 
 from streammuse.application.config.models import (
     ApplicationConfig,
+    ContinuationMode,
     InferenceConfig,
     InputConfig,
     OutputConfig,
@@ -9,4 +10,12 @@ from streammuse.application.config.models import (
     TempoConfig,
 )
 
-__all__ = ["ApplicationConfig", "TempoConfig", "InputConfig", "OutputConfig", "InferenceConfig", "RapConfig"]
+__all__ = [
+    "ApplicationConfig",
+    "ContinuationMode",
+    "TempoConfig",
+    "InputConfig",
+    "OutputConfig",
+    "InferenceConfig",
+    "RapConfig",
+]

@@ -112,6 +112,36 @@ from streammuse.presentation.cli.cli import main
 # 通过 CLI 参数测试完整流程（通常使用 list 输入模式）
 ```
 
+### Lekai consistency tests（真实模型，默认跳过）
+
+`tests/consistency/` contains opt-in end-to-end tests. They start a local Lekai
+server, load real checkpoints, and compare MIDI-file realtime simulation with
+offline generation. Without the checkpoint environment variables these tests
+skip and do not load a model.
+
+Single-stage consistency:
+
+```bash
+LEKAI_CHECKPOINT_PATH=<checkpoint.safetensors> \
+STREAMMUSE_CONSISTENCY_SONGS=4 \
+STREAMMUSE_CONSISTENCY_TEMPOS=15,120 \
+uv run pytest tests/consistency/test_realtime_offline_consistency.py -q -s
+```
+
+Two-stage prompt-continuation consistency:
+
+```bash
+LEKAI_PROMPT_CHECKPOINT_PATH=<prompt-model.safetensors> \
+LEKAI_CONTINUATION_CHECKPOINT_PATH=<continuation-model.safetensors> \
+STREAMMUSE_TWO_STAGE_CONSISTENCY_SONGS=4 \
+STREAMMUSE_TWO_STAGE_CONSISTENCY_TEMPOS=15,120 \
+uv run pytest tests/consistency/test_two_stage_prompt_continuation_consistency.py -q -s
+```
+
+Set `STREAMMUSE_CONSISTENCY_USE_DEFAULT_MODELS=1` instead of the two explicit
+two-stage checkpoint variables only when the documented default model paths
+exist locally.
+
 ---
 
 ## Mock 最佳实践

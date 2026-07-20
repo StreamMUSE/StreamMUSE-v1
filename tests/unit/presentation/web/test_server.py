@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import MagicMock, patch
 
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 from streammuse.presentation.web import server as webserver
@@ -28,6 +29,7 @@ def reset_module_state():
     loop" when lifespan's finally block tries to join it.
     """
     def _reset():
+        webserver._runtime = None
         webserver._ws_sink = None
         webserver._service = None
         webserver._composite_sink = None
@@ -97,3 +99,40 @@ def test_websocket_endpoint_works_when_no_sink_attached():
             # No broadcast traffic because there's no sink — that's fine.
             # The endpoint should remain open until we close it.
             assert ws is not None
+
+
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+@patch("streammuse.presentation.web.server.parse_args")
+@patch("streammuse.presentation.web.server.args_to_config")
+@patch("uvicorn.run")
+def test_web_main_builds_runtime_through_shared_builder(
+    uvicorn_run,
+    args_to_config,
+    parse_args,
+    builder_cls,
+    tmp_path,
+):
+    args = MagicMock(
+        log_dir=str(tmp_path),
+        web_host="127.0.0.1",
+        web_port=8001,
+    )
+    parse_args.return_value = args
+    config = MagicMock()
+    config.tempo.bpm = 120.0
+    config.input.type = "midi_file"
+    config.inference.type = "http"
+    config.inference.model_name = "lekai"
+    args_to_config.return_value = config
+    runtime = MagicMock()
+    runtime.websocket_sink = WebSocketOutputSink()
+    runtime.output_sink = MagicMock()
+    runtime.service = MagicMock(running=False)
+    runtime.session_manager.get_session_dir.return_value = tmp_path
+    builder_cls.return_value.build_web.return_value = runtime
+
+    assert webserver.main() == 0
+
+    builder_cls.assert_called_once_with(config=config, log_dir=str(tmp_path))
+    runtime.start.assert_called_once_with(run_stop_tick=None)
+    uvicorn_run.assert_called_once()

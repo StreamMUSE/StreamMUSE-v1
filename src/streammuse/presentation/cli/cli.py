@@ -3,24 +3,17 @@
 from __future__ import annotations
 
 import atexit
-import json
 import os
 import signal
 import sys
 
 from streammuse.application.config import ApplicationConfig
-from streammuse.application.factories import (
-    InferenceEngineFactory,
-    InputSourceFactory,
-    OutputSinkFactory,
-)
+from streammuse.application.runtime import RuntimeSessionBuilder
 from streammuse.domain.interfaces import InferenceEngine
 from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.domain.musical import EventType, MusicalEvent, Note
-from streammuse.application.services.real_time_music_service import RealTimeMusicService
 from streammuse.application.rap.realtime import RollingRapController
-from streammuse.domain.logging import SessionManager
-from streammuse.domain.timing import PlaybackScheduler, Tempo
+from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.input.midi_file import MidiFileInput
 from streammuse.infrastructure.inference.local_chat_client import LocalChatModelClient, LocalChatModelClientConfig
 from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator
@@ -170,121 +163,43 @@ def main() -> int:
             print(f"Error: Injection file not found: {config.input.injection_file}")
             return 1
 
-    session_manager = None
-    session_config: dict[str, object] = {}
-    if config.output.type != "midi_file":
-        session_manager = SessionManager(args.log_dir)
-        session_manager.create_session_directory()
-        session_config = {
-            "tempo_bpm": config.tempo.bpm,
-            "ticks_per_beat": config.tempo.ticks_per_beat,
-            "beats_per_bar": config.tempo.beats_per_bar,
-            "input_type": config.input.type,
-            "output_type": config.output.type,
-            "metronome_enabled": config.output.metronome_enabled,
-            "metronome_port": config.output.metronome_port,
-            "metronome_channel": config.output.metronome_channel,
-            "count_in_beats": config.count_in_beats,
-            "input_snap_forward_fraction": input_snap_forward_fraction,
-            "inference_type": config.inference.type,
-            "generation_interval_ticks": config.inference.generation_interval_ticks,
-            "generation_length_frames": config.inference.generation_length_frames,
-            "session_artifact_tier": config.output.session_artifact_tier,
-            "rap_enabled": config.rap.topic is not None,
-            "rap_topic": config.rap.topic,
-            "rap_pattern": config.rap.pattern,
-            "rap_generator": config.rap.generator,
-            "rap_lookahead_bars": config.rap.lookahead_bars,
-        }
-        if config.output.session_artifact_tier == "debug":
-            session_manager.save_config(session_config)
-
-    output_sink = OutputSinkFactory.create(config, session_manager)
-    inference_engine = InferenceEngineFactory.create(config)
-
-    if config.input.injection_file:
-        injected = _perform_injection(inference_engine, config)
-        if injected == 0:
-            try:
-                output_sink.close()
-            except Exception:
-                pass
-            return 1
-
-    input_source = InputSourceFactory.create(config)
-
-    if session_manager:
-        output_sink.output_config(session_config)
-
     tempo = Tempo(
         bpm=config.tempo.bpm,
         ticks_per_beat=config.tempo.ticks_per_beat,
         beats_per_bar=config.tempo.beats_per_bar,
     )
-    scheduler = PlaybackScheduler()
-    rap_controller = _build_rap_controller(config, tempo)
 
-    service = RealTimeMusicService(
-        input_source=input_source,
-        inference_engine=inference_engine,
-        output_sink=output_sink,
-        tempo=tempo,
-        scheduler=scheduler,
-        generation_interval_ticks=config.inference.generation_interval_ticks,
-        generation_length_frames=config.inference.generation_length_frames,
-        count_in_beats=config.count_in_beats,
-        input_snap_forward_fraction=input_snap_forward_fraction,
-        tick_observer=rap_controller,
-    )
-
-    def _save_history_logs(history_payload: object) -> None:
-        if session_manager is None or config.output.session_artifact_tier != "debug":
+    def _before_input_create(inference_engine, _prompt_client, output_sink) -> None:
+        if not config.input.injection_file:
             return
-        if not isinstance(history_payload, dict):
-            print("Warning: clear_history returned unexpected payload; skipping history log files")
-            return
-
-        melody_history = history_payload.get("melody_history", [])
-        accompaniment_history = history_payload.get("accompaniment_history", [])
-
-        session_dir = session_manager.get_session_dir()
-        melody_path = session_dir / "melody_history.json"
-        accompaniment_path = session_dir / "accompaniment_history.json"
-
-        with open(melody_path, "w") as f:
-            json.dump(melody_history if isinstance(melody_history, list) else [], f, indent=2)
-        with open(accompaniment_path, "w") as f:
-            json.dump(accompaniment_history if isinstance(accompaniment_history, list) else [], f, indent=2)
-
-    def cleanup() -> None:
-        try:
-            history_payload = inference_engine.clear_history()
-            if session_manager:
-                _save_history_logs(history_payload)
-        except Exception as exc:
-            print(f"Warning: Failed to clear inference history: {exc}")
-
-        try:
+        if inference_engine is None:
             output_sink.close()
-        except Exception as exc:
-            print(f"Warning: Failed to close output sink cleanly: {exc}")
+            raise RuntimeError(
+                "--injection-file is not supported with prompt_continuation mode"
+            )
+        if _perform_injection(inference_engine, config) == 0:
+            output_sink.close()
+            raise RuntimeError("injection failed")
 
-        if session_manager and config.output.session_artifact_tier == "debug":
-            try:
-                session_manager.save_summary(
-                    {
-                        "status": "completed",
-                        "session_id": session_manager.get_session_id(),
-                    }
-                )
-            except Exception as exc:
-                print(f"Warning: Failed to save session summary: {exc}")
+    try:
+        runtime = RuntimeSessionBuilder(
+            config=config,
+            log_dir=args.log_dir,
+            before_input_create=_before_input_create,
+            tick_observer_factory=lambda built_tempo: _build_rap_controller(
+                config, built_tempo
+            ),
+        ).build_cli()
+    except (RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return 1
 
-    atexit.register(cleanup)
+    session_manager = runtime.session_manager
+    atexit.register(runtime.cleanup)
 
     def signal_handler(sig, frame):
         print("\nShutting down...")
-        service.stop()
+        runtime.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -352,20 +267,20 @@ def main() -> int:
         run_stop_tick = derived_run_stop
 
     try:
-        service.start(
+        runtime.start(
             run_stop_tick=run_stop_tick,
             analysis_end_tick=analysis_end_tick,
             last_input_note_off_tick=last_input_note_off_tick,
             request_cutoff_tick=request_cutoff_tick,
             drain_timeout_seconds=drain_timeout_seconds,
         )
-        while service.running:
+        while runtime.running:
             import time
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:
-        service.stop()
+        runtime.stop()
 
     return 0
 

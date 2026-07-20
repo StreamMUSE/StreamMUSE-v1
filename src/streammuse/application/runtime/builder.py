@@ -38,31 +38,48 @@ class RuntimeSessionBuilder:
         prompt_client_override: Any | None = None,
         output_sink_override: Any | None = None,
         before_input_create: Callable[[Any | None, Any | None, Any], None] | None = None,
+        tick_observer_factory: Callable[[Tempo], Any | None] | None = None,
     ) -> None:
         self.config = config
         self.log_dir = log_dir
         self.prompt_client_override = prompt_client_override
         self.output_sink_override = output_sink_override
         self.before_input_create = before_input_create
+        self.tick_observer_factory = tick_observer_factory
 
     def build_cli(self) -> RuntimeSession:
-        session_manager = self._create_session_manager()
+        session_manager = None
+        if self.config.output.type != "midi_file":
+            session_manager = self._create_session_manager(
+                save_config=self.config.output.session_artifact_tier == "debug"
+            )
         output_sink = self.output_sink_override or OutputSinkFactory.create(self.config, session_manager)
-        return self._build(session_manager=session_manager, output_sink=output_sink)
+        return self._build(
+            session_manager=session_manager,
+            output_sink=output_sink,
+            emit_output_config=session_manager is not None,
+            write_summary_on_cleanup=(
+                session_manager is not None
+                and self.config.output.session_artifact_tier == "debug"
+            ),
+        )
 
     def build_web(self) -> RuntimeSession:
-        session_manager = self._create_session_manager()
+        session_manager = self._create_session_manager(save_config=True)
         output_sink, websocket_sink = self._build_web_composite(session_manager=session_manager)
         return self._build(
             session_manager=session_manager,
             output_sink=output_sink,
             websocket_sink=websocket_sink,
+            emit_output_config=True,
+            write_summary_on_cleanup=False,
         )
 
-    def _create_session_manager(self) -> SessionManager:
+    def _create_session_manager(self, *, save_config: bool) -> SessionManager:
         session_manager = SessionManager(self.log_dir)
         session_manager.create_session_directory()
-        session_manager.save_config(self._session_config())
+        if save_config:
+            session_manager.save_config(self._session_config())
         return session_manager
 
     def _session_config(self) -> dict[str, Any]:
@@ -82,14 +99,23 @@ class RuntimeSessionBuilder:
             "prompt_length_ticks": self._prompt_length_ticks(default=None),
             "generation_interval_ticks": self.config.inference.generation_interval_ticks,
             "generation_length_frames": self.config.inference.generation_length_frames,
+            "session_artifact_tier": self.config.output.session_artifact_tier,
+            "midi_file_trim_leading_rest": self.config.input.midi_file_trim_leading_rest,
+            "rap_enabled": self.config.rap.topic is not None,
+            "rap_topic": self.config.rap.topic,
+            "rap_pattern": self.config.rap.pattern,
+            "rap_generator": self.config.rap.generator,
+            "rap_lookahead_bars": self.config.rap.lookahead_bars,
         }
 
     def _build(
         self,
         *,
-        session_manager: SessionManager,
+        session_manager: SessionManager | None,
         output_sink: Any,
         websocket_sink: WebSocketOutputSink | None = None,
+        emit_output_config: bool = True,
+        write_summary_on_cleanup: bool = True,
     ) -> RuntimeSession:
         tempo = Tempo(
             bpm=self.config.tempo.bpm,
@@ -101,6 +127,8 @@ class RuntimeSessionBuilder:
         inference_engine = None
         prompt_client = None
         if self._continuation_mode() == "prompt_continuation":
+            if self.config.rap.topic:
+                raise ValueError("rap cannot be combined with prompt_continuation mode")
             service_cls = self._prompt_continuation_service_cls()
             prompt_client = self.prompt_client_override or self._create_prompt_client()
             if self.before_input_create is not None:
@@ -120,6 +148,11 @@ class RuntimeSessionBuilder:
             if self.before_input_create is not None:
                 self.before_input_create(inference_engine, None, output_sink)
             input_source = InputSourceFactory.create(self.config)
+            tick_observer = (
+                self.tick_observer_factory(tempo)
+                if self.tick_observer_factory is not None
+                else None
+            )
             service = RealTimeMusicService(
                 input_source=input_source,
                 inference_engine=inference_engine,
@@ -130,6 +163,7 @@ class RuntimeSessionBuilder:
                 generation_length_frames=self.config.inference.generation_length_frames,
                 count_in_beats=self.config.count_in_beats,
                 input_snap_forward_fraction=self._input_snap_forward_fraction(),
+                tick_observer=tick_observer,
             )
 
         return RuntimeSession(
@@ -141,6 +175,8 @@ class RuntimeSessionBuilder:
             inference_engine=inference_engine,
             prompt_client=prompt_client,
             websocket_sink=websocket_sink,
+            emit_output_config=emit_output_config,
+            write_summary_on_cleanup=write_summary_on_cleanup,
         )
 
     def _continuation_mode(self) -> str:

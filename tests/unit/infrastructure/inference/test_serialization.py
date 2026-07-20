@@ -28,6 +28,6 @@ def test_event_from_dict_handles_missing_optional_fields():
     assert event.event_type == EventType.NOTE_OFF
     assert event.pitch == 64
     assert event.tick == 8
-    assert event.velocity == 100
+    assert event.velocity == 0
     assert event.channel == 0
     assert event.program == 0

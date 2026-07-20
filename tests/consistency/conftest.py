@@ -221,3 +221,122 @@ def _tail(path: Path, n: int = 30) -> str:
     except OSError:
         return "(no log)"
     return "\n".join(lines[-n:])
+
+
+# --- Two-stage prompt+continuation fixtures ---
+
+DEFAULT_MODELS_DIR = Path.home() / "mbzuai-projects" / "models"
+DEFAULT_PROMPT_CHECKPOINT = DEFAULT_MODELS_DIR / "lekai_prompt_model" / "model.safetensors"
+DEFAULT_CONTINUATION_CHECKPOINT = (
+    DEFAULT_MODELS_DIR / "lekai_continuation_model" / "model.safetensors"
+)
+
+TWO_STAGE_DETERMINISTIC_ENV = {
+    **DETERMINISTIC_SERVER_ENV,
+    "LEKAI_PROMPT_CONTINUATION_ENGINE": "standard",
+    "LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS": "1",
+    "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
+    "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
+    "LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP": "1",
+    "LEKAI_PROMPT_SEED": "12345",
+    "LEKAI_PROMPT_BPM": str(CONDITION_BPM),
+    "LEKAI_PROMPT_TEMPERATURE": "1.1",
+    "LEKAI_PROMPT_TOP_K": "0",
+    "LEKAI_PROMPT_TOP_P": "0.95",
+    "LEKAI_PROMPT_REPETITION_PENALTY": "1.0",
+}
+
+
+def _env_path_or_default(env_name: str, default: Path) -> Path | None:
+    raw = os.environ.get(env_name)
+    if raw:
+        path = Path(raw).expanduser()
+        return path if path.exists() else None
+    use_defaults = os.environ.get(
+        "STREAMMUSE_CONSISTENCY_USE_DEFAULT_MODELS",
+        "",
+    ).lower()
+    if use_defaults in {"1", "true", "yes", "on"}:
+        return default if default.exists() else None
+    return None
+
+
+@pytest.fixture(scope="session")
+def lekai_prompt_checkpoint() -> Path:
+    ckpt = _env_path_or_default("LEKAI_PROMPT_CHECKPOINT_PATH", DEFAULT_PROMPT_CHECKPOINT)
+    if ckpt is None:
+        pytest.skip(
+            "two-stage consistency requires LEKAI_PROMPT_CHECKPOINT_PATH "
+            "or STREAMMUSE_CONSISTENCY_USE_DEFAULT_MODELS=1"
+        )
+    if requests is None:
+        pytest.skip("consistency test requires the 'requests' package")
+    return ckpt
+
+
+@pytest.fixture(scope="session")
+def lekai_continuation_checkpoint() -> Path:
+    ckpt = _env_path_or_default(
+        "LEKAI_CONTINUATION_CHECKPOINT_PATH",
+        DEFAULT_CONTINUATION_CHECKPOINT,
+    )
+    if ckpt is None:
+        pytest.skip(
+            "two-stage consistency requires LEKAI_CONTINUATION_CHECKPOINT_PATH "
+            "or STREAMMUSE_CONSISTENCY_USE_DEFAULT_MODELS=1"
+        )
+    if requests is None:
+        pytest.skip("consistency test requires the 'requests' package")
+    return ckpt
+
+
+@pytest.fixture(scope="session")
+def two_stage_lekai_server(
+    lekai_prompt_checkpoint: Path,
+    lekai_continuation_checkpoint: Path,
+    artifacts_dir: Path,
+) -> LekaiServer:
+    port = _free_port()
+    log_path = artifacts_dir / "two_stage_server.log"
+
+    env = _subprocess_env()
+    env.update(TWO_STAGE_DETERMINISTIC_ENV)
+    env["LEKAI_PROMPT_CHECKPOINT_PATH"] = str(lekai_prompt_checkpoint)
+    env["LEKAI_CONTINUATION_CHECKPOINT_PATH"] = str(lekai_continuation_checkpoint)
+    env["LEKAI_SERVER_PORT"] = str(port)
+
+    base_url = f"http://127.0.0.1:{port}"
+    log_file = log_path.open("w")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "streammuse.infrastructure.inference.server_lekai"],
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+    )
+
+    try:
+        _wait_for_health(base_url, proc, log_path, timeout_s=180)
+        info = requests.get(
+            f"{base_url}/prompt_continuation/runtime_info",
+            timeout=30,
+        ).json()
+        if not bool(info.get("has_real_model")) or not bool(info.get("prompt_has_real_model")):
+            raise RuntimeError(
+                "two-stage server did not load real models. "
+                f"runtime_info={info}\nLog tail:\n{_tail(log_path)}"
+            )
+        requests.post(f"{base_url}/clear_history", timeout=30)
+        yield LekaiServer(
+            base_url=base_url,
+            generate_url=f"{base_url}/generate_accompaniment",
+            log_path=log_path,
+        )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=15)
+        log_file.close()
