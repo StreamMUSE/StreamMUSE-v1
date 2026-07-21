@@ -1,6 +1,10 @@
 import numpy as np
-import StreamMUSE.preprocess.xf_midi as xf_midi
-from StreamMUSE.preprocess.settings import RWC_DATASET_PATH, LA_DATASET_PATH, NOTTINGHAM_DATASET_PATH
+from streammuse.infrastructure.inference.stanley_stack.preprocess import xf_midi
+from streammuse.infrastructure.inference.stanley_stack.preprocess.settings import (
+    LA_DATASET_PATH,
+    NOTTINGHAM_DATASET_PATH,
+    RWC_DATASET_PATH,
+)
 import os
 from joblib import Parallel, delayed
 import torch
@@ -325,7 +329,7 @@ def create_tensor(dataset_name, folders, max_polyphony=4):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="process midi folder(s) into usable tensors for the task")
-    
+
     # Positional arguments
     parser.add_argument("--name",type=str,help="name your dataset")
     parser.add_argument("--folders",nargs='+', type=str, help="paths to midi folders")
@@ -340,10 +344,5 @@ if __name__ == '__main__':
 
     paths_m = create_tensor(melody_n, melody_f, max_polyphony=args.polyphony)
     paths_a = create_tensor(accomp_n, accomp_f, max_polyphony=args.polyphony)
-    
+
     sync(paths_m, paths_a)
-
-
-        
-
-    

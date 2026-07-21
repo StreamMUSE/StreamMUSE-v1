@@ -225,7 +225,12 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
     backend._model_adapter = _DummyAdapter()
     backend._converter = _DummyConverter()
     backend._tokenizer = object()
-    monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
+    generation_logs = []
+    monkeypatch.setattr(
+        backend._logger,
+        "log_generation",
+        lambda **kwargs: generation_logs.append(kwargs),
+    )
     monkeypatch.setattr(
         "streammuse.infrastructure.inference.lekai_model.inference_adapter.beats_to_pianoroll",
         lambda *args, **kwargs: np.zeros((2, 88, 4), dtype=np.float32),
@@ -255,6 +260,26 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
         generation_length_frames=4,
     )
     assert backend._accompaniment_token_history[1] == [255]
+    assert generation_logs[0]["diagnostics"] == {
+        "context_start_tick": 0,
+        "current_beat": 1,
+        "start_beat": 0,
+        "num_beats_to_generate": 1,
+        "beat_diagnostics": [
+            {
+                "target_beat": 1,
+                "beat_start_tick": 4,
+                "prompt_token_count": 8,
+                "generated_tokens": [255],
+                "generated_token_count": 1,
+                "pianoroll_nonzero": 0,
+                "event_count": 0,
+                "note_on_count": 0,
+                "min_event_tick": None,
+                "max_event_tick": None,
+            }
+        ],
+    }
 
     encoded_calls.clear()
     backend._generate_with_interleaved_prompt(

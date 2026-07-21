@@ -871,6 +871,7 @@ class LekaiHttpBackend:
         generated_events: List[EventPayload] = []
         running_active = set(self._active_pitches)
         token_decode_initial_active_pitches = sorted(running_active)
+        beat_diagnostics: List[Dict[str, Any]] = []
 
         try:
             rt_temperature = float(os.environ.get("LEKAI_RT_TEMPERATURE", "0.8"))
@@ -978,6 +979,7 @@ class LekaiHttpBackend:
                 tokenizer=self._tokenizer,
                 timesteps_per_beat=TIMESTEPS_PER_BEAT,
             )
+            pianoroll_nonzero = int(np.count_nonzero(beat_pianoroll))
 
             expected_shape = (2, 88, TIMESTEPS_PER_BEAT)
             got_shape = tuple(int(dim) for dim in beat_pianoroll.shape)
@@ -1023,6 +1025,29 @@ class LekaiHttpBackend:
             generated_events.extend(normalized_beat_events)
             accompaniment_context_events.extend(normalized_beat_events)
             self._accompaniment_token_history[target_beat] = list(generated_beat_tokens)
+
+            note_on_events = [
+                event
+                for event in normalized_beat_events
+                if str(event.get("type", "")) == "note_on"
+            ]
+            event_ticks = [
+                int(event.get("tick", 0)) for event in normalized_beat_events
+            ]
+            beat_diagnostics.append(
+                {
+                    "target_beat": int(target_beat),
+                    "beat_start_tick": int(beat_start_tick),
+                    "prompt_token_count": int(len(prompt_tokens)),
+                    "generated_tokens": [int(token) for token in generated_beat_tokens],
+                    "generated_token_count": int(len(generated_beat_tokens)),
+                    "pianoroll_nonzero": pianoroll_nonzero,
+                    "event_count": int(len(normalized_beat_events)),
+                    "note_on_count": int(len(note_on_events)),
+                    "min_event_tick": min(event_ticks) if event_ticks else None,
+                    "max_event_tick": max(event_ticks) if event_ticks else None,
+                }
+            )
 
             # Preserve the raw ACC tokens in the model sequence. At a measure
             # boundary, offline next injects a part0 BAR and generates a separate
@@ -1094,6 +1119,13 @@ class LekaiHttpBackend:
                 f"context_start_tick={context_start_tick}, current_beat={current_beat}, "
                 f"boundary_pending={boundary_pending}"
             ),
+            diagnostics={
+                "context_start_tick": int(context_start_tick),
+                "current_beat": int(current_beat),
+                "start_beat": int(start_beat),
+                "num_beats_to_generate": int(num_beats_to_generate),
+                "beat_diagnostics": beat_diagnostics,
+            },
             suffix="",
         )
 
