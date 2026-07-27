@@ -48,6 +48,17 @@ uv run streammuse-cli --help
 
 ## 可选依赖
 
+### 交互式游戏语音输入
+
+Zip-Zap-Zop 的本地语音输入使用独立的 `voice` 可选依赖组：
+
+```bash
+uv sync --extra voice
+uv run --extra voice streammuse-task voice-devices
+```
+
+安装后参见[交互式游戏语音输入](../user-guide/voice-input.md)，了解模型缓存、麦克风权限、隐私和离线运行。
+
 ### 实时音频输出（`--output-type audio`）
 
 实时音频播放依赖 `python-rtmidi` 提供的虚拟 MIDI 端口，以及系统 MIDI 合成器（如 macOS 自带的 FluidSynth 或 DLSMusicDevice）。

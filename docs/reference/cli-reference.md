@@ -147,6 +147,24 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 
 ---
 
+## 交互式任务语音参数
+
+以下参数属于 `streammuse-task play`，与音乐实时入口 `streammuse-cli` 的输入参数相互独立：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `--human-input` | `terminal/voice` | `terminal` | 人类玩家输入方式 |
+| `--voice-model` | `str` | `tiny.en` | faster-whisper 模型标识符或本地目录 |
+| `--voice-device` | `str` | `cpu` | CTranslate2 执行设备 |
+| `--voice-compute-type` | `str` | `int8` | CTranslate2 计算类型 |
+| `--microphone-device` | 名称或索引 | 系统默认 | PortAudio 输入设备 |
+| `--voice-model-cache` | 路径 | `None` | Hugging Face 模型下载/缓存根目录 |
+| `--voice-model-revision` | `str` | `None` | 固定模型版本的 commit 或 tag |
+| `--voice-local-files-only` | flag | `False` | 禁止联网下载模型 |
+| `--voice-save-audio` | flag | `False` | 将每回合发言保存到运行产物目录 |
+
+`streammuse-task voice-devices` 可以在不提供 `--task`、不连接聊天模型服务器且不加载 Whisper 的情况下列出麦克风。语音参数只能和 `--human-input voice` 一起使用。完整说明见[交互式游戏语音输入](../user-guide/voice-input.md)。
+
 ## 典型命令示例
 
 ```bash

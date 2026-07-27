@@ -91,6 +91,22 @@ logs/YYYY-MM-DD/session_HHMMSS/
 
 `combined.mid` contains `Melody` and `Accompaniment` tracks. With `--enable-metronome`, it also contains a `Metronome` drum track. With `--count-in-beats`, count-in clicks are recorded at the beginning of the MIDI file.
 
+### Interactive Voice Input
+
+Zip-Zap-Zop can capture each human turn from a microphone and transcribe it locally with a resident `faster-whisper tiny.en` CPU/int8 model:
+
+```bash
+uv sync --extra voice
+uv run --extra voice streammuse-task voice-devices
+uv run --extra voice streammuse-task play \
+  --task zip_zap_zop \
+  --human-input voice \
+  --deadline-mode soft \
+  --deadline-ms 3000
+```
+
+Raw microphone audio is not saved unless `--voice-save-audio` is supplied. See [`docs/user-guide/voice-input.md`](docs/user-guide/voice-input.md) for model caching, permissions, privacy, and deadline behavior.
+
 ## Documentation
 
 Start from [`docs/index.md`](docs/index.md). Key pages:

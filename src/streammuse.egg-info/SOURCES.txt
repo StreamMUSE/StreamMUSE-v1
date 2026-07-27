@@ -14,6 +14,7 @@ src/streammuse/application/debug/__init__.py
 src/streammuse/application/debug/compare.py
 src/streammuse/application/debug/replay.py
 src/streammuse/application/factories/__init__.py
+src/streammuse/application/factories/human_input_factory.py
 src/streammuse/application/factories/inference_factory.py
 src/streammuse/application/factories/input_factory.py
 src/streammuse/application/factories/output_factory.py
@@ -23,6 +24,7 @@ src/streammuse/application/runtime/session.py
 src/streammuse/application/services/input_timing.py
 src/streammuse/application/services/real_time_music_service.py
 src/streammuse/application/tasks/__init__.py
+src/streammuse/application/tasks/human_input.py
 src/streammuse/application/tasks/interactive_runtime.py
 src/streammuse/application/tasks/runtime.py
 src/streammuse/domain/__init__.py
@@ -108,6 +110,10 @@ src/streammuse/infrastructure/output/session_logger.py
 src/streammuse/infrastructure/output/websocket.py
 src/streammuse/infrastructure/storage/__init__.py
 src/streammuse/infrastructure/storage/prompt_repository.py
+src/streammuse/infrastructure/voice/__init__.py
+src/streammuse/infrastructure/voice/faster_whisper.py
+src/streammuse/infrastructure/voice/microphone.py
+src/streammuse/infrastructure/voice/response_source.py
 src/streammuse/presentation/__init__.py
 src/streammuse/presentation/cli/__init__.py
 src/streammuse/presentation/cli/cli.py

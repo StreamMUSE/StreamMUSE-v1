@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from streammuse.application.tasks import InteractiveTaskRunResult, TaskRunResult
+from streammuse.domain.tasks import ZipZapZopTask
+from streammuse.infrastructure.voice import MicrophoneDevice, VoiceDependencyError
 from streammuse.presentation.task.cli import build_parser, main
 
 
@@ -223,3 +226,286 @@ def test_task_cli_rejects_unknown_task(tmp_path) -> None:
 
     assert exit_code == 2
     run_task.assert_not_called()
+
+
+def test_task_cli_voice_mode_passes_typed_configuration(tmp_path, capsys) -> None:
+    result = InteractiveTaskRunResult(
+        output_dir=str(tmp_path / "play"),
+        task_name="zip_zap_zop",
+        turn_count=0,
+        human_turn_count=0,
+        llm_turn_count=0,
+        valid_count=0,
+        invalid_count=0,
+        deadline_miss_count=0,
+    )
+
+    with patch("streammuse.presentation.task.cli.play_task", return_value=result) as play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "zip_zap_zop",
+                "--human-input",
+                "voice",
+                "--microphone-device",
+                "3",
+                "--voice-model-cache",
+                str(tmp_path / "models"),
+                "--voice-model-revision",
+                "model-commit",
+                "--voice-local-files-only",
+                "--voice-save-audio",
+            ]
+        )
+
+    assert exit_code == 0
+    config = play_task.call_args.kwargs["human_input_config"]
+    assert config.mode == "voice"
+    assert config.voice.model == "tiny.en"
+    assert config.voice.device == "cpu"
+    assert config.voice.compute_type == "int8"
+    assert config.voice.microphone_device == 3
+    assert config.voice.model_revision == "model-commit"
+    assert config.voice.local_files_only is True
+    assert config.voice.save_audio is True
+    assert "interactive completed" in capsys.readouterr().out
+
+
+def test_task_cli_rejects_voice_options_in_terminal_mode(capsys) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as play_task:
+        exit_code = main(
+            ["play", "--task", "zip_zap_zop", "--voice-model", "tiny.en"]
+        )
+
+    assert exit_code == 2
+    play_task.assert_not_called()
+    assert "voice options require --human-input voice" in capsys.readouterr().out
+
+
+def test_voice_devices_needs_no_task_or_model_client(capsys) -> None:
+    devices = (
+        MicrophoneDevice(
+            index=2,
+            name="Built-in Microphone",
+            max_input_channels=1,
+            default_sample_rate_hz=48_000.0,
+            hostapi=0,
+        ),
+    )
+
+    with (
+        patch("streammuse.infrastructure.voice.enumerate_input_devices", return_value=devices) as enumerate_devices,
+        patch("streammuse.presentation.task.cli._build_client") as build_client,
+    ):
+        exit_code = main(["voice-devices"])
+
+    assert exit_code == 0
+    enumerate_devices.assert_called_once_with()
+    build_client.assert_not_called()
+    output = capsys.readouterr().out
+    assert "[2] Built-in Microphone" in output
+    assert "48000 Hz" in output
+
+
+def test_voice_devices_reports_missing_optional_dependency_once(capsys) -> None:
+    with patch(
+        "streammuse.infrastructure.voice.enumerate_input_devices",
+        side_effect=VoiceDependencyError("install with uv sync --extra voice"),
+    ):
+        exit_code = main(["voice-devices"])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert output.count("voice input error:") == 1
+    assert "uv sync --extra voice" in output
+
+
+def test_task_cli_maps_keyboard_interrupt_to_exit_code_130(capsys) -> None:
+    with patch("streammuse.presentation.task.cli.play_task", side_effect=KeyboardInterrupt):
+        exit_code = main(["play", "--task", "zip_zap_zop"])
+
+    assert exit_code == 130
+    assert "interactive session interrupted" in capsys.readouterr().out
+
+
+def test_task_cli_does_not_treat_runtime_value_error_as_configuration_error(capsys) -> None:
+    with (
+        patch("streammuse.presentation.task.cli.play_task", side_effect=ValueError("runtime failed")),
+        pytest.raises(ValueError, match="runtime failed"),
+    ):
+        main(["play", "--task", "zip_zap_zop"])
+
+    assert "invalid human input configuration" not in capsys.readouterr().out
+
+
+def test_task_cli_rejects_explicit_empty_voice_model(capsys) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "zip_zap_zop",
+                "--human-input",
+                "voice",
+                "--voice-model",
+                "",
+            ]
+        )
+
+    assert exit_code == 2
+    play_task.assert_not_called()
+    assert "model must not be empty" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
+def test_task_cli_rejects_non_positive_or_non_finite_deadline(value: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["play", "--task", "zip_zap_zop", "--deadline-ms", value]
+        )
+
+
+@pytest.mark.parametrize("value", ["1000,nan", "1000,inf", "1000,0", "1000,-1"])
+def test_task_cli_rejects_invalid_challenge_deadline_list(value: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "play",
+                "--task",
+                "zip_zap_zop",
+                "--challenge-deadline-ms-list",
+                value,
+            ]
+        )
+
+
+def test_task_cli_rejects_voice_game_outside_spoken_integer_range(capsys) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "zip_zap_zop",
+                "--human-input",
+                "voice",
+                "--start-number",
+                str(ZipZapZopTask.max_spoken_integer),
+                "--max-turns",
+                "2",
+            ]
+        )
+
+    assert exit_code == 2
+    play_task.assert_not_called()
+    assert "spoken integer range" in capsys.readouterr().out
+
+
+def test_play_task_source_construction_failure_writes_startup_manifest(tmp_path) -> None:
+    run_dir = tmp_path / "failed-source"
+
+    with (
+        patch("streammuse.presentation.task.cli._new_run_dir", return_value=run_dir),
+        patch(
+            "streammuse.application.factories.human_input_factory.HumanInputFactory.create",
+            side_effect=RuntimeError("source construction failed"),
+        ),
+        patch("streammuse.presentation.task.cli._build_client") as build_client,
+        pytest.raises(RuntimeError, match="source construction failed"),
+    ):
+        main(["play", "--task", "zip_zap_zop"])
+
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    build_client.assert_not_called()
+    assert manifest["schema_version"] == 2
+    assert manifest["status"] == "startup_error"
+    assert manifest["human_input"] == {"mode": "terminal"}
+    assert manifest["startup_error"]["message"] == "source construction failed"
+    assert not (run_dir / "response_trace.jsonl").exists()
+
+
+def test_play_task_client_failure_preserves_primary_error_and_closes_source(tmp_path) -> None:
+    run_dir = tmp_path / "failed-client"
+    source = _FailingCloseSource()
+
+    with (
+        patch("streammuse.presentation.task.cli._new_run_dir", return_value=run_dir),
+        patch("streammuse.application.factories.human_input_factory.HumanInputFactory.create", return_value=source),
+        patch(
+            "streammuse.presentation.task.cli._build_client",
+            side_effect=ValueError("client construction failed"),
+        ),
+        pytest.raises(ValueError, match="client construction failed"),
+    ):
+        main(["play", "--task", "zip_zap_zop"])
+
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert source.close_count == 1
+    assert manifest["status"] == "startup_error"
+    assert manifest["startup_error"]["message"] == "client construction failed"
+    assert manifest["human_input"] == {"mode": "terminal", "source": "fake"}
+
+
+def test_play_task_runtime_entry_failure_uses_outer_resource_fallback(tmp_path) -> None:
+    run_dir = tmp_path / "failed-runtime-entry"
+    source = _TrackingSource()
+    client = _TrackingClient()
+
+    with (
+        patch("streammuse.presentation.task.cli._new_run_dir", return_value=run_dir),
+        patch(
+            "streammuse.application.factories.human_input_factory.HumanInputFactory.create",
+            return_value=source,
+        ),
+        patch("streammuse.presentation.task.cli._build_client", return_value=client),
+        patch(
+            "streammuse.presentation.task.cli.InteractiveTaskRuntime.play",
+            side_effect=RuntimeError("runtime entry failed"),
+        ),
+        pytest.raises(RuntimeError, match="runtime entry failed"),
+    ):
+        main(["play", "--task", "zip_zap_zop"])
+
+    assert source.close_count == 1
+    assert client.close_count == 1
+
+
+class _FailingCloseSource:
+    mode = "terminal"
+
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    @property
+    def provenance(self) -> dict[str, object]:
+        return {"mode": "terminal", "source": "fake"}
+
+    def close(self) -> None:
+        self.close_count += 1
+        raise RuntimeError("source close failed")
+
+
+class _TrackingSource:
+    mode = "terminal"
+
+    def __init__(self) -> None:
+        self.close_count = 0
+        self.closed = False
+
+    @property
+    def provenance(self) -> dict[str, object]:
+        return {"mode": "terminal", "source": "tracking"}
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.close_count += 1
+
+
+class _TrackingClient:
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1

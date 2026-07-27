@@ -77,6 +77,8 @@ description: 实时 AI 音乐伴奏生成系统
 | [输出类型](user-guide/output-types.md) | 7 种用户可选输出类型与 metronome 说明 |
 | [Session 日志](user-guide/session-logging.md) | 日志文件结构与字段 |
 | [音乐注入](user-guide/music-injection.md) | CLI/API 注入历史上下文 |
+| [交互式游戏语音输入](user-guide/voice-input.md) | faster-whisper 麦克风输入、离线缓存、隐私与故障诊断 |
+| [语音输入资格验证](developer-guide/voice-input-qualification.md) | 冻结语料库、准确率/延迟统计与验收门槛 |
 | [新增输入源](developer-guide/adding-input-source.md) | 如何扩展 InputSource |
 | [新增输出 Sink](developer-guide/adding-output-sink.md) | 如何扩展 OutputSink |
 | [新增推理引擎](developer-guide/adding-inference-engine.md) | 如何扩展 InferenceEngine |

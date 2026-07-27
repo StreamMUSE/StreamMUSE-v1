@@ -45,6 +45,14 @@ dependencies = [
   "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+voice = [
+  "faster-whisper>=1.2,<1.3",
+  "onnxruntime<1.24; python_version < '3.11'",
+  "sounddevice>=0.5,<0.6",
+  "webrtcvad-wheels>=2.0,<2.1",
+]
+
 [project.scripts]
 streammuse-cli = "streammuse.presentation.cli.cli:main"
 streammuse-web = "streammuse.presentation.web.server:main"

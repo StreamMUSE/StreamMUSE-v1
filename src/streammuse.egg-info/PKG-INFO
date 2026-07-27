@@ -35,6 +35,11 @@ Requires-Dist: uvicorn>=0.35.0
 Requires-Dist: wandb>=0.20.1
 Requires-Dist: websockets>=12
 Requires-Dist: httpx>=0.27
+Provides-Extra: voice
+Requires-Dist: faster-whisper<1.3,>=1.2; extra == "voice"
+Requires-Dist: onnxruntime<1.24; python_version < "3.11" and extra == "voice"
+Requires-Dist: sounddevice<0.6,>=0.5; extra == "voice"
+Requires-Dist: webrtcvad-wheels<2.1,>=2.0; extra == "voice"
 
 # StreamMUSE
 
@@ -128,6 +133,22 @@ logs/YYYY-MM-DD/session_HHMMSS/
 ```
 
 `combined.mid` contains `Melody` and `Accompaniment` tracks. With `--enable-metronome`, it also contains a `Metronome` drum track. With `--count-in-beats`, count-in clicks are recorded at the beginning of the MIDI file.
+
+### Interactive Voice Input
+
+Zip-Zap-Zop can capture each human turn from a microphone and transcribe it locally with a resident `faster-whisper tiny.en` CPU/int8 model:
+
+```bash
+uv sync --extra voice
+uv run --extra voice streammuse-task voice-devices
+uv run --extra voice streammuse-task play \
+  --task zip_zap_zop \
+  --human-input voice \
+  --deadline-mode soft \
+  --deadline-ms 3000
+```
+
+Raw microphone audio is not saved unless `--voice-save-audio` is supplied. See [`docs/user-guide/voice-input.md`](docs/user-guide/voice-input.md) for model caching, permissions, privacy, and deadline behavior.
 
 ## Documentation
 

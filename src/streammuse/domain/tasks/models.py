@@ -3,12 +3,63 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 
 
 ChatMessage = dict[str, str]
 InteractiveActor = Literal["human", "llm"]
 DeadlineMode = Literal["menu", "soft", "hard", "challenge"]
+HumanInputMode = Literal["terminal", "voice"]
+HumanResponseStatus = Literal[
+    "ok",
+    "no_speech",
+    "empty_transcript",
+    "rejected_transcript",
+]
+SpokenResponseParseStatus = Literal["ok", "empty", "unrecognized"]
+
+
+@dataclass(frozen=True)
+class SpeechContext:
+    initial_prompt: str | None = None
+    hotwords: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class HumanResponseRequest:
+    turn_id: int
+    prompt: str
+    timeout_s: float | None
+    speech_context: SpeechContext | None = None
+
+
+@dataclass(frozen=True)
+class HumanResponse:
+    text: str
+    status: HumanResponseStatus = "ok"
+    deadline_expired: bool = False
+    latency_ms: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class HumanResponseSource(Protocol):
+    mode: HumanInputMode
+
+    def start(self) -> None: ...
+
+    @property
+    def provenance(self) -> dict[str, Any]: ...
+
+    def read_response(self, request: HumanResponseRequest) -> HumanResponse: ...
+
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class SpokenResponseParseResult:
+    canonical_text: str | None
+    status: SpokenResponseParseStatus
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,3 +187,19 @@ class InteractiveTask(Protocol):
         state: TaskState,
         transcript: list[InteractiveTurnRecord],
     ) -> str | None: ...
+
+
+@runtime_checkable
+class SpeechAwareInteractiveTask(Protocol):
+    def build_speech_context(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> SpeechContext: ...
+
+    def parse_spoken_response(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        raw_text: str,
+    ) -> SpokenResponseParseResult: ...
