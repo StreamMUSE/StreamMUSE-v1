@@ -48,7 +48,7 @@ def _json_safe(value: Any) -> Any:
 
 
 class VoiceInfrastructureError(RuntimeError):
-    """Base class for actionable voice-input infrastructure failures."""
+    """Base class for actionable voice input or output infrastructure failures."""
 
 
 class VoiceDependencyError(VoiceInfrastructureError):
@@ -79,6 +79,26 @@ class SpeechRecognitionError(VoiceInfrastructureError):
     """The speech recognizer failed to load, warm up, or transcribe audio."""
 
 
+class SpeechOutputError(VoiceInfrastructureError):
+    """Base class for speech synthesis, playback, and artifact failures."""
+
+
+class SpeechSynthesisError(SpeechOutputError):
+    """A configured speech synthesizer failed."""
+
+
+class SpeakerDeviceError(SpeechOutputError, VoiceStartupError):
+    """No usable speaker configuration could be selected."""
+
+
+class SpeakerPlaybackError(SpeechOutputError):
+    """A running speaker stream failed."""
+
+
+class SpeechArtifactError(SpeechOutputError):
+    """A synthesized speech artifact could not be persisted."""
+
+
 from .faster_whisper import FasterWhisperRecognizer, TranscriptionResult
 from .microphone import (
     SUPPORTED_VAD_SAMPLE_RATES,
@@ -100,6 +120,11 @@ __all__ = [
     "MicrophoneError",
     "SUPPORTED_VAD_SAMPLE_RATES",
     "SpeechRecognitionError",
+    "SpeechArtifactError",
+    "SpeechOutputError",
+    "SpeechSynthesisError",
+    "SpeakerDeviceError",
+    "SpeakerPlaybackError",
     "TranscriptionResult",
     "VoiceDependencyError",
     "VoiceHumanResponseSource",

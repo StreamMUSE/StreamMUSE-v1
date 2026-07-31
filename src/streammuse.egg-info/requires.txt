@@ -30,6 +30,14 @@ wandb>=0.20.1
 websockets>=12
 httpx>=0.27
 
+[speech]
+sounddevice<0.6,>=0.5
+
+[tts-kokoro]
+kokoro<1.0,>=0.9
+soundfile>=0.12
+sounddevice<0.6,>=0.5
+
 [voice]
 faster-whisper<1.3,>=1.2
 sounddevice<0.6,>=0.5

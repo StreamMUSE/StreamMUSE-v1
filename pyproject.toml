@@ -52,6 +52,14 @@ voice = [
   "sounddevice>=0.5,<0.6",
   "webrtcvad-wheels>=2.0,<2.1",
 ]
+speech = [
+  "sounddevice>=0.5,<0.6",
+]
+tts-kokoro = [
+  "kokoro>=0.9,<1.0",
+  "soundfile>=0.12",
+  "sounddevice>=0.5,<0.6",
+]
 
 [project.scripts]
 streammuse-cli = "streammuse.presentation.cli.cli:main"

@@ -7,7 +7,7 @@ import math
 import time
 import uuid
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -19,6 +19,7 @@ from streammuse.application.tasks.human_input import (
     TerminalIO,
     TimedPromptResult as TimedPromptResult,
 )
+from streammuse.application.tasks.speech_output import SilentSpeechOutput
 from streammuse.domain.tasks import (
     ChatModelResponse,
     DeadlineMode,
@@ -30,6 +31,10 @@ from streammuse.domain.tasks import (
     InteractiveTurnRecord,
     LocalChatModel,
     SpeechAwareInteractiveTask,
+    SpeechOutputSink,
+    SpeechPlayback,
+    SpeechRenderableTask,
+    SpeechRequest,
     TaskRefereeResult,
     TaskState,
 )
@@ -49,6 +54,9 @@ class InteractiveTaskRuntimeConfig:
     deadline_mode: DeadlineMode = "menu"
     challenge_stage_turns: int = 20
     challenge_deadline_ms_list: tuple[float, ...] = (10000.0, 5000.0, 3000.0, 2000.0, 1000.0)
+    speech_guard_ms: float = 200.0
+    speech_on_error: Literal["fail", "warn"] = "fail"
+    llm_deadline_basis: Literal["text", "audio_end"] = "text"
 
     def __post_init__(self) -> None:
         if not math.isfinite(float(self.deadline_ms)) or float(self.deadline_ms) <= 0:
@@ -58,6 +66,15 @@ class InteractiveTaskRuntimeConfig:
             for value in self.challenge_deadline_ms_list
         ):
             raise ValueError("challenge deadlines must be finite and > 0")
+        if (
+            not math.isfinite(float(self.speech_guard_ms))
+            or float(self.speech_guard_ms) < 0
+        ):
+            raise ValueError("speech_guard_ms must be finite and >= 0")
+        if self.speech_on_error not in {"fail", "warn"}:
+            raise ValueError("speech_on_error must be 'fail' or 'warn'")
+        if self.llm_deadline_basis not in {"text", "audio_end"}:
+            raise ValueError("llm_deadline_basis must be 'text' or 'audio_end'")
 
 
 @dataclass(frozen=True)
@@ -88,6 +105,7 @@ class _InteractiveStats:
     llm_turn_count: int = 0
     human_turn_count: int = 0
     quit_requested: bool = False
+    audio_end_fallback_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def turn_count(self) -> int:
@@ -121,7 +139,9 @@ class InteractiveTaskRuntime:
         model_client: LocalChatModel,
         terminal: TerminalIO | None = None,
         human_response_source: HumanResponseSource | None = None,
+        speech_output_sink: SpeechOutputSink | None = None,
         now: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.config = config
         self.model_client = model_client
@@ -131,7 +151,15 @@ class InteractiveTaskRuntime:
             if human_response_source is not None
             else TerminalHumanResponseSource(self.terminal)
         )
+        self.speech_output_sink = (
+            speech_output_sink
+            if speech_output_sink is not None
+            else SilentSpeechOutput()
+        )
         self._now = now or time.perf_counter
+        self._sleep = sleep or time.sleep
+        self._pending_speech_guard = False
+        self._last_stats_fallback_reasons: dict[str, int] = {}
 
     def play(self, task: InteractiveTask, *, max_turns: int) -> InteractiveTaskRunResult:
         run_dir = Path(self.config.output_dir).expanduser()
@@ -152,8 +180,16 @@ class InteractiveTaskRuntime:
             (run_dir / "artifacts" / "turn").mkdir(parents=True, exist_ok=True)
             run_dir_ready = True
             self._validate_human_input_task(task)
+            self._validate_speech_output_task(task)
             deadline_state = self._build_deadline_state()
+            state = task.initial_state()
             self.human_response_source.start()
+            self.speech_output_sink.start()
+            if self.speech_output_sink.mode == "audio":
+                speech_task = self._renderable_task(task)
+                self.speech_output_sink.prepare(
+                    speech_task.speech_vocabulary(state, max_turns=max_turns)
+                )
             human_input = self._human_input_provenance()
             self._write_initial_manifest(
                 run_dir,
@@ -166,7 +202,6 @@ class InteractiveTaskRuntime:
             manifest_written = True
             startup_complete = True
 
-            state = task.initial_state()
             self._write_banner(task.name, deadline_state)
             while (
                 stats.turn_count < int(max_turns)
@@ -198,7 +233,7 @@ class InteractiveTaskRuntime:
 
             status = deadline_state.stop_reason or ("user_quit" if stats.quit_requested else "completed")
             source_close_attempted = True
-            self.human_response_source.close()
+            self._close_interactive_resources()
             result = self._result(run_dir, task.name, stats, deadline_state, stop_reason=status)
             self._write_run_summary(run_dir, task.name, result, status=status)
             self.terminal.write(self._summary_text(result, stats))
@@ -253,8 +288,9 @@ class InteractiveTaskRuntime:
             raise
         finally:
             if not source_close_attempted:
+                source_close_attempted = True
                 try:
-                    self.human_response_source.close()
+                    self._close_interactive_resources()
                 except BaseException:
                     if primary_error is None:
                         raise
@@ -262,6 +298,20 @@ class InteractiveTaskRuntime:
         if result is None:
             raise RuntimeError("Interactive task ended without a result")
         return result
+
+    def _close_interactive_resources(self) -> None:
+        first_error: BaseException | None = None
+        try:
+            self.speech_output_sink.close()
+        except BaseException as exc:
+            first_error = exc
+        try:
+            self.human_response_source.close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        if first_error is not None:
+            raise first_error
 
     def _build_deadline_state(self) -> _DeadlineSessionState:
         mode = self._resolve_deadline_mode()
@@ -286,10 +336,25 @@ class InteractiveTaskRuntime:
                 "use terminal input or a SpeechAwareInteractiveTask"
             )
 
+    def _validate_speech_output_task(self, task: InteractiveTask) -> None:
+        if self.speech_output_sink.mode == "audio" and not isinstance(
+            task, SpeechRenderableTask
+        ):
+            raise TypeError(
+                f"Task {task.name!r} does not support speech output; "
+                "use --speech-output off or a SpeechRenderableTask"
+            )
+
     @staticmethod
     def _speech_task(task: InteractiveTask) -> SpeechAwareInteractiveTask:
         if not isinstance(task, SpeechAwareInteractiveTask):
             raise TypeError(f"Task {task.name!r} does not support voice input")
+        return task
+
+    @staticmethod
+    def _renderable_task(task: InteractiveTask) -> SpeechRenderableTask:
+        if not isinstance(task, SpeechRenderableTask):
+            raise TypeError(f"Task {task.name!r} does not support speech output")
         return task
 
     def _human_input_provenance(self) -> dict[str, Any]:
@@ -303,6 +368,27 @@ class InteractiveTaskRuntime:
         except BaseException as exc:
             return {
                 "mode": self.human_response_source.mode,
+                "provenance_error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            }
+
+    def _speech_output_provenance(self) -> dict[str, Any] | None:
+        if self.speech_output_sink.mode != "audio":
+            return None
+        provenance = deepcopy(self.speech_output_sink.provenance)
+        provenance["mode"] = "audio"
+        return provenance
+
+    def _safe_speech_output_provenance(self) -> dict[str, Any] | None:
+        if self.speech_output_sink.mode != "audio":
+            return None
+        try:
+            return self._speech_output_provenance()
+        except BaseException as exc:
+            return {
+                "mode": "audio",
                 "provenance_error": {
                     "type": type(exc).__name__,
                     "message": str(exc),
@@ -345,6 +431,7 @@ class InteractiveTaskRuntime:
         run_dir: Path,
         deadline_state: _DeadlineSessionState,
     ) -> TaskState | None:
+        guard_ms = self._apply_pending_speech_guard()
         prompt_text = task.build_human_prompt(state, transcript)
         number = self._number_from_state(state)
 
@@ -433,6 +520,8 @@ class InteractiveTaskRuntime:
                 "total_latency_ms": float(elapsed_ms),
             }
         )
+        if guard_ms > 0.0:
+            human_input_metadata["guard_ms"] = guard_ms
         if self.human_response_source.mode == "voice":
             human_input_metadata["raw_transcript"] = str(response_text or "")
             if response.status == "ok":
@@ -540,6 +629,17 @@ class InteractiveTaskRuntime:
             if value is not None and isinstance(value, (int, float)) and math.isfinite(float(value)):
                 metadata[key] = float(value) + offset_ms
 
+    def _apply_pending_speech_guard(self) -> float:
+        pending = self._pending_speech_guard
+        self._pending_speech_guard = False
+        if not pending or self.human_response_source.mode != "voice":
+            return 0.0
+        self.speech_output_sink.drain()
+        guard_ms = float(self.config.speech_guard_ms)
+        if guard_ms > 0.0:
+            self._sleep(guard_ms / 1000.0)
+        return guard_ms
+
     def _run_llm_turn(
         self,
         *,
@@ -568,6 +668,14 @@ class InteractiveTaskRuntime:
             elapsed_ms = max(0.0, (self._now() - start_s) * 1000.0)
             elapsed_ms = max(elapsed_ms, float(deadline_state.current_deadline_ms))
             self.terminal.write("    LLM > [timeout]")
+            speech_metadata = None
+            if self.speech_output_sink.mode == "audio":
+                speech_metadata = self._speech_metadata(
+                    playback=SpeechPlayback(status="not_attempted"),
+                    source_text="",
+                    text_ready_offset_ms=elapsed_ms,
+                    deadline_basis_fallback_reason="llm_timeout",
+                )
             return self._finish_turn(
                 task=task,
                 state=state,
@@ -584,11 +692,110 @@ class InteractiveTaskRuntime:
                 deadline_state=deadline_state,
                 forced_deadline_missed=True,
                 model_error=str(exc),
+                speech_output_metadata=speech_metadata,
             )
-        elapsed_ms = max(float(model_response.latency_ms), (self._now() - start_s) * 1000.0)
+        text_ready_s = self._now()
+        text_ready_ms = max(
+            float(model_response.latency_ms),
+            (text_ready_s - start_s) * 1000.0,
+        )
         response_text = model_response.text
-        self.terminal.write(f"    LLM > {response_text}")
-        return self._finish_turn(
+        playback: SpeechPlayback | None = None
+        speech_metadata: dict[str, Any] | None = None
+        elapsed_ms = text_ready_ms
+        try:
+            self.terminal.write(f"    LLM > {response_text}")
+            if self.speech_output_sink.mode == "audio":
+                spoken_text = self._renderable_task(task).build_spoken_text(
+                    state,
+                    transcript,
+                    response_text,
+                    actor="llm",
+                )
+                if not spoken_text:
+                    playback = SpeechPlayback(status="empty_text")
+                else:
+                    speak_started_s = self._now()
+                    playback = self.speech_output_sink.speak(
+                        SpeechRequest(
+                            turn_id=len(transcript),
+                            actor="llm",
+                            text=spoken_text,
+                            source_text=response_text,
+                        )
+                    )
+                    self._validate_speech_playback(
+                        playback,
+                        speak_wall_ms=max(
+                            0.0,
+                            (self._now() - speak_started_s) * 1000.0,
+                        ),
+                    )
+                    playback = self._shift_speech_offsets(
+                        playback,
+                        max(0.0, (speak_started_s - start_s) * 1000.0),
+                    )
+                elapsed_ms, fallback_reason = self._speech_deadline_latency(
+                    playback=playback,
+                    text_ready_ms=text_ready_ms,
+                    text_ready_s=text_ready_s,
+                    turn_start_s=start_s,
+                )
+                speech_metadata = self._speech_metadata(
+                    playback=playback,
+                    source_text=response_text,
+                    text_ready_offset_ms=max(
+                        0.0, (text_ready_s - start_s) * 1000.0
+                    ),
+                    deadline_basis_fallback_reason=fallback_reason,
+                )
+        except BaseException as exc:
+            if self.speech_output_sink.mode == "audio":
+                status = (
+                    "interrupted"
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit))
+                    else "internal_error"
+                )
+                playback = SpeechPlayback(
+                    status=status,
+                    error={
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                )
+                elapsed_ms, fallback_reason = self._speech_deadline_latency(
+                    playback=playback,
+                    text_ready_ms=text_ready_ms,
+                    text_ready_s=text_ready_s,
+                    turn_start_s=start_s,
+                )
+                speech_metadata = self._speech_metadata(
+                    playback=playback,
+                    source_text=response_text,
+                    text_ready_offset_ms=max(
+                        0.0, (text_ready_s - start_s) * 1000.0
+                    ),
+                    deadline_basis_fallback_reason=fallback_reason,
+                )
+            self._finish_turn(
+                task=task,
+                state=state,
+                transcript=transcript,
+                stats=stats,
+                run_dir=run_dir,
+                actor="llm",
+                prompt_payload=messages,
+                response_text=response_text,
+                elapsed_ms=elapsed_ms,
+                prompt_tokens=model_response.prompt_tokens,
+                completion_tokens=model_response.completion_tokens,
+                raw_model_response=model_response,
+                deadline_state=deadline_state,
+                speech_output_metadata=speech_metadata,
+            )
+            raise
+
+        next_state = self._finish_turn(
             task=task,
             state=state,
             transcript=transcript,
@@ -602,7 +809,151 @@ class InteractiveTaskRuntime:
             completion_tokens=model_response.completion_tokens,
             raw_model_response=model_response,
             deadline_state=deadline_state,
+            speech_output_metadata=speech_metadata,
         )
+        if playback is not None:
+            self._pending_speech_guard = (
+                playback.first_dac_sample_offset_ms is not None
+            )
+            if (
+                playback.status
+                in {"synthesis_failed", "playback_failed", "artifact_failed"}
+                and self.config.speech_on_error == "fail"
+            ):
+                from streammuse.infrastructure.voice import SpeechOutputError
+
+                message = (
+                    playback.error or {}
+                ).get("message", f"speech output failed: {playback.status}")
+                raise SpeechOutputError(message)
+        return next_state
+
+    @staticmethod
+    def _validate_speech_playback(
+        playback: SpeechPlayback,
+        *,
+        speak_wall_ms: float,
+    ) -> None:
+        for key in (
+            "synthesis_ms",
+            "audio_duration_ms",
+            "artifact_persistence_ms",
+        ):
+            value = getattr(playback, key)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise ValueError(f"{key} must be finite and non-negative")
+        if playback.artifact_persistence_ms > speak_wall_ms + 1.0:
+            raise ValueError(
+                "artifact_persistence_ms exceeds measured speech wall time"
+            )
+        for key in (
+            "playback_start_offset_ms",
+            "first_dac_sample_offset_ms",
+            "playback_drained_offset_ms",
+            "stream_inactive_offset_ms",
+        ):
+            value = getattr(playback, key)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise ValueError(
+                    f"{key} must be None or finite and non-negative"
+                )
+
+    @staticmethod
+    def _shift_speech_offsets(
+        playback: SpeechPlayback,
+        offset_ms: float,
+    ) -> SpeechPlayback:
+        shifted: dict[str, float | None] = {}
+        for key in (
+            "playback_start_offset_ms",
+            "first_dac_sample_offset_ms",
+            "playback_drained_offset_ms",
+            "stream_inactive_offset_ms",
+        ):
+            value = getattr(playback, key)
+            shifted[key] = (
+                float(value) + offset_ms
+                if value is not None and math.isfinite(float(value))
+                else value
+            )
+        return replace(playback, **shifted)
+
+    def _speech_deadline_latency(
+        self,
+        *,
+        playback: SpeechPlayback,
+        text_ready_ms: float,
+        text_ready_s: float,
+        turn_start_s: float,
+    ) -> tuple[float, str | None]:
+        if self.config.llm_deadline_basis == "text":
+            return text_ready_ms, None
+        full_playback_completed = (
+            playback.completed_normally
+            and playback.playback_drained_offset_ms is not None
+        )
+        if not full_playback_completed:
+            return text_ready_ms, self._speech_fallback_reason(playback)
+        drained_s = turn_start_s + float(
+            playback.playback_drained_offset_ms
+        ) / 1000.0
+        measured_text_to_drained_ms = max(
+            0.0, (drained_s - text_ready_s) * 1000.0
+        )
+        return text_ready_ms + measured_text_to_drained_ms, None
+
+    @staticmethod
+    def _speech_fallback_reason(playback: SpeechPlayback) -> str:
+        if playback.status in {
+            "empty_text",
+            "cache_miss_skipped",
+            "synthesis_failed",
+            "interrupted",
+            "internal_error",
+        }:
+            return playback.status
+        if playback.status == "not_attempted":
+            return "llm_timeout"
+        return "playback_incomplete"
+
+    def _speech_metadata(
+        self,
+        *,
+        playback: SpeechPlayback,
+        source_text: str,
+        text_ready_offset_ms: float,
+        deadline_basis_fallback_reason: str | None,
+    ) -> dict[str, Any]:
+        payload = asdict(playback)
+        playback_metadata = payload.pop("metadata", {})
+        provenance = self._safe_speech_output_provenance() or {}
+        payload.update(playback_metadata)
+        payload.update(
+            {
+                "mode": "audio",
+                "backend": provenance.get("backend"),
+                "source_text": source_text,
+                "text_ready_offset_ms": text_ready_offset_ms,
+                "deadline_basis": self.config.llm_deadline_basis,
+                "effective_deadline_basis": (
+                    "text"
+                    if deadline_basis_fallback_reason is not None
+                    else self.config.llm_deadline_basis
+                ),
+                "deadline_basis_fallback_reason": deadline_basis_fallback_reason,
+            }
+        )
+        return payload
 
     def _finish_turn(
         self,
@@ -623,6 +974,7 @@ class InteractiveTaskRuntime:
         forced_deadline_missed: bool = False,
         model_error: str | None = None,
         human_input_metadata: dict[str, Any] | None = None,
+        speech_output_metadata: dict[str, Any] | None = None,
     ) -> TaskState:
         referee = task.validate_response(
             state,
@@ -644,6 +996,8 @@ class InteractiveTaskRuntime:
         }
         if human_input_metadata is not None:
             metadata["human_input"] = deepcopy(human_input_metadata)
+        if speech_output_metadata is not None:
+            metadata["speech_output"] = deepcopy(speech_output_metadata)
         record = InteractiveTurnRecord(
             turn_id=len(transcript),
             actor=actor,
@@ -821,6 +1175,16 @@ class InteractiveTaskRuntime:
         else:
             stats.llm_turn_count += 1
             stats.llm_latency_ms_sum += float(record.latency_ms or 0.0)
+            speech_output = record.metadata.get("speech_output")
+            if isinstance(speech_output, dict):
+                fallback_reason = speech_output.get(
+                    "deadline_basis_fallback_reason"
+                )
+                if fallback_reason:
+                    key = str(fallback_reason)
+                    stats.audio_end_fallback_reasons[key] = (
+                        stats.audio_end_fallback_reasons.get(key, 0) + 1
+                    )
 
     def _result_text(self, record: InteractiveTurnRecord) -> str:
         latency = f"  {float(record.latency_ms or 0.0):.1f} ms"
@@ -879,6 +1243,12 @@ class InteractiveTaskRuntime:
             f"avg LLM latency {avg_text}"
         ]
         lines.append(f"Stop reason: {result.stop_reason}")
+        if stats.audio_end_fallback_reasons:
+            lines.append(
+                "Audio-end fallbacks: "
+                f"{sum(stats.audio_end_fallback_reasons.values())} "
+                f"({', '.join(f'{key}={value}' for key, value in sorted(stats.audio_end_fallback_reasons.items()))})"
+            )
         if result.winner or result.loser:
             lines.append(f"Winner: {result.winner}; loser: {result.loser}")
         if result.deadline_misses:
@@ -1020,6 +1390,9 @@ class InteractiveTaskRuntime:
             "artifact_root": "artifacts",
             "human_input": deepcopy(human_input),
         }
+        speech_output = self._safe_speech_output_provenance()
+        if speech_output is not None:
+            manifest["speech_output"] = speech_output
         if startup_error is not None:
             manifest["startup_error"] = {
                 "type": type(startup_error).__name__,
@@ -1057,6 +1430,13 @@ class InteractiveTaskRuntime:
                 "invalid_responses": list(result.invalid_responses),
             }
         )
+        if self.speech_output_sink.mode == "audio":
+            manifest["audio_end_fallback_turn_count"] = sum(
+                self._last_stats_fallback_reasons.values()
+            )
+            manifest["audio_end_fallback_reasons"] = dict(
+                self._last_stats_fallback_reasons
+            )
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         (run_dir / "run_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -1069,6 +1449,9 @@ class InteractiveTaskRuntime:
         *,
         stop_reason: str,
     ) -> InteractiveTaskRunResult:
+        self._last_stats_fallback_reasons = dict(
+            stats.audio_end_fallback_reasons
+        )
         return InteractiveTaskRunResult(
             output_dir=str(run_dir),
             task_name=task_name,

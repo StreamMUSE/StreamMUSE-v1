@@ -107,6 +107,22 @@ uv run --extra voice streammuse-task play \
 
 Raw microphone audio is not saved unless `--voice-save-audio` is supplied. See [`docs/user-guide/voice-input.md`](docs/user-guide/voice-input.md) for model caching, permissions, privacy, and deadline behavior.
 
+### Interactive Speech Output
+
+LLM answers can be synthesized and played without enabling microphone input:
+
+```bash
+uv sync --extra speech
+uv run --extra speech streammuse-task speaker-devices
+uv run --extra speech streammuse-task play \
+  --task zip_zap_zop \
+  --speech-output audio \
+  --speech-backend system \
+  --deadline-mode soft
+```
+
+Only LLM answers are spoken; human prompts and referee results remain terminal text. See [`docs/user-guide/speech-output.md`](docs/user-guide/speech-output.md) for backends, caching, deadline semantics, saved audio, and echo precautions.
+
 ## Documentation
 
 Start from [`docs/index.md`](docs/index.md). Key pages:
@@ -115,6 +131,7 @@ Start from [`docs/index.md`](docs/index.md). Key pages:
 - [`docs/reference/cli-reference.md`](docs/reference/cli-reference.md)
 - [`docs/user-guide/running-realtime.md`](docs/user-guide/running-realtime.md)
 - [`docs/user-guide/music-injection.md`](docs/user-guide/music-injection.md)
+- [`docs/user-guide/speech-output.md`](docs/user-guide/speech-output.md)
 - [`docs/architecture/application/service.md`](docs/architecture/application/service.md)
 
 ## Dataset / Training Notes

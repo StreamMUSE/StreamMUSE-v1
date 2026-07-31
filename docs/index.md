@@ -78,6 +78,7 @@ description: 实时 AI 音乐伴奏生成系统
 | [Session 日志](user-guide/session-logging.md) | 日志文件结构与字段 |
 | [音乐注入](user-guide/music-injection.md) | CLI/API 注入历史上下文 |
 | [交互式游戏语音输入](user-guide/voice-input.md) | faster-whisper 麦克风输入、离线缓存、隐私与故障诊断 |
+| [交互式游戏语音输出](user-guide/speech-output.md) | TTS 后端、预合成缓存、扬声器、计分口径与回声防护 |
 | [语音输入资格验证](developer-guide/voice-input-qualification.md) | 冻结语料库、准确率/延迟统计与验收门槛 |
 | [新增输入源](developer-guide/adding-input-source.md) | 如何扩展 InputSource |
 | [新增输出 Sink](developer-guide/adding-output-sink.md) | 如何扩展 OutputSink |

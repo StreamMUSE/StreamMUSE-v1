@@ -165,6 +165,31 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 
 `streammuse-task voice-devices` 可以在不提供 `--task`、不连接聊天模型服务器且不加载 Whisper 的情况下列出麦克风。语音参数只能和 `--human-input voice` 一起使用。完整说明见[交互式游戏语音输入](../user-guide/voice-input.md)。
 
+### 交互式任务语音输出参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `--speech-output` | `off/audio` | `off` | 是否朗读 LLM 回答 |
+| `--speech-backend` | `system/espeak_ng/kokoro/null` | `system` | TTS 后端 |
+| `--speech-voice` | `str` | 后端默认 | 音色 |
+| `--speech-rate` | `float` | `1.0` | 相对后端默认语速的倍率 |
+| `--speaker-device` | 名称或索引 | 系统默认 | PortAudio 输出设备 |
+| `--speech-model` | repo 或路径 | `None` | Kokoro 模型，仅 Kokoro |
+| `--speech-model-cache` | 路径 | `None` | Kokoro snapshot 缓存 |
+| `--speech-model-revision` | commit 或 tag | `None` | Kokoro 固定版本 |
+| `--speech-local-files-only` | flag | `False` | Kokoro 禁止联网 |
+| `--speech-synthesis-timeout-s` | `float` | `10.0` | 子进程合成上限 |
+| `--speech-prewarm` / `--no-speech-prewarm` | flag | prewarm | 游戏前预合成词表 |
+| `--speech-cache-miss` | `synthesize/skip` | `synthesize` | 未命中缓存的行为 |
+| `--speech-cache-max-entries` | `int` | `512` | 缓存条数上限 |
+| `--speech-cache-max-bytes` | `int` | `67108864` | 缓存字节上限 |
+| `--speech-guard-ms` | `float` | `200` | 机器音频排空到开麦的间隔 |
+| `--speech-on-error` | `fail/warn` | `fail` | 预期输出失败策略 |
+| `--speech-save-audio` | flag | `False` | 保存每个 LLM 回合的合成 WAV |
+| `--llm-deadline-basis` | `text/audio_end` | `text` | 机器回合计分口径 |
+
+`streammuse-task speaker-devices` 不需要任务或模型服务器。关闭语音输出时禁止传入 `--speech-*` 参数；`audio_end` 必须同时启用音频输出。Kokoro 在当前版本必须显式提供模型和 revision。完整说明见[交互式游戏语音输出](../user-guide/speech-output.md)。
+
 ## 典型命令示例
 
 ```bash

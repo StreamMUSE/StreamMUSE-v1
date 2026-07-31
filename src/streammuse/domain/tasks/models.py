@@ -10,6 +10,7 @@ ChatMessage = dict[str, str]
 InteractiveActor = Literal["human", "llm"]
 DeadlineMode = Literal["menu", "soft", "hard", "challenge"]
 HumanInputMode = Literal["terminal", "voice"]
+SpeechOutputMode = Literal["silent", "audio"]
 HumanResponseStatus = Literal[
     "ok",
     "no_speech",
@@ -17,6 +18,20 @@ HumanResponseStatus = Literal[
     "rejected_transcript",
 ]
 SpokenResponseParseStatus = Literal["ok", "empty", "unrecognized"]
+SpeechPlaybackStatus = Literal[
+    "ok",
+    "disabled",
+    "not_attempted",
+    "empty_text",
+    "not_renderable",
+    "cache_miss_synthesized",
+    "cache_miss_skipped",
+    "synthesis_failed",
+    "playback_failed",
+    "artifact_failed",
+    "interrupted",
+    "internal_error",
+]
 
 
 @dataclass(frozen=True)
@@ -51,6 +66,49 @@ class HumanResponseSource(Protocol):
     def provenance(self) -> dict[str, Any]: ...
 
     def read_response(self, request: HumanResponseRequest) -> HumanResponse: ...
+
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class SpeechRequest:
+    turn_id: int
+    actor: InteractiveActor
+    text: str
+    source_text: str
+
+
+@dataclass(frozen=True)
+class SpeechPlayback:
+    status: SpeechPlaybackStatus = "ok"
+    spoken_text: str = ""
+    cached: bool = False
+    synthesis_ms: float = 0.0
+    audio_duration_ms: float = 0.0
+    completed_normally: bool = False
+    playback_start_offset_ms: float | None = None
+    first_dac_sample_offset_ms: float | None = None
+    playback_drained_offset_ms: float | None = None
+    stream_inactive_offset_ms: float | None = None
+    audio_artifact: str | None = None
+    artifact_persistence_ms: float = 0.0
+    error: dict[str, str] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class SpeechOutputSink(Protocol):
+    mode: SpeechOutputMode
+
+    def start(self) -> None: ...
+
+    @property
+    def provenance(self) -> dict[str, Any]: ...
+
+    def prepare(self, phrases: tuple[str, ...]) -> None: ...
+
+    def speak(self, request: SpeechRequest) -> SpeechPlayback: ...
+
+    def drain(self) -> None: ...
 
     def close(self) -> None: ...
 
@@ -203,3 +261,22 @@ class SpeechAwareInteractiveTask(Protocol):
         transcript: list[InteractiveTurnRecord],
         raw_text: str,
     ) -> SpokenResponseParseResult: ...
+
+
+@runtime_checkable
+class SpeechRenderableTask(Protocol):
+    def build_spoken_text(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        response_text: str,
+        *,
+        actor: InteractiveActor,
+    ) -> str | None: ...
+
+    def speech_vocabulary(
+        self,
+        state: TaskState,
+        *,
+        max_turns: int,
+    ) -> tuple[str, ...]: ...

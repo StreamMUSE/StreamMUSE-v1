@@ -15,6 +15,7 @@ from streammuse.application.tasks import (
     InteractiveTaskRunResult,
     InteractiveTaskRuntime,
     InteractiveTaskRuntimeConfig,
+    SpeechOutputConfig,
     StdTerminalIO,
     TaskRunResult,
     TaskRuntime,
@@ -79,8 +80,69 @@ def build_parser() -> argparse.ArgumentParser:
     play.add_argument("--voice-model-revision", default=None)
     play.add_argument("--voice-local-files-only", action="store_true")
     play.add_argument("--voice-save-audio", action="store_true")
+    play.add_argument("--speech-output", choices=["off", "audio"], default=None)
+    play.add_argument(
+        "--speech-backend",
+        choices=["system", "espeak_ng", "kokoro", "null"],
+        default=None,
+    )
+    play.add_argument("--speech-voice", default=None)
+    play.add_argument("--speech-rate", type=_positive_finite_float, default=None)
+    play.add_argument(
+        "--speaker-device",
+        type=_parse_audio_device,
+        default=None,
+    )
+    play.add_argument("--speech-model", default=None)
+    play.add_argument("--speech-model-cache", default=None)
+    play.add_argument("--speech-model-revision", default=None)
+    play.add_argument(
+        "--speech-local-files-only",
+        action="store_true",
+        default=None,
+    )
+    play.add_argument(
+        "--speech-synthesis-timeout-s",
+        type=_positive_finite_float,
+        default=None,
+    )
+    prewarm = play.add_mutually_exclusive_group()
+    prewarm.add_argument(
+        "--speech-prewarm",
+        dest="speech_prewarm",
+        action="store_true",
+        default=None,
+    )
+    prewarm.add_argument(
+        "--no-speech-prewarm",
+        dest="speech_prewarm",
+        action="store_false",
+    )
+    play.add_argument(
+        "--speech-cache-miss",
+        choices=["synthesize", "skip"],
+        default=None,
+    )
+    play.add_argument("--speech-cache-max-entries", type=int, default=None)
+    play.add_argument("--speech-cache-max-bytes", type=int, default=None)
+    play.add_argument("--speech-guard-ms", type=float, default=None)
+    play.add_argument(
+        "--speech-on-error",
+        choices=["fail", "warn"],
+        default=None,
+    )
+    play.add_argument("--speech-save-audio", action="store_true", default=None)
+    play.add_argument(
+        "--llm-deadline-basis",
+        choices=["text", "audio_end"],
+        default=None,
+    )
 
     subcommands.add_parser("voice-devices", help="List microphone input devices without loading a model")
+    subcommands.add_parser(
+        "speaker-devices",
+        help="List speaker output devices without loading a TTS model",
+    )
     return parser
 
 
@@ -102,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "voice-devices":
         return _list_voice_devices()
+    if args.command == "speaker-devices":
+        return _list_speaker_devices()
     if args.command not in {"run", "play"}:
         parser.print_help()
         return 2
@@ -146,8 +210,13 @@ def main(argv: list[str] | None = None) -> int:
             max_turns=int(args.max_turns),
             config=human_input_config,
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         print(f"invalid human input configuration: {exc}")
+        return 2
+    try:
+        speech_output_config = _speech_output_config_from_args(args)
+    except (TypeError, ValueError) as exc:
+        print(f"invalid speech output configuration: {exc}")
         return 2
 
     try:
@@ -169,11 +238,15 @@ def main(argv: list[str] | None = None) -> int:
             challenge_stage_turns=int(args.challenge_stage_turns),
             challenge_deadline_ms_list=args.challenge_deadline_ms_list,
             human_input_config=human_input_config,
+            speech_output_config=speech_output_config,
         )
     except KeyboardInterrupt:
         print("interactive session interrupted")
         return 130
     except Exception as exc:
+        if _is_speech_output_error(exc):
+            print(f"speech output error: {exc}")
+            return 1
         if _is_voice_infrastructure_error(exc):
             print(f"voice input error: {exc}")
             return 1
@@ -255,11 +328,13 @@ def play_task(
     challenge_deadline_ms_list: tuple[float, ...] = (10000.0, 5000.0, 3000.0, 2000.0, 1000.0),
     terminal: TerminalIO | None = None,
     human_input_config: HumanInputConfig | None = None,
+    speech_output_config: SpeechOutputConfig | None = None,
 ) -> InteractiveTaskRunResult:
     task = create_task(task_name, start_number=start_number, history_limit=history_limit)
     run_dir = _new_run_dir(output_dir, task_name=task.name, runner_kind="interactive")
     active_terminal = terminal or StdTerminalIO()
     input_config = human_input_config or HumanInputConfig()
+    output_config = speech_output_config or SpeechOutputConfig()
     _validate_voice_game_range(
         task_name=task_name,
         start_number=start_number,
@@ -276,6 +351,9 @@ def play_task(
         deadline_mode=deadline_mode,
         challenge_stage_turns=challenge_stage_turns,
         challenge_deadline_ms_list=challenge_deadline_ms_list,
+        speech_guard_ms=output_config.guard_ms,
+        speech_on_error=output_config.on_error,
+        llm_deadline_basis=output_config.llm_deadline_basis,
     )
 
     with ExitStack() as resources:
@@ -293,12 +371,24 @@ def play_task(
                 task_name=task.name,
                 max_turns=max_turns,
                 config=input_config,
+                speech_config=output_config,
                 runtime_config=runtime_config,
                 error=exc,
             )
             raise
         resources.enter_context(_preserving_close(human_response_source.close))
         try:
+            from streammuse.application.factories.speech_output_factory import (
+                SpeechOutputFactory,
+            )
+
+            speech_output_sink = SpeechOutputFactory.create(
+                output_config,
+                artifact_root=run_dir / "artifacts" / "turn",
+            )
+            resources.enter_context(
+                _preserving_close(speech_output_sink.close)
+            )
             client = _build_client(model_url=model_url, model=model, timeout_s=timeout_s)
             resources.enter_context(_preserving_close(lambda: _close_client(client)))
             runtime = InteractiveTaskRuntime(
@@ -306,6 +396,7 @@ def play_task(
                 model_client=client,
                 terminal=active_terminal,
                 human_response_source=human_response_source,
+                speech_output_sink=speech_output_sink,
             )
         except BaseException as exc:
             _best_effort_startup_manifest(
@@ -313,9 +404,13 @@ def play_task(
                 task_name=task.name,
                 max_turns=max_turns,
                 config=input_config,
+                speech_config=output_config,
                 runtime_config=runtime_config,
                 error=exc,
                 human_response_source=human_response_source,
+                speech_output_sink=speech_output_sink
+                if "speech_output_sink" in locals()
+                else None,
             )
             raise
         return runtime.play(task, max_turns=max_turns)
@@ -354,13 +449,16 @@ def _parse_deadline_ms_list(raw: str) -> tuple[float, ...]:
     return tuple(values)
 
 
-def _parse_microphone_device(raw: str) -> str | int:
+def _parse_audio_device(raw: str) -> str | int:
     value = str(raw).strip()
     if not value:
         raise argparse.ArgumentTypeError("microphone device must not be empty")
     if value.lstrip("+-").isdigit():
         return int(value)
     return value
+
+
+_parse_microphone_device = _parse_audio_device
 
 
 def _positive_finite_float(raw: str) -> float:
@@ -400,6 +498,95 @@ def _human_input_config_from_args(args: argparse.Namespace) -> HumanInputConfig:
     )
 
 
+def _speech_output_config_from_args(
+    args: argparse.Namespace,
+) -> SpeechOutputConfig:
+    speech_option_names = (
+        "speech_backend",
+        "speech_voice",
+        "speech_rate",
+        "speaker_device",
+        "speech_model",
+        "speech_model_cache",
+        "speech_model_revision",
+        "speech_local_files_only",
+        "speech_synthesis_timeout_s",
+        "speech_prewarm",
+        "speech_cache_miss",
+        "speech_cache_max_entries",
+        "speech_cache_max_bytes",
+        "speech_guard_ms",
+        "speech_on_error",
+        "speech_save_audio",
+    )
+    mode = "off" if args.speech_output is None else args.speech_output
+    if mode == "off":
+        explicit = [
+            f"--{name.replace('_', '-')}"
+            for name in speech_option_names
+            if getattr(args, name) is not None
+        ]
+        if explicit:
+            raise ValueError(
+                "speech options require --speech-output audio: "
+                + ", ".join(explicit)
+            )
+        return SpeechOutputConfig(
+            llm_deadline_basis=(
+                "text"
+                if args.llm_deadline_basis is None
+                else args.llm_deadline_basis
+            )
+        )
+
+    return SpeechOutputConfig(
+        mode="audio",
+        backend=(
+            "system" if args.speech_backend is None else args.speech_backend
+        ),
+        voice=args.speech_voice,
+        rate=1.0 if args.speech_rate is None else args.speech_rate,
+        speaker_device=args.speaker_device,
+        model=args.speech_model,
+        model_cache=args.speech_model_cache,
+        model_revision=args.speech_model_revision,
+        local_files_only=bool(args.speech_local_files_only),
+        synthesis_timeout_s=(
+            10.0
+            if args.speech_synthesis_timeout_s is None
+            else args.speech_synthesis_timeout_s
+        ),
+        prewarm=True if args.speech_prewarm is None else args.speech_prewarm,
+        cache_miss=(
+            "synthesize"
+            if args.speech_cache_miss is None
+            else args.speech_cache_miss
+        ),
+        cache_max_entries=(
+            512
+            if args.speech_cache_max_entries is None
+            else args.speech_cache_max_entries
+        ),
+        cache_max_bytes=(
+            67_108_864
+            if args.speech_cache_max_bytes is None
+            else args.speech_cache_max_bytes
+        ),
+        guard_ms=(
+            200.0 if args.speech_guard_ms is None else args.speech_guard_ms
+        ),
+        on_error=(
+            "fail" if args.speech_on_error is None else args.speech_on_error
+        ),
+        save_audio=bool(args.speech_save_audio),
+        llm_deadline_basis=(
+            "text"
+            if args.llm_deadline_basis is None
+            else args.llm_deadline_basis
+        ),
+    )
+
+
 def _validate_voice_game_range(
     *,
     task_name: str,
@@ -434,6 +621,9 @@ def _interactive_runtime_config(
     deadline_mode: DeadlineMode,
     challenge_stage_turns: int,
     challenge_deadline_ms_list: tuple[float, ...],
+    speech_guard_ms: float = 200.0,
+    speech_on_error: str = "fail",
+    llm_deadline_basis: str = "text",
 ) -> InteractiveTaskRuntimeConfig:
     return InteractiveTaskRuntimeConfig(
         output_dir=str(run_dir),
@@ -445,6 +635,9 @@ def _interactive_runtime_config(
         deadline_mode=deadline_mode,
         challenge_stage_turns=challenge_stage_turns,
         challenge_deadline_ms_list=challenge_deadline_ms_list,
+        speech_guard_ms=speech_guard_ms,
+        speech_on_error=speech_on_error,  # type: ignore[arg-type]
+        llm_deadline_basis=llm_deadline_basis,  # type: ignore[arg-type]
     )
 
 
@@ -472,9 +665,11 @@ def _best_effort_startup_manifest(
     task_name: str,
     max_turns: int,
     config: HumanInputConfig,
+    speech_config: SpeechOutputConfig,
     runtime_config: InteractiveTaskRuntimeConfig,
     error: BaseException,
     human_response_source: object | None = None,
+    speech_output_sink: object | None = None,
 ) -> None:
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -512,6 +707,12 @@ def _best_effort_startup_manifest(
             "artifact_root": "artifacts",
             "human_input": human_input,
         }
+        speech_output = _startup_speech_output(
+            speech_config,
+            speech_output_sink,
+        )
+        if speech_output is not None:
+            manifest["speech_output"] = speech_output
         if interrupted:
             manifest["stop_reason"] = "user_interrupt"
         else:
@@ -541,6 +742,25 @@ def _startup_human_input(config: HumanInputConfig, source: object | None) -> dic
     return result
 
 
+def _startup_speech_output(
+    config: SpeechOutputConfig,
+    sink: object | None,
+) -> dict[str, object] | None:
+    if config.mode == "off":
+        return None
+    if sink is not None:
+        try:
+            provenance = getattr(sink, "provenance")
+            if isinstance(provenance, dict):
+                return {**provenance, "mode": "audio"}
+        except BaseException:
+            pass
+    return {
+        "mode": "audio",
+        "configuration": asdict(config),
+    }
+
+
 def _list_voice_devices() -> int:
     try:
         from streammuse.infrastructure.voice import enumerate_input_devices
@@ -566,10 +786,43 @@ def _list_voice_devices() -> int:
     return 0
 
 
+def _list_speaker_devices() -> int:
+    try:
+        from streammuse.infrastructure.voice.speaker import (
+            enumerate_output_devices,
+        )
+
+        devices = enumerate_output_devices()
+    except Exception as exc:
+        if _is_speech_output_error(exc):
+            print(f"speech output error: {exc}")
+            return 1
+        raise
+    if not devices:
+        print("No speaker output devices found.")
+        return 0
+    print("Speaker output devices:")
+    for device in devices:
+        hostapi = "unknown" if device.hostapi is None else str(device.hostapi)
+        print(
+            f"[{device.index}] {device.name} "
+            f"(channels={device.max_output_channels}, "
+            f"default_rate={device.default_sample_rate_hz:g} Hz, "
+            f"hostapi={hostapi})"
+        )
+    return 0
+
+
 def _is_voice_infrastructure_error(exc: BaseException) -> bool:
     from streammuse.infrastructure.voice import VoiceInfrastructureError
 
     return isinstance(exc, VoiceInfrastructureError)
+
+
+def _is_speech_output_error(exc: BaseException) -> bool:
+    from streammuse.infrastructure.voice import SpeechOutputError
+
+    return isinstance(exc, SpeechOutputError)
 
 
 def _build_client(

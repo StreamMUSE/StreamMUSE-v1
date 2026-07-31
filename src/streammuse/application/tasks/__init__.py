@@ -14,6 +14,7 @@ from streammuse.application.tasks.human_input import (
     VoiceInputConfig,
 )
 from streammuse.application.tasks.runtime import TaskRunResult, TaskRuntime, TaskRuntimeConfig
+from streammuse.application.tasks.speech_output import SpeechOutputConfig, SilentSpeechOutput
 
 __all__ = [
     "HumanInputConfig",
@@ -22,6 +23,8 @@ __all__ = [
     "InteractiveTaskRuntimeConfig",
     "TimedPromptResult",
     "StdTerminalIO",
+    "SilentSpeechOutput",
+    "SpeechOutputConfig",
     "TerminalHumanResponseSource",
     "TaskRunResult",
     "TaskRuntime",

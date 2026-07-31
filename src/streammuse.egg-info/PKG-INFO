@@ -40,6 +40,12 @@ Requires-Dist: faster-whisper<1.3,>=1.2; extra == "voice"
 Requires-Dist: onnxruntime<1.24; python_version < "3.11" and extra == "voice"
 Requires-Dist: sounddevice<0.6,>=0.5; extra == "voice"
 Requires-Dist: webrtcvad-wheels<2.1,>=2.0; extra == "voice"
+Provides-Extra: speech
+Requires-Dist: sounddevice<0.6,>=0.5; extra == "speech"
+Provides-Extra: tts-kokoro
+Requires-Dist: kokoro<1.0,>=0.9; extra == "tts-kokoro"
+Requires-Dist: soundfile>=0.12; extra == "tts-kokoro"
+Requires-Dist: sounddevice<0.6,>=0.5; extra == "tts-kokoro"
 
 # StreamMUSE
 

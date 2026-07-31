@@ -8,7 +8,6 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from math import gcd
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 import numpy as np
@@ -20,6 +19,7 @@ from . import (
     VoiceDependencyError,
     _json_safe,
 )
+from .audio import PortAudioClockMapper, resample_float32
 
 if TYPE_CHECKING:
     from streammuse.application.tasks.human_input import VoiceInputConfig
@@ -85,60 +85,11 @@ class _AudioChunk:
     captured_end_s: float
 
 
-def _time_info_seconds(time_info: Any, field: str) -> float | None:
-    """Read a PortAudio timestamp from mapping or CFFI-like callback data."""
-
-    try:
-        if hasattr(time_info, "get"):
-            value = time_info.get(field)
-        else:
-            value = getattr(time_info, field)
-    except (AttributeError, IndexError, KeyError, TypeError):
-        try:
-            value = getattr(time_info[0], field)
-        except (AttributeError, IndexError, KeyError, TypeError):
-            return None
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
-        return None
-    return seconds if math.isfinite(seconds) else None
-
-
-class _PortAudioClockMapper:
-    """Map PortAudio's monotonic stream clock onto the local monotonic clock."""
+class _PortAudioClockMapper(PortAudioClockMapper):
+    """Backward-compatible input-clock specialization."""
 
     def __init__(self) -> None:
-        self._offset_s: float | None = None
-        self._lock = threading.Lock()
-
-    def calibrate(self, *, portaudio_s: float, local_s: float) -> None:
-        if not math.isfinite(portaudio_s) or not math.isfinite(local_s):
-            return
-        with self._lock:
-            self._offset_s = local_s - portaudio_s
-
-    def capture_interval(
-        self,
-        time_info: Any,
-        *,
-        callback_local_s: float,
-        frame_count: int,
-        sample_rate: int,
-    ) -> tuple[float, float]:
-        duration_s = max(0, int(frame_count)) / sample_rate
-        adc_start_s = _time_info_seconds(time_info, "inputBufferAdcTime")
-        callback_portaudio_s = _time_info_seconds(time_info, "currentTime")
-        with self._lock:
-            offset_s = self._offset_s
-            if offset_s is None and callback_portaudio_s is not None:
-                offset_s = callback_local_s - callback_portaudio_s
-                self._offset_s = offset_s
-        if adc_start_s is not None and offset_s is not None:
-            captured_start_s = adc_start_s + offset_s
-            return captured_start_s, captured_start_s + duration_s
-        captured_end_s = callback_local_s
-        return captured_end_s - duration_s, captured_end_s
+        super().__init__("inputBufferAdcTime")
 
 
 def _import_sounddevice() -> Any:
@@ -697,15 +648,7 @@ class MicrophoneCapture:
     @staticmethod
     def _pcm_to_float32(pcm: bytes, sample_rate: int) -> np.ndarray:
         source = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-        if sample_rate == 16_000 or source.size == 0:
-            return np.ascontiguousarray(source, dtype=np.float32)
-        try:
-            from scipy.signal import resample_poly
-        except ImportError as exc:  # pragma: no cover - SciPy is a base project dependency.
-            raise VoiceDependencyError("Microphone resampling requires scipy.") from exc
-        divisor = gcd(sample_rate, 16_000)
-        result = resample_poly(source, 16_000 // divisor, sample_rate // divisor)
-        return np.ascontiguousarray(result, dtype=np.float32)
+        return resample_float32(source, sample_rate, 16_000)
 
     @staticmethod
     def _set_callback_error(

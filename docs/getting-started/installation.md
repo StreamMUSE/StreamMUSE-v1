@@ -59,6 +59,20 @@ uv run --extra voice streammuse-task voice-devices
 
 安装后参见[交互式游戏语音输入](../user-guide/voice-input.md)，了解模型缓存、麦克风权限、隐私和离线运行。
 
+### 交互式游戏语音输出
+
+系统 TTS 和 Kokoro 使用独立的可选依赖组：
+
+```bash
+# 人打字 + 机器使用 say/espeak-ng 说话
+uv sync --extra speech
+
+# Kokoro
+uv sync --extra tts-kokoro
+```
+
+双向语音的系统 TTS 使用 `voice,speech`；Kokoro 使用 `voice,tts-kokoro`。完整说明见[交互式游戏语音输出](../user-guide/speech-output.md)。
+
 ### 实时音频输出（`--output-type audio`）
 
 实时音频播放依赖 `python-rtmidi` 提供的虚拟 MIDI 端口，以及系统 MIDI 合成器（如 macOS 自带的 FluidSynth 或 DLSMusicDevice）。

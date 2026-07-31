@@ -187,6 +187,46 @@ class ZipZapZopTask:
             return _unrecognized_parse("invalid_number_phrase")
         return _unrecognized_parse("unrecognized_response")
 
+    def build_spoken_text(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        response_text: str,
+        *,
+        actor: InteractiveActor,
+    ) -> str | None:
+        parsed = self.parse_spoken_response(state, transcript, response_text)
+        if parsed.status != "ok" or parsed.canonical_text is None:
+            return None
+        canonical = parsed.canonical_text
+        if canonical.lstrip("-").isdigit():
+            return canonical
+        words = re.findall(r"Zip|Zap|Zop", canonical)
+        if "".join(words).casefold() != canonical.casefold():
+            return None
+        return " ".join(words)
+
+    def speech_vocabulary(
+        self,
+        state: TaskState,
+        *,
+        max_turns: int,
+    ) -> tuple[str, ...]:
+        phrases = [
+            "Zip",
+            "Zap",
+            "Zop",
+            "Zip Zap",
+            "Zip Zop",
+            "Zap Zop",
+            "Zip Zap Zop",
+        ]
+        start_number = int(state.data.get("start_number", self.start_number))
+        for number in range(start_number, start_number + max(0, int(max_turns))):
+            if self.expected_response(number) == str(number):
+                phrases.append(str(number))
+        return tuple(dict.fromkeys(phrases))
+
     def build_llm_messages(
         self,
         state: TaskState,

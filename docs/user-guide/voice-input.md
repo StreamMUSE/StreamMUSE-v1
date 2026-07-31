@@ -104,4 +104,4 @@ uv run --extra voice streammuse-task play \
 | 一秒挑战经常超时 | 先使用 3000 ms `soft` 模式，依据目标设备的 p95 指标再缩短时间 |
 | 采集期间需要退出 | 按 `Ctrl-C`；语音模式采集中不并发处理 `:quit` |
 
-当前版本仅实现语音转文字，不包含 LLM 回答的 TTS 播放或声学回声消除。
+LLM 回答的可选 TTS 播放见[交互式游戏语音输出](speech-output.md)。当前仍不包含声学回声消除。
