@@ -335,3 +335,12 @@ git diff --check
   a `dict` base-class bypass.
 - The detached `prompt_json` data is standard JSON-serializable objects and
   cannot mutate the batch’s retained diagnostics.
+
+### Fix Round 2 Clarification
+
+Standalone `Bearer <token>` redaction remains required in addition to bounded
+assignment/header redaction. A new regression failed while the second bearer
+pass was absent, exposing `Bearer bare-secret` in an explicit error batch. The
+sanitizer now runs this dedicated bearer-token matcher after assignment
+redaction, preserving unrelated non-assignment prose. The focused Task 5 suite
+then passed 25 tests.

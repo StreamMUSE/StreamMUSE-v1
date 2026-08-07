@@ -306,6 +306,28 @@ def test_local_chat_redacts_generic_and_compound_secret_assignments_only() -> No
         assert name in (batch.error_message or "")
 
 
+def test_local_chat_redacts_a_standalone_bearer_token_without_hiding_other_prose() -> None:
+    client = ResponseClient(
+        type(
+            "BareBearerResponse",
+            (),
+            {
+                "text": property(
+                    lambda self: (_ for _ in ()).throw(
+                        RuntimeError("request failed; Bearer bare-secret; ordinary non-assignment prose remains")
+                    )
+                )
+            },
+        )()
+    )
+
+    batch = LocalChatCandidateGenerator(client).generate(request_for_bar())
+
+    assert "bare-secret" not in (batch.error_message or "")
+    assert "Bearer [REDACTED]" in (batch.error_message or "")
+    assert "ordinary non-assignment prose remains" in (batch.error_message or "")
+
+
 def test_candidate_batch_prompt_is_defensively_and_deeply_immutable() -> None:
     message = {"role": "user", "content": "original"}
     batch = LocalChatCandidateGenerator(FakeClient("a line")).generate(request_for_bar())

@@ -216,6 +216,7 @@ _SENSITIVE_ERROR_ASSIGNMENT = re.compile(
     r"(?i)\b(?P<name>(?:[a-z][a-z0-9_]*_)?(?:api[-_]?key|access[-_]?key(?:[-_]?id)?|key|token|password|secret|authorization))"
     r"(?P<separator>\s*(?::|=)\s*)(?:bearer\s+)?[^\s,;}\]]+"
 )
+_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[^\s,;}\]]+")
 
 
 def _sanitize_error(message: str) -> str:
@@ -223,4 +224,4 @@ def _sanitize_error(message: str) -> str:
         lambda match: f"{match.group('name')}{match.group('separator')}[REDACTED]",
         message,
     )
-    return sanitized
+    return _BEARER_TOKEN.sub("Bearer [REDACTED]", sanitized)
