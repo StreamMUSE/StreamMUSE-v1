@@ -27,18 +27,28 @@ _IRREGULAR_SYLLABLE_COUNTS = {
 def analyse_syllables(text: str) -> tuple[Syllable, ...]:
     """Estimate syllables and word-level stress for a line of English text."""
     syllables: list[Syllable] = []
-    for word in _WORDS.findall(text.lower()):
+    for word in extract_words(text):
         count = _count_syllables(word)
         syllables.extend(
             Syllable(
                 word=word,
                 index_in_word=index,
                 syllable_count=count,
-                stressed=index == 0,
+                stress=1 if index == 0 else 0,
             )
             for index in range(count)
         )
     return tuple(syllables)
+
+
+def extract_words(text: str) -> tuple[str, ...]:
+    """Return lower-cased English words while preserving internal apostrophes."""
+    return tuple(_WORDS.findall(text.lower()))
+
+
+def normalize_text(text: str) -> str:
+    """Normalize supported words into a deterministic analysis string."""
+    return " ".join(extract_words(text))
 
 
 def _count_syllables(word: str) -> int:

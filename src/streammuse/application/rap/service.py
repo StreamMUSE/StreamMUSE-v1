@@ -6,7 +6,7 @@ from typing import Protocol
 
 from streammuse.application.rap.alignment import choose_best_line
 from streammuse.application.rap.rhythm import build_bar_slots
-from streammuse.domain.rap import CandidateBatch, RapPlan
+from streammuse.domain.rap import CandidateBatch, ProsodyAnalysis, RapPlan
 from streammuse.domain.timing import Tempo
 
 
@@ -15,6 +15,13 @@ class CandidateGenerator(Protocol):
 
     def generate(self, topic: str, count: int) -> CandidateBatch:
         """Return candidate lines and their origin metadata."""
+
+
+class ProsodyAnalyzer(Protocol):
+    """Replaceable boundary for lyric prosody analysis."""
+
+    def analyze(self, text: str) -> ProsodyAnalysis:
+        """Return syllable, stress, rhyme-tail, boundary, and fallback diagnostics."""
 
 
 class RapPrototypeService:

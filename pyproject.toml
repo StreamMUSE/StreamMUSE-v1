@@ -24,6 +24,7 @@ dependencies = [
   "music21>=9.7.1",
   "nvitop>=1.5.1",
   "pretty-midi>=0.2.10",
+  "pronouncing>=0.2.0",
   "pydantic>=2.11.7",
   "pynput>=1.8.1",
   "pytest>=8.4.1",

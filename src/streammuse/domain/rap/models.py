@@ -14,12 +14,37 @@ class Syllable:
     word: str
     index_in_word: int
     syllable_count: int
-    stressed: bool
+    stress: int
+    phonemes: tuple[str, ...] = ()
+    analysis_source: str = "heuristic"
+
+    @property
+    def stressed(self) -> bool:
+        """Preserve the historical boolean stress API."""
+        return self.stress > 0
+
+    @property
+    def is_word_end(self) -> bool:
+        """Whether this syllable closes its source word."""
+        return self.index_in_word == self.syllable_count - 1
 
     @property
     def label(self) -> str:
         """Compact terminal label which preserves the word boundary."""
         return self.word if self.index_in_word == 0 else "."
+
+
+@dataclass(frozen=True)
+class ProsodyAnalysis:
+    """Immutable diagnostics and prosody data for one input text."""
+
+    text: str
+    normalized_text: str
+    syllables: tuple[Syllable, ...]
+    end_rhyme_tail: tuple[str, ...]
+    oov_words: tuple[str, ...]
+    heuristic_words: tuple[str, ...]
+    punctuation_boundary_after: tuple[int, ...]
 
 
 @dataclass(frozen=True)

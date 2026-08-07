@@ -1,6 +1,10 @@
 """Tests for dependency-free lyric prosody analysis."""
 
-from streammuse.domain.rap import analyse_syllables
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from streammuse.domain.rap import ProsodyAnalysis, Syllable, analyse_syllables
 
 
 def test_analyse_syllables_marks_word_boundaries_and_irregular_counts() -> None:
@@ -49,3 +53,26 @@ def test_analyse_syllables_distinguishes_silent_and_syllabic_le_endings() -> Non
 
 def test_analyse_syllables_ignores_non_words() -> None:
     assert analyse_syllables("  -- 123 !! ") == ()
+
+
+def test_syllable_exposes_boolean_stress_compatibility_and_label() -> None:
+    syllable = Syllable(word="moving", index_in_word=1, syllable_count=2, stress=2)
+
+    assert syllable.stressed is True
+    assert syllable.label == "."
+    assert syllable.is_word_end is True
+
+
+def test_prosody_analysis_is_immutable_value_data() -> None:
+    analysis = ProsodyAnalysis(
+        text="night",
+        normalized_text="night",
+        syllables=(),
+        end_rhyme_tail=(),
+        oov_words=(),
+        heuristic_words=(),
+        punctuation_boundary_after=(),
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        analysis.text = "day"  # type: ignore[misc]
