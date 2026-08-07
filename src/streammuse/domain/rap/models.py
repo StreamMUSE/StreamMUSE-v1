@@ -31,6 +31,11 @@ class BeatSlot:
     beat: int
     tick_in_beat: int
     accent: float
+    duration_ticks: int = 1
+    boundary_strength: int = 0
+    rhyme_group: str | None = None
+    template_id: str = "legacy"
+    slot_index: int = 0
 
 
 @dataclass(frozen=True)
