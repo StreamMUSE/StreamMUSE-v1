@@ -78,7 +78,25 @@ def test_catalog_rejects_syllable_mismatch_during_build() -> None:
         segments=(ScenarioSegment(0, 1, "space", "one_slot", ("one two",)),),
     )
 
-    with pytest.raises(ValueError, match="fallback lines do not match one_slot: \['one two'\]"):
+    with pytest.raises(ValueError, match=r"fallback lines do not match one_slot: \['one two'\]"):
+        PrevalidatedFallbackCatalog.build(scenario, _templates(), HeuristicProsodyAnalyzer())
+
+
+def test_catalog_rejects_empty_segment_fallbacks_during_build() -> None:
+    scenario = RapScenario(
+        scenario_id="empty-segment",
+        tempo_bpm=120.0,
+        segments=(ScenarioSegment(0, 1, "space", "one_slot", ()),),
+    )
+
+    with pytest.raises(ValueError, match="fallback segment one_slot requires at least one line"):
+        PrevalidatedFallbackCatalog.build(scenario, _templates(), HeuristicProsodyAnalyzer())
+
+
+def test_catalog_rejects_an_overall_empty_fallback_configuration() -> None:
+    scenario = RapScenario(scenario_id="empty", tempo_bpm=120.0, segments=())
+
+    with pytest.raises(ValueError, match="prevalidated fallback catalog requires at least one line"):
         PrevalidatedFallbackCatalog.build(scenario, _templates(), HeuristicProsodyAnalyzer())
 
 

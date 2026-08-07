@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from math import isfinite
 from typing import Protocol
 
 from streammuse.domain.rap import CandidateBatch, CandidateRequest
@@ -57,29 +59,36 @@ class LocalChatCandidateGenerator:
 
     def generate(self, request: CandidateRequest) -> CandidateBatch:
         prompt = _build_messages(request)
+        diagnostics = _ResponseDiagnostics()
         try:
             response = self._client.generate(
                 [dict(message) for message in prompt],
                 max_tokens=max(64, request.count * 24),
                 temperature=0.8,
             )
-            raw_response = str(getattr(response, "text", ""))
-            lines = _parse_candidate_lines(raw_response, request.count)
+            diagnostics, errors = _response_diagnostics(response)
+            if errors:
+                return _error_batch(request, prompt, "; ".join(errors), diagnostics=diagnostics)
+            lines = _parse_candidate_lines(diagnostics.raw_response, request.count)
+            if not lines:
+                return _error_batch(
+                    request,
+                    prompt,
+                    "local chat candidate generation returned no usable lines",
+                    diagnostics=diagnostics,
+                )
+            return CandidateBatch(
+                request_id=request.request_id,
+                candidates=lines,
+                source="local_chat",
+                prompt=prompt,
+                raw_response=diagnostics.raw_response,
+                latency_ms=diagnostics.latency_ms,
+                prompt_tokens=diagnostics.prompt_tokens,
+                completion_tokens=diagnostics.completion_tokens,
+            )
         except Exception as exc:
-            return _error_batch(request, prompt, _sanitize_error(str(exc)))
-
-        if not lines:
-            return _error_batch(request, prompt, "local chat candidate generation returned no usable lines", raw_response=raw_response)
-        return CandidateBatch(
-            request_id=request.request_id,
-            candidates=lines,
-            source="local_chat",
-            prompt=prompt,
-            raw_response=raw_response,
-            latency_ms=_response_latency(response),
-            prompt_tokens=_response_tokens(response, "prompt_tokens"),
-            completion_tokens=_response_tokens(response, "completion_tokens"),
-        )
+            return _error_batch(request, prompt, _sanitize_error(str(exc)), diagnostics=diagnostics)
 
 
 def _normalise_topic(topic: str) -> str:
@@ -110,7 +119,7 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
 def _parse_candidate_lines(text: str, count: int) -> tuple[str, ...]:
     candidates: list[str] = []
     for raw_line in text.splitlines():
-        line = _NUMBERED_LINE.sub("", raw_line).strip().strip('"')
+        line = _NUMBERED_LINE.sub("", raw_line).strip()
         if not line or line in candidates:
             continue
         candidates.append(line)
@@ -124,36 +133,95 @@ def _error_batch(
     prompt: tuple[dict[str, str], ...],
     message: str,
     *,
-    raw_response: str = "",
+    diagnostics: "_ResponseDiagnostics | None" = None,
 ) -> CandidateBatch:
+    diagnostics = diagnostics or _ResponseDiagnostics()
     return CandidateBatch(
         request_id=request.request_id,
         candidates=(),
         source="local_chat",
         prompt=prompt,
-        raw_response=raw_response,
-        latency_ms=0.0,
+        raw_response=diagnostics.raw_response,
+        latency_ms=diagnostics.latency_ms,
+        prompt_tokens=diagnostics.prompt_tokens,
+        completion_tokens=diagnostics.completion_tokens,
         error_type="generation_error",
-        error_message=message,
+        error_message=_sanitize_error(message),
     )
 
 
-def _response_latency(response: object) -> float:
-    value = getattr(response, "latency_ms", 0.0)
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else 0.0
+@dataclass(frozen=True)
+class _ResponseDiagnostics:
+    raw_response: str = ""
+    latency_ms: float = 0.0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
-def _response_tokens(response: object, name: str) -> int | None:
-    value = getattr(response, name, None)
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+def _response_diagnostics(response: object) -> tuple[_ResponseDiagnostics, tuple[str, ...]]:
+    raw_response = ""
+    latency_ms = 0.0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    errors: list[str] = []
+
+    try:
+        text = getattr(response, "text")
+    except Exception as exc:
+        errors.append(f"malformed chat response text: {exc}")
+    else:
+        if isinstance(text, str):
+            raw_response = text
+        else:
+            errors.append("malformed chat response text must be a string")
+
+    try:
+        value = getattr(response, "latency_ms")
+    except Exception as exc:
+        errors.append(f"malformed chat response latency_ms: {exc}")
+    else:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value) and value >= 0:
+            latency_ms = float(value)
+        else:
+            errors.append("malformed chat response latency_ms")
+
+    for name in ("prompt_tokens", "completion_tokens"):
+        try:
+            value = getattr(response, name)
+        except Exception as exc:
+            errors.append(f"malformed chat response {name}: {exc}")
+            continue
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            errors.append(f"malformed chat response {name}")
+            continue
+        if name == "prompt_tokens":
+            prompt_tokens = value
+        else:
+            completion_tokens = value
+
+    return (
+        _ResponseDiagnostics(
+            raw_response=raw_response,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        ),
+        tuple(errors),
+    )
 
 
-_SENSITIVE_ERROR_VALUE = re.compile(
-    r"(?i)\b(?:authorization|api[_-]?key|token|password)\b\s*(?::|=)\s*(?:bearer\s+)?[^\s,;}\]]+"
+_SENSITIVE_ERROR_ASSIGNMENT = re.compile(
+    r"(?i)\b(?P<name>(?:[a-z][a-z0-9_]*_)?(?:api[-_]?key|token|password|secret|authorization))"
+    r"(?P<separator>\s*(?::|=)\s*)(?:bearer\s+)?[^\s,;}\]]+"
 )
 _BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[^\s,;}\]]+")
 
 
 def _sanitize_error(message: str) -> str:
-    sanitized = _SENSITIVE_ERROR_VALUE.sub("[REDACTED]", message)
+    sanitized = _SENSITIVE_ERROR_ASSIGNMENT.sub(
+        lambda match: f"{match.group('name')}{match.group('separator')}[REDACTED]",
+        message,
+    )
     return _BEARER_TOKEN.sub("Bearer [REDACTED]", sanitized)

@@ -45,6 +45,8 @@ class PrevalidatedFallbackCatalog:
         """Analyze every configured fallback and reject structural mismatches."""
         lines: dict[tuple[str, str], list[ProsodyAnalysis]] = {}
         for segment in scenario.segments:
+            if not segment.fallback_lines:
+                raise ValueError(f"fallback segment {segment.template_id} requires at least one line")
             template = templates.get(segment.template_id)
             analyses = tuple(analyzer.analyze(line) for line in segment.fallback_lines)
             invalid = [analysis.text for analysis in analyses if len(analysis.syllables) != len(template.slots)]
@@ -52,6 +54,8 @@ class PrevalidatedFallbackCatalog:
                 raise ValueError(f"fallback lines do not match {template.template_id}: {invalid}")
             key = (normalize_topic(segment.topic), template.template_id)
             lines.setdefault(key, []).extend(analyses)
+        if not any(lines.values()):
+            raise ValueError("prevalidated fallback catalog requires at least one line")
         return cls({key: tuple(value) for key, value in lines.items()})
 
     def line_for(self, bar_context: CandidateRequest) -> PrevalidatedFallbackLine:

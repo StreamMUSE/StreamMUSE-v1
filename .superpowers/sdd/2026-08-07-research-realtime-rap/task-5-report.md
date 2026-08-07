@@ -185,3 +185,85 @@ git diff --check
 - The new catalog is ready for Task 7’s scenario-aware controller but is not
   yet wired into the legacy rolling planner, preserving the requested minimal
   compatibility migration.
+
+## Fix Round 1
+
+### Findings Addressed
+
+1. `LocalChatCandidateGenerator.generate()` now contains all response-field
+   extraction, parsing, and successful `CandidateBatch` construction. A
+   non-string or raising `text`, malformed/raising latency or token attributes,
+   and a successful-batch validation failure all return an empty explicit
+   `generation_error` batch rather than entering the musical path or escaping.
+   Diagnostics are collected field-by-field, so valid raw text, latency, and
+   token values remain available on error batches whenever they can be read.
+   Empty string/whitespace model responses preserve their raw text, latency,
+   and token diagnostics.
+2. Error redaction now retains non-secret context while replacing values for
+   `OPENAI_API_KEY=...`, `*_TOKEN=...`, `*_PASSWORD: ...`,
+   `Authorization: Bearer ...`, bare bearer values, and the earlier generic
+   API-key/token/password/secret forms.
+3. `PrevalidatedFallbackCatalog.build()` rejects each segment with
+   `fallback_lines=()` and rejects a scenario with no usable fallback lines.
+4. Candidate parsing retains surrounding quote characters. It continues to
+   remove list labels and surrounding whitespace, deduplicating normalized
+   lines in first-occurrence order as required by Task 5.
+5. `CandidateBatch` defensively copies each prompt message to an internal
+   immutable `dict` subtype. The prompt still supports normal mapping access
+   and JSON serialization, but external aliases and in-batch mutation cannot
+   change recorded diagnostics.
+
+### RED/GREEN Evidence
+
+The fix-round RED command was:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/infrastructure/rap/test_generators.py \
+  tests/unit/infrastructure/rap/test_fallback.py -v
+```
+
+It produced 14 expected failures from the first set of new regressions:
+empty-response diagnostics were discarded; quotes were stripped; non-string
+text became candidates; malformed response diagnostics entered successful
+batches; a raising latency property escaped; environment-style secret values
+were exposed; prompt dictionaries were mutable; and empty fallback
+configuration built a catalog. After the clarification that Task 5 retains
+deduplication, the focused run deliberately failed once more because the draft
+parser retained duplicate `"one"` candidates. Restoring first-occurrence
+deduplication produced the final GREEN result:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/infrastructure/rap/test_generators.py \
+  tests/unit/infrastructure/rap/test_fallback.py -v
+# 23 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap -q --tb=no
+# 142 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/presentation/rap/test_rap_cli.py \
+  tests/unit/presentation/test_cli_config_parser.py \
+  tests/integration/test_cli_entry_point.py -q --tb=no
+# 24 passed; one existing pretty_midi/pkg_resources deprecation warning
+
+git diff --check
+# passed
+```
+
+### Fix-Round Self-Review
+
+- Non-string text never passes through `str(...)` into a lyric candidate.
+- Field access is individually contained, and later readable diagnostics are
+  retained even if another field raises.
+- The error-batch factory receives only validated diagnostic values, so it can
+  return a valid batch after a successful-batch construction failure.
+- Prompt immutability is both defensive (alias-safe) and direct (mutation-safe)
+  without sacrificing mapping access or standard JSON serialization.
+- Empty fallback validation occurs at catalog build time before runtime lookup.
+- Quote preservation and first-occurrence deduplication coexist: only labels,
+  surrounding whitespace, empty lines, and duplicate normalized lines are
+  removed.

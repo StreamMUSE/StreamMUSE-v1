@@ -8,6 +8,22 @@ from math import isfinite
 from streammuse.domain.timing import Tempo
 
 
+class _FrozenPromptMessage(dict[str, str]):
+    """A JSON-serializable prompt mapping that rejects post-construction changes."""
+
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("candidate batch prompt messages are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+
 @dataclass(frozen=True)
 class Syllable:
     """One estimated syllable within a source word."""
@@ -144,6 +160,7 @@ class CandidateBatch:
             for message in self.prompt
         ):
             raise ValueError("candidate batch prompt must be a tuple of string dictionaries")
+        object.__setattr__(self, "prompt", tuple(_FrozenPromptMessage(message) for message in self.prompt))
         if not isinstance(self.raw_response, str):
             raise ValueError("candidate batch raw_response must be a string")
         if not isinstance(self.latency_ms, (int, float)) or isinstance(self.latency_ms, bool) or not isfinite(self.latency_ms) or self.latency_ms < 0:
