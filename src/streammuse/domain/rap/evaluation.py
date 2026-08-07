@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from math import isfinite
 
 from streammuse.domain.rap.models import ProsodyAnalysis, ScheduledSyllable
 
@@ -19,6 +20,9 @@ class ScoreWeights:
     novelty: float = 0.05
 
     def __post_init__(self) -> None:
+        values = asdict(self).values()
+        if not all(isfinite(weight) for weight in values):
+            raise ValueError("score weights must be finite")
         if abs(sum(asdict(self).values()) - 1.0) > 1e-9:
             raise ValueError("score weights must sum to one")
 
