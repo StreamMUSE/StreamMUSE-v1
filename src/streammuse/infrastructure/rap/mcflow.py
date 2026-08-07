@@ -47,6 +47,7 @@ class ParsedMeasure:
     meter: tuple[int, int] | None
     syllables: tuple[AnonymousSyllable, ...]
     phrase_starts: tuple[PhraseStart, ...]
+    parse_error: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -125,12 +126,13 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
     phrase_starts: list[PhraseStart] = []
     meter: tuple[int, int] | None = None
     current_duration = Fraction(0)
+    current_parse_error: tuple[str, str] | None = None
     measure_ordinal = 1
     measure_started = False
     previous_stress = 0.0
 
     def finish_measure() -> None:
-        nonlocal syllables, phrase_starts, current_duration
+        nonlocal syllables, phrase_starts, current_duration, current_parse_error
         measures.append(
             ParsedMeasure(
                 ordinal=measure_ordinal,
@@ -138,11 +140,13 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
                 meter=meter,
                 syllables=tuple(syllables),
                 phrase_starts=tuple(phrase_starts),
+                parse_error=current_parse_error,
             )
         )
         syllables = []
         phrase_starts = []
         current_duration = Fraction(0)
+        current_parse_error = None
 
     for raw_line in lines[exclusive_index + 1 :]:
         if not raw_line or raw_line.startswith("!"):
@@ -176,7 +180,9 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
             stress = _parse_stress(stress_token)
             previous_stress = stress
         break_strength = _parse_break(fields[spine_index["**break"]])
-        if break_strength:
+        if break_strength is None:
+            current_parse_error = ("invalid_break_value", "break annotation is not a supported boundary strength")
+        elif break_strength:
             phrase_starts.append(PhraseStart(onset=current_duration, strength=break_strength))
         if not is_rest:
             rhyme = fields[spine_index["**rhyme"]]
@@ -293,12 +299,12 @@ def _parse_stress(value: str) -> float:
     raise ValueError("invalid stress value")
 
 
-def _parse_break(value: str) -> int:
+def _parse_break(value: str) -> int | None:
     if value in {".", "0"}:
         return 0
     if value in {"1", "2", "3", "4", "5"}:
         return int(value)
-    raise ValueError("invalid break value")
+    return None
 
 
 def _extract_parsed(
@@ -361,6 +367,8 @@ def _extract_parsed(
 def _quantize_measure(
     measure: ParsedMeasure, limit: Fraction
 ) -> tuple[list[FlowSlot], float, tuple[str, str] | None]:
+    if measure.parse_error is not None:
+        return [], 0.0, measure.parse_error
     if measure.meter != (4, 4):
         return [], 0.0, ("non_4_4_meter", "measure meter is not 4/4")
     if not measure.syllables:

@@ -139,6 +139,37 @@ def test_extract_records_anonymous_quantization_rejections(tmp_path: Path) -> No
     assert "unquantized" not in json.dumps(extraction.to_dict())
 
 
+def test_extract_records_invalid_break_values_without_stopping_other_measures(tmp_path: Path) -> None:
+    """Catches one unsupported prosodic value aborting a whole local corpus extraction."""
+    source = tmp_path / "input.rap"
+    source.write_text(
+        "\n".join(
+            (
+                "**recip\t**stress\t**break\t**rhyme\t**lyrics",
+                "*M4/4\t*M4/4\t*M4/4\t*M4/4\t*M4/4",
+                "=1\t=1\t=1\t=1\t=1",
+                "4\t1\t?\tA\tza",
+                "4\t0\t.\t.\tzb",
+                "4\t1\t.\t.\tzc",
+                "4\t0\t.\t.\tzd",
+                "=2\t=2\t=2\t=2\t=2",
+                "4\t1\t.\tB\tze",
+                "4\t0\t.\t.\tzf",
+                "4\t1\t.\t.\tzg",
+                "4\t0\t.\t.\tzh",
+                "*-\t*-\t*-\t*-\t*-",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    extraction = extract_anonymous_templates(source)
+
+    assert [template.name for template in extraction.templates] == ["anonymous_measure_2"]
+    assert [(item.measure_ordinal, item.error_code) for item in extraction.rejections] == [(1, "invalid_break_value")]
+
+
 def test_extract_records_empty_measure_without_reusing_its_ordinal(tmp_path: Path) -> None:
     """Catches empty measures being omitted and causing ordinal reuse."""
     source = tmp_path / "input.rap"

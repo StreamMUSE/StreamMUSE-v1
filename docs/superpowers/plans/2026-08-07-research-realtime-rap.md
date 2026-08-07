@@ -425,6 +425,72 @@ Run the focused Task 1 and Task 2 tests. Then, without committing or copying sou
 
 Commit only source code, invented fixtures, tests, and plan/report bookkeeping. Confirm `git diff --check`, then dispatch an independent task review covering both specification compliance and implementation quality.
 
+### Task 2.5: Representative Local MCFlow Sample Catalog
+
+**Files:**
+- Create: `src/streammuse/infrastructure/rap/sample_catalog.py`
+- Create: `scripts/build_mcflow_sample_catalog.py`
+- Create: `tests/unit/infrastructure/rap/test_sample_catalog.py`
+- Create: `tests/unit/scripts/test_build_mcflow_sample_catalog.py`
+
+**Interfaces:**
+- Produces: `structural_flow_signature(template)`, `select_sample_templates(templates, per_bucket=10)`, `SampleCatalogSelection`, `SampleCatalogReport`, and the local sample-catalog CLI.
+- Consumes: Task 2 anonymous extracted `FlowTemplate` values, `ExtractionResult`, `write_extracted_templates`, and Task 1 `TemplateCatalog`.
+
+**Artifact boundary:** Real-derived sample catalogs and reports are generated only into a caller-selected local or temporary directory and are never committed. The repository contains the deterministic recipe and invented tests, not MCFlow-derived rows. The sample catalog keeps Task 2's anonymous structural provenance and remains loadable by `load_extracted_templates`.
+
+- [ ] **Step 1: Write failing structural-deduplication and sampling tests**
+
+Use invented anonymous `FlowTemplate` values. Tests must establish:
+
+1. exact duplicate flow structures collapse to one template;
+2. source hash, measure ordinal, template ID, and quantization error do not affect structural equivalence;
+3. rhyme labels are canonicalized by first occurrence, so equivalent `A/B` and `C/D` rhyme patterns deduplicate;
+4. onset, duration, stress, boundary, rhyme topology, or slot-count differences remain distinct;
+5. density bands are sparse `4..7`, medium `8..11`, and dense `12..16` slots;
+6. templates outside those bands are excluded and counted;
+7. each band selects at most `per_bucket` deterministic, evenly distributed unique structures;
+8. representative selection is independent of input order; and
+9. invalid limits or non-anonymous/non-4x4 templates are rejected.
+
+- [ ] **Step 2: Implement immutable selection and report contracts**
+
+`SampleCatalogSelection` contains selected templates plus an aggregate-only `SampleCatalogReport`. The report records input templates, structurally unique templates, duplicates removed, out-of-range templates, selected templates, anonymous source-file count, and per-band available/selected/underfilled counts. It contains no source hashes, IDs, filenames, paths, lyrics, IPA, artists, or titles.
+
+When duplicates occur, retain the representative with the lexicographically smallest deterministic anonymous template ID. Sort unique structures by their normalized structural signature. If a band has more structures than its limit, select evenly spaced entries across that stable order, including both endpoints when the limit is greater than one. Concatenate selected templates in sparse, medium, dense order.
+
+- [ ] **Step 3: Write a standard anonymous catalog plus aggregate sidecar**
+
+The selected catalog uses Task 2's standard extraction schema, retains the original extraction rejections and parsed-file count, and reloads through `load_extracted_templates` and `TemplateCatalog`. The sidecar report uses schema `streammuse.mcflow_sample.v1`, records the exact density ranges and requested per-band limit, and contains aggregate values only. Validate report consistency before writing.
+
+- [ ] **Step 4: Add the opt-in local catalog CLI**
+
+```text
+uv run python scripts/build_mcflow_sample_catalog.py \
+  --mcflow-dir /path/to/MCFlow/Humdrum \
+  --catalog-output /local/path/sample_templates.json \
+  --report-output /local/path/sample_report.json \
+  --per-bucket 10 \
+  --max-quantization-error-ticks 0.25
+```
+
+The CLI performs Task 2 extraction, deterministic deduplication, and balanced sampling. It creates parent output directories, never downloads data, prints only aggregate counts and requested output paths, exits `2` for invalid arguments/input, and exits `1` when no template is selected or any density band is empty. It still writes the catalog and report when one band is empty so the underfilled result remains inspectable.
+
+- [ ] **Step 5: Run a five-file transient sample experiment**
+
+Use five public MCFlow `.rap` files stored only under `/tmp`. Run API and CLI paths with `per_bucket=10`, reload the resulting catalog into `TemplateCatalog`, and audit both JSON documents for forbidden text/source identity fields. Record, without filenames or hashes:
+
+- parsed files, accepted and rejected source measures;
+- pre/post-deduplication counts and duplicate rate;
+- available and selected counts per density band;
+- slot-count distribution of the selected catalog;
+- maximum accepted quantization error and rejection categories; and
+- three representative slot timelines, one per populated density band.
+
+- [ ] **Step 6: Commit and independently review**
+
+Run Task 2, Task 2.5, and focused rap regressions. Commit only code, invented tests, the amended plan, and the task report. Confirm no `.rap` corpus file or real-derived catalog/report is tracked. Dispatch independent specification and quality review and resolve all Important findings before the review gate.
+
 ### Task 3: Pronunciation-Backed Prosody With Measured Fallback
 
 **Files:**
@@ -1411,9 +1477,9 @@ git commit -m "docs(rap): add reproducible research analysis"
 
 ## Milestones and Review Gates
 
-### Milestone A: Corpus bridge after Task 2
+### Milestone A: Corpus bridge after Task 2.5
 
-Researchers can derive anonymous, varied-density flow templates from user-supplied MCFlow files, inspect quantization and rejection diagnostics, and load accepted templates through the Task 1 contract without storing corpus lyrics or identities.
+Researchers can derive anonymous, varied-density flow templates from user-supplied MCFlow files, inspect quantization and rejection diagnostics, build a deterministic density-balanced local sample catalog, and load it through the Task 1 contract without storing corpus lyrics or identities.
 
 ### Milestone B: Defensible offline selection after Task 5
 
