@@ -89,4 +89,23 @@ The invented fixture produced two accepted templates with slot counts of four an
 
 ## Concerns
 
-No user-supplied public corpus file was available outside the invented test assets. Per the no-download constraint, no corpus data was fetched, copied, or committed; consequently the required transient real-corpus extraction observations could not be recorded. A later run should supply a local corpus checkout and record only aggregate counts, slot-count variation, quantization errors, and anonymous rejection categories.
+The original lack of a transient public input was resolved by the smoke test below. No corpus content was copied into the repository or emitted in this report. No remaining Task 2 concern is known.
+
+## Transient Real-Corpus Smoke Test
+
+Commands were run through both the Python API and the opt-in directory CLI using only temporary input and output locations. The API command extracted, serialized, reloaded, and inserted the resulting templates into `TemplateCatalog`. The CLI command extracted the same transient input with the configured 0.25-tick tolerance; its JSON output was independently reloaded and inserted into `TemplateCatalog`.
+
+Aggregate anonymous output from both paths:
+
+```text
+accepted_templates=26
+rejected_measures=8
+accepted_slot_counts=[4, 11, 12, 13, 14, 15, 16]
+max_quantization_error_ticks=0.0
+rejection_codes={incomplete_measure: 4, overfull_measure: 4}
+anonymous_catalog=validated
+```
+
+The output-field audit passed: only whitelisted anonymous structural fields were inspected, no textual-content or source-identifying fields were present, and both serialized catalogs reloaded into usable `FlowTemplate` instances accepted by `TemplateCatalog`.
+
+The smoke test initially exposed two valid Humdrum constructs missing from the parser: non-meter tandem interpretations beginning with `*M`, and null stress continuations including one initial null. Focused invented regressions now preserve non-meter tandem records, carry later null stress values forward, and map an initial null stress to the neutral unaccented value. The repeated API and CLI smoke test then completed with the aggregate result above.

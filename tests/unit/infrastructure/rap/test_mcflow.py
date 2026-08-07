@@ -80,6 +80,37 @@ def test_parse_mcflow_file_rejects_missing_or_malformed_spines(tmp_path: Path, c
         parse_mcflow_file(malformed)
 
 
+def test_parse_mcflow_file_ignores_non_meter_tandem_interpretations(tmp_path: Path) -> None:
+    """Catches tempo-style tandem records being treated as malformed meters."""
+    source = tmp_path / "input.rap"
+    tandem = b"\t".join([b"*MM=99"] * 8) + b"\n"
+    source.write_bytes(FIXTURE.read_bytes().replace(b"=1\t=1\t=1\t=1\t=1\t=1\t=1\t=1\n", tandem + b"=1\t=1\t=1\t=1\t=1\t=1\t=1\t=1\n", 1))
+
+    parsed = parse_mcflow_file(source)
+
+    assert [measure.duration for measure in parsed.measures] == [Fraction(1, 1), Fraction(1, 1)]
+
+
+def test_parse_mcflow_file_carries_humdrum_null_stress_values(tmp_path: Path) -> None:
+    """Catches a null stress continuation being rejected as a new stress value."""
+    source = tmp_path / "input.rap"
+    source.write_bytes(FIXTURE.read_bytes().replace(b"16\t0\t.\t.\t.\t/ko/", b"16\t.\t.\t.\t.\t/ko/", 1))
+
+    parsed = parse_mcflow_file(source)
+
+    assert parsed.measures[0].syllables[1].stress == 1.0
+
+
+def test_parse_mcflow_file_defaults_an_initial_null_stress_to_unaccented(tmp_path: Path) -> None:
+    """Catches an initial Humdrum null stress preventing otherwise valid extraction."""
+    source = tmp_path / "input.rap"
+    source.write_bytes(FIXTURE.read_bytes().replace(b"16\t1\t.\t.\tA\t/ta/", b"16\t.\t.\t.\tA\t/ta/", 1))
+
+    parsed = parse_mcflow_file(source)
+
+    assert parsed.measures[0].syllables[0].stress == 0.0
+
+
 def test_extract_records_anonymous_quantization_rejections(tmp_path: Path) -> None:
     """Catches measures skipped without a structured explanation."""
     source = tmp_path / "unquantized.rap"

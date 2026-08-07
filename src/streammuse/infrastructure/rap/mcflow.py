@@ -117,6 +117,7 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
     current_duration = Fraction(0)
     measure_ordinal = 1
     saw_data = False
+    previous_stress = 0.0
 
     def finish_measure() -> None:
         nonlocal syllables, current_duration, saw_data
@@ -143,7 +144,7 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
             break
         if raw_line.startswith("*"):
             for field in fields:
-                if field.startswith("*M"):
+                if field.startswith("*M") and len(field) > 2 and field[2].isdigit():
                     meter = _parse_meter(field)
             continue
         if raw_line.startswith("="):
@@ -156,8 +157,13 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
         duration = parse_reciprocal_duration(reciprocal)
         lyric = fields[spine_index["**lyrics"]]
         is_rest = reciprocal.endswith("r") or lyric == "R"
+        stress_token = fields[spine_index["**stress"]]
+        if stress_token == ".":
+            stress = previous_stress
+        else:
+            stress = _parse_stress(stress_token)
+            previous_stress = stress
         if not is_rest:
-            stress = _parse_stress(fields[spine_index["**stress"]])
             phrase_start_strength = _parse_break(fields[spine_index["**break"]])
             rhyme = fields[spine_index["**rhyme"]]
             syllables.append(
