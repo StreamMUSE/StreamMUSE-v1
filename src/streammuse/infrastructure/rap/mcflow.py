@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from fractions import Fraction
@@ -26,8 +27,15 @@ class AnonymousSyllable:
     onset: Fraction
     duration: Fraction
     stress: float
-    phrase_start_strength: int
     rhyme_group: str | None
+
+
+@dataclass(frozen=True)
+class PhraseStart:
+    """A structural phrase start retained independently of lyric-bearing slots."""
+
+    onset: Fraction
+    strength: int
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,7 @@ class ParsedMeasure:
     duration: Fraction
     meter: tuple[int, int] | None
     syllables: tuple[AnonymousSyllable, ...]
+    phrase_starts: tuple[PhraseStart, ...]
 
 
 @dataclass(frozen=True)
@@ -113,26 +122,27 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
 
     measures: list[ParsedMeasure] = []
     syllables: list[AnonymousSyllable] = []
+    phrase_starts: list[PhraseStart] = []
     meter: tuple[int, int] | None = None
     current_duration = Fraction(0)
     measure_ordinal = 1
-    saw_data = False
+    measure_started = False
     previous_stress = 0.0
 
     def finish_measure() -> None:
-        nonlocal syllables, current_duration, saw_data
-        if saw_data:
-            measures.append(
-                ParsedMeasure(
-                    ordinal=measure_ordinal,
-                    duration=current_duration,
-                    meter=meter,
-                    syllables=tuple(syllables),
-                )
+        nonlocal syllables, phrase_starts, current_duration
+        measures.append(
+            ParsedMeasure(
+                ordinal=measure_ordinal,
+                duration=current_duration,
+                meter=meter,
+                syllables=tuple(syllables),
+                phrase_starts=tuple(phrase_starts),
             )
+        )
         syllables = []
+        phrase_starts = []
         current_duration = Fraction(0)
-        saw_data = False
 
     for raw_line in lines[exclusive_index + 1 :]:
         if not raw_line or raw_line.startswith("!"):
@@ -148,11 +158,13 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
                     meter = _parse_meter(field)
             continue
         if raw_line.startswith("="):
-            if saw_data:
+            if measure_started:
                 finish_measure()
                 measure_ordinal += 1
+            measure_started = True
             continue
 
+        measure_started = True
         reciprocal = fields[spine_index["**recip"]]
         duration = parse_reciprocal_duration(reciprocal)
         lyric = fields[spine_index["**lyrics"]]
@@ -163,21 +175,22 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
         else:
             stress = _parse_stress(stress_token)
             previous_stress = stress
+        break_strength = _parse_break(fields[spine_index["**break"]])
+        if break_strength:
+            phrase_starts.append(PhraseStart(onset=current_duration, strength=break_strength))
         if not is_rest:
-            phrase_start_strength = _parse_break(fields[spine_index["**break"]])
             rhyme = fields[spine_index["**rhyme"]]
             syllables.append(
                 AnonymousSyllable(
                     onset=current_duration,
                     duration=duration,
                     stress=stress,
-                    phrase_start_strength=phrase_start_strength,
                     rhyme_group=None if rhyme == "." else rhyme,
                 )
             )
         current_duration += duration
-        saw_data = True
-    finish_measure()
+    if measure_started:
+        finish_measure()
     return ParsedMcFlow(source_hash=source_hash, measures=tuple(measures))
 
 
@@ -203,6 +216,7 @@ def extract_mcflow_directory(
 
 def flow_template_to_dict(template: FlowTemplate) -> dict[str, object]:
     """Serialize a template through the anonymous catalog whitelist."""
+    _validate_anonymous_template(template)
     return {
         "template_id": template.template_id,
         "name": template.name,
@@ -245,7 +259,10 @@ def load_extracted_templates(path: str | Path) -> tuple[FlowTemplate, ...]:
     if not isinstance(templates, list):
         raise ValueError("invalid extracted template catalog")
     _validate_catalog_sections(payload)
-    return tuple(_flow_template_from_dict(item) for item in templates)
+    loaded = tuple(_flow_template_from_dict(item) for item in templates)
+    for template in loaded:
+        _validate_anonymous_template(template)
+    return loaded
 
 
 def _find_exclusive_interpretations(lines: list[str]) -> tuple[int, list[str]]:
@@ -290,9 +307,10 @@ def _extract_parsed(
     if max_quantization_error_ticks < 0:
         raise ValueError("max quantization error ticks must not be negative")
     limit = Fraction(str(max_quantization_error_ticks))
-    drafts: list[tuple[int, ParsedMeasure, list[FlowSlot], float, str]] = []
+    drafts: list[tuple[ParsedMeasure, list[FlowSlot], float, str]] = []
     rejections: list[ExtractionRejection] = []
-    for file_index, parsed in enumerate(parsed_files):
+    for parsed in parsed_files:
+        previous: tuple[ParsedMeasure, list[FlowSlot], float, str] | None = None
         for measure in parsed.measures:
             slots, error, rejection = _quantize_measure(measure, limit)
             if rejection is not None:
@@ -304,23 +322,31 @@ def _extract_parsed(
                         detail=rejection[1],
                     )
                 )
+                if measure.phrase_starts:
+                    rejections.append(
+                        ExtractionRejection(
+                            source_hash=parsed.source_hash,
+                            measure_ordinal=measure.ordinal,
+                            error_code="unrepresentable_phrase_break",
+                            detail="phrase break cannot be represented in a rejected measure",
+                        )
+                    )
+                previous = None
             else:
-                drafts.append((file_index, measure, slots, error, parsed.source_hash))
-
-    previous_slots: list[FlowSlot] | None = None
-    previous_file_index: int | None = None
-    for file_index, measure, slots, _, _ in drafts:
-        if file_index != previous_file_index:
-            previous_slots = None
-        for index, syllable in enumerate(measure.syllables):
-            if not syllable.phrase_start_strength:
-                continue
-            if index > 0:
-                _replace_boundary(slots, index - 1, syllable.phrase_start_strength)
-            elif previous_slots:
-                _replace_boundary(previous_slots, len(previous_slots) - 1, syllable.phrase_start_strength)
-        previous_slots = slots
-        previous_file_index = file_index
+                draft = (measure, slots, error, parsed.source_hash)
+                if _apply_phrase_starts(measure, slots, previous):
+                    rejections.append(
+                        ExtractionRejection(
+                            source_hash=parsed.source_hash,
+                            measure_ordinal=measure.ordinal,
+                            error_code="unrepresentable_phrase_break",
+                            detail="phrase break has no immediately preceding lyric-bearing slot",
+                        )
+                    )
+                    previous = None
+                else:
+                    drafts.append(draft)
+                    previous = draft
 
     templates = tuple(
         FlowTemplate(
@@ -336,7 +362,7 @@ def _extract_parsed(
                 quantization_error_ticks=error,
             ),
         )
-        for _, measure, slots, error, source_hash in drafts
+        for measure, slots, error, source_hash in drafts
     )
     return ExtractionResult(templates=templates, rejections=tuple(rejections), parsed_files=len(parsed_files))
 
@@ -346,6 +372,8 @@ def _quantize_measure(
 ) -> tuple[list[FlowSlot], float, tuple[str, str] | None]:
     if measure.meter != (4, 4):
         return [], 0.0, ("non_4_4_meter", "measure meter is not 4/4")
+    if not measure.syllables:
+        return [], 0.0, ("empty_measure", "measure has no lyric-bearing slots")
     if measure.duration < 1:
         return [], 0.0, ("incomplete_measure", "measure duration is shorter than four beats")
     if measure.duration > 1:
@@ -373,8 +401,6 @@ def _quantize_measure(
                 rhyme_group=syllable.rhyme_group,
             )
         )
-    if not slots:
-        return [], 0.0, ("empty_measure", "measure has no lyric-bearing slots")
     if len({slot.tick_in_bar for slot in slots}) != len(slots):
         return [], 0.0, ("duplicate_quantized_onset", "multiple slots share a quantized onset")
     return slots, float(max_error), None
@@ -395,6 +421,22 @@ def _replace_boundary(slots: list[FlowSlot], index: int, strength: int) -> None:
     )
 
 
+def _apply_phrase_starts(
+    measure: ParsedMeasure,
+    slots: list[FlowSlot],
+    previous: tuple[ParsedMeasure, list[FlowSlot], float, str] | None,
+) -> bool:
+    for phrase_start in measure.phrase_starts:
+        preceding = [index for index, syllable in enumerate(measure.syllables) if syllable.onset < phrase_start.onset]
+        if preceding:
+            _replace_boundary(slots, preceding[-1], phrase_start.strength)
+        elif previous is not None:
+            _replace_boundary(previous[1], len(previous[1]) - 1, phrase_start.strength)
+        else:
+            return True
+    return False
+
+
 def _template_id(source_hash: str, measure_ordinal: int) -> str:
     identity = f"{source_hash}:{measure_ordinal}".encode("ascii")
     return f"mcflow_{hashlib.sha256(identity).hexdigest()[:20]}"
@@ -406,10 +448,15 @@ def _validate_catalog_sections(payload: dict[str, Any]) -> None:
     if not isinstance(payload["rejections"], list) or not isinstance(payload["aggregate"], dict):
         raise ValueError("invalid extracted template catalog")
     for rejection in payload["rejections"]:
-        if not isinstance(rejection, dict):
-            raise ValueError("invalid extracted template catalog")
-        _require_keys(rejection, {"source_hash", "measure_ordinal", "error_code", "detail"})
-    _require_keys(payload["aggregate"], {"parsed_files", "accepted_templates", "rejected_measures"})
+        _validate_rejection(rejection)
+    aggregate = payload["aggregate"]
+    _require_keys(aggregate, {"parsed_files", "accepted_templates", "rejected_measures"})
+    if any(_nonnegative_integer(aggregate[key]) is None for key in aggregate):
+        raise ValueError("invalid extracted template catalog")
+    if aggregate["accepted_templates"] != len(payload["templates"]):
+        raise ValueError("invalid extracted template catalog")
+    if aggregate["rejected_measures"] != len(payload["rejections"]):
+        raise ValueError("invalid extracted template catalog")
 
 
 def _flow_template_from_dict(value: object) -> FlowTemplate:
@@ -468,7 +515,10 @@ def _integer(value: object) -> int:
 def _number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("invalid extracted template catalog")
-    return float(value)
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("invalid extracted template catalog")
+    return result
 
 
 def _string(value: object) -> str:
@@ -481,3 +531,43 @@ def _optional_string(value: object) -> str | None:
     if value is not None and not isinstance(value, str):
         raise ValueError("invalid extracted template catalog")
     return value
+
+
+def _validate_rejection(value: object) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("invalid extracted template catalog")
+    _require_keys(value, {"source_hash", "measure_ordinal", "error_code", "detail"})
+    if not _is_source_hash(value["source_hash"]):
+        raise ValueError("invalid extracted template catalog")
+    if _nonnegative_integer(value["measure_ordinal"]) is None or value["measure_ordinal"] < 1:
+        raise ValueError("invalid extracted template catalog")
+    if not isinstance(value["error_code"], str) or not value["error_code"]:
+        raise ValueError("invalid extracted template catalog")
+    if not isinstance(value["detail"], str) or not value["detail"]:
+        raise ValueError("invalid extracted template catalog")
+
+
+def _nonnegative_integer(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _is_source_hash(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _validate_anonymous_template(template: FlowTemplate) -> None:
+    match = re.fullmatch(r"anonymous_measure_([1-9][0-9]*)", template.name)
+    if match is None:
+        raise ValueError("invalid anonymous extracted template")
+    if template.provenance.kind != "mcflow_extracted_anonymous" or template.provenance.source != "anonymous_mcflow":
+        raise ValueError("invalid anonymous extracted template")
+    if not _is_source_hash(template.provenance.source_hash):
+        raise ValueError("invalid anonymous extracted template")
+    error = template.provenance.quantization_error_ticks
+    if not math.isfinite(error) or error < 0:
+        raise ValueError("invalid anonymous extracted template")
+    expected_id = _template_id(template.provenance.source_hash, int(match.group(1)))
+    if template.template_id != expected_id:
+        raise ValueError("invalid anonymous extracted template")

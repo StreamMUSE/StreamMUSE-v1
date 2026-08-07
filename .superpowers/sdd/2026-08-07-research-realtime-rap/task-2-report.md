@@ -109,3 +109,82 @@ anonymous_catalog=validated
 The output-field audit passed: only whitelisted anonymous structural fields were inspected, no textual-content or source-identifying fields were present, and both serialized catalogs reloaded into usable `FlowTemplate` instances accepted by `TemplateCatalog`.
 
 The smoke test initially exposed two valid Humdrum constructs missing from the parser: non-meter tandem interpretations beginning with `*M`, and null stress continuations including one initial null. Focused invented regressions now preserve non-meter tandem records, carry later null stress values forward, and map an initial null stress to the neutral unaccented value. The repeated API and CLI smoke test then completed with the aggregate result above.
+
+## Fix Round 1
+
+### Changed Files
+
+- `src/streammuse/infrastructure/rap/mcflow.py`
+- `tests/unit/infrastructure/rap/test_mcflow.py`
+- `.superpowers/sdd/2026-08-07-research-realtime-rap/task-2-report.md`
+
+### RED Evidence
+
+Empty-measure ordinal regression:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/infrastructure/rap/test_mcflow.py::test_extract_records_empty_measure_without_reusing_its_ordinal -q --tb=no
+1 failed in 0.04s
+```
+
+Phrase-break regressions:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/infrastructure/rap/test_mcflow.py::test_extract_shifts_a_phrase_break_annotated_on_a_rest tests/unit/infrastructure/rap/test_mcflow.py::test_extract_rejects_phrase_break_that_would_cross_a_rejected_measure -q --tb=no
+2 failed in 0.02s
+```
+
+Malformed catalog metadata regression:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/infrastructure/rap/test_mcflow.py::test_load_extracted_templates_rejects_malformed_rejection_and_aggregate_scalars -q --tb=no
+4 failed in 0.03s
+```
+
+Anonymous serialize/reload boundary regressions:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/infrastructure/rap/test_mcflow.py::test_flow_template_to_dict_rejects_nonanonymous_extracted_metadata tests/unit/infrastructure/rap/test_mcflow.py::test_load_extracted_templates_rejects_nonanonymous_metadata -q --tb=no
+2 failed in 0.02s
+```
+
+### Implementation
+
+- Measure starts now advance independently of data records. Empty measures retain their source ordinal and become `empty_measure` rejections.
+- Phrase starts are retained as anonymous timing events even when annotated on rests. A shift may target only the immediately preceding lyric-bearing slot in the same accepted measure or its immediately preceding accepted measure. Rejected measures reset that continuity; affected structures receive `unrepresentable_phrase_break` rejections.
+- Catalog loading now validates rejection scalar types, nonempty error details, SHA-256 format, positive measure ordinals, nonnegative aggregate counts, and aggregate/template/rejection count consistency.
+- Serialization and loading enforce fixed anonymous extracted-template name, identifier, provenance kind, provenance source, source-hash, and finite nonnegative quantization-error invariants.
+
+### Covering Tests
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/infrastructure/rap/test_mcflow.py -q --tb=no
+21 passed in 0.06s
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/scripts/test_extract_mcflow_templates.py -q --tb=no
+2 passed in 0.02s
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/domain/rap tests/unit/infrastructure/rap tests/unit/application/rap tests/unit/presentation/rap -q --tb=no
+72 passed in 0.20s
+```
+
+### Transient Real-Corpus Smoke Test
+
+The Python API and opt-in CLI were run against the supplied transient input using only temporary locations. Their serialized anonymous catalogs were separately field-audited, reloaded, and inserted into `TemplateCatalog`.
+
+```text
+api accepted_templates=25 rejected_measures=16
+cli accepted_templates=25 rejected_measures=16
+accepted_slot_counts=[4, 11, 12, 13, 14, 15, 16]
+max_quantization_error_ticks=0.0
+rejection_codes={incomplete_measure: 4, overfull_measure: 4, unrepresentable_phrase_break: 8}
+anonymous_catalog=validated
+```
+
+### Self-Review
+
+- Empty and rejected measures both create chronological barriers for phrase-boundary shifting.
+- Rest annotations are retained independently from lyric slot creation.
+- Rejection and aggregate validation rejects malformed scalars before templates are returned.
+- Anonymous invariants are enforced on both public serialization and loading paths.
+- No corpus content was copied into the repository or included in this report.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -138,6 +139,71 @@ def test_extract_records_anonymous_quantization_rejections(tmp_path: Path) -> No
     assert "unquantized" not in json.dumps(extraction.to_dict())
 
 
+def test_extract_records_empty_measure_without_reusing_its_ordinal(tmp_path: Path) -> None:
+    """Catches empty measures being omitted and causing ordinal reuse."""
+    source = tmp_path / "input.rap"
+    empty_then_third = b"=2\t=2\t=2\t=2\t=2\t=2\t=2\t=2\n=3\t=3\t=3\t=3\t=3\t=3\t=3\t=3\n"
+    content = FIXTURE.read_bytes().replace(b"=2\t=2\t=2\t=2\t=2\t=2\t=2\t=2\n", empty_then_third, 1)
+    source.write_bytes(content.replace(b"16%13\t1\t.\t3\tC", b"16%13\t1\t.\t.\tC", 1))
+
+    extraction = extract_anonymous_templates(source)
+
+    assert [template.name for template in extraction.templates] == ["anonymous_measure_1", "anonymous_measure_3"]
+    assert [(item.measure_ordinal, item.error_code) for item in extraction.rejections] == [(2, "empty_measure")]
+
+
+def test_extract_shifts_a_phrase_break_annotated_on_a_rest(tmp_path: Path) -> None:
+    """Catches phrase-break annotations on rests being silently discarded."""
+    source = tmp_path / "input.rap"
+    content = FIXTURE.read_bytes()
+    content = content.replace(b"4r\t.\t.\t.\t.\t.\tR", b"4r\t.\t.\t4\t.\t.\tR", 1)
+    content = content.replace(b"16%13\t1\t.\t3\tC", b"16%13\t1\t.\t.\tC", 1)
+    source.write_bytes(content)
+
+    extraction = extract_anonymous_templates(source)
+
+    assert extraction.templates[0].slots[-1].boundary_strength == 4
+
+
+def test_extract_rejects_phrase_break_that_would_cross_a_rejected_measure(tmp_path: Path) -> None:
+    """Catches a phrase start after rejection mutating an older accepted template."""
+    source = tmp_path / "input.rap"
+    source.write_text(
+        "\n".join(
+            (
+                "**recip\t**stress\t**break\t**rhyme\t**lyrics",
+                "*M4/4\t*M4/4\t*M4/4\t*M4/4\t*M4/4",
+                "=1\t=1\t=1\t=1\t=1",
+                "4\t1\t.\tA\tza",
+                "4\t0\t.\t.\tzb",
+                "4\t1\t.\t.\tzc",
+                "4\t0\t.\t.\tzd",
+                "=2\t=2\t=2\t=2\t=2",
+                "2\t1\t.\tB\tze",
+                "2\t0\t.\t.\tzf",
+                "4r\t.\t.\t.\tR",
+                "=3\t=3\t=3\t=3\t=3",
+                "4\t1\t3\tC\tzg",
+                "4r\t.\t.\t.\tR",
+                "4r\t.\t.\t.\tR",
+                "4r\t.\t.\t.\tR",
+                "*-\t*-\t*-\t*-\t*-",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    extraction = extract_anonymous_templates(source)
+
+    assert [template.name for template in extraction.templates] == ["anonymous_measure_1"]
+    assert extraction.templates[0].slots[-1].boundary_strength == 0
+    assert [(item.measure_ordinal, item.error_code) for item in extraction.rejections] == [
+        (2, "overfull_measure"),
+        (3, "unrepresentable_phrase_break"),
+    ]
+
+
 def test_serialized_catalog_reloads_validated_templates_and_rejects_unknown_schema(tmp_path: Path) -> None:
     """Catches catalog output that cannot be safely reused by TemplateCatalog."""
     output = tmp_path / "catalog.json"
@@ -150,6 +216,68 @@ def test_serialized_catalog_reloads_validated_templates_and_rejects_unknown_sche
     payload["schema_version"] = "unknown"
     output.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="unsupported extracted template schema"):
+        load_extracted_templates(output)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.update(
+            {
+                "rejections": [
+                    {"source_hash": "invalid", "measure_ordinal": 1, "error_code": "empty_measure", "detail": "empty"}
+                ],
+                "aggregate": {"parsed_files": 1, "accepted_templates": 2, "rejected_measures": 1},
+            }
+        ),
+        lambda payload: payload.update(
+            {
+                "rejections": [
+                    {
+                        "source_hash": payload["templates"][0]["provenance"]["source_hash"],
+                        "measure_ordinal": 0,
+                        "error_code": "empty_measure",
+                        "detail": "empty",
+                    }
+                ],
+                "aggregate": {"parsed_files": 1, "accepted_templates": 2, "rejected_measures": 1},
+            }
+        ),
+        lambda payload: payload["aggregate"].update({"parsed_files": -1}),
+        lambda payload: payload["aggregate"].update({"accepted_templates": 99}),
+    ),
+)
+def test_load_extracted_templates_rejects_malformed_rejection_and_aggregate_scalars(tmp_path: Path, mutate) -> None:
+    """Catches malformed anonymous catalog metadata passing validation."""
+    output = tmp_path / "catalog.json"
+    write_extracted_templates(extract_anonymous_templates(FIXTURE), output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    mutate(payload)
+    output.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid extracted template catalog"):
+        load_extracted_templates(output)
+
+
+def test_flow_template_to_dict_rejects_nonanonymous_extracted_metadata() -> None:
+    """Catches callers serializing arbitrary names or provenance through the public API."""
+    template = extract_anonymous_templates(FIXTURE).templates[0]
+    nonanonymous = replace(template, name="caller supplied title", provenance=replace(template.provenance, source="caller/path"))
+
+    with pytest.raises(ValueError, match="anonymous extracted template"):
+        flow_template_to_dict(nonanonymous)
+
+
+def test_load_extracted_templates_rejects_nonanonymous_metadata(tmp_path: Path) -> None:
+    """Catches catalog input round-tripping a caller supplied name or provenance source."""
+    output = tmp_path / "catalog.json"
+    write_extracted_templates(extract_anonymous_templates(FIXTURE), output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    payload["templates"][0]["name"] = "caller supplied title"
+    payload["templates"][0]["provenance"]["source"] = "caller/path"
+    output.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="anonymous extracted template"):
         load_extracted_templates(output)
 
 
