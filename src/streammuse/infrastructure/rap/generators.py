@@ -51,6 +51,22 @@ class PhraseBankGenerator:
         )
 
 
+class ScriptedFailureGenerator:
+    """Deterministic failure source used to prove no-gap fallback behavior."""
+
+    def generate(self, request: CandidateRequest) -> CandidateBatch:
+        return CandidateBatch(
+            request_id=request.request_id,
+            candidates=(),
+            source="scripted_failure",
+            prompt=(),
+            raw_response="",
+            latency_ms=0.0,
+            error_type="generation_error",
+            error_message="scripted generator failure",
+        )
+
+
 class LocalChatCandidateGenerator:
     """Optional observable candidate source backed by a local chat model."""
 

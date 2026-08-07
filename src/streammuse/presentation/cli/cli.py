@@ -13,10 +13,14 @@ from streammuse.domain.interfaces import InferenceEngine
 from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.application.rap.realtime import RollingRapController
+from streammuse.domain.rap import RapScenario, ScenarioSegment, ScoreWeights
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.input.midi_file import MidiFileInput
 from streammuse.infrastructure.inference.local_chat_client import LocalChatModelClient, LocalChatModelClientConfig
 from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator
+from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
+from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
+from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 from streammuse.presentation.cli.config_parser import args_to_config, env_to_config, parse_args
 
 
@@ -102,8 +106,20 @@ def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRap
     if not rap.topic:
         return None
 
-    fallback = PhraseBankGenerator()
-    primary = None
+    template_id, fallback_line = {
+        "boom_bap": ("baseline_syncopated_9", "space dreams rise while bright stars cross dark night"),
+        "straight_8": ("baseline_straight_9", "deep sea winds move while moon lights guide ships"),
+        "trap_sparse": ("baseline_staggered_9", "code sparks grow as quick hands shape new sound"),
+    }[rap.pattern]
+    scenario = RapScenario(
+        scenario_id="streammuse_cli_compatibility",
+        tempo_bpm=tempo.bpm,
+        segments=(ScenarioSegment(0, 1, rap.topic, template_id, (fallback_line,)),),
+        loop=True,
+    )
+    analyzer = CmuProsodyAnalyzer()
+    fallback_catalog = PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer)
+    primary = PhraseBankGenerator()
     close_primary = None
     if rap.generator == "local_chat":
         client = LocalChatModelClient(
@@ -126,12 +142,17 @@ def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRap
 
     return RollingRapController(
         tempo=tempo,
-        topic=rap.topic,
-        pattern=rap.pattern,
-        fallback_generator=fallback,
+        scenario=scenario,
+        templates=BUILTIN_TEMPLATES,
+        fallback_catalog=fallback_catalog,
+        analyzer=analyzer,
+        weights=ScoreWeights(),
+        publisher=None,
         primary_generator=primary,
         candidate_count=rap.candidate_count,
         lookahead_bars=rap.lookahead_bars,
+        minimum_score=0.0,
+        seed=0,
         emit=emit,
         close_primary=close_primary,
     )

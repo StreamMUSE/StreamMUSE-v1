@@ -52,6 +52,7 @@ streammuse-web = "streammuse.presentation.web.server:main"
 streammuse-debug = "streammuse.presentation.debug.cli:main"
 streammuse-task = "streammuse.presentation.task.cli:main"
 streammuse-rap = "streammuse.presentation.rap.cli:main"
+streammuse-rap-demo = "streammuse.presentation.rap_demo.cli:main"
 
 [tool.pytest.ini_options]
 markers = [

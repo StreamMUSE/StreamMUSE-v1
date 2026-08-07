@@ -1,101 +1,174 @@
-"""Rolling, tick-driven delivery of beat-aligned rap syllables."""
+"""Scenario-aware rolling rap planning with frozen no-gap fallbacks."""
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from dataclasses import asdict, dataclass
 from threading import RLock
 from typing import Callable
 
-from streammuse.application.rap.alignment import choose_best_line
-from streammuse.application.rap.rhythm import build_bar_slots
-from streammuse.application.rap.service import CandidateGenerator
-from streammuse.domain.rap import AlignedLine, CandidateBatch, CandidateRequest, ScheduledSyllable
+from streammuse.application.rap.alignment import align_exact
+from streammuse.application.rap.monitoring import RapEventPublisher
+from streammuse.application.rap.scoring import rank_candidates
+from streammuse.application.rap.service import CandidateGenerator, ProsodyAnalyzer
+from streammuse.domain.rap import (
+    AlignedLine,
+    CandidateBatch,
+    CandidateRequest,
+    FlowTemplate,
+    ProsodyAnalysis,
+    RapEventType,
+    RapScenario,
+    ScenarioSegment,
+    ScheduledSyllable,
+    ScoreWeights,
+    SelectionResult,
+    materialize_flow,
+)
 from streammuse.domain.timing import Tempo
+from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
+from streammuse.infrastructure.rap.templates import TemplateCatalog
+
+
+@dataclass
+class PlannedRapBar:
+    bar: int
+    segment: ScenarioSegment
+    template: FlowTemplate
+    analysis: ProsodyAnalysis
+    scheduled: tuple[ScheduledSyllable, ...]
+    text: str
+    source: str
+    fallback_reason: str | None
+    request_id: str | None = None
+    frozen: bool = False
+
+
+@dataclass(frozen=True)
+class _PlanningResult:
+    request: CandidateRequest
+    batch: CandidateBatch
+    selection: SelectionResult
 
 
 class RollingRapController:
-    """Keep aligned lyric bars ready and emit syllables on music-service ticks."""
+    """Reserve fallback bars synchronously and replace only before freeze."""
 
     def __init__(
         self,
         *,
         tempo: Tempo,
-        topic: str,
-        pattern: str,
-        fallback_generator: CandidateGenerator,
-        primary_generator: CandidateGenerator | None = None,
-        candidate_count: int = 12,
-        lookahead_bars: int = 2,
-        emit: Callable[[ScheduledSyllable], None],
+        scenario: RapScenario,
+        templates: TemplateCatalog,
+        fallback_catalog: PrevalidatedFallbackCatalog,
+        analyzer: ProsodyAnalyzer,
+        weights: ScoreWeights,
+        publisher: RapEventPublisher | None,
+        primary_generator: CandidateGenerator | None,
+        candidate_count: int,
+        lookahead_bars: int,
+        minimum_score: float,
+        seed: int,
+        planning_bar_limit: int | None = None,
+        emit: Callable[[ScheduledSyllable], None] | None = None,
         close_primary: Callable[[], None] | None = None,
         executor: Executor | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        if candidate_count <= 0:
-            raise ValueError("candidate_count must be positive")
-        if lookahead_bars <= 0:
-            raise ValueError("lookahead_bars must be positive")
-
+        if candidate_count <= 0 or lookahead_bars <= 0:
+            raise ValueError("candidate_count and lookahead_bars must be positive")
+        if planning_bar_limit is not None and planning_bar_limit <= 0:
+            raise ValueError("planning_bar_limit must be positive or None")
+        if tempo.ticks_per_beat != 4 or tempo.beats_per_bar != 4:
+            raise ValueError("rap showcase requires four ticks per beat and four beats per bar")
         self._tempo = tempo
-        self._topic = topic
-        self._pattern = pattern
-        self._fallback_generator = fallback_generator
+        self._scenario = scenario
+        self._templates = templates
+        self._fallback_catalog = fallback_catalog
+        self._analyzer = analyzer
+        self._weights = weights
+        self._publisher = publisher
         self._primary_generator = primary_generator
         self._candidate_count = candidate_count
         self._lookahead_bars = lookahead_bars
+        self._minimum_score = minimum_score
+        self._seed = seed
+        self._planning_bar_limit = planning_bar_limit
         self._emit = emit
         self._close_primary = close_primary
         self._executor = executor or (
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="streammuse-rap")
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="streammuse-rap-planner")
             if primary_generator is not None
             else None
         )
-
+        self._clock = monotonic
         self._lock = RLock()
-        self._started = False
-        self._closed = False
-        self._last_tick = -1
-        self._lines: dict[int, AlignedLine] = {}
-        self._line_sources: dict[int, str] = {}
-        self._used_texts: set[str] = set()
-        self._future: Future[CandidateBatch] | None = None
+        self._bars: dict[int, PlannedRapBar] = {}
+        self._frozen_history: list[ProsodyAnalysis] = []
+        self._rhyme_anchors: dict[tuple[int, str], tuple[str, ...]] = {}
+        self._future: Future[_PlanningResult] | None = None
         self._future_bar: int | None = None
         self._next_primary_bar = 1
+        self._last_tick = -1
+        self._clock_origin: float | None = None
+        self._started = False
+        self._closed = False
+
+    @property
+    def scenario(self) -> RapScenario:
+        return self._scenario
 
     def start(self) -> None:
-        """Synchronously preload fallback bars before the first music tick."""
         with self._lock:
             if self._started or self._closed:
                 return
             self._started = True
-            self._ensure_fallback_through(self._lookahead_bars - 1)
+            startup_last_bar = self._bounded_last_bar(self._lookahead_bars - 1)
+            self._reserve_through(startup_last_bar)
             self._submit_next_primary(current_bar=0)
 
     def on_tick(self, tick: int) -> None:
-        """Emit events exactly on ``tick`` without waiting for model generation."""
         with self._lock:
             if not self._started or self._closed:
                 return
             self._last_tick = tick
-            self._drain_primary_result()
+            now = self._clock()
+            if self._clock_origin is None:
+                self._clock_origin = now - self._tempo.tick_to_seconds(tick)
             current_bar = tick // self._tempo.ticks_per_bar
-            self._ensure_fallback_through(current_bar + self._lookahead_bars - 1)
+            self._reserve_through(self._planning_ceiling(current_bar))
+            self._drain_primary_result()
+            if tick % self._tempo.ticks_per_bar == 0:
+                self._freeze(current_bar, tick)
             self._submit_next_primary(current_bar=current_bar)
-            events = tuple(
-                event
-                for line in self._lines.values()
-                for event in line.events
-                if event.slot.tick == tick
-            )
+            beat = (tick % self._tempo.ticks_per_bar) // self._tempo.ticks_per_beat
+            tick_in_beat = tick % self._tempo.ticks_per_beat
+            self._event(RapEventType.TICK, bar=current_bar, tick=tick, payload={"beat": beat, "tick_in_beat": tick_in_beat})
+            scheduled = tuple(item for item in self._bars[current_bar].scheduled if item.slot.tick == tick)
+            assert not scheduled or self._bars[current_bar].frozen
 
-        for event in events:
-            try:
-                self._emit(event)
-            except Exception:
-                # Presentation failures cannot interrupt the shared music clock.
-                continue
+        for item in scheduled:
+            actual = self._clock()
+            planned = (self._clock_origin or actual) + self._tempo.tick_to_seconds(tick)
+            payload = {
+                "word": item.syllable.word,
+                "label": item.syllable.label,
+                "stressed": item.syllable.stressed,
+                "beat": item.slot.beat,
+                "tick_in_beat": item.slot.tick_in_beat,
+                "planned_monotonic": planned,
+                "actual_monotonic": actual,
+                "jitter_ms": (actual - planned) * 1000.0,
+            }
+            self._event(RapEventType.SYLLABLE_EMITTED, bar=item.slot.bar, tick=tick, payload=payload)
+            if self._emit is not None:
+                try:
+                    self._emit(item)
+                except Exception:
+                    continue
 
     def close(self) -> None:
-        """Cancel optional background work without delaying service shutdown."""
         with self._lock:
             if self._closed:
                 return
@@ -103,7 +176,6 @@ class RollingRapController:
             future = self._future
             executor = self._executor
             close_primary = self._close_primary
-
         if future is not None:
             future.cancel()
         if executor is not None:
@@ -111,80 +183,277 @@ class RollingRapController:
         if close_primary is not None:
             try:
                 close_primary()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._event(
+                    RapEventType.GENERATION_FAILED,
+                    payload={"error_type": "close_error", "error_message": str(exc)},
+                )
+
+    def bar_for(self, index: int) -> PlannedRapBar:
+        with self._lock:
+            return self._bars[index]
+
+    def bar_state(self, index: int) -> str:
+        with self._lock:
+            bar = self._bars.get(index)
+            return "unreserved" if bar is None else "frozen" if bar.frozen else "reserved"
 
     def line_for_bar(self, bar: int) -> AlignedLine:
-        """Return the current planned line for a bar for diagnostics and tests."""
-        with self._lock:
-            return self._lines[bar]
+        item = self.bar_for(bar)
+        return AlignedLine(item.text, item.analysis.syllables, item.scheduled, score=0.0)
 
     def line_source_for_bar(self, bar: int) -> str:
-        """Return the candidate source that currently owns a bar."""
-        with self._lock:
-            return self._line_sources[bar]
+        return self.bar_for(bar).source
 
-    def _ensure_fallback_through(self, last_bar: int) -> None:
+    def _reserve_through(self, last_bar: int) -> None:
         for bar in range(last_bar + 1):
-            if bar in self._lines:
+            if bar in self._bars:
                 continue
-            batch = self._fallback_generator.generate(self._request_for_bar(bar, source="fallback"))
-            line = self._select_line(batch, bar)
-            if line is None:
-                raise ValueError("fallback rap generator returned no one-bar line")
-            self._store_line(bar, line, batch.source)
+            request = self._request_for_bar(bar)
+            segment = self._scenario.segment_for_bar(bar)
+            template = self._templates.get(segment.template_id)
+            fallback = self._fallback_catalog.line_for(request)
+            reason = "initial_bar" if bar == 0 else "no_primary_generator" if self._primary_generator is None else "generation_pending"
+            self._bars[bar] = PlannedRapBar(
+                bar=bar,
+                segment=segment,
+                template=template,
+                analysis=fallback.analysis,
+                scheduled=align_exact(fallback.analysis, materialize_flow(template, bar)),
+                text=fallback.text,
+                source=fallback.source,
+                fallback_reason=reason,
+            )
+            self._event(
+                RapEventType.BAR_RESERVED,
+                bar=bar,
+                tick=self._last_tick if self._last_tick >= 0 else None,
+                payload={
+                    "source": fallback.source,
+                    "text": fallback.text,
+                    "topic": segment.topic,
+                    "template_id": template.template_id,
+                    "fallback_reason": reason,
+                },
+            )
 
     def _submit_next_primary(self, *, current_bar: int) -> None:
         if self._primary_generator is None or self._executor is None or self._future is not None:
             return
         target_bar = max(self._next_primary_bar, current_bar + 1)
-        self._next_primary_bar = target_bar + 1
-        self._future = self._executor.submit(self._primary_generator.generate, self._request_for_bar(target_bar, source="primary"))
+        if target_bar > self._planning_ceiling(current_bar):
+            return
+        self._reserve_through(target_bar)
+        target = self._bars[target_bar]
+        if target.frozen:
+            self._next_primary_bar = target_bar + 1
+            return
+        request = self._request_for_bar(target_bar)
+        target.request_id = request.request_id
+        history = tuple(self._frozen_history)
+        anchors = dict(self._rhyme_anchors)
+        self._event(
+            RapEventType.BAR_PLANNING_STARTED,
+            bar=target_bar,
+            tick=self._last_tick if self._last_tick >= 0 else None,
+            request_id=request.request_id,
+            payload={
+                "topic": target.segment.topic,
+                "template_id": target.template.template_id,
+                "required_syllables": request.required_syllables,
+                "candidate_count": request.count,
+            },
+        )
+        self._future = self._executor.submit(self._generate_and_rank, request, target.template, target.segment, history, anchors)
         self._future_bar = target_bar
+        self._next_primary_bar = target_bar + 1
+
+    def _generate_and_rank(
+        self,
+        request: CandidateRequest,
+        template: FlowTemplate,
+        segment: ScenarioSegment,
+        history: tuple[ProsodyAnalysis, ...],
+        anchors: dict[tuple[int, str], tuple[str, ...]],
+    ) -> _PlanningResult:
+        assert self._primary_generator is not None
+        batch = self._primary_generator.generate(request)
+        candidates = tuple(
+            (f"{request.request_id}-candidate-{index + 1}", text, self._analyzer.analyze(text))
+            for index, text in enumerate(batch.candidates)
+        )
+        selection = rank_candidates(
+            candidates,
+            template=template,
+            topic=segment.topic,
+            history=history,
+            rhyme_anchors=anchors,
+            weights=self._weights,
+            minimum_score=self._minimum_score,
+            segment_start_bar=segment.start_bar,
+            target_bar=request.target_bar,
+        )
+        return _PlanningResult(request, batch, selection)
 
     def _drain_primary_result(self) -> None:
         future = self._future
         target_bar = self._future_bar
         if future is None or target_bar is None or not future.done():
             return
-
         self._future = None
         self._future_bar = None
         try:
-            batch = future.result()
-        except Exception:
+            result = future.result()
+        except Exception as exc:
+            target = self._bars[target_bar]
+            late = target.frozen or target_bar * self._tempo.ticks_per_bar <= self._last_tick
+            if not late:
+                target.fallback_reason = "generation_error"
+            self._event(
+                RapEventType.GENERATION_FAILED,
+                bar=target_bar,
+                tick=self._last_tick,
+                request_id=target.request_id,
+                payload={"error_type": "generation_error", "error_message": str(exc), "late": late},
+            )
             return
 
-        target_tick = target_bar * self._tempo.ticks_per_bar
-        if batch.source != "local_chat" or target_tick <= self._last_tick:
-            return
-        line = self._select_line(batch, target_bar)
-        if line is not None:
-            self._store_line(target_bar, line, batch.source)
-
-    def _select_line(self, batch: CandidateBatch, bar: int) -> AlignedLine | None:
-        candidates = tuple(candidate.strip() for candidate in batch.candidates if candidate.strip())
-        if not candidates:
-            return None
-        available = tuple(candidate for candidate in candidates if candidate not in self._used_texts) or candidates
-        line = choose_best_line(available, build_bar_slots(self._tempo, self._pattern, bar))
-        if line.overflow_count or not line.events:
-            return None
-        return line
-
-    def _store_line(self, bar: int, line: AlignedLine, source: str) -> None:
-        self._lines[bar] = line
-        self._line_sources[bar] = source
-        self._used_texts.add(line.text)
-
-    def _request_for_bar(self, bar: int, *, source: str) -> CandidateRequest:
-        return CandidateRequest(
-            request_id=f"rolling-{source}-bar-{bar}",
-            target_bar=bar,
-            topic=self._topic,
-            template_id=self._pattern,
-            required_syllables=len(build_bar_slots(self._tempo, self._pattern, bar)),
-            count=self._candidate_count,
-            context_lines=(),
-            seed=bar,
+        target = self._bars[target_bar]
+        batch = result.batch
+        late = target.frozen or target_bar * self._tempo.ticks_per_bar <= self._last_tick
+        self._event(
+            RapEventType.CANDIDATE_BATCH_RECEIVED,
+            bar=target_bar,
+            tick=self._last_tick,
+            request_id=result.request.request_id,
+            payload={
+                "source": batch.source,
+                "candidate_count": len(batch.candidates),
+                "prompt": list(batch.prompt_json),
+                "raw_response": batch.raw_response,
+                "latency_ms": batch.latency_ms,
+                "error_type": batch.error_type,
+                "error_message": batch.error_message,
+                "late": late,
+            },
         )
+        selected_id = result.selection.selected.candidate_id if result.selection.selected else None
+        for evaluation in result.selection.evaluations:
+            word_sources = []
+            seen_words = set()
+            for syllable in evaluation.analysis.syllables:
+                if syllable.word in seen_words:
+                    continue
+                seen_words.add(syllable.word)
+                word_sources.append({"word": syllable.word, "source": syllable.analysis_source})
+            self._event(
+                RapEventType.CANDIDATE_EVALUATED,
+                bar=target_bar,
+                tick=self._last_tick,
+                request_id=result.request.request_id,
+                payload={
+                    "candidate_id": evaluation.candidate_id,
+                    "text": evaluation.text,
+                    "normalized_text": evaluation.analysis.normalized_text,
+                    "syllables": [asdict(item) for item in evaluation.analysis.syllables],
+                    "word_analysis_sources": word_sources,
+                    "oov_words": list(evaluation.analysis.oov_words),
+                    "valid": evaluation.valid,
+                    "rejection_reasons": list(evaluation.rejection_reasons),
+                    "components": [asdict(item) for item in evaluation.components],
+                    "total_score": evaluation.total_score,
+                    "selected": evaluation.candidate_id == selected_id,
+                },
+            )
+        if batch.error_type:
+            if not late:
+                target.fallback_reason = batch.error_type
+            self._event(
+                RapEventType.GENERATION_FAILED,
+                bar=target_bar,
+                tick=self._last_tick,
+                request_id=result.request.request_id,
+                payload={
+                    "error_type": batch.error_type,
+                    "error_message": batch.error_message,
+                    "late": late,
+                },
+            )
+            return
+        if late:
+            return
+        selected = result.selection.selected
+        if selected is None:
+            reason = result.selection.fallback_reason or "no_valid_candidate"
+            target.fallback_reason = "no_valid_candidate" if reason == "no_valid_candidates" else reason
+            return
+        previous_source = target.source
+        target.analysis = selected.analysis
+        target.scheduled = selected.scheduled
+        target.text = selected.text
+        target.source = batch.source
+        target.fallback_reason = None
+        self._event(
+            RapEventType.BAR_REPLACED,
+            bar=target_bar,
+            tick=self._last_tick,
+            request_id=result.request.request_id,
+            payload={
+                "previous_source": previous_source,
+                "source": batch.source,
+                "text": selected.text,
+                "candidate_id": selected.candidate_id,
+                "total_score": selected.total_score,
+            },
+        )
+
+    def _freeze(self, bar_index: int, tick: int) -> None:
+        bar = self._bars[bar_index]
+        if bar.frozen:
+            return
+        if bar.source == "prevalidated_fallback" and bar.fallback_reason == "generation_pending":
+            bar.fallback_reason = "deadline_miss"
+        bar.frozen = True
+        self._frozen_history.append(bar.analysis)
+        rhyme_group = next((slot.rhyme_group for slot in reversed(bar.template.slots) if slot.rhyme_group), None)
+        if rhyme_group and bar.analysis.end_rhyme_tail:
+            self._rhyme_anchors.setdefault((bar.segment.start_bar, rhyme_group), bar.analysis.end_rhyme_tail)
+        fallback = bar.source == "prevalidated_fallback"
+        payload = {
+            "text": bar.text,
+            "source": bar.source,
+            "fallback": fallback,
+            "fallback_reason": bar.fallback_reason,
+            "topic": bar.segment.topic,
+            "template_id": bar.template.template_id,
+        }
+        self._event(RapEventType.BAR_FROZEN, bar=bar_index, tick=tick, request_id=bar.request_id, payload=payload)
+        if fallback:
+            self._event(RapEventType.FALLBACK_ACTIVATED, bar=bar_index, tick=tick, request_id=bar.request_id, payload=payload)
+
+    def _request_for_bar(self, bar: int) -> CandidateRequest:
+        segment = self._scenario.segment_for_bar(bar)
+        template = self._templates.get(segment.template_id)
+        context = tuple(item.text for item in self._bars.values() if item.frozen)[-4:]
+        return CandidateRequest(
+            request_id=f"{self._scenario.scenario_id}-bar-{bar}-seed-{self._seed + bar}",
+            target_bar=bar,
+            topic=segment.topic,
+            template_id=template.template_id,
+            required_syllables=len(template.slots),
+            count=self._candidate_count,
+            context_lines=context,
+            seed=self._seed + bar,
+        )
+
+    def _planning_ceiling(self, current_bar: int) -> int:
+        return self._bounded_last_bar(current_bar + self._lookahead_bars)
+
+    def _bounded_last_bar(self, requested: int) -> int:
+        if self._planning_bar_limit is None:
+            return requested
+        return min(requested, self._planning_bar_limit - 1)
+
+    def _event(self, event_type: RapEventType, **kwargs: object) -> None:
+        if self._publisher is not None:
+            self._publisher.emit(event_type, **kwargs)

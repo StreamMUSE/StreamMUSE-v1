@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 
 from streammuse.application.rap.service import RapPrototypeService
+from streammuse.application.config import ApplicationConfig, RapConfig
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.rap.generators import PhraseBankGenerator
+from streammuse.presentation.cli.cli import _build_rap_controller
 from streammuse.presentation.rap.cli import main, plan_to_dict, play_plan
 
 
@@ -53,3 +55,16 @@ def test_play_plan_emits_the_existing_schedule_at_tick_offsets() -> None:
     assert len(writes) == len(_plan().events)
     assert sleeps
     assert all(delay > 0 for delay in sleeps)
+
+
+def test_existing_main_cli_builds_the_scenario_aware_controller() -> None:
+    controller = _build_rap_controller(
+        ApplicationConfig(rap=RapConfig(topic="space", pattern="boom_bap")),
+        Tempo(92.0, 4, 4),
+    )
+
+    assert controller is not None
+    assert controller.scenario.segment_for_bar(0).topic == "space"
+    controller.start()
+    controller.on_tick(0)
+    controller.close()
