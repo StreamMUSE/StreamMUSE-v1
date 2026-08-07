@@ -322,15 +322,6 @@ def _extract_parsed(
                         detail=rejection[1],
                     )
                 )
-                if measure.phrase_starts:
-                    rejections.append(
-                        ExtractionRejection(
-                            source_hash=parsed.source_hash,
-                            measure_ordinal=measure.ordinal,
-                            error_code="unrepresentable_phrase_break",
-                            detail="phrase break cannot be represented in a rejected measure",
-                        )
-                    )
                 previous = None
             else:
                 draft = (measure, slots, error, parsed.source_hash)

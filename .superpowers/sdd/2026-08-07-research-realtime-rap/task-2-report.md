@@ -188,3 +188,59 @@ anonymous_catalog=validated
 - Rejection and aggregate validation rejects malformed scalars before templates are returned.
 - Anonymous invariants are enforced on both public serialization and loading paths.
 - No corpus content was copied into the repository or included in this report.
+
+## Fix Round 2
+
+### Changed Files
+
+- `src/streammuse/infrastructure/rap/mcflow.py`
+- `tests/unit/infrastructure/rap/test_mcflow.py`
+- `.superpowers/sdd/2026-08-07-research-realtime-rap/task-2-report.md`
+
+### RED Evidence
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/infrastructure/rap/test_mcflow.py::test_rejected_measure_with_phrase_start_has_one_primary_catalog_rejection -q --tb=no
+1 failed in 0.04s
+```
+
+The regression used one source measure with an overfull primary failure and a phrase-start condition. Before the fix, extraction emitted both the primary failure and `unrepresentable_phrase_break` for the same anonymous source hash and measure ordinal, and the serialized aggregate counted both records.
+
+### Implementation
+
+- A measure with a primary extraction or quantization rejection now emits only that canonical rejection record, even when it contains phrase-start events.
+- The phrase chronology barrier remains in place after every rejected measure, so later phrase starts cannot attach across it.
+- `rejected_measures` continues to equal the number of serialized canonical rejection records, which now has one record per rejected source measure.
+
+### Covering Tests
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/infrastructure/rap/test_mcflow.py -q --tb=no
+22 passed in 0.05s
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/scripts/test_extract_mcflow_templates.py -q --tb=no
+2 passed in 0.02s
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest tests/unit/domain/rap tests/unit/infrastructure/rap tests/unit/application/rap tests/unit/presentation/rap -q --tb=no
+73 passed in 0.18s
+```
+
+### Transient Real-Corpus Smoke Test
+
+The Python API and opt-in CLI were rerun against the supplied transient input with only anonymous aggregate fields inspected. Both outputs reloaded into `TemplateCatalog`.
+
+```text
+api accepted_templates=25 rejected_measures=9
+cli accepted_templates=25 rejected_measures=9
+accepted_slot_counts=[4, 11, 12, 13, 14, 15, 16]
+max_quantization_error_ticks=0.0
+rejection_codes={incomplete_measure: 4, overfull_measure: 4, unrepresentable_phrase_break: 1}
+anonymous_catalog=validated
+```
+
+### Self-Review
+
+- The rejected-measure branch appends exactly one primary rejection and resets phrase chronology.
+- The unrepresentable phrase-break path is reached only when a measure otherwise passed extraction but cannot represent its own boundary.
+- The focused regression verifies aggregate count and serialized-catalog reload against the one-record contract.
+- `progress.md` was left untouched and unstaged.

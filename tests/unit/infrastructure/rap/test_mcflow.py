@@ -204,6 +204,39 @@ def test_extract_rejects_phrase_break_that_would_cross_a_rejected_measure(tmp_pa
     ]
 
 
+def test_rejected_measure_with_phrase_start_has_one_primary_catalog_rejection(tmp_path: Path) -> None:
+    """Catches a failed measure being serialized once per failure reason rather than once per measure."""
+    source = tmp_path / "input.rap"
+    source.write_text(
+        "\n".join(
+            (
+                "**recip\t**stress\t**break\t**rhyme\t**lyrics",
+                "*M4/4\t*M4/4\t*M4/4\t*M4/4\t*M4/4",
+                "=1\t=1\t=1\t=1\t=1",
+                "4\t1\t.\tA\tza",
+                "4\t0\t.\t.\tzb",
+                "4\t1\t.\t.\tzc",
+                "4\t0\t.\t.\tzd",
+                "=2\t=2\t=2\t=2\t=2",
+                "2\t1\t3\tB\tze",
+                "2\t0\t.\t.\tzf",
+                "4r\t.\t.\t.\tR",
+                "*-\t*-\t*-\t*-\t*-",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    extraction = extract_anonymous_templates(source)
+    output = tmp_path / "catalog.json"
+    write_extracted_templates(extraction, output)
+
+    assert [(item.measure_ordinal, item.error_code) for item in extraction.rejections] == [(2, "overfull_measure")]
+    assert extraction.to_dict()["aggregate"]["rejected_measures"] == 1
+    assert [template.name for template in load_extracted_templates(output)] == ["anonymous_measure_1"]
+
+
 def test_serialized_catalog_reloads_validated_templates_and_rejects_unknown_schema(tmp_path: Path) -> None:
     """Catches catalog output that cannot be safely reused by TemplateCatalog."""
     output = tmp_path / "catalog.json"
