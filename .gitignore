@@ -38,6 +38,7 @@ venv/
 .pytest_cache/
 
 # Project-specific
+.worktrees/
 __pycache__
 ckpt
 lightning_logs
