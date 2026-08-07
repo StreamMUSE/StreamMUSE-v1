@@ -10,6 +10,7 @@ from streammuse.domain.rap.models import (
     Syllable,
 )
 from streammuse.domain.rap.flow import FlowProvenance, FlowSlot, FlowTemplate, materialize_flow
+from streammuse.domain.rap.evaluation import CandidateEvaluation, ScoreComponent, ScoreWeights, SelectionResult
 from streammuse.domain.rap.prosody import analyse_syllables, extract_words, normalize_text
 from streammuse.domain.rap.scenario import RapScenario, ScenarioSegment
 
@@ -17,6 +18,7 @@ __all__ = [
     "AlignedLine",
     "BeatSlot",
     "CandidateBatch",
+    "CandidateEvaluation",
     "FlowProvenance",
     "FlowSlot",
     "FlowTemplate",
@@ -25,6 +27,9 @@ __all__ = [
     "RapScenario",
     "ScheduledSyllable",
     "ScenarioSegment",
+    "ScoreComponent",
+    "ScoreWeights",
+    "SelectionResult",
     "Syllable",
     "analyse_syllables",
     "extract_words",

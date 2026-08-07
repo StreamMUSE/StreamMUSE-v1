@@ -4,10 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from streammuse.domain.rap import AlignedLine, BeatSlot, ScheduledSyllable, Syllable, analyse_syllables
+from streammuse.domain.rap import AlignedLine, BeatSlot, ProsodyAnalysis, ScheduledSyllable, Syllable, analyse_syllables
 
 
-def align_text_to_slots(text: str, slots: Sequence[BeatSlot]) -> AlignedLine:
+def align_exact(analysis: ProsodyAnalysis, slots: Sequence[BeatSlot]) -> tuple[ScheduledSyllable, ...]:
+    """Schedule one already-analyzed syllable per slot in source order."""
+    if len(analysis.syllables) != len(slots):
+        raise ValueError(f"exact alignment requires {len(slots)} syllables, got {len(analysis.syllables)}")
+    return tuple(
+        ScheduledSyllable(slot=slot, syllable=syllable)
+        for syllable, slot in zip(analysis.syllables, slots, strict=True)
+    )
+
+
+def align_legacy_flexible(text: str, slots: Sequence[BeatSlot]) -> AlignedLine:
     """Assign a line to strictly increasing slots, favoring accents and flow."""
     syllables = analyse_syllables(text)
     if not slots:
@@ -37,6 +47,11 @@ def align_text_to_slots(text: str, slots: Sequence[BeatSlot]) -> AlignedLine:
         events=events,
         score=score - density_penalty,
     )
+
+
+def align_text_to_slots(text: str, slots: Sequence[BeatSlot]) -> AlignedLine:
+    """Preserve the original flexible alignment API for existing callers."""
+    return align_legacy_flexible(text, slots)
 
 
 def choose_best_line(candidates: Sequence[str], slots: Sequence[BeatSlot]) -> AlignedLine:
