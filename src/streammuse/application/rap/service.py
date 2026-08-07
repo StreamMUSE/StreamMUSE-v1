@@ -6,15 +6,15 @@ from typing import Protocol
 
 from streammuse.application.rap.alignment import choose_best_line
 from streammuse.application.rap.rhythm import build_bar_slots
-from streammuse.domain.rap import CandidateBatch, ProsodyAnalysis, RapPlan
+from streammuse.domain.rap import CandidateBatch, CandidateRequest, ProsodyAnalysis, RapPlan
 from streammuse.domain.timing import Tempo
 
 
 class CandidateGenerator(Protocol):
     """Supplies lyric-line candidates for deterministic local alignment."""
 
-    def generate(self, topic: str, count: int) -> CandidateBatch:
-        """Return candidate lines and their origin metadata."""
+    def generate(self, request: CandidateRequest) -> CandidateBatch:
+        """Return raw parsed candidates and complete non-secret request diagnostics."""
 
 
 class ProsodyAnalyzer(Protocol):
@@ -39,7 +39,19 @@ class RapPrototypeService:
         if candidate_count <= 0:
             raise ValueError("candidate_count must be positive")
 
-        batch = self._generator.generate(topic, candidate_count)
+        initial_slots = build_bar_slots(self._tempo, self._pattern, 0)
+        batch = self._generator.generate(
+            CandidateRequest(
+                request_id="prototype-bar-0",
+                target_bar=0,
+                topic=topic,
+                template_id=self._pattern,
+                required_syllables=len(initial_slots),
+                count=candidate_count,
+                context_lines=(),
+                seed=0,
+            )
+        )
         candidates = tuple(candidate.strip() for candidate in batch.candidates if candidate.strip())
         if not candidates:
             raise ValueError("candidate generator returned no usable lines")

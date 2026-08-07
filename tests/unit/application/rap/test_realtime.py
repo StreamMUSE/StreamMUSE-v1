@@ -7,7 +7,7 @@ from threading import Event
 from time import monotonic
 
 from streammuse.application.rap.realtime import RollingRapController
-from streammuse.domain.rap import CandidateBatch
+from streammuse.domain.rap import CandidateBatch, CandidateRequest
 from streammuse.domain.timing import Tempo
 
 
@@ -20,10 +20,14 @@ class FixedGenerator:
             "bright echoes travel through the open room",
         )
 
-    def generate(self, topic: str, count: int) -> CandidateBatch:
+    def generate(self, request: CandidateRequest) -> CandidateBatch:
         return CandidateBatch(
+            request_id=request.request_id,
             candidates=self.candidates,
             source=self.source,
+            prompt=(),
+            raw_response="",
+            latency_ms=0.0,
         )
 
 
@@ -32,10 +36,10 @@ class BlockingGenerator:
         self.release = Event()
         self.started = Event()
 
-    def generate(self, topic: str, count: int) -> CandidateBatch:
+    def generate(self, request: CandidateRequest) -> CandidateBatch:
         self.started.set()
         self.release.wait(timeout=1.0)
-        return FixedGenerator(source="local_chat").generate(topic, count)
+        return FixedGenerator(source="local_chat").generate(request)
 
 
 class ManualExecutor:

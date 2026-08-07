@@ -113,7 +113,7 @@ def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRap
                 timeout_s=rap.timeout_s,
             )
         )
-        primary = LocalChatCandidateGenerator(client, fallback)
+        primary = LocalChatCandidateGenerator(client)
         close_primary = client.close
 
     def emit(event) -> None:

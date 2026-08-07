@@ -146,7 +146,7 @@ def _build_generator(args: argparse.Namespace) -> tuple[CandidateGenerator, Loca
             timeout_s=args.timeout_s,
         )
     )
-    return LocalChatCandidateGenerator(client, phrase_bank), client
+    return LocalChatCandidateGenerator(client), client
 
 
 def _render_event_row(event: ScheduledSyllable, tempo: Tempo) -> str:

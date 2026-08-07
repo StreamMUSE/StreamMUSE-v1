@@ -3,19 +3,23 @@
 import pytest
 
 from streammuse.application.rap.service import RapPrototypeService
-from streammuse.domain.rap import CandidateBatch
+from streammuse.domain.rap import CandidateBatch, CandidateRequest
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.rap.generators import PhraseBankGenerator
 
 
 class FixedGenerator:
-    def generate(self, topic: str, count: int) -> CandidateBatch:
+    def generate(self, request: CandidateRequest) -> CandidateBatch:
         return CandidateBatch(
+            request_id=request.request_id,
             candidates=(
                 "space travel in the midnight all the speakers keep it bright",
                 "we bring space travel through the rhythm making every pulse ignite",
             ),
             source="fixed",
+            prompt=(),
+            raw_response="",
+            latency_ms=0.0,
         )
 
 

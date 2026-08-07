@@ -9,7 +9,7 @@ from typing import Callable
 from streammuse.application.rap.alignment import choose_best_line
 from streammuse.application.rap.rhythm import build_bar_slots
 from streammuse.application.rap.service import CandidateGenerator
-from streammuse.domain.rap import AlignedLine, CandidateBatch, ScheduledSyllable
+from streammuse.domain.rap import AlignedLine, CandidateBatch, CandidateRequest, ScheduledSyllable
 from streammuse.domain.timing import Tempo
 
 
@@ -128,7 +128,7 @@ class RollingRapController:
         for bar in range(last_bar + 1):
             if bar in self._lines:
                 continue
-            batch = self._fallback_generator.generate(self._topic, self._candidate_count)
+            batch = self._fallback_generator.generate(self._request_for_bar(bar, source="fallback"))
             line = self._select_line(batch, bar)
             if line is None:
                 raise ValueError("fallback rap generator returned no one-bar line")
@@ -139,11 +139,7 @@ class RollingRapController:
             return
         target_bar = max(self._next_primary_bar, current_bar + 1)
         self._next_primary_bar = target_bar + 1
-        self._future = self._executor.submit(
-            self._primary_generator.generate,
-            self._topic,
-            self._candidate_count,
-        )
+        self._future = self._executor.submit(self._primary_generator.generate, self._request_for_bar(target_bar, source="primary"))
         self._future_bar = target_bar
 
     def _drain_primary_result(self) -> None:
@@ -180,3 +176,15 @@ class RollingRapController:
         self._lines[bar] = line
         self._line_sources[bar] = source
         self._used_texts.add(line.text)
+
+    def _request_for_bar(self, bar: int, *, source: str) -> CandidateRequest:
+        return CandidateRequest(
+            request_id=f"rolling-{source}-bar-{bar}",
+            target_bar=bar,
+            topic=self._topic,
+            template_id=self._pattern,
+            required_syllables=len(build_bar_slots(self._tempo, self._pattern, bar)),
+            count=self._candidate_count,
+            context_lines=(),
+            seed=bar,
+        )
