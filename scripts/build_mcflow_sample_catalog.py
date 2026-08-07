@@ -35,6 +35,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.mcflow_dir,
             max_quantization_error_ticks=args.max_quantization_error_ticks,
         )
+    except OSError:
+        print("error: unable to read MCFlow input", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    try:
         selection = select_sample_templates(extraction.templates, per_bucket=args.per_bucket)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

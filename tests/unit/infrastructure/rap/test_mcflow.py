@@ -170,6 +170,48 @@ def test_extract_records_invalid_break_values_without_stopping_other_measures(tm
     assert [(item.measure_ordinal, item.error_code) for item in extraction.rejections] == [(1, "invalid_break_value")]
 
 
+def test_extract_records_reciprocal_and_stress_parse_failures_per_measure(tmp_path: Path) -> None:
+    """Catches one malformed data record aborting later valid measures from the same source."""
+    source = tmp_path / "input.rap"
+    source.write_text(
+        "\n".join(
+            (
+                "**recip\t**stress\t**break\t**rhyme\t**lyrics",
+                "*M4/4\t*M4/4\t*M4/4\t*M4/4\t*M4/4",
+                "=1\t=1\t=1\t=1\t=1",
+                "bad_recip\t1\t.\tA\tza",
+                "4\t0\t.\t.\tzb",
+                "4\t1\t.\t.\tzc",
+                "4\t0\t.\t.\tzd",
+                "=2\t=2\t=2\t=2\t=2",
+                "4\tbad_stress\t.\tB\tze",
+                "4\t0\t.\t.\tzf",
+                "4\t1\t.\t.\tzg",
+                "4\t0\t.\t.\tzh",
+                "=3\t=3\t=3\t=3\t=3",
+                "4\t1\t.\tC\tzi",
+                "4\t0\t.\t.\tzj",
+                "4\t1\t.\t.\tzk",
+                "4\t0\t.\t.\tzl",
+                "*-\t*-\t*-\t*-\t*-",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    extraction = extract_anonymous_templates(source)
+    payload = json.dumps(extraction.to_dict())
+
+    assert [template.name for template in extraction.templates] == ["anonymous_measure_3"]
+    assert [(item.measure_ordinal, item.error_code) for item in extraction.rejections] == [
+        (1, "invalid_reciprocal_duration"),
+        (2, "invalid_stress_value"),
+    ]
+    assert "bad_recip" not in payload
+    assert "bad_stress" not in payload
+
+
 def test_extract_records_empty_measure_without_reusing_its_ordinal(tmp_path: Path) -> None:
     """Catches empty measures being omitted and causing ordinal reuse."""
     source = tmp_path / "input.rap"

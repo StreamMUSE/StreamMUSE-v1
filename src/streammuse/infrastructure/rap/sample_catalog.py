@@ -151,9 +151,11 @@ def write_sample_catalog(
     report_path: str | Path,
 ) -> None:
     """Persist a standard extracted catalog and a validated aggregate-only sidecar."""
-    _validate_write_contract(extraction, selection)
     catalog_destination = Path(catalog_path)
     report_destination = Path(report_path)
+    if catalog_destination.resolve() == report_destination.resolve():
+        raise ValueError("catalog and report destinations must differ")
+    _validate_write_contract(extraction, selection)
     catalog_destination.parent.mkdir(parents=True, exist_ok=True)
     report_destination.parent.mkdir(parents=True, exist_ok=True)
     sampled_extraction = ExtractionResult(
@@ -199,24 +201,11 @@ def _evenly_spaced(
 
 
 def _validate_write_contract(extraction: ExtractionResult, selection: SampleCatalogSelection) -> None:
-    report = selection.report
-    if report.input_templates != len(extraction.templates):
-        raise ValueError("inconsistent sample catalog report input count")
-    if report.selected_templates != len(selection.templates):
-        raise ValueError("inconsistent sample catalog report selection count")
-    if report.requested_per_bucket < 1:
-        raise ValueError("inconsistent sample catalog report bucket limit")
-    if set(report.band_counts) != set(DENSITY_BANDS):
-        raise ValueError("inconsistent sample catalog report density bands")
-    if report.structurally_unique_templates + report.duplicates_removed != report.input_templates:
-        raise ValueError("inconsistent sample catalog report deduplication counts")
-    if report.out_of_range_templates + sum(count.available for count in report.band_counts.values()) != report.structurally_unique_templates:
-        raise ValueError("inconsistent sample catalog report availability counts")
-    if sum(count.selected for count in report.band_counts.values()) != report.selected_templates:
-        raise ValueError("inconsistent sample catalog report selected counts")
-    if any(count.selected > count.available or count.underfilled != max(0, report.requested_per_bucket - count.selected) for count in report.band_counts.values()):
-        raise ValueError("inconsistent sample catalog report band counts")
-    selected_ids = {template.template_id for template in selection.templates}
-    input_ids = {template.template_id for template in extraction.templates}
-    if not selected_ids.issubset(input_ids):
+    try:
+        expected = select_sample_templates(
+            extraction.templates, per_bucket=selection.report.requested_per_bucket
+        )
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("inconsistent sample catalog selection") from exc
+    if selection.templates != expected.templates or selection.report != expected.report:
         raise ValueError("inconsistent sample catalog selection")

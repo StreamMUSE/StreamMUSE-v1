@@ -131,6 +131,11 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
     measure_started = False
     previous_stress = 0.0
 
+    def record_parse_error(error_code: str, detail: str) -> None:
+        nonlocal current_parse_error
+        if current_parse_error is None:
+            current_parse_error = (error_code, detail)
+
     def finish_measure() -> None:
         nonlocal syllables, phrase_starts, current_duration, current_parse_error
         measures.append(
@@ -170,18 +175,27 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
 
         measure_started = True
         reciprocal = fields[spine_index["**recip"]]
-        duration = parse_reciprocal_duration(reciprocal)
+        try:
+            duration = parse_reciprocal_duration(reciprocal)
+        except ValueError:
+            duration = Fraction(0)
+            record_parse_error("invalid_reciprocal_duration", "reciprocal duration is unsupported")
         lyric = fields[spine_index["**lyrics"]]
         is_rest = reciprocal.endswith("r") or lyric == "R"
         stress_token = fields[spine_index["**stress"]]
         if stress_token == ".":
             stress = previous_stress
         else:
-            stress = _parse_stress(stress_token)
-            previous_stress = stress
+            try:
+                stress = _parse_stress(stress_token)
+            except ValueError:
+                stress = previous_stress
+                record_parse_error("invalid_stress_value", "stress annotation is unsupported")
+            else:
+                previous_stress = stress
         break_strength = _parse_break(fields[spine_index["**break"]])
         if break_strength is None:
-            current_parse_error = ("invalid_break_value", "break annotation is not a supported boundary strength")
+            record_parse_error("invalid_break_value", "break annotation is not a supported boundary strength")
         elif break_strength:
             phrase_starts.append(PhraseStart(onset=current_duration, strength=break_strength))
         if not is_rest:

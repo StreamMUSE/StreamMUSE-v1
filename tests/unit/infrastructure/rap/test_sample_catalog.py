@@ -17,6 +17,7 @@ from streammuse.infrastructure.rap.mcflow import (
 )
 from streammuse.infrastructure.rap.sample_catalog import (
     DENSITY_BANDS,
+    DensityBandCount,
     structural_flow_signature,
     select_sample_templates,
     write_sample_catalog,
@@ -201,3 +202,53 @@ def test_write_sample_catalog_rejects_an_inconsistent_selection_report(tmp_path:
             tmp_path / "catalog.json",
             tmp_path / "report.json",
         )
+
+
+def test_write_sample_catalog_rejects_equal_resolved_destinations_before_writing(tmp_path: Path) -> None:
+    """Catches lexical aliases causing the report to overwrite the selected catalog."""
+    template = _template(1)
+    extraction = ExtractionResult(templates=(template,), rejections=(), parsed_files=1)
+    selection = select_sample_templates((template,))
+    catalog_path = tmp_path / "out" / "catalog.json"
+    report_alias = tmp_path / "out" / "." / "catalog.json"
+
+    with pytest.raises(ValueError, match="destinations must differ"):
+        write_sample_catalog(extraction, selection, catalog_path, report_alias)
+
+    assert not catalog_path.exists()
+    assert not catalog_path.parent.exists()
+
+
+def test_write_sample_catalog_rejects_mutated_anonymous_source_count(tmp_path: Path) -> None:
+    """Catches an aggregate-only field fabricated independently of the source templates."""
+    templates = (_template(1, source_seed="sparse"), _template(2, slots=8, source_seed="medium"))
+    extraction = ExtractionResult(templates=templates, rejections=(), parsed_files=2)
+    selection = select_sample_templates(templates, per_bucket=2)
+    mutated = replace(
+        selection,
+        report=replace(selection.report, anonymous_source_file_count=selection.report.anonymous_source_file_count + 1),
+    )
+
+    with pytest.raises(ValueError, match="inconsistent"):
+        write_sample_catalog(extraction, mutated, tmp_path / "catalog.json", tmp_path / "report.json")
+
+
+def test_write_sample_catalog_rejects_fabricated_band_counts(tmp_path: Path) -> None:
+    """Catches mathematically balanced band counts assigned to the wrong density bands."""
+    templates = (_template(1), _template(2, slots=8), _template(3, slots=12))
+    extraction = ExtractionResult(templates=templates, rejections=(), parsed_files=3)
+    selection = select_sample_templates(templates, per_bucket=2)
+    mutated = replace(
+        selection,
+        report=replace(
+            selection.report,
+            band_counts={
+                "sparse": DensityBandCount(available=0, selected=0, underfilled=2),
+                "medium": DensityBandCount(available=2, selected=2, underfilled=0),
+                "dense": DensityBandCount(available=1, selected=1, underfilled=1),
+            },
+        ),
+    )
+
+    with pytest.raises(ValueError, match="inconsistent"):
+        write_sample_catalog(extraction, mutated, tmp_path / "catalog.json", tmp_path / "report.json")
