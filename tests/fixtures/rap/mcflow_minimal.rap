@@ -1,0 +1,15 @@
+!!! Invented anonymous structural fixture
+**recip	**stress	**tone	**break	**rhyme	**ipa	**lyrics	**hype
+*M4/4	*M4/4	*M4/4	*M4/4	*M4/4	*M4/4	*M4/4	*M4/4
+=1	=1	=1	=1	=1	=1	=1	=1
+16	1	.	.	A	/ta/	tav	.
+16	0	.	.	.	/ko/	kor	.
+8.	2	.	.	B	/mi/	miv	.
+4.	1	.	.	.	/zu/	zun	.
+4r	.	.	.	.	.	R	.
+16r	.	.	.	.	.	R	.
+! an ignored local comment
+=2	=2	=2	=2	=2	=2	=2	=2
+16%13	1	.	3	C	/fe/	fex	.
+16%3r	.	.	.	.	.	R	.
+*-	*-	*-	*-	*-	*-	*-	*-

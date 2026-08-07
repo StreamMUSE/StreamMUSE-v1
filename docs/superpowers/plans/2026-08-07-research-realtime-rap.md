@@ -355,7 +355,77 @@ git add src/streammuse/domain/rap src/streammuse/infrastructure/rap/templates.py
 git commit -m "feat(rap): add flow templates and scenarios"
 ```
 
-### Task 2: Pronunciation-Backed Prosody With Measured Fallback
+### Task 2: Anonymous MCFlow Extraction and Template Catalog
+
+**Files:**
+- Create: `src/streammuse/infrastructure/rap/mcflow.py`
+- Create: `scripts/extract_mcflow_templates.py`
+- Create: `tests/fixtures/rap/mcflow_minimal.rap`
+- Create: `tests/unit/infrastructure/rap/test_mcflow.py`
+- Create: `tests/unit/scripts/test_extract_mcflow_templates.py`
+
+**Interfaces:**
+- Produces: `parse_mcflow_file(path)`, `extract_anonymous_templates(path, ...)`, `extract_mcflow_directory(path, ...)`, `flow_template_to_dict(template)`, `load_extracted_templates(path)`, and the opt-in extraction CLI.
+- Consumes: user-supplied `.rap` Humdrum files and Task 1's `FlowTemplate`, `FlowSlot`, and `FlowProvenance` contracts.
+
+**Research boundary:** MCFlow is an external corpus containing copyrighted lyrics and source metadata. The repository stores only invented fixtures. Extracted artifacts contain anonymous structural templates, hashes, measure ordinals, quantization diagnostics, and rejection reasons; they must omit lyrics, IPA, artist, song title, source filename, and absolute source path. No MCFlow checkout is downloaded automatically.
+
+- [ ] **Step 1: Add a representative invented Humdrum fixture and failing tests**
+
+The fixture uses the real eight-spine layout (`**recip`, `**stress`, `**tone`, `**break`, `**rhyme`, `**ipa`, `**lyrics`, `**hype`) but only invented syllables. Include at least two complete 4/4 measures with different syllable counts, a rest, a dotted duration, a `n%d` reciprocal duration, comments, tandem interpretations, and an explicit phrase break. Tests must establish:
+
+1. exact reciprocal-duration parsing with `fractions.Fraction`;
+2. varied template slot counts rather than a nine-syllable assumption;
+3. rests advance time but do not create slots;
+4. stress, rhyme, and break structure survive extraction;
+5. output contains no lyric, IPA, source name, or source path;
+6. the same bytes produce stable IDs and source hashes; and
+7. malformed/missing spines fail with actionable errors.
+
+- [ ] **Step 2: Parse the actual MCFlow Humdrum structure**
+
+Locate spines from the exclusive interpretation row rather than assuming column order. Require `**recip`, `**stress`, `**break`, `**rhyme`, and `**lyrics`; ignore optional `**tone`, `**ipa`, and `**hype` structurally. Skip comments and tandem interpretations, recognize measure and termination records, and validate record width.
+
+Parse reciprocal tokens as exact whole-note fractions. Support ordinary reciprocals such as `16`, augmentation dots such as `8.`, and MCFlow's untied rational form `16%13`, whose duration is `13/16` of a whole note. A lyric token `R` or a reciprocal rest marker advances time without creating a lyric-bearing slot. Public parsed objects must never retain lyric or IPA text.
+
+MCFlow `**break` values mark the beginning of a phrase. Convert them to Task 1's boundary-after representation by attaching the break strength to the previous lyric-bearing slot, including across a measure boundary when possible. Preserve rhyme labels on the annotated slot. Map stress `0` to `0.0`, stress `1` to `1.0`, and the corpus's experimental stress `2` to `1.0`, while rejecting other values.
+
+- [ ] **Step 3: Quantize honestly into the Task 1 clock**
+
+Convert exact onsets and durations to StreamMUSE ticks using `whole_note_duration * 4 * ticks_per_beat`. The current Task 1 contract requires four ticks per beat and four beats per bar. Quantize only when every lyric-bearing onset and duration is within `max_quantization_error_ticks`; otherwise reject the measure with a structured reason. Also reject incomplete/overfull measures, non-4/4 meter, duplicate quantized onsets, and slots outside the bar. Never silently discard a failed measure.
+
+Each accepted template records the maximum onset/duration error in `FlowProvenance.quantization_error_ticks`. Each rejected measure records an anonymous source hash, measure ordinal, error code, and human-readable detail.
+
+- [ ] **Step 4: Serialize and reload anonymous catalogs**
+
+Whitelisted JSON output contains:
+
+```text
+schema_version, extractor_version, templates, rejections, aggregate counts
+```
+
+Each template contains only its deterministic anonymous ID, anonymous name, timing values, structural slots, source-file SHA-256, measure ordinal, and quantization error. `load_extracted_templates(path)` reconstructs validated `FlowTemplate` values suitable for `TemplateCatalog.from_templates(...)` and rejects unknown schema versions or malformed fields.
+
+- [ ] **Step 5: Add the opt-in directory CLI**
+
+```text
+uv run python scripts/extract_mcflow_templates.py \
+  --mcflow-dir /path/to/MCFlow/Humdrum \
+  --output /path/to/anonymous_templates.json \
+  --max-quantization-error-ticks 0.25
+```
+
+Recursively process `.rap` files in deterministic order. Do not download data. Exit nonzero for an invalid input directory or when no template is accepted, but still write a report when files were parsed and measures were rejected. Print only aggregate counts and the output path, never source filenames.
+
+- [ ] **Step 6: Verify synthetic and transient real-corpus behavior**
+
+Run the focused Task 1 and Task 2 tests. Then, without committing or copying source data into the repository, run the extractor against at least one real public MCFlow file and inspect only the anonymous output. Record accepted/rejected counts, observed slot-count variation, quantization errors, and rejection categories in the task report.
+
+- [ ] **Step 7: Commit and review**
+
+Commit only source code, invented fixtures, tests, and plan/report bookkeeping. Confirm `git diff --check`, then dispatch an independent task review covering both specification compliance and implementation quality.
+
+### Task 3: Pronunciation-Backed Prosody With Measured Fallback
 
 **Files:**
 - Modify: `pyproject.toml`
@@ -521,7 +591,7 @@ git add pyproject.toml uv.lock src/streammuse/domain/rap src/streammuse/infrastr
 git commit -m "feat(rap): add observable CMU prosody analysis"
 ```
 
-### Task 3: Exact Alignment and Transparent Candidate Ranking
+### Task 4: Exact Alignment and Transparent Candidate Ranking
 
 **Files:**
 - Create: `src/streammuse/domain/rap/evaluation.py`
@@ -697,7 +767,7 @@ git add src/streammuse/domain/rap/evaluation.py src/streammuse/application/rap/s
 git commit -m "feat(rap): add transparent candidate ranking"
 ```
 
-### Task 4: Request-Aware Generation and Prevalidated Fallback
+### Task 5: Request-Aware Generation and Prevalidated Fallback
 
 **Files:**
 - Modify: `src/streammuse/domain/rap/models.py`
@@ -811,7 +881,7 @@ git add src/streammuse/domain/rap/models.py src/streammuse/application/rap/servi
 git commit -m "feat(rap): make generation and fallback observable"
 ```
 
-### Task 5: Canonical Research Events, Recorder, and Metrics
+### Task 6: Canonical Research Events, Recorder, and Metrics
 
 **Files:**
 - Create: `src/streammuse/domain/rap/events.py`
@@ -930,7 +1000,7 @@ git add src/streammuse/domain/rap/events.py src/streammuse/application/rap/monit
 git commit -m "feat(rap): record canonical research event stream"
 ```
 
-### Task 6: Rolling Planner, Deadlines, Freeze, and No-Gap Fallback
+### Task 7: Rolling Planner, Deadlines, Freeze, and No-Gap Fallback
 
 **Files:**
 - Modify: `src/streammuse/application/rap/realtime.py`
@@ -1027,7 +1097,7 @@ git add src/streammuse/application/rap/realtime.py tests/unit/application/rap/te
 git commit -m "feat(rap): add observable rolling bar planner"
 ```
 
-### Task 7: Standalone Research Runtime and Terminal Monitor
+### Task 8: Standalone Research Runtime and Terminal Monitor
 
 **Files:**
 - Create: `src/streammuse/application/rap/runtime.py`
@@ -1128,7 +1198,7 @@ git add pyproject.toml src/streammuse/application/rap/runtime.py src/streammuse/
 git commit -m "feat(rap): add standalone research runtime"
 ```
 
-### Task 8: Live Read-Only Web Monitor
+### Task 9: Live Read-Only Web Monitor
 
 **Files:**
 - Create: `src/streammuse/presentation/rap_demo/server.py`
@@ -1210,7 +1280,7 @@ git add src/streammuse/presentation/rap_demo tests/unit/presentation/rap_demo/te
 git commit -m "feat(rap): add live research monitor"
 ```
 
-### Task 9: Preserve Active StreamMUSE Integration
+### Task 10: Preserve Active StreamMUSE Integration
 
 **Files:**
 - Modify: `src/streammuse/presentation/cli/cli.py`
@@ -1266,58 +1336,19 @@ git add src/streammuse/presentation/cli/cli.py src/streammuse/application/rap/rh
 git commit -m "refactor(rap): preserve realtime CLI integration"
 ```
 
-### Task 10: Optional MCFlow Extraction and Reproducible Session Analysis
+### Task 11: Reproducible Session Analysis and Research Documentation
 
 **Files:**
-- Create: `src/streammuse/infrastructure/rap/mcflow.py`
-- Create: `scripts/extract_mcflow_templates.py`
 - Create: `scripts/summarize_rap_session.py`
-- Create: `tests/fixtures/rap/mcflow_minimal.rap`
-- Create: `tests/unit/infrastructure/rap/test_mcflow.py`
 - Create: `tests/unit/scripts/test_summarize_rap_session.py`
 - Create: `docs/developer-guide/research-realtime-rap.md`
 - Modify: `docs/developer-guide/rap-alignment-prototype.md`
 
 **Interfaces:**
-- Produces: `parse_mcflow_file(path)`, `extract_anonymous_templates(...)`, and deterministic summary regeneration.
-- Consumes: user-supplied Humdrum files with `**recip`, `**stress`, `**break`, `**rhyme`, and `**lyrics` spines; canonical session artifacts.
+- Produces: deterministic summary regeneration and the final experiment guide.
+- Consumes: canonical session artifacts and Task 2's anonymous MCFlow catalogs.
 
-- [ ] **Step 1: Create a synthetic Humdrum fixture and failing parser tests**
-
-The fixture must contain invented syllables and no copied lyrics:
-
-```text
-**recip	**stress	**break	**rhyme	**lyrics
-=1	=1	=1	=1	=1
-8	1	.	.	ta
-16	0	.	.	ka
-16	1	3	A	boom
-=2	=2	=2	=2	=2
-*-	*-	*-	*-	*-
-```
-
-```python
-def test_mcflow_extractor_discards_lyrics_and_preserves_structure(tmp_path: Path) -> None:
-    templates = extract_anonymous_templates(FIXTURE, ticks_per_beat=4, max_quantization_error_ticks=0.25)
-    assert len(templates) == 1
-    assert [slot.tick_in_bar for slot in templates[0].slots] == [0, 2, 3]
-    assert templates[0].slots[-1].rhyme_group == "A"
-    assert "ta" not in json.dumps(flow_template_to_dict(templates[0]))
-```
-
-- [ ] **Step 2: Parse Humdrum spines structurally**
-
-Read tab-separated records, locate required exclusive interpretations by name, skip global/local comments and tandem interpretations, reset measure accumulation at `=` records, and stop at `*-`. Parse reciprocal duration with `fractions.Fraction`; convert whole-note fractions to ticks using `duration * 4 * ticks_per_beat`.
-
-- [ ] **Step 3: Refuse silent timing distortion**
-
-Quantize rational onsets to integer StreamMUSE ticks only when every slot and duration is within `max_quantization_error_ticks`. Store maximum error in `FlowProvenance.quantization_error_ticks`. Reject the measure with an explicit reason when triplets or other values exceed tolerance. This keeps the first runtime honest about its sixteenth-note grid limitation.
-
-- [ ] **Step 4: Emit anonymous hashes and provenance**
-
-The output JSON contains structural slots, source-file SHA-256, measure index, extractor version, and quantization error. It omits lyrics, IPA, artist, song title, source filename, and absolute source path. The command requires `--mcflow-dir` and `--output`; no MCFlow data is downloaded automatically.
-
-- [ ] **Step 5: Implement deterministic session regeneration**
+- [ ] **Step 1: Implement deterministic session regeneration**
 
 ```python
 def main(argv: list[str] | None = None) -> int:
@@ -1330,7 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
 
 Test byte-equivalent JSON data and equivalent CSV rows against recorder output, ignoring final newline differences only.
 
-- [ ] **Step 6: Document the experiment protocol and limitations**
+- [ ] **Step 2: Document the experiment protocol and limitations**
 
 The guide must include:
 
@@ -1342,15 +1373,15 @@ The guide must include:
 6. Current limitations: dictionary pronunciation, OOV heuristic, one pronunciation choice, lexical topic/continuity proxies, hand-authored templates, sixteenth-note quantization, no expressive audio, and no human validation.
 7. The next research step: collect pairwise human preferences and fit/validate a learned ranker against the logged candidate features.
 
-- [ ] **Step 7: Run parser, analysis, and full regression tests**
+- [ ] **Step 3: Run analysis and full regression tests**
 
-Run: `uv run pytest tests/unit/infrastructure/rap/test_mcflow.py tests/unit/scripts/test_summarize_rap_session.py -v`
+Run: `uv run pytest tests/unit/scripts/test_summarize_rap_session.py -v`
 
 Run: `uv run pytest tests/ -q --tb=short`
 
 Expected: all tests pass; GPU/model-dependent tests remain skipped under their existing markers.
 
-- [ ] **Step 8: Run the final observable smoke experiment**
+- [ ] **Step 4: Run the final observable smoke experiment**
 
 Start a local OpenAI-compatible model server, then run:
 
@@ -1369,30 +1400,34 @@ uv run streammuse-rap-demo \
 
 Verify twelve frozen bars, at least three topic/template segments, no missing bar, complete candidate diagnostics, moving browser timeline, and summary consistency. It is acceptable if fallback is frequent; report the observed rate and reasons rather than hiding them.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/streammuse/infrastructure/rap/mcflow.py scripts/extract_mcflow_templates.py scripts/summarize_rap_session.py tests/fixtures/rap tests/unit/infrastructure/rap/test_mcflow.py tests/unit/scripts/test_summarize_rap_session.py docs/developer-guide/research-realtime-rap.md docs/developer-guide/rap-alignment-prototype.md
-git commit -m "feat(rap): add MCFlow extraction and research analysis"
+git add scripts/summarize_rap_session.py tests/unit/scripts/test_summarize_rap_session.py docs/developer-guide/research-realtime-rap.md docs/developer-guide/rap-alignment-prototype.md
+git commit -m "docs(rap): add reproducible research analysis"
 ```
 
 ---
 
 ## Milestones and Review Gates
 
-### Milestone A: Defensible offline selection after Task 4
+### Milestone A: Corpus bridge after Task 2
+
+Researchers can derive anonymous, varied-density flow templates from user-supplied MCFlow files, inspect quantization and rejection diagnostics, and load accepted templates through the Task 1 contract without storing corpus lyrics or identities.
+
+### Milestone B: Defensible offline selection after Task 5
 
 Given a topic and flow template, the system can show every raw candidate, dictionary/heuristic syllable analysis, hard rejection, component score, and deterministic winner or fallback. This is the first point at which the scoring design can be inspected independently of real-time behavior.
 
-### Milestone B: Continuous terminal experiment after Task 7
+### Milestone C: Continuous terminal experiment after Task 8
 
 The system produces uninterrupted bars on a monotonic clock, records all decisions, and survives forced generator failure. This is the minimum end-to-end research prototype and should be preserved even if browser work is delayed.
 
-### Milestone C: Live monitor after Task 8
+### Milestone D: Live monitor after Task 9
 
 The browser shows the same event stream and metrics as the terminal and artifacts. No musical or planning logic lives in JavaScript.
 
-### Milestone D: Active-system and corpus bridge after Tasks 9–10
+### Milestone E: Active-system and reproducibility bridge after Tasks 10–11
 
 The improved controller remains usable through `streammuse-cli`, and researchers can derive anonymous templates from a local MCFlow checkout without committing copyrighted lyrics or silently quantizing unsupported rhythm.
 
