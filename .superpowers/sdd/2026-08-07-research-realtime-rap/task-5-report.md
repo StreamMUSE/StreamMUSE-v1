@@ -201,17 +201,17 @@ git diff --check
    and token diagnostics.
 2. Error redaction now retains non-secret context while replacing values for
    `OPENAI_API_KEY=...`, `*_TOKEN=...`, `*_PASSWORD: ...`,
-   `Authorization: Bearer ...`, bare bearer values, and the earlier generic
+   `Authorization: Bearer ...`, and the earlier generic
    API-key/token/password/secret forms.
 3. `PrevalidatedFallbackCatalog.build()` rejects each segment with
    `fallback_lines=()` and rejects a scenario with no usable fallback lines.
 4. Candidate parsing retains surrounding quote characters. It continues to
    remove list labels and surrounding whitespace, deduplicating normalized
    lines in first-occurrence order as required by Task 5.
-5. `CandidateBatch` defensively copies each prompt message to an internal
-   immutable `dict` subtype. The prompt still supports normal mapping access
-   and JSON serialization, but external aliases and in-batch mutation cannot
-   change recorded diagnostics.
+5. `CandidateBatch` defensively copies each prompt message into read-only
+   mapping storage. The prompt retains normal mapping access, while
+   `prompt_json` provides JSON-ready copies; external aliases and in-batch
+   mutation cannot change recorded diagnostics.
 
 ### RED/GREEN Evidence
 
@@ -262,8 +262,76 @@ git diff --check
 - The error-batch factory receives only validated diagnostic values, so it can
   return a valid batch after a successful-batch construction failure.
 - Prompt immutability is both defensive (alias-safe) and direct (mutation-safe)
-  without sacrificing mapping access or standard JSON serialization.
+  without sacrificing mapping access; `prompt_json` supplies standard
+  JSON-serializable copies.
 - Empty fallback validation occurs at catalog build time before runtime lookup.
 - Quote preservation and first-occurrence deduplication coexist: only labels,
   surrounding whitespace, empty lines, and duplicate normalized lines are
   removed.
+
+## Fix Round 2
+
+### Findings Addressed
+
+1. Assignment/header redaction now recognizes generic and compound key names:
+   `KEY`, `API_KEY`, `GROQ_KEY`, `PRIVATE_KEY`, `SECRET_KEY`,
+   `AWS_ACCESS_KEY_ID`, `TOKEN`, `PASSWORD`, `SECRET`, and `AUTHORIZATION`.
+   The matcher requires a `:` or `=` assignment/header separator, so ordinary
+   free text such as `ordinary secret reference remains` is preserved. An
+   authorization header with a bearer value is redacted through the same
+   bounded assignment rule.
+2. `CandidateBatch.prompt` is now typed as a tuple of read-only
+   `Mapping[str, str]` values. Construction copies each caller-provided
+   message into a `MappingProxyType`, preserving ergonomic mapping reads while
+   preventing direct writes and `dict.__setitem__` bypasses. The new
+   `prompt_json` property returns detached plain dictionaries for future JSON
+   recorders; callers can mutate that copy without affecting stored evidence.
+
+### RED/GREEN Evidence
+
+The Round 2 RED command was:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/infrastructure/rap/test_generators.py \
+  tests/unit/infrastructure/rap/test_fallback.py -v
+```
+
+It produced two expected failures. `GROQ_KEY`, `PRIVATE_KEY`, `SECRET_KEY`,
+and `AWS_ACCESS_KEY_ID` values were exposed because the name grammar lacked
+generic `KEY` and `ACCESS_KEY_ID` forms. The frozen `dict` subclass rejected
+ordinary assignment but allowed direct `dict.__setitem__` mutation.
+
+After replacing the grammar and stored prompt mappings, the GREEN runs were:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/infrastructure/rap/test_generators.py \
+  tests/unit/infrastructure/rap/test_fallback.py -v
+# 24 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap -q --tb=no
+# 143 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/presentation/rap/test_rap_cli.py \
+  tests/unit/presentation/test_cli_config_parser.py \
+  tests/integration/test_cli_entry_point.py -q --tb=no
+# 24 passed; one existing pretty_midi/pkg_resources deprecation warning
+
+git diff --check
+# passed
+```
+
+### Fix-Round Self-Review
+
+- Redaction is restricted to recognized assignment/header names with `:` or
+  `=`, rather than blanket substitutions of words such as `secret` in prose.
+- Compound key identifiers are matched as a whole before their values are
+  redacted, retaining useful non-secret context.
+- `prompt` message storage cannot be changed by ordinary mapping assignment or
+  a `dict` base-class bypass.
+- The detached `prompt_json` data is standard JSON-serializable objects and
+  cannot mutate the batch’s retained diagnostics.

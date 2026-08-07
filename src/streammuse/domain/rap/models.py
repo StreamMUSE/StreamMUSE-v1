@@ -2,26 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
+from types import MappingProxyType
 
 from streammuse.domain.timing import Tempo
-
-
-class _FrozenPromptMessage(dict[str, str]):
-    """A JSON-serializable prompt mapping that rejects post-construction changes."""
-
-    def _immutable(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError("candidate batch prompt messages are immutable")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    __ior__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
 
 
 @dataclass(frozen=True)
@@ -138,7 +124,7 @@ class CandidateBatch:
     request_id: str
     candidates: tuple[str, ...]
     source: str
-    prompt: tuple[dict[str, str], ...]
+    prompt: tuple[Mapping[str, str], ...]
     raw_response: str
     latency_ms: float
     prompt_tokens: int | None = None
@@ -155,12 +141,12 @@ class CandidateBatch:
         if not isinstance(self.source, str) or not self.source.strip():
             raise ValueError("candidate batch source must be non-empty")
         if not isinstance(self.prompt, tuple) or not all(
-            isinstance(message, dict)
+            isinstance(message, Mapping)
             and all(isinstance(key, str) and isinstance(value, str) for key, value in message.items())
             for message in self.prompt
         ):
-            raise ValueError("candidate batch prompt must be a tuple of string dictionaries")
-        object.__setattr__(self, "prompt", tuple(_FrozenPromptMessage(message) for message in self.prompt))
+            raise ValueError("candidate batch prompt must be a tuple of string mappings")
+        object.__setattr__(self, "prompt", tuple(MappingProxyType(dict(message)) for message in self.prompt))
         if not isinstance(self.raw_response, str):
             raise ValueError("candidate batch raw_response must be a string")
         if not isinstance(self.latency_ms, (int, float)) or isinstance(self.latency_ms, bool) or not isfinite(self.latency_ms) or self.latency_ms < 0:
@@ -168,6 +154,11 @@ class CandidateBatch:
         for name, value in (("prompt_tokens", self.prompt_tokens), ("completion_tokens", self.completion_tokens)):
             if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
                 raise ValueError(f"candidate batch {name} must be a non-negative integer or None")
+
+    @property
+    def prompt_json(self) -> tuple[dict[str, str], ...]:
+        """Return a detached JSON-ready copy of the immutable prompt diagnostics."""
+        return tuple(dict(message) for message in self.prompt)
 
 
 @dataclass(frozen=True)

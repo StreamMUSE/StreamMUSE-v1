@@ -257,6 +257,55 @@ def test_local_chat_redacts_environment_style_secrets_without_hiding_error_conte
     assert "Authorization: [REDACTED]" in (batch.error_message or "")
 
 
+def test_local_chat_redacts_generic_and_compound_secret_assignments_only() -> None:
+    client = ResponseClient(
+        type(
+            "CompoundSecretResponse",
+            (),
+            {
+                "text": property(
+                    lambda self: (_ for _ in ()).throw(
+                        RuntimeError(
+                            "request failed; GROQ_KEY=groq-secret; PRIVATE_KEY: private-secret; "
+                            "SECRET_KEY=secret-key; AWS_ACCESS_KEY_ID=aws-key; API_KEY=api-secret; "
+                            "TOKEN: token-secret; PASSWORD=password-secret; SECRET: secret-value; "
+                            "AUTHORIZATION: Bearer header-secret; ordinary secret reference remains"
+                        )
+                    )
+                )
+            },
+        )()
+    )
+
+    batch = LocalChatCandidateGenerator(client).generate(request_for_bar())
+
+    assert "ordinary secret reference remains" in (batch.error_message or "")
+    for secret in (
+        "groq-secret",
+        "private-secret",
+        "secret-key",
+        "aws-key",
+        "api-secret",
+        "token-secret",
+        "password-secret",
+        "secret-value",
+        "header-secret",
+    ):
+        assert secret not in (batch.error_message or "")
+    for name in (
+        "GROQ_KEY=[REDACTED]",
+        "PRIVATE_KEY: [REDACTED]",
+        "SECRET_KEY=[REDACTED]",
+        "AWS_ACCESS_KEY_ID=[REDACTED]",
+        "API_KEY=[REDACTED]",
+        "TOKEN: [REDACTED]",
+        "PASSWORD=[REDACTED]",
+        "SECRET: [REDACTED]",
+        "AUTHORIZATION: [REDACTED]",
+    ):
+        assert name in (batch.error_message or "")
+
+
 def test_candidate_batch_prompt_is_defensively_and_deeply_immutable() -> None:
     message = {"role": "user", "content": "original"}
     batch = LocalChatCandidateGenerator(FakeClient("a line")).generate(request_for_bar())
@@ -274,6 +323,11 @@ def test_candidate_batch_prompt_is_defensively_and_deeply_immutable() -> None:
     assert direct_batch.prompt[0]["content"] == "original"
     with pytest.raises(TypeError):
         direct_batch.prompt[0]["content"] = "mutated inside"
-    assert json.loads(json.dumps({"prompt": direct_batch.prompt}))["prompt"][0]["content"] == "original"
+    with pytest.raises(TypeError):
+        dict.__setitem__(direct_batch.prompt[0], "content", "dict bypass")
+    assert json.loads(json.dumps({"prompt": direct_batch.prompt_json}))["prompt"][0]["content"] == "original"
+    prompt_copy = direct_batch.prompt_json
+    prompt_copy[0]["content"] = "mutable JSON copy"
+    assert direct_batch.prompt[0]["content"] == "original"
     with pytest.raises(TypeError):
         batch.prompt[-1]["content"] = "mutated generated prompt"
