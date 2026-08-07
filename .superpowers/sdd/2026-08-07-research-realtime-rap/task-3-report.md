@@ -122,3 +122,36 @@ The exact unscoped command `UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python 
 - Confirmed frozen value objects, tuple-based analysis fields, and no neural dependency.
 - Confirmed `git diff --check` has no whitespace errors.
 - Direct analyzer probe confirmed CMU phone chunks/stress, `('AY1', 'T')` rhyme tail, OOV diagnostics, and apostrophe-safe punctuation boundaries.
+
+## Fix Round 1
+
+- Added direct CMU regression assertions for the selected
+  `cmudict_first_pronunciation` provenance, the exact `moving` and `night`
+  ARPABET syllable phone chunks, and exact rhyme tail `('AY1', 'T')`.
+- Added `beat xyzzy` coverage proving that an OOV final word yields an empty
+  dictionary rhyme tail while retaining `xyzzy` in `oov_words`.
+- Rebuilt `uv.lock` using the official `uv 0.8.13` macOS ARM64 binary after
+  restoring the prior genuine revision-3 lock as resolver input. The resulting
+  lock remains `revision = 3`; compared with the pre-Task-3 lock, it adds only
+  `pronouncing`, `cmudict`, `importlib-metadata`, `importlib-resources`,
+  `zipp`, and the two StreamMUSE dependency declarations (57 inserted lines).
+- `UV_CACHE_DIR=/tmp/streammuse-uv-cache .venv/bin/uv-aarch64-apple-darwin/uv lock --check`
+  passed with the same resolver.
+- Fix-round verification:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/domain/rap/test_prosody.py \
+  tests/unit/infrastructure/rap/test_prosody.py -v
+# 14 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap \
+  tests/unit/presentation/test_cli_config_parser.py \
+  tests/integration/test_cli_entry_point.py -q
+# 124 passed, 1 existing pretty_midi/pkg_resources deprecation warning
+
+git diff --check
+# passed
+```

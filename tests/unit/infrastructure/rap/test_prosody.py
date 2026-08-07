@@ -8,7 +8,17 @@ def test_cmu_analyzer_exposes_stress_and_rhyme_tail() -> None:
 
     assert [syllable.word for syllable in result.syllables] == ["moving", "moving", "night"]
     assert [syllable.stress for syllable in result.syllables] == [1, 0, 1]
-    assert result.end_rhyme_tail[-1].startswith("T")
+    assert [syllable.analysis_source for syllable in result.syllables] == [
+        "cmudict_first_pronunciation",
+        "cmudict_first_pronunciation",
+        "cmudict_first_pronunciation",
+    ]
+    assert [syllable.phonemes for syllable in result.syllables] == [
+        ("M", "UW1", "V"),
+        ("IH0", "NG"),
+        ("N", "AY1", "T"),
+    ]
+    assert result.end_rhyme_tail == ("AY1", "T")
     assert result.heuristic_words == ()
 
 
@@ -19,6 +29,13 @@ def test_oov_word_is_retained_and_identified_as_heuristic() -> None:
     assert "xyzzy" in result.heuristic_words
     assert any(syllable.word == "xyzzy" for syllable in result.syllables)
     assert all(syllable.analysis_source == "vowel_group_heuristic" for syllable in result.syllables if syllable.word == "xyzzy")
+
+
+def test_final_oov_word_has_no_dictionary_rhyme_tail() -> None:
+    result = CmuProsodyAnalyzer().analyze("beat xyzzy")
+
+    assert result.oov_words == ("xyzzy",)
+    assert result.end_rhyme_tail == ()
 
 
 def test_punctuation_boundaries_follow_preceding_syllables_but_ignore_apostrophes() -> None:
