@@ -344,3 +344,55 @@ pass was absent, exposing `Bearer bare-secret` in an explicit error batch. The
 sanitizer now runs this dedicated bearer-token matcher after assignment
 redaction, preserving unrelated non-assignment prose. The focused Task 5 suite
 then passed 25 tests.
+
+## Fix Round 3
+
+### Finding Addressed
+
+The controller integration demo exposed double redaction:
+`OPENAI_API_KEY=[REDACTED]]; Bearer [REDACTED]]`. The exception handler had
+already sanitized its message before handing it to `_error_batch`, whose single
+responsibility is to sanitize every error message before storing it. A second
+pass treated `[REDACTED]` as a new token but did not consume the closing bracket.
+
+`generate()` now passes raw exception text to `_error_batch`; this factory is
+the sole sanitization boundary. Both assignment/header and standalone bearer
+patterns explicitly skip values already equal to `[REDACTED]`, making
+`_sanitize_error` idempotent as a defensive property for future callers.
+
+### RED/GREEN Evidence
+
+The focused RED run added exact-output and idempotence regressions. It failed
+with the observed doubled brackets for both the error-batch output and a second
+direct sanitizer invocation.
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/infrastructure/rap/test_generators.py \
+  tests/unit/infrastructure/rap/test_fallback.py -v
+# RED: 2 failures, both produced [REDACTED]]
+
+# GREEN
+# 27 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap -q --tb=no
+# 146 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/presentation/rap/test_rap_cli.py \
+  tests/unit/presentation/test_cli_config_parser.py \
+  tests/integration/test_cli_entry_point.py -q --tb=no
+# 24 passed; one existing pretty_midi/pkg_resources deprecation warning
+
+git diff --check
+# passed
+```
+
+### Fix-Round Self-Review
+
+- `_error_batch` is the only `generate()` path that calls `_sanitize_error`.
+- Exact output for assignment plus standalone bearer redaction has no extra
+  bracket and no secret value.
+- Applying `_sanitize_error` to its own output returns exactly the same text.

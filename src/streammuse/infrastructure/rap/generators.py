@@ -88,7 +88,7 @@ class LocalChatCandidateGenerator:
                 completion_tokens=diagnostics.completion_tokens,
             )
         except Exception as exc:
-            return _error_batch(request, prompt, _sanitize_error(str(exc)), diagnostics=diagnostics)
+            return _error_batch(request, prompt, str(exc), diagnostics=diagnostics)
 
 
 def _normalise_topic(topic: str) -> str:
@@ -214,9 +214,9 @@ def _response_diagnostics(response: object) -> tuple[_ResponseDiagnostics, tuple
 
 _SENSITIVE_ERROR_ASSIGNMENT = re.compile(
     r"(?i)\b(?P<name>(?:[a-z][a-z0-9_]*_)?(?:api[-_]?key|access[-_]?key(?:[-_]?id)?|key|token|password|secret|authorization))"
-    r"(?P<separator>\s*(?::|=)\s*)(?:bearer\s+)?[^\s,;}\]]+"
+    r"(?P<separator>\s*(?::|=)\s*)(?:bearer\s+)?(?!\[redacted\])[^\s,;}\]]+"
 )
-_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[^\s,;}\]]+")
+_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+(?!\[redacted\])[^\s,;}\]]+")
 
 
 def _sanitize_error(message: str) -> str:

@@ -7,7 +7,7 @@ import pytest
 from streammuse.domain.rap import CandidateBatch, CandidateRequest
 from streammuse.domain.tasks import ChatModelResponse
 from streammuse.infrastructure.rap import generators as generator_module
-from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator
+from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator, _sanitize_error
 
 
 class FailingClient:
@@ -326,6 +326,24 @@ def test_local_chat_redacts_a_standalone_bearer_token_without_hiding_other_prose
     assert "bare-secret" not in (batch.error_message or "")
     assert "Bearer [REDACTED]" in (batch.error_message or "")
     assert "ordinary non-assignment prose remains" in (batch.error_message or "")
+
+
+def test_local_chat_error_batch_sanitizes_secrets_exactly_once() -> None:
+    class FailingClient:
+        def generate(self, *args, **kwargs) -> object:
+            raise RuntimeError("OPENAI_API_KEY=api-secret; Bearer bearer-secret")
+
+    batch = LocalChatCandidateGenerator(FailingClient()).generate(request_for_bar())
+
+    assert batch.error_message == "OPENAI_API_KEY=[REDACTED]; Bearer [REDACTED]"
+
+
+def test_sanitize_error_is_idempotent_for_redacted_assignments_and_bearer_tokens() -> None:
+    raw = "OPENAI_API_KEY=api-secret; Bearer bearer-secret"
+    expected = "OPENAI_API_KEY=[REDACTED]; Bearer [REDACTED]"
+
+    assert _sanitize_error(raw) == expected
+    assert _sanitize_error(expected) == expected
 
 
 def test_candidate_batch_prompt_is_defensively_and_deeply_immutable() -> None:
