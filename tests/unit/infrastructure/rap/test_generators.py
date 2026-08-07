@@ -346,6 +346,28 @@ def test_sanitize_error_is_idempotent_for_redacted_assignments_and_bearer_tokens
     assert _sanitize_error(expected) == expected
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    (
+        ("OPENAI_API_KEY=api-secret", "OPENAI_API_KEY=[REDACTED]"),
+        ("OPENAI_API_KEY=[REDACTED]", "OPENAI_API_KEY=[REDACTED]"),
+        ("Authorization: Bearer auth-secret", "Authorization: [REDACTED]"),
+        ("Authorization: Bearer [REDACTED]", "Authorization: [REDACTED]"),
+        ("Bearer bearer-secret", "Bearer [REDACTED]"),
+        ("Bearer [REDACTED]", "Bearer [REDACTED]"),
+    ),
+)
+def test_sanitize_error_is_idempotent_for_raw_and_redacted_secret_forms(
+    message: str,
+    expected: str,
+) -> None:
+    sanitized = message
+
+    for _ in range(2):
+        sanitized = _sanitize_error(sanitized)
+        assert sanitized == expected
+
+
 def test_candidate_batch_prompt_is_defensively_and_deeply_immutable() -> None:
     message = {"role": "user", "content": "original"}
     batch = LocalChatCandidateGenerator(FakeClient("a line")).generate(request_for_bar())

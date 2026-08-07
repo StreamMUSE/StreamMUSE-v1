@@ -396,3 +396,69 @@ git diff --check
 - Exact output for assignment plus standalone bearer redaction has no extra
   bracket and no secret value.
 - Applying `_sanitize_error` to its own output returns exactly the same text.
+
+## Fix Round 4
+
+### Finding Addressed
+
+The assignment/header pattern's optional `Bearer` prefix could backtrack when
+the following value was already `[REDACTED]`. It then treated only `Bearer` as
+the raw assignment value and left the existing marker behind, producing
+`Authorization: [REDACTED] [REDACTED]`.
+
+Assignment/header values now use ordered whole-value alternatives for
+already-redacted values, raw bearer values, and raw non-bearer values. The
+standalone bearer matcher likewise consumes either the complete redaction
+marker or the complete raw token. This preserves the existing canonical
+outputs (`Authorization: [REDACTED]` for headers and `Bearer [REDACTED]` for
+standalone values), compound environment assignment coverage, and ordinary
+non-assignment prose.
+
+### RED/GREEN Evidence
+
+The new six-row matrix covers raw and already-redacted API assignments,
+authorization bearer headers, and standalone bearer values. Every row asserts
+the exact expected string after each of two sanitizer passes. Before the fix,
+the already-redacted authorization row failed as intended:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/infrastructure/rap/test_generators.py::test_sanitize_error_is_idempotent_for_raw_and_redacted_secret_forms -v
+# RED: 1 failed, 5 passed
+# Authorization: Bearer [REDACTED]
+# became Authorization: [REDACTED] [REDACTED]
+
+# GREEN after the regex fix: 6 passed
+```
+
+Final verification:
+
+```text
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/infrastructure/rap/test_generators.py \
+  tests/unit/infrastructure/rap/test_fallback.py -v
+# 33 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap -q --tb=no
+# 152 passed
+
+UV_CACHE_DIR=/tmp/streammuse-uv-cache uv run python -m pytest \
+  tests/unit/presentation/rap/test_rap_cli.py \
+  tests/unit/presentation/test_cli_config_parser.py \
+  tests/integration/test_cli_entry_point.py -q --tb=no
+# 24 passed; one existing pretty_midi/pkg_resources deprecation warning
+
+git diff --check
+# passed
+```
+
+### Fix-Round Self-Review
+
+- Raw and already-redacted assignment/header values are each consumed as one
+  complete match before replacement.
+- Raw and already-redacted standalone bearer values produce the same exact
+  output on consecutive sanitizer passes.
+- Existing compound secret assignments remain covered, and ordinary prose is
+  still outside the assignment/header matcher.

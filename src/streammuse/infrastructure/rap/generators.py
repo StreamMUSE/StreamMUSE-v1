@@ -212,11 +212,14 @@ def _response_diagnostics(response: object) -> tuple[_ResponseDiagnostics, tuple
     )
 
 
+# Keep a Bearer prefix and its token in one alternative so a redacted marker
+# cannot be left behind when the optional prefix would otherwise backtrack.
+_SENSITIVE_ERROR_VALUE = r"(?:(?:bearer\s+)?\[redacted\]|bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)"
 _SENSITIVE_ERROR_ASSIGNMENT = re.compile(
     r"(?i)\b(?P<name>(?:[a-z][a-z0-9_]*_)?(?:api[-_]?key|access[-_]?key(?:[-_]?id)?|key|token|password|secret|authorization))"
-    r"(?P<separator>\s*(?::|=)\s*)(?:bearer\s+)?(?!\[redacted\])[^\s,;}\]]+"
+    rf"(?P<separator>\s*(?::|=)\s*){_SENSITIVE_ERROR_VALUE}"
 )
-_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+(?!\[redacted\])[^\s,;}\]]+")
+_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+(?:\[redacted\]|[^\s,;}\]]+)")
 
 
 def _sanitize_error(message: str) -> str:
