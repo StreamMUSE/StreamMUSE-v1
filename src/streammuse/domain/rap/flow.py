@@ -40,6 +40,8 @@ class FlowTemplate:
     provenance: FlowProvenance
 
     def __post_init__(self) -> None:
+        if self.ticks_per_beat != 4 or self.beats_per_bar != 4:
+            raise ValueError("flow templates require four ticks per beat and four beats per bar")
         ticks_per_bar = self.ticks_per_beat * self.beats_per_bar
         ticks = [slot.tick_in_bar for slot in self.slots]
         if not self.template_id or not self.slots:

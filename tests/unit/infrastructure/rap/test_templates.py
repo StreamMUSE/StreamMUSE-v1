@@ -89,3 +89,32 @@ def test_load_scenario_rejects_invalid_dependency_assembly(tmp_path, payload: di
 
     with pytest.raises(ValueError):
         load_scenario(path)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "scenario_id": "string_loop",
+            "tempo_bpm": 92.0,
+            "loop": "false",
+            "segments": [{"start_bar": 0, "bars": 1, "topic": "space", "template_id": "baseline_straight_9", "fallback_lines": ["space dreams rise while bright stars cross dark night"]}],
+        },
+        {
+            "scenario_id": "fractional_bar",
+            "tempo_bpm": 92.0,
+            "segments": [{"start_bar": 0.5, "bars": 1, "topic": "space", "template_id": "baseline_straight_9", "fallback_lines": ["space dreams rise while bright stars cross dark night"]}],
+        },
+        {
+            "scenario_id": "null_topic",
+            "tempo_bpm": 92.0,
+            "segments": [{"start_bar": 0, "bars": 1, "topic": None, "template_id": "baseline_straight_9", "fallback_lines": ["space dreams rise while bright stars cross dark night"]}],
+        },
+    ),
+)
+def test_load_scenario_rejects_malformed_json_field_types(tmp_path, payload: dict[str, object]) -> None:
+    path = tmp_path / "malformed.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid scenario JSON"):
+        load_scenario(path)

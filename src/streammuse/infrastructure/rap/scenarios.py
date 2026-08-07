@@ -39,26 +39,63 @@ def _scenario_from_payload(payload: Any) -> RapScenario:
     if not isinstance(payload, dict):
         raise ValueError("scenario JSON must contain an object")
     try:
+        scenario_id = _require_string(payload, "scenario_id")
+        tempo_bpm = _require_number(payload, "tempo_bpm")
+        loop = _optional_bool(payload, "loop", default=True)
         raw_segments = payload["segments"]
         if not isinstance(raw_segments, list):
             raise ValueError("scenario segments must be a list")
         return RapScenario(
-            scenario_id=str(payload["scenario_id"]),
-            tempo_bpm=float(payload["tempo_bpm"]),
-            loop=bool(payload.get("loop", True)),
-            segments=tuple(
-                ScenarioSegment(
-                    start_bar=int(segment["start_bar"]),
-                    bars=int(segment["bars"]),
-                    topic=str(segment["topic"]),
-                    template_id=str(segment["template_id"]),
-                    fallback_lines=tuple(str(line) for line in segment["fallback_lines"]),
-                )
-                for segment in raw_segments
-            ),
+            scenario_id=scenario_id,
+            tempo_bpm=tempo_bpm,
+            loop=loop,
+            segments=tuple(_segment_from_payload(segment) for segment in raw_segments),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("invalid scenario JSON") from exc
+
+
+def _segment_from_payload(payload: Any) -> ScenarioSegment:
+    if not isinstance(payload, dict):
+        raise ValueError("scenario segment must be an object")
+    fallback_lines = payload["fallback_lines"]
+    if not isinstance(fallback_lines, list) or not all(isinstance(line, str) for line in fallback_lines):
+        raise ValueError("scenario fallback lines must be a list of strings")
+    return ScenarioSegment(
+        start_bar=_require_int(payload, "start_bar"),
+        bars=_require_int(payload, "bars"),
+        topic=_require_string(payload, "topic"),
+        template_id=_require_string(payload, "template_id"),
+        fallback_lines=tuple(fallback_lines),
+    )
+
+
+def _require_string(payload: dict[str, Any], key: str) -> str:
+    value = payload[key]
+    if not isinstance(value, str):
+        raise ValueError(f"scenario {key} must be a string")
+    return value
+
+
+def _require_int(payload: dict[str, Any], key: str) -> int:
+    value = payload[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"scenario {key} must be an integer")
+    return value
+
+
+def _require_number(payload: dict[str, Any], key: str) -> float:
+    value = payload[key]
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"scenario {key} must be a number")
+    return float(value)
+
+
+def _optional_bool(payload: dict[str, Any], key: str, *, default: bool) -> bool:
+    value = payload.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"scenario {key} must be a boolean")
+    return value
 
 
 def _validate_scenario(scenario: RapScenario, templates: TemplateCatalog) -> None:

@@ -67,3 +67,21 @@ def test_materialize_flow_rejects_negative_bar() -> None:
 
     with pytest.raises(ValueError, match="bar must not be negative"):
         materialize_flow(template, bar=-1)
+
+
+@pytest.mark.parametrize(
+    ("ticks_per_beat", "beats_per_bar"),
+    ((3, 4), (4, 3)),
+)
+def test_flow_template_requires_four_ticks_per_beat_and_four_beats_per_bar(
+    ticks_per_beat: int, beats_per_bar: int
+) -> None:
+    with pytest.raises(ValueError, match="flow templates require four ticks per beat and four beats per bar"):
+        FlowTemplate(
+            template_id="wrong_timing",
+            name="Wrong timing",
+            ticks_per_beat=ticks_per_beat,
+            beats_per_bar=beats_per_bar,
+            slots=(FlowSlot(tick_in_bar=0, duration_ticks=1, target_stress=1.0),),
+            provenance=FlowProvenance(kind="test", source="unit-test"),
+        )
