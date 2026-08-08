@@ -20,6 +20,7 @@ class TerminalRapBarView:
     flow: Mapping[str, Any] | None
     text: str | None
     source: str | None
+    fallback: bool | None
     fallback_reason: str | None
     frozen: bool
     scheduled_syllables: tuple[Mapping[str, Any], ...]
@@ -99,6 +100,7 @@ class TerminalRapStateProjector:
         self._current_tick: int | None = None
         self._bars: OrderedDict[int, TerminalRapBarView] = OrderedDict()
         self._latest_request: TerminalRapRequestView | None = None
+        self._active_request_id: str | None = None
         self._latest_batch: TerminalRapBatchView | None = None
         self._candidates: OrderedDict[str, TerminalRapCandidateView] = OrderedDict()
         self._current_syllable: Mapping[str, Any] | None = None
@@ -126,23 +128,24 @@ class TerminalRapStateProjector:
             elif kind == RapEventType.SESSION_STOPPED:
                 self._stopped = True
             elif kind == RapEventType.BAR_RESERVED:
-                self._update_bar(event, frozen=False)
+                self._update_bar(event, frozen=False, ignore_if_frozen=True)
             elif kind == RapEventType.BAR_PLANNING_STARTED:
                 self._latest_request = _request_view(event)
+                self._active_request_id = event.request_id if isinstance(event.request_id, str) else None
                 self._latest_batch = None
                 self._candidates.clear()
                 self._update_bar(event)
-            elif kind == RapEventType.CANDIDATE_BATCH_RECEIVED:
+            elif kind == RapEventType.CANDIDATE_BATCH_RECEIVED and self._matches_active_request(event):
                 self._latest_batch = _batch_view(event)
-            elif kind == RapEventType.CANDIDATE_EVALUATED:
+            elif kind == RapEventType.CANDIDATE_EVALUATED and self._matches_active_request(event):
                 candidate = _candidate_view(event)
                 key = candidate.candidate_id or f"sequence-{event.sequence}"
                 self._candidates[key] = candidate
                 self._candidates.move_to_end(key)
                 while len(self._candidates) > self._candidate_limit:
                     self._candidates.popitem(last=False)
-            elif kind == RapEventType.BAR_REPLACED:
-                self._update_bar(event)
+            elif kind == RapEventType.BAR_REPLACED and self._matches_active_request(event):
+                self._update_bar(event, ignore_if_frozen=True)
             elif kind == RapEventType.BAR_FROZEN:
                 self._update_bar(event, frozen=True)
             elif kind == RapEventType.FALLBACK_ACTIVATED:
@@ -156,26 +159,42 @@ class TerminalRapStateProjector:
                 self._last_error = event_view
             return self._snapshot()
 
-    def _update_bar(self, event: RapEvent, *, frozen: bool | None = None) -> None:
+    def _matches_active_request(self, event: RapEvent) -> bool:
+        return self._active_request_id is not None and event.request_id == self._active_request_id
+
+    def _update_bar(
+        self,
+        event: RapEvent,
+        *,
+        frozen: bool | None = None,
+        ignore_if_frozen: bool = False,
+    ) -> None:
         if event.bar is None:
             return
         old = self._bars.get(event.bar)
+        if ignore_if_frozen and old is not None and old.frozen:
+            return
         payload = event.payload
-        flow = _freeze(payload["flow"]) if "flow" in payload else (old.flow if old else None)
-        scheduled = (
-            tuple(_freeze(item) for item in payload["scheduled_syllables"])
-            if "scheduled_syllables" in payload
-            else (old.scheduled_syllables if old else ())
-        )
+        flow = _mapping_value(payload.get("flow")) if "flow" in payload else (old.flow if old else None)
+        if flow is None and old is not None:
+            flow = old.flow
+        scheduled = _mapping_sequence(payload.get("scheduled_syllables")) if "scheduled_syllables" in payload else None
+        if scheduled is None:
+            scheduled = old.scheduled_syllables if old else ()
+        fallback = old.fallback if old else None
+        if "fallback" in payload and isinstance(payload["fallback"], bool):
+            fallback = payload["fallback"]
+        fallback_reason = old.fallback_reason if old else None
+        if "fallback_reason" in payload and (payload["fallback_reason"] is None or isinstance(payload["fallback_reason"], str)):
+            fallback_reason = payload["fallback_reason"]
         view = TerminalRapBarView(
             bar=event.bar,
             topic=_string(payload.get("topic")) if "topic" in payload else (old.topic if old else None),
             flow=flow,
             text=_string(payload.get("text")) if "text" in payload else (old.text if old else None),
             source=_string(payload.get("source")) if "source" in payload else (old.source if old else None),
-            fallback_reason=(
-                _string(payload.get("fallback_reason")) if "fallback_reason" in payload else (old.fallback_reason if old else None)
-            ),
+            fallback=fallback,
+            fallback_reason=fallback_reason,
             frozen=frozen if frozen is not None else (old.frozen if old else False),
             scheduled_syllables=scheduled,
         )
@@ -212,7 +231,7 @@ def _request_view(event: RapEvent) -> TerminalRapRequestView:
         candidate_count=_integer(payload.get("candidate_count")),
         context_lines=tuple(item for item in context if isinstance(item, str)) if isinstance(context, (list, tuple)) else (),
         seed=_integer(payload.get("seed")),
-        flow=_freeze(payload["flow"]) if isinstance(payload.get("flow"), Mapping) else None,
+        flow=_mapping_value(payload.get("flow")),
     )
 
 
@@ -223,7 +242,7 @@ def _batch_view(event: RapEvent) -> TerminalRapBatchView:
         request_id=event.request_id,
         bar=event.bar,
         source=_string(event.payload.get("source")),
-        prompt=tuple(_freeze(item) for item in prompt) if isinstance(prompt, (list, tuple)) else (),
+        prompt=_prompt_items(prompt),
         raw_response=_string(event.payload.get("raw_response")),
         payload=payload,
     )
@@ -248,14 +267,32 @@ def _event_view(event: RapEvent) -> TerminalRapEventView:
 
 
 def _freeze(value: Any) -> Any:
-    value = deepcopy(value)
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
     if isinstance(value, list):
         return tuple(_freeze(item) for item in value)
     if isinstance(value, tuple):
         return tuple(_freeze(item) for item in value)
-    return value
+    try:
+        return deepcopy(value)
+    except Exception:
+        return repr(value)
+
+
+def _mapping_value(value: object) -> Mapping[str, Any] | None:
+    return _freeze(value) if isinstance(value, Mapping) else None
+
+
+def _mapping_sequence(value: object) -> tuple[Mapping[str, Any], ...] | None:
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, Mapping) for item in value):
+        return None
+    return tuple(_freeze(item) for item in value)
+
+
+def _prompt_items(value: object) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(_freeze(item) for item in value if isinstance(item, Mapping))
 
 
 def _string(value: object) -> str | None:

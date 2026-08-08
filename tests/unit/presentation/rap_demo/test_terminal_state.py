@@ -6,8 +6,16 @@ from streammuse.domain.rap import RapEvent, RapEventType
 from streammuse.presentation.rap_demo.terminal_state import TerminalRapStateProjector
 
 
-def _event(sequence: int, event_type: RapEventType, payload: dict, *, bar: int | None = 1, tick: int | None = 16) -> RapEvent:
-    return RapEvent("session", sequence, event_type, "2026-08-08T00:00:00+00:00", sequence, bar, tick, "request-1", payload)
+def _event(
+    sequence: int,
+    event_type: RapEventType,
+    payload: dict,
+    *,
+    bar: int | None = 1,
+    tick: int | None = 16,
+    request_id: str | None = "request-1",
+) -> RapEvent:
+    return RapEvent("session", sequence, event_type, "2026-08-08T00:00:00+00:00", sequence, bar, tick, request_id, payload)
 
 
 def test_projector_tracks_structured_request_candidates_and_bounded_history() -> None:
@@ -48,3 +56,66 @@ def test_projector_copies_nested_event_payloads() -> None:
     state = projector.state
     assert state.latest_request.flow["template_id"] == "original"
     assert state.latest_request.context_lines == ()
+
+
+def test_projector_ignores_stale_request_results_but_preserves_them_in_history() -> None:
+    projector = TerminalRapStateProjector()
+    projector.apply(_event(1, RapEventType.BAR_RESERVED, {"text": "fallback", "fallback": True}, request_id=None))
+    projector.apply(_event(2, RapEventType.BAR_PLANNING_STARTED, {"flow": {"template_id": "r1"}}, request_id="r1"))
+    projector.apply(_event(3, RapEventType.BAR_PLANNING_STARTED, {"flow": {"template_id": "r2"}}, request_id="r2"))
+    projector.apply(_event(4, RapEventType.CANDIDATE_BATCH_RECEIVED, {"prompt": [{"role": "system"}]}, request_id="r1"))
+    projector.apply(_event(5, RapEventType.CANDIDATE_EVALUATED, {"candidate_id": "stale"}, request_id="r1"))
+    projector.apply(_event(6, RapEventType.BAR_REPLACED, {"text": "stale", "fallback": False}, request_id="r1"))
+
+    state = projector.state
+    assert state.latest_request.request_id == "r2"
+    assert state.latest_batch is None
+    assert state.candidates == ()
+    assert state.bars[1].text == "fallback"
+    assert [event.request_id for event in state.recent_events[-3:]] == ["r1", "r1", "r1"]
+
+
+def test_projector_never_replaces_or_reserves_a_frozen_bar_and_clears_fallback() -> None:
+    projector = TerminalRapStateProjector()
+    projector.apply(_event(1, RapEventType.BAR_RESERVED, {"text": "fallback", "fallback": True, "fallback_reason": "generation_pending"}, request_id=None))
+    projector.apply(_event(2, RapEventType.BAR_PLANNING_STARTED, {}, request_id="r1"))
+    projector.apply(_event(3, RapEventType.BAR_REPLACED, {"text": "selected", "fallback": False, "fallback_reason": None}, request_id="r1"))
+    selected = projector.state.bars[1]
+    assert selected.fallback is False
+    assert selected.fallback_reason is None
+    projector.apply(_event(4, RapEventType.BAR_FROZEN, {"text": "selected", "fallback": False}, request_id="r1"))
+    projector.apply(_event(5, RapEventType.BAR_RESERVED, {"text": "late reserve", "fallback": True}, request_id=None))
+    projector.apply(_event(6, RapEventType.BAR_REPLACED, {"text": "late replacement", "fallback": False}, request_id="r1"))
+
+    frozen = projector.state.bars[1]
+    assert frozen.frozen is True
+    assert frozen.text == "selected"
+    assert frozen.fallback is False
+
+
+def test_projector_ignores_malformed_structured_values_without_losing_raw_trace() -> None:
+    projector = TerminalRapStateProjector()
+    projector.apply(
+        _event(
+            1,
+            RapEventType.BAR_RESERVED,
+            {"flow": ["not-a-mapping"], "scheduled_syllables": None},
+            request_id=None,
+        )
+    )
+    projector.apply(_event(2, RapEventType.BAR_PLANNING_STARTED, {"flow": ["not-a-mapping"]}, request_id="r1"))
+    projector.apply(
+        _event(
+            3,
+            RapEventType.CANDIDATE_BATCH_RECEIVED,
+            {"prompt": [{"role": "system"}, "not-a-mapping"]},
+            request_id="r1",
+        )
+    )
+
+    state = projector.state
+    assert state.bars[1].flow is None
+    assert state.bars[1].scheduled_syllables == ()
+    assert state.latest_request.flow is None
+    assert state.latest_batch.prompt == ({"role": "system"},)
+    assert state.recent_events[-1].payload["prompt"][1] == "not-a-mapping"

@@ -237,6 +237,7 @@ class RollingRapController:
                     "topic": segment.topic,
                     "template_id": template.template_id,
                     "flow": flow_template_payload(template),
+                    "fallback": True,
                     "fallback_reason": reason,
                 },
             )
@@ -429,6 +430,8 @@ class RollingRapController:
                 "total_score": selected.total_score,
                 "flow": flow_template_payload(target.template),
                 "scheduled_syllables": scheduled_syllables_payload(selected.scheduled, bar=target_bar),
+                "fallback": False,
+                "fallback_reason": None,
             },
         )
 

@@ -242,6 +242,9 @@ def test_controller_events_include_structured_request_flow_and_alignment() -> No
     assert replaced["scheduled_syllables"][0]["tick_in_bar"] == 0
     assert frozen["scheduled_syllables"][0]["slot_index"] == 0
     assert frozen["flow"]["template_id"] == "one_slot"
+    assert reserved["fallback"] is True
+    assert replaced["fallback"] is False
+    assert replaced["fallback_reason"] is None
 
 
 def test_realtime_request_owns_the_reserved_template_used_for_ranking() -> None:

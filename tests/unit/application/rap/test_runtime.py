@@ -1,5 +1,8 @@
 """Tests for the standalone rap tick loop."""
 
+from collections import UserDict
+from types import MappingProxyType
+
 import pytest
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
@@ -130,3 +133,31 @@ def test_demo_dependencies_reject_nonpositive_repetition_window(tmp_path) -> Non
     dispatcher = RapEventDispatcher(publisher.queue, sinks=())
     with pytest.raises(ValueError, match="repetition_window_bars"):
         RapDemoDependencies(Tempo(120.0, 4, 4), Controller(), publisher, dispatcher, TickLoop(), tmp_path, 0)
+
+
+def test_demo_session_metadata_recursively_freezes_mapping_proxy_and_user_dict(tmp_path) -> None:
+    class Controller:
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class TickLoop:
+        def run(self, max_ticks: int | None = None) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    nested = UserDict({"lines": [{"text": "original"}]})
+    metadata = MappingProxyType({"nested": [nested, (MappingProxyType({"mode": "split"}),)]})
+    publisher = RapEventPublisher("session")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=())
+    dependencies = RapDemoDependencies(
+        Tempo(120.0, 4, 4), Controller(), publisher, dispatcher, TickLoop(), tmp_path, session_metadata=metadata,
+    )
+    nested["lines"][0]["text"] = "mutated"
+
+    assert dependencies.session_metadata["nested"][0]["lines"][0]["text"] == "original"
+    assert dependencies.session_metadata["nested"][1][0]["mode"] == "split"

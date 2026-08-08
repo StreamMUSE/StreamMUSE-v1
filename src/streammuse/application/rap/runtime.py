@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from copy import deepcopy
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 from threading import Event
 from types import MappingProxyType
@@ -72,7 +72,7 @@ class RapDemoDependencies:
             raise ValueError("repetition_window_bars must be a positive integer")
         if not isinstance(self.session_metadata, Mapping):
             raise ValueError("session_metadata must be a mapping")
-        self.session_metadata = _freeze_metadata(deepcopy(dict(self.session_metadata)))
+        self.session_metadata = _freeze_metadata(self.session_metadata)
 
     def run(self, *, max_bars: int) -> None:
         payload = _thaw_metadata(self.session_metadata)
@@ -106,13 +106,24 @@ class RapDemoDependencies:
 
 
 def _freeze_metadata(value: Any) -> Any:
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, Mapping):
+        frozen: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("session_metadata keys must be strings")
+            frozen[key] = _freeze_metadata(item)
+        return MappingProxyType(frozen)
     if isinstance(value, list):
         return tuple(_freeze_metadata(item) for item in value)
     if isinstance(value, tuple):
         return tuple(_freeze_metadata(item) for item in value)
-    return value
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float) and isfinite(value):
+        return value
+    raise ValueError("session_metadata must contain JSON-compatible values")
 
 
 def _thaw_metadata(value: Any) -> Any:
@@ -120,4 +131,4 @@ def _thaw_metadata(value: Any) -> Any:
         return {key: _thaw_metadata(item) for key, item in value.items()}
     if isinstance(value, tuple):
         return [_thaw_metadata(item) for item in value]
-    return deepcopy(value)
+    return value
