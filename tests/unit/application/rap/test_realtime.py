@@ -175,6 +175,10 @@ def _types(events) -> list[str]:
     return [event.event_type.value for event in events]
 
 
+def _payload_for_bar(events, event_type: str, bar: int):
+    return next(event.payload for event in events if event.event_type.value == event_type and event.bar == bar)
+
+
 def test_start_reserves_prevalidated_fallback_through_lookahead() -> None:
     controller, _emitted, events, dispatcher = _controller(lookahead_bars=2)
     controller.start()
@@ -217,6 +221,27 @@ def test_valid_primary_replaces_only_unfrozen_reservation_and_logs_components() 
     assert evaluated.payload["selected"] is True
     assert evaluated.payload["components"]
     assert evaluated.payload["word_analysis_sources"] == [{"word": "space", "source": "cmudict_first_pronunciation"}]
+
+
+def test_controller_events_include_structured_request_flow_and_alignment() -> None:
+    executor = ManualExecutor()
+    controller, _emitted, events, dispatcher = _controller(primary=FixedGenerator(), executor=executor)
+    controller.start()
+    executor.complete()
+    controller.on_tick(0)
+    _finish(controller, dispatcher)
+
+    reserved = _payload_for_bar(events, "bar_reserved", 1)
+    planning = _payload_for_bar(events, "bar_planning_started", 1)
+    replaced = _payload_for_bar(events, "bar_replaced", 1)
+    frozen = _payload_for_bar(events, "bar_frozen", 0)
+    assert reserved["flow"]["slots"][0]["tick_in_bar"] == 0
+    assert planning["context_lines"] == []
+    assert planning["seed"] == 8
+    assert planning["flow"]["template_id"] == "one_slot"
+    assert replaced["scheduled_syllables"][0]["tick_in_bar"] == 0
+    assert frozen["scheduled_syllables"][0]["slot_index"] == 0
+    assert frozen["flow"]["template_id"] == "one_slot"
 
 
 def test_realtime_request_owns_the_reserved_template_used_for_ranking() -> None:

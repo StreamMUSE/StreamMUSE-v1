@@ -10,6 +10,7 @@ from typing import Callable
 
 from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.monitoring import RapEventPublisher
+from streammuse.application.rap.monitoring_payloads import flow_template_payload, scheduled_syllables_payload
 from streammuse.application.rap.scoring import rank_candidates
 from streammuse.application.rap.service import CandidateGenerator, ProsodyAnalyzer
 from streammuse.domain.rap import (
@@ -235,6 +236,7 @@ class RollingRapController:
                     "text": fallback.text,
                     "topic": segment.topic,
                     "template_id": template.template_id,
+                    "flow": flow_template_payload(template),
                     "fallback_reason": reason,
                 },
             )
@@ -264,6 +266,9 @@ class RollingRapController:
                 "template_id": target.template.template_id,
                 "required_syllables": request.required_syllables,
                 "candidate_count": request.count,
+                "context_lines": list(request.context_lines),
+                "seed": request.seed,
+                "flow": flow_template_payload(request.flow_template),
             },
         )
         self._future = self._executor.submit(self._generate_and_rank, request, target.segment, history, anchors)
@@ -422,6 +427,8 @@ class RollingRapController:
                 "text": selected.text,
                 "candidate_id": selected.candidate_id,
                 "total_score": selected.total_score,
+                "flow": flow_template_payload(target.template),
+                "scheduled_syllables": scheduled_syllables_payload(selected.scheduled, bar=target_bar),
             },
         )
 
@@ -444,6 +451,8 @@ class RollingRapController:
             "fallback_reason": bar.fallback_reason,
             "topic": bar.segment.topic,
             "template_id": bar.template.template_id,
+            "flow": flow_template_payload(bar.template),
+            "scheduled_syllables": scheduled_syllables_payload(bar.scheduled, bar=bar_index),
         }
         self._event(RapEventType.BAR_FROZEN, bar=bar_index, tick=tick, request_id=bar.request_id, payload=payload)
         if fallback:

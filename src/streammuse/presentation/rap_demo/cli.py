@@ -111,7 +111,29 @@ def build_demo(
         monotonic=clock,
     )
     tick_loop = RapTickLoop(tempo, on_tick=controller.on_tick, clock=clock, sleep=sleep)
-    return RapDemoDependencies(tempo, controller, publisher, dispatcher, tick_loop, session_dir)
+    session_metadata = {
+        key: manifest[key]
+        for key in (
+            "scenario_id",
+            "generator",
+            "model_url",
+            "model",
+            "candidate_count",
+            "lookahead_bars",
+            "minimum_score",
+            "seed",
+            "score_weights",
+        )
+    }
+    return RapDemoDependencies(
+        tempo,
+        controller,
+        publisher,
+        dispatcher,
+        tick_loop,
+        session_dir,
+        session_metadata=session_metadata,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

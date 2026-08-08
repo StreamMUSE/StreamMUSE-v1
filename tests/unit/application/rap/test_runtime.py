@@ -76,6 +76,41 @@ def test_demo_session_start_records_resolved_repetition_window(tmp_path) -> None
     assert events[0].payload["repetition_window_bars"] == 7
 
 
+def test_demo_session_metadata_is_copied_and_cannot_override_canonical_values(tmp_path) -> None:
+    class Controller:
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class TickLoop:
+        def run(self, max_ticks: int | None = None) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    metadata = {"scenario_id": "default_research_demo", "generator": "local_chat", "tempo_bpm": 1.0}
+    events = []
+    publisher = RapEventPublisher("session")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(events.append,))
+    dispatcher.start()
+    dependencies = RapDemoDependencies(
+        Tempo(120.0, 4, 4), Controller(), publisher, dispatcher, TickLoop(), tmp_path,
+        repetition_window_bars=7, session_metadata=metadata,
+    )
+    metadata["scenario_id"] = "mutated"
+    dependencies.run(max_bars=3)
+
+    assert dependencies.session_metadata["scenario_id"] == "default_research_demo"
+    assert events[0].payload["scenario_id"] == "default_research_demo"
+    assert events[0].payload["tempo_bpm"] == 120.0
+    assert events[0].payload["ticks_per_beat"] == 4
+    assert events[0].payload["beats_per_bar"] == 4
+    assert events[0].payload["max_bars"] == 3
+
+
 def test_demo_dependencies_reject_nonpositive_repetition_window(tmp_path) -> None:
     class Controller:
         def start(self) -> None:
