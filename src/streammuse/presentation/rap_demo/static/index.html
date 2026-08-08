@@ -3,106 +3,200 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>StreamMUSE Rap Research Monitor</title>
-    <link rel="stylesheet" href="/static/css/rap-demo.css">
-    <script src="/static/js/rap-demo.js" defer></script>
+    <title>StreamMUSE Rap Lab</title>
+    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20260809-4">
+    <script src="/static/js/rap-demo.js?v=20260809-4" defer></script>
   </head>
   <body>
-    <header class="topbar">
-      <div class="identity">
+    <header class="app-header">
+      <div class="brand-block">
         <span class="wordmark">StreamMUSE</span>
-        <h1>Rap Research Monitor</h1>
+        <span class="product-name">Rap Lab</span>
       </div>
-      <div class="connection" id="connection" data-state="connecting">
-        <span class="connection-mark" aria-hidden="true"></span>
-        <span id="connection-label">Connecting</span>
+      <div class="header-center" aria-label="Session identity">
+        <span class="session-label">Session</span>
+        <strong id="session-id">--</strong>
+        <span class="header-divider" aria-hidden="true"></span>
+        <span id="generator">--</span>
+        <span class="header-divider" aria-hidden="true"></span>
+        <span id="model">--</span>
       </div>
-      <dl class="session-identity">
-        <div><dt>Session</dt><dd id="session-id">--</dd></div>
-        <div><dt>Generator</dt><dd id="generator">--</dd></div>
-        <div><dt>Model</dt><dd id="model">--</dd></div>
-      </dl>
+      <div class="header-actions">
+        <label class="follow-control" for="follow-live">
+          <input id="follow-live" type="checkbox" checked>
+          <span>Follow live</span>
+        </label>
+        <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite">
+          <span class="connection-mark" aria-hidden="true"></span>
+          <span id="connection-label">Connecting</span>
+        </div>
+      </div>
     </header>
 
     <main>
-      <section class="telemetry" aria-label="Live session telemetry">
+      <section class="telemetry-band" aria-label="Live session telemetry">
         <div><span>State</span><strong id="session-state">waiting</strong></div>
         <div><span>Tempo</span><strong id="tempo">--</strong></div>
-        <div><span>Tick</span><strong id="tick">--</strong></div>
         <div><span>Bar</span><strong id="bar">--</strong></div>
-        <div class="wide"><span>Topic</span><strong id="topic">--</strong></div>
-        <div class="wide"><span>Flow template</span><strong id="template">--</strong></div>
+        <div><span>Tick</span><strong id="tick">--</strong></div>
+        <div class="telemetry-wide"><span>Topic</span><strong id="topic">--</strong></div>
+        <div class="telemetry-wide"><span>Flow template</span><strong id="template">--</strong></div>
         <div><span>Generator</span><strong id="generator-state">idle</strong></div>
+        <div><span>Session limit</span><strong id="max-bars">--</strong></div>
       </section>
 
-      <div class="primary-grid">
-        <section class="performance-pane" aria-labelledby="performance-title">
-          <div class="section-heading">
-            <div><span class="eyebrow">Now performing</span><h2 id="performance-title">Current bar</h2></div>
+      <div class="workspace-grid">
+        <section class="workspace-panel performance-panel" aria-labelledby="performance-title">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Live delivery</span>
+              <h1 id="performance-title">Bar <span id="performance-bar">--</span></h1>
+            </div>
             <span class="source-badge" id="source-badge">UNRESOLVED</span>
           </div>
-          <p class="selected-line" id="selected-line">Waiting for the first frozen bar.</p>
-          <dl class="decision-grid">
+
+          <div class="delivery-line" aria-live="polite">
+            <p class="selected-line" id="selected-line">Waiting for the first frozen bar.</p>
+            <div class="syllable-readout">
+              <span>Now</span>
+              <strong id="current-syllable">--</strong>
+              <small id="current-syllable-detail">beat -- · stress -- · jitter --</small>
+            </div>
+          </div>
+
+          <dl class="decision-strip">
             <div><dt>Source</dt><dd id="source">--</dd></div>
-            <div><dt>Score</dt><dd id="total-score">--</dd></div>
+            <div><dt>Selected score</dt><dd id="total-score">--</dd></div>
             <div><dt>Generation</dt><dd id="generation-latency">--</dd></div>
             <div><dt>Deadline slack</dt><dd id="deadline-slack">--</dd></div>
-            <div class="span-two"><dt>Fallback reason</dt><dd id="fallback-reason">none</dd></div>
+            <div><dt>Fallback reason</dt><dd id="fallback-reason">none</dd></div>
           </dl>
 
-          <div class="flow-heading">
-            <h3>Beat-aligned flow</h3>
-            <span id="flow-meter">4 beats / 16 ticks</span>
+          <div class="flow-header">
+            <div>
+              <h2>Beat-aligned flow</h2>
+              <span id="flow-meter">4 beats / 16 ticks</span>
+            </div>
+            <div class="flow-legend" aria-label="Flow legend">
+              <span><i class="legend-stress"></i>stress</span>
+              <span><i class="legend-playhead"></i>playing</span>
+              <span><i class="legend-boundary"></i>boundary</span>
+            </div>
           </div>
-          <div class="flow-track" id="flow-track" aria-label="Sixteen tick flow timeline"></div>
-          <div class="flow-legend" aria-label="Flow legend">
-            <span><i class="legend-slot"></i>syllable slot</span>
-            <span><i class="legend-stress"></i>target stress</span>
-            <span><i class="legend-playhead"></i>active tick</span>
+          <div class="flow-rail" role="region" aria-label="Beat-aligned syllable timeline" tabindex="0">
+            <div class="flow-track" id="flow-track"></div>
+          </div>
+
+          <div class="flow-facts-grid">
+            <section class="facts-block" aria-labelledby="flow-exact-title">
+              <h3 id="flow-exact-title">Exact template arrays</h3>
+              <dl class="facts-list" id="flow-exact">
+                <div><dt>Ticks</dt><dd>--</dd></div>
+                <div><dt>Durations</dt><dd>--</dd></div>
+                <div><dt>Stress</dt><dd>--</dd></div>
+                <div><dt>Boundaries</dt><dd>--</dd></div>
+                <div><dt>Rhyme groups</dt><dd>--</dd></div>
+              </dl>
+            </section>
+            <section class="facts-block" aria-labelledby="flow-provenance-title">
+              <h3 id="flow-provenance-title">Template provenance</h3>
+              <dl class="facts-list" id="flow-provenance">
+                <div><dt>ID</dt><dd>--</dd></div>
+                <div><dt>Meter</dt><dd>--</dd></div>
+                <div><dt>Source</dt><dd>--</dd></div>
+              </dl>
+            </section>
           </div>
         </section>
 
-        <section class="context-pane" aria-labelledby="context-title">
-          <div class="section-heading">
-            <div><span class="eyebrow">Generator input</span><h2 id="context-title">Exact LLM context</h2></div>
+        <aside class="workspace-panel audit-panel" aria-labelledby="audit-title">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Generation audit</span>
+              <h2 id="audit-title">Model round</h2>
+            </div>
             <span class="request-id" id="request-id">no request</span>
           </div>
-          <pre class="prompt" id="prompt">No prompt received.</pre>
+
           <dl class="request-grid">
             <div><dt>Target bar</dt><dd id="request-bar">--</dd></div>
             <div><dt>Required syllables</dt><dd id="required-syllables">--</dd></div>
-            <div><dt>Requested candidates</dt><dd id="requested-candidates">--</dd></div>
+            <div><dt>Candidates</dt><dd id="requested-candidates">--</dd></div>
             <div><dt>Seed</dt><dd id="request-seed">--</dd></div>
-            <div><dt>Prompt tokens</dt><dd id="prompt-tokens">--</dd></div>
-            <div><dt>Completion tokens</dt><dd id="completion-tokens">--</dd></div>
-            <div><dt>Generator warning</dt><dd id="batch-warning">none</dd></div>
           </dl>
-        </section>
+
+          <section class="audit-block" aria-labelledby="context-lines-title">
+            <h3 id="context-lines-title">Frozen context</h3>
+            <ol class="context-lines" id="context-lines"><li>No previous lines.</li></ol>
+          </section>
+
+          <details class="audit-disclosure" open>
+            <summary>Exact LLM prompt</summary>
+            <pre class="code-output prompt" id="prompt">No prompt received.</pre>
+          </details>
+
+          <details class="audit-disclosure" open>
+            <summary>Raw model response</summary>
+            <pre class="code-output response-output" id="raw-response">No response received.</pre>
+          </details>
+
+          <section class="audit-block response-block" aria-labelledby="response-title">
+            <h3 id="response-title">Response diagnostics</h3>
+            <dl class="facts-list" id="response-status">
+              <div><dt>Source</dt><dd>--</dd></div>
+              <div><dt>Status</dt><dd>waiting</dd></div>
+              <div><dt>Tokens</dt><dd>--</dd></div>
+              <div><dt>Warning</dt><dd>none</dd></div>
+            </dl>
+            <span class="visually-hidden" id="prompt-tokens">--</span>
+            <span class="visually-hidden" id="completion-tokens">--</span>
+            <span class="visually-hidden" id="batch-warning">none</span>
+          </section>
+        </aside>
       </div>
 
-      <section class="metric-strip" aria-label="Cumulative research metrics">
-        <div><span>Candidate yield</span><strong id="candidate-yield">0 / 0</strong></div>
-        <div><span>Fallback rate</span><strong id="fallback-rate">0.0%</strong></div>
-        <div><span>Deadline miss rate</span><strong id="deadline-rate">0.0%</strong></div>
-        <div><span>Pronunciation fallback</span><strong id="pronunciation-rate">0.0%</strong></div>
-        <div><span>Emission jitter p95</span><strong id="jitter-p95">--</strong></div>
+      <section class="status-band" aria-label="Queue and health">
+        <div><span>Next reserved bar</span><strong id="next-bar">--</strong></div>
+        <div><span>Model health</span><strong id="model-health">waiting</strong></div>
+        <div class="status-error"><span>Last error</span><strong id="last-error">none</strong></div>
       </section>
 
-      <section class="data-section" aria-labelledby="candidates-title">
-        <div class="section-heading table-heading">
-          <div><span class="eyebrow">Current generation round</span><h2 id="candidates-title">Candidate evaluations</h2></div>
-          <span id="candidate-count">0 candidates</span>
+      <section class="data-panel candidates-panel" aria-labelledby="candidates-title">
+        <div class="panel-heading table-heading">
+          <div>
+            <span class="eyebrow">Current generation round</span>
+            <h2 id="candidates-title">Candidate gate and ranking</h2>
+          </div>
+          <div class="candidate-tools">
+            <span id="candidate-count">0 candidates</span>
+            <label class="mobile-sort" for="candidate-sort">
+              <span>Sort</span>
+              <select id="candidate-sort">
+                <option value="total_score:-1">Score: high to low</option>
+                <option value="total_score:1">Score: low to high</option>
+                <option value="selected:-1">Selected first</option>
+                <option value="valid:-1">Valid first</option>
+                <option value="syllable_count:1">Syllable count</option>
+                <option value="text:1">Text: A to Z</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="selected-score-panel">
+          <span class="selected-score-label">Winning score</span>
+          <dl class="selected-score" id="selected-score"><div><dt>Waiting</dt><dd>--</dd></div></dl>
         </div>
         <div class="table-scroll">
           <table id="candidate-table">
             <thead>
               <tr>
                 <th><button type="button" data-sort="selected">Pick</button></th>
+                <th>Candidate ID</th>
                 <th><button type="button" data-sort="text">Raw text</button></th>
                 <th><button type="button" data-sort="syllable_count">Syllables</button></th>
-                <th><button type="button" data-sort="valid">Valid</button></th>
+                <th><button type="button" data-sort="valid">Gate</button></th>
                 <th><button type="button" data-sort="total_score">Total</button></th>
-                <th>Component scores</th>
+                <th>Component value × weight = contribution</th>
                 <th>Rejection reasons</th>
                 <th>OOV / fallback words</th>
               </tr>
@@ -112,25 +206,37 @@
         </div>
       </section>
 
-      <div class="secondary-grid">
-        <section class="data-section" aria-labelledby="history-title">
-          <div class="section-heading table-heading">
+      <section class="metric-band" aria-label="Cumulative research metrics">
+        <div><span>Candidate yield</span><strong id="candidate-yield">0 / 0</strong></div>
+        <div><span>Fallback rate</span><strong id="fallback-rate">0.0%</strong></div>
+        <div><span>Deadline misses</span><strong id="deadline-rate">0.0%</strong></div>
+        <div><span>Generator errors</span><strong id="generator-error-rate">0.0%</strong></div>
+        <div><span>Pronunciation fallback</span><strong id="pronunciation-rate">0.0%</strong></div>
+        <div><span>Generation p50</span><strong id="generation-p50">--</strong></div>
+        <div><span>Generation p95</span><strong id="generation-p95">--</strong></div>
+        <div><span>Emission jitter p95</span><strong id="jitter-p95">--</strong></div>
+      </section>
+
+      <div class="evidence-grid">
+        <section class="data-panel history-panel" aria-labelledby="history-title">
+          <div class="panel-heading table-heading">
             <div><span class="eyebrow">Committed output</span><h2 id="history-title">Frozen-bar history</h2></div>
           </div>
           <div class="table-scroll compact-scroll">
             <table>
-              <thead><tr><th>Bar</th><th>Line</th><th>Source</th><th>Decision</th></tr></thead>
+              <thead><tr><th>Bar</th><th>Line</th><th>Source</th><th>Score</th><th>Decision</th></tr></thead>
               <tbody id="history-rows"></tbody>
             </table>
           </div>
         </section>
 
-        <section class="data-section event-section" aria-labelledby="events-title">
-          <div class="section-heading table-heading">
+        <section class="data-panel event-panel" aria-labelledby="events-title">
+          <div class="panel-heading table-heading">
             <div><span class="eyebrow">Canonical stream</span><h2 id="events-title">Event console</h2></div>
             <span id="event-count">0 events</span>
           </div>
           <ol class="event-console" id="event-console"></ol>
+          <p class="visually-hidden" id="event-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
         </section>
       </div>
     </main>

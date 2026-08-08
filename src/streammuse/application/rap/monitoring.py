@@ -372,14 +372,18 @@ class RapStateProjector:
             "session_id": None,
             "last_sequence": 0,
             "current_tick": None,
+            "current_playback": None,
+            "current_syllable": None,
             "current_segment": None,
             "pending_request": None,
             "latest_request": None,
             "latest_batch": None,
+            "last_error": None,
             "session_metadata": {},
             "stopped": False,
             "recent_events": [],
             "candidates": OrderedDict(),
+            "bars": OrderedDict(),
             "frozen_bars": OrderedDict(),
             "emitted_syllables": [],
             "latencies": {
@@ -405,10 +409,14 @@ class RapStateProjector:
             if event.event_type == RapEventType.SESSION_STARTED:
                 self._state["session_metadata"] = deepcopy(event.payload)
                 self._state["stopped"] = False
+                self._state["last_error"] = None
             elif event.event_type == RapEventType.SESSION_STOPPED:
                 self._state["stopped"] = True
+            elif event.event_type == RapEventType.BAR_RESERVED:
+                self._merge_bar(event, frozen=False, ignore_if_frozen=True)
             elif event.event_type == RapEventType.TICK:
                 self._state["current_tick"] = event.tick
+                self._state["current_playback"] = self._event_state(event)
                 if event.bar is not None and str(event.bar) in self._segments:
                     self._state["current_segment"] = deepcopy(self._segments[str(event.bar)])
                     self._prune_past_segments(event.bar)
@@ -418,6 +426,7 @@ class RapStateProjector:
                 self._state["pending_request"] = self._event_state(event)
                 self._state["latest_request"] = self._event_state(event)
                 self._state["latest_batch"] = None
+                self._merge_bar(event)
             elif event.event_type == RapEventType.CANDIDATE_BATCH_RECEIVED:
                 if self._state["pending_request"] and self._state["pending_request"]["request_id"] == event.request_id:
                     self._state["pending_request"] = None
@@ -435,14 +444,23 @@ class RapStateProjector:
                     self._state["candidates"][candidate_id] = self._event_state(event)
                     self._state["candidates"].move_to_end(candidate_id)
                     self._trim_mapping(self._state["candidates"], self._max_candidates)
+            elif (
+                event.event_type == RapEventType.BAR_REPLACED
+                and self._latest_request_id is not None
+                and event.request_id == self._latest_request_id
+            ):
+                self._merge_bar(event, ignore_if_frozen=True)
             elif event.event_type == RapEventType.BAR_FROZEN and event.bar is not None:
-                self._state["frozen_bars"][str(event.bar)] = self._event_state(event)
+                self._merge_bar(event, frozen=True)
+                self._state["frozen_bars"][str(event.bar)] = deepcopy(self._state["bars"][str(event.bar)])
                 self._state["frozen_bars"].move_to_end(str(event.bar))
                 self._trim_mapping(self._state["frozen_bars"], self._max_recent_bars)
             elif event.event_type == RapEventType.GENERATION_FAILED:
                 if self._state["pending_request"] and self._state["pending_request"]["request_id"] == event.request_id:
                     self._state["pending_request"] = None
+                self._state["last_error"] = self._canonical_event_state(event)
             elif event.event_type == RapEventType.FALLBACK_ACTIVATED:
+                self._merge_bar(event)
                 fallbacks = self._state["fallbacks"]
                 fallbacks["count"] += 1
                 reason = event.payload.get("fallback_reason")
@@ -450,9 +468,12 @@ class RapStateProjector:
                     fallbacks["by_reason"][reason] = fallbacks["by_reason"].get(reason, 0) + 1
             elif event.event_type == RapEventType.SYLLABLE_EMITTED:
                 syllable = {"bar": event.bar, "tick": event.tick, **deepcopy(event.payload)}
+                self._state["current_syllable"] = syllable
                 self._state["emitted_syllables"].append(syllable)
                 del self._state["emitted_syllables"][:-self._max_emitted_syllables]
                 self._add_payload_number(event.payload, "jitter_ms", "emission_jitter_ms")
+            elif event.event_type == RapEventType.PRESENTATION_ERROR:
+                self._state["last_error"] = self._canonical_event_state(event)
             self._state["research_metrics"] = self._research_metrics.apply(event)
 
     def snapshot(self) -> dict[str, Any]:
@@ -499,6 +520,32 @@ class RapStateProjector:
                 "template_id": template_id if isinstance(template_id, str) else None,
             }
             self._segments.move_to_end(str(event.bar))
+
+    def _merge_bar(
+        self,
+        event: RapEvent,
+        *,
+        frozen: bool | None = None,
+        ignore_if_frozen: bool = False,
+    ) -> None:
+        if event.bar is None:
+            return
+        key = str(event.bar)
+        existing = self._state["bars"].get(key)
+        if ignore_if_frozen and existing and existing.get("frozen") is True:
+            return
+        bar_state = deepcopy(existing) if existing else {"bar": event.bar, "frozen": False}
+        bar_state["sequence"] = event.sequence
+        if event.tick is not None:
+            bar_state["tick"] = event.tick
+        if event.request_id is not None:
+            bar_state["request_id"] = event.request_id
+        bar_state.update(deepcopy(event.payload))
+        if frozen is not None:
+            bar_state["frozen"] = frozen
+        self._state["bars"][key] = bar_state
+        self._state["bars"].move_to_end(key)
+        self._trim_mapping(self._state["bars"], self._max_recent_bars)
 
     def _prune_past_segments(self, current_bar: int) -> None:
         for bar_key in tuple(self._segments):

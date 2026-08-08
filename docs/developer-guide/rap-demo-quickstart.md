@@ -65,10 +65,20 @@ the prevalidated fallback remains available.
 
 ## Read the Monitor
 
-- **Performance** shows the current bar, frozen lyric, active syllable, flow
-  slots, timing, and fallback state.
-- **Research** shows the exact flow template and model prompt, raw response,
-  candidates, rejection reasons, component scores, and selection.
+- **Live delivery** shows the frozen lyric, sounding syllable, beat/subdivision,
+  stress, jitter, generation latency, deadline slack, and fallback state.
+- **Beat-aligned flow** shows the moving tick playhead plus the exact tick,
+  duration, stress, boundary, rhyme, and template-provenance arrays.
+- **Generation audit** shows frozen context, the role-labelled LLM prompt, raw
+  response, token/deadline/error diagnostics, and the active request identity.
+- **Candidate gate and ranking** shows observed versus required syllables,
+  validity, rejection reasons, OOV words, and every score value, weight, and
+  contribution. The winning-score strip isolates the selected breakdown.
+- **Queue and health** shows the next reserved lyric, lifecycle state, and last
+  retained error. History and the canonical event console remain available
+  below the cumulative metrics.
+- Clear **Follow live** to inspect older events without automatic scrolling;
+  generation and all other page updates continue normally.
 - **Replaced** means a candidate passed validation, ranking, threshold, and the
   planning deadline.
 - **Frozen** is the authoritative line being emitted; later responses cannot

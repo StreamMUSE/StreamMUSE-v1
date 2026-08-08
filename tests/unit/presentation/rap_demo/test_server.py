@@ -123,10 +123,61 @@ def test_static_monitor_routes_are_served_and_model_text_uses_text_content(tmp_p
     script = client.get("/static/js/rap-demo.js")
 
     assert index.status_code == css.status_code == script.status_code == 200
-    assert "StreamMUSE Rap Research Monitor" in index.text
-    assert "candidate-table" in index.text
-    assert "prompt-tokens" in index.text
-    assert "research_metrics" in script.text
+    assert "StreamMUSE Rap Lab" in index.text
+    for element_id in (
+        "follow-live",
+        "current-syllable",
+        "next-bar",
+        "model-health",
+        "last-error",
+        "flow-track",
+        "flow-exact",
+        "flow-provenance",
+        "context-lines",
+        "prompt",
+        "raw-response",
+        "response-status",
+        "selected-score",
+        "candidate-table",
+        "candidate-sort",
+        "generator-error-rate",
+        "generation-p50",
+        "generation-p95",
+        "history-rows",
+        "event-console",
+        "event-announcer",
+    ):
+        assert f'id="{element_id}"' in index.text
+
+    for css_contract in (
+        "--brand: #e91e63",
+        ".flow-rail",
+        ".candidate-record",
+        ".mobile-sort",
+        ":focus-visible",
+        "@media (max-width: 760px)",
+        "@media (prefers-reduced-motion: reduce)",
+    ):
+        assert css_contract in css.text
+
+    for renderer_contract in (
+        "renderQueueAndHealth",
+        "renderFlowFacts",
+        "renderResponse",
+        "renderSelectedScore",
+        "renderCurrentSyllable",
+        "generationFailure",
+        "createEventRow",
+        "renderedEventSequences",
+        "monitor.followLive",
+        "component.weight",
+        "component.contribution",
+        "generator_error",
+        "raw_response",
+        "context_lines",
+        "research_metrics",
+    ):
+        assert renderer_contract in script.text
     assert "textContent" in script.text
     assert "innerHTML" not in script.text
 

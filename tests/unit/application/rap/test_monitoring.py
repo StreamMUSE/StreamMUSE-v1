@@ -290,6 +290,89 @@ def test_state_projector_bounds_live_windows_and_tracks_request_failures() -> No
     json.dumps(snapshot)
 
 
+def test_state_projector_retains_terminal_dashboard_state_across_freeze_and_reconnect() -> None:
+    projector = RapStateProjector()
+    projector.apply(
+        _event(
+            1,
+            RapEventType.BAR_RESERVED,
+            bar=0,
+            payload={"text": "fallback line", "fallback": True, "source": "prevalidated_fallback"},
+        )
+    )
+    projector.apply(
+        _event(
+            2,
+            RapEventType.BAR_PLANNING_STARTED,
+            bar=0,
+            request_id="r0",
+            payload={"topic": "demo"},
+        )
+    )
+    projector.apply(
+        _event(
+            3,
+            RapEventType.BAR_REPLACED,
+            bar=0,
+            request_id="r0",
+            payload={"text": "selected line", "fallback": False, "source": "local_chat", "total_score": 0.875},
+        )
+    )
+    projector.apply(
+        _event(
+            4,
+            RapEventType.BAR_FROZEN,
+            bar=0,
+            request_id="r0",
+            payload={"text": "selected line", "fallback": False, "source": "local_chat"},
+        )
+    )
+    projector.apply(
+        _event(
+            5,
+            RapEventType.BAR_RESERVED,
+            bar=1,
+            payload={"text": "next safe line", "fallback": True, "source": "prevalidated_fallback"},
+        )
+    )
+    projector.apply(_event(6, RapEventType.TICK, bar=0, tick=4, payload={"beat": 1, "tick_in_beat": 0}))
+    projector.apply(
+        _event(
+            7,
+            RapEventType.SYLLABLE_EMITTED,
+            bar=0,
+            tick=4,
+            payload={"label": "selected", "stressed": True, "jitter_ms": 0.25},
+        )
+    )
+    projector.apply(
+        _event(
+            8,
+            RapEventType.GENERATION_FAILED,
+            bar=1,
+            request_id="r1",
+            payload={"error_type": "timeout", "error_message": "model missed deadline"},
+        )
+    )
+
+    snapshot = projector.snapshot()
+
+    assert snapshot["bars"]["0"]["frozen"] is True
+    assert snapshot["bars"]["0"]["total_score"] == 0.875
+    assert snapshot["frozen_bars"]["0"]["total_score"] == 0.875
+    assert snapshot["bars"]["1"]["text"] == "next safe line"
+    assert snapshot["current_syllable"] == {
+        "bar": 0,
+        "tick": 4,
+        "label": "selected",
+        "stressed": True,
+        "jitter_ms": 0.25,
+    }
+    assert snapshot["last_error"]["event_type"] == "generation_failed"
+    assert snapshot["last_error"]["payload"]["error_message"] == "model missed deadline"
+    json.dumps(snapshot)
+
+
 def test_state_projector_replaces_candidates_when_a_new_request_starts() -> None:
     projector = RapStateProjector()
     projector.apply(_event(1, RapEventType.CANDIDATE_EVALUATED, request_id="old", payload={"candidate_id": "old"}))
