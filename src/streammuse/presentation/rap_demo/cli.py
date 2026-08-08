@@ -10,8 +10,11 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from queue import Queue
 from typing import Callable
 from uuid import uuid4
+
+import uvicorn
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
 from streammuse.application.rap.monitoring_payloads import flow_template_payload
@@ -27,10 +30,19 @@ from streammuse.infrastructure.rap.generators import (
     ScriptedFailureGenerator,
 )
 from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
-from streammuse.infrastructure.rap.recorder import RapSessionRecorder, build_session_manifest
+from streammuse.infrastructure.rap.recorder import RapSessionRecorder, build_session_manifest, event_to_dict
 from streammuse.infrastructure.rap.scenarios import default_scenario, load_scenario
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 from streammuse.presentation.rap_demo.terminal import TerminalRapSink
+from streammuse.presentation.rap_demo.server import create_app
+
+
+class _WebSocketQueueSink:
+    def __init__(self, queue: Queue[dict[str, object]]) -> None:
+        self._queue = queue
+
+    def __call__(self, event) -> None:
+        self._queue.put(event_to_dict(event))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,9 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-bars", type=int, default=12, help="Zero runs until interrupted")
     parser.add_argument("--log-dir", type=Path, default=Path("logs/rap"))
     parser.add_argument("--terminal-detail", choices=("summary", "candidates", "full"), default="full")
-    parser.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
-    parser.add_argument("--port", type=int, default=8012, help=argparse.SUPPRESS)
-    parser.add_argument("--no-web", action="store_true", help="Accepted for terminal-only compatibility")
+    parser.add_argument("--terminal-layout", choices=("auto", "split", "stream"), default="auto")
+    parser.add_argument("--host", default="127.0.0.1", help="Web monitor bind address")
+    parser.add_argument("--port", type=int, default=8012, help="Web monitor port")
+    parser.add_argument("--no-web", action="store_true", help="Run only the terminal monitor")
     return parser
 
 
@@ -80,48 +93,83 @@ def build_demo(
     tempo = Tempo(scenario.tempo_bpm, 4, 4)
     analyzer = CmuProsodyAnalyzer()
     fallbacks = PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer)
-    generator, close_primary = _build_generator(args)
     session_id = f"rap-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
     session_dir = args.log_dir / session_id
     manifest = _build_manifest(args, scenario, tempo)
-    manifest.update({"session_id": session_id, "max_bars": args.max_bars})
-    recorder = RapSessionRecorder(session_dir, manifest)
+    manifest.update(
+        {
+            "session_id": session_id,
+            "max_bars": args.max_bars,
+            "terminal_layout": args.terminal_layout,
+            "terminal_detail": args.terminal_detail,
+        }
+    )
+    generator, close_primary = _build_generator(args)
+    recorder = None
+    dispatcher = None
+    try:
+        recorder = RapSessionRecorder(session_dir, manifest)
+        publisher = RapEventPublisher(session_id)
+        projector = RapStateProjector()
+        websocket_queue: Queue[dict[str, object]] = Queue()
+        dispatcher = RapEventDispatcher(
+            publisher.queue,
+            sinks=(
+                recorder,
+                projector,
+                _WebSocketQueueSink(websocket_queue),
+                TerminalRapSink(args.terminal_detail, layout=args.terminal_layout),
+            ),
+        )
+        dispatcher.start()
+        controller = RollingRapController(
+            tempo=tempo,
+            scenario=scenario,
+            templates=BUILTIN_TEMPLATES,
+            fallback_catalog=fallbacks,
+            analyzer=analyzer,
+            weights=ScoreWeights(),
+            publisher=publisher,
+            primary_generator=generator,
+            candidate_count=args.candidate_count,
+            lookahead_bars=args.lookahead_bars,
+            minimum_score=args.minimum_score,
+            seed=args.seed,
+            planning_bar_limit=args.max_bars or (None if scenario.loop else scenario.total_bars),
+            close_primary=close_primary,
+            monotonic=clock,
+        )
+        tick_loop = RapTickLoop(tempo, on_tick=controller.on_tick, clock=clock, sleep=sleep)
+    except BaseException:
+        try:
+            if dispatcher is not None:
+                dispatcher.flush_and_close()
+        finally:
+            try:
+                if recorder is not None:
+                    recorder.close()
+            finally:
+                if close_primary is not None:
+                    close_primary()
+        raise
 
-    publisher = RapEventPublisher(session_id)
-    projector = RapStateProjector()
-    dispatcher = RapEventDispatcher(
-        publisher.queue,
-        sinks=(recorder, projector, TerminalRapSink(args.terminal_detail)),
-    )
-    dispatcher.start()
-    controller = RollingRapController(
-        tempo=tempo,
-        scenario=scenario,
-        templates=BUILTIN_TEMPLATES,
-        fallback_catalog=fallbacks,
-        analyzer=analyzer,
-        weights=ScoreWeights(),
-        publisher=publisher,
-        primary_generator=generator,
-        candidate_count=args.candidate_count,
-        lookahead_bars=args.lookahead_bars,
-        minimum_score=args.minimum_score,
-        seed=args.seed,
-        planning_bar_limit=args.max_bars or (None if scenario.loop else scenario.total_bars),
-        close_primary=close_primary,
-        monotonic=clock,
-    )
-    tick_loop = RapTickLoop(tempo, on_tick=controller.on_tick, clock=clock, sleep=sleep)
+    generator_config = manifest["generator_config"]
+    model_config = manifest["model_config"]
+    assert isinstance(generator_config, dict) and isinstance(model_config, dict)
     session_metadata = {
         "scenario_id": scenario.scenario_id,
-        "generator": args.generator,
-        "model_url": args.model_url,
-        "model": args.model,
+        "generator": generator_config["name"],
+        "model_url": model_config["base_url"],
+        "model": model_config["name"],
+        "generator_config": generator_config,
+        "model_config": model_config,
         "candidate_count": args.candidate_count,
         "lookahead_bars": args.lookahead_bars,
         "minimum_score": args.minimum_score,
         "seed": args.seed,
         "score_weights": manifest["score_weights"],
+        "terminal_layout": args.terminal_layout,
+        "terminal_detail": args.terminal_detail,
     }
     return RapDemoDependencies(
         tempo,
@@ -133,6 +181,8 @@ def build_demo(
         session_metadata=session_metadata,
         recorder=recorder,
         projector=projector,
+        websocket_queue=websocket_queue,
+        configured_max_bars=args.max_bars,
     )
 
 
@@ -140,7 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         demo = build_demo(args)
-        demo.run(max_bars=args.max_bars)
+        if args.no_web:
+            demo.run(max_bars=args.max_bars)
+        else:
+            app = create_app(runtime=demo, projector=demo.projector, websocket_queue=demo.websocket_queue)
+            print(f"Rap monitor: http://{args.host}:{args.port}")
+            uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}")
         return 2
@@ -163,7 +218,7 @@ def _build_generator(args: argparse.Namespace):
 
 
 def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[str, object]:
-    revision, dirty = _repository_state()
+    revision, dirty, git_state_known = _repository_state()
     templates = []
     seen: set[str] = set()
     for segment in scenario.segments:
@@ -211,7 +266,7 @@ def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[st
         package_version = version("streammuse")
     except PackageNotFoundError:
         package_version = "0.1.0"
-    return build_session_manifest(
+    manifest = build_session_manifest(
         scenario_id=scenario.scenario_id,
         scenario=scenario_payload,
         seed=args.seed,
@@ -221,10 +276,22 @@ def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[st
             "beats_per_bar": tempo.beats_per_bar,
         },
         templates=templates,
-        generator_config={"name": args.generator, "candidate_count": args.candidate_count},
+        generator_config={
+            "name": args.generator,
+            "candidate_count": args.candidate_count,
+            "prompt_schema_version": "beat_aligned_flow_v1",
+            "candidate_parser_version": "plain_lines_v1",
+            "temperature": 0.8 if args.generator == "local_chat" else None,
+            "max_tokens_policy": "max(64,candidate_count*24)" if args.generator == "local_chat" else None,
+        },
         model_config={
             "name": args.model if args.generator == "local_chat" else "none",
             "base_url": args.model_url if args.generator == "local_chat" else None,
+            "timeout_seconds": args.timeout_s if args.generator == "local_chat" else None,
+            "max_retries": 0 if args.generator == "local_chat" else None,
+            "retry_delay_seconds": 0.25 if args.generator == "local_chat" else None,
+            "top_p": None,
+            "extra_payload": None,
         },
         score_weights=asdict(ScoreWeights()),
         minimum_score=args.minimum_score,
@@ -236,9 +303,11 @@ def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[st
         git_revision=revision,
         git_dirty=dirty,
     )
+    manifest["git_state_known"] = git_state_known
+    return manifest
 
 
-def _repository_state() -> tuple[str, bool]:
+def _repository_state() -> tuple[str, bool, bool]:
     root = Path(__file__).resolve().parents[4]
     try:
         revision = subprocess.run(
@@ -249,9 +318,9 @@ def _repository_state() -> tuple[str, bool]:
                 ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True, timeout=2.0
             ).stdout.strip()
         )
-        return revision or "unknown", dirty
+        return revision or "unknown", dirty, bool(revision)
     except (OSError, subprocess.SubprocessError):
-        return "unknown", False
+        return "unknown", True, False
 
 
 if __name__ == "__main__":

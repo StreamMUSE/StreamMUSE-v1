@@ -130,8 +130,8 @@ def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
     projector = RapStateProjector()
     events = (
         _event(1, RapEventType.BAR_RESERVED, bar=2, payload={"topic": "space", "template_id": "nine"}),
-        _event(2, RapEventType.BAR_PLANNING_STARTED, bar=2, tick=32, request_id="r2", payload={"topic": "space", "template_id": "nine"}),
-        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=2, tick=33, request_id="r2", payload={"latency_ms": 12.5}),
+        _event(2, RapEventType.BAR_PLANNING_STARTED, bar=2, tick=32, request_id="r2", payload={"topic": "space", "template_id": "nine", "context_lines": ["prior line"], "flow": {"slots": [{"tick_in_bar": 0}]}}),
+        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=2, tick=33, request_id="r2", payload={"latency_ms": 12.5, "prompt": [{"role": "user", "content": "exact prompt"}], "raw_response": "raw line"}),
         _event(4, RapEventType.CANDIDATE_EVALUATED, bar=2, request_id="r2", payload={"candidate_id": "c1", "valid": True}),
         _event(5, RapEventType.BAR_FROZEN, bar=2, tick=64, request_id="r2", payload={"text": "space line", "fallback": True, "fallback_reason": "deadline_miss"}),
         _event(6, RapEventType.FALLBACK_ACTIVATED, bar=2, request_id="r2", payload={"fallback_reason": "deadline_miss"}),
@@ -146,6 +146,10 @@ def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
     assert snapshot["current_tick"] == 65
     assert snapshot["current_segment"] == {"bar": 2, "topic": "space", "template_id": "nine"}
     assert snapshot["pending_request"] is None
+    assert snapshot["latest_request"]["context_lines"] == ["prior line"]
+    assert snapshot["latest_request"]["flow"]["slots"][0]["tick_in_bar"] == 0
+    assert snapshot["latest_batch"]["prompt"][0]["content"] == "exact prompt"
+    assert snapshot["latest_batch"]["raw_response"] == "raw line"
     assert snapshot["candidates"]["c1"]["valid"] is True
     assert snapshot["frozen_bars"]["2"]["text"] == "space line"
     assert snapshot["emitted_syllables"] == [{"bar": 2, "tick": 65, "label": "space", "jitter_ms": 0.25}]

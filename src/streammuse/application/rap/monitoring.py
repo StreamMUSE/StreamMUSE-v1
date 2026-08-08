@@ -227,6 +227,8 @@ class RapStateProjector:
             "current_tick": None,
             "current_segment": None,
             "pending_request": None,
+            "latest_request": None,
+            "latest_batch": None,
             "candidates": OrderedDict(),
             "frozen_bars": OrderedDict(),
             "emitted_syllables": [],
@@ -256,9 +258,13 @@ class RapStateProjector:
                 self._state["candidates"].clear()
                 self._latest_request_id = event.request_id if isinstance(event.request_id, str) else None
                 self._state["pending_request"] = self._event_state(event)
+                self._state["latest_request"] = self._event_state(event)
+                self._state["latest_batch"] = None
             elif event.event_type == RapEventType.CANDIDATE_BATCH_RECEIVED:
                 if self._state["pending_request"] and self._state["pending_request"]["request_id"] == event.request_id:
                     self._state["pending_request"] = None
+                if self._latest_request_id is not None and event.request_id == self._latest_request_id:
+                    self._state["latest_batch"] = self._event_state(event)
                 self._add_payload_number(event.payload, "latency_ms", "generation_latency_ms")
                 self._add_payload_number(event.payload, "deadline_slack_ms", "deadline_slack_ms")
             elif event.event_type == RapEventType.CANDIDATE_EVALUATED:

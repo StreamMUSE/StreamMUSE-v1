@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from enum import Enum
 from pathlib import Path
 from queue import Queue
@@ -43,6 +44,12 @@ class FakeProjector:
                             ),
                         }
                     ),
+                ),
+                "latest_request": MappingProxyType(
+                    {"request_id": "request-1", "context_lines": ("prior line",), "flow": {"slots": ({"tick_in_bar": 0},)}}
+                ),
+                "latest_batch": MappingProxyType(
+                    {"request_id": "request-1", "prompt": ({"role": "user", "content": "exact flow prompt"},)}
                 ),
             }
         )
@@ -88,6 +95,8 @@ def test_state_endpoint_returns_complete_json_safe_monitor_snapshot(tmp_path: Pa
     assert response.json()["status"] == "running"
     assert response.json()["current"]["bar"] == 1
     assert response.json()["candidates"][0]["components"][0]["name"] == "stress_alignment"
+    assert response.json()["latest_request"]["context_lines"] == ["prior line"]
+    assert response.json()["latest_batch"]["prompt"][0]["content"] == "exact flow prompt"
 
 
 def test_session_endpoint_reports_runtime_identity_without_exposing_runtime_objects(tmp_path: Path) -> None:
@@ -149,6 +158,18 @@ def test_disconnected_websocket_does_not_block_later_clients(tmp_path: Path) -> 
             assert second.receive_json()["type"] == "snapshot"
             websocket_queue.put({"sequence": 23, "event_type": "tick", "payload": {}})
             assert second.receive_json()["payload"]["sequence"] == 23
+
+
+def test_broadcaster_discards_live_queue_events_without_clients_because_snapshot_is_authoritative(tmp_path: Path) -> None:
+    app, _, websocket_queue = _app(tmp_path)
+
+    with TestClient(app):
+        websocket_queue.put({"sequence": 24, "event_type": "tick", "payload": {}})
+        deadline = time.monotonic() + 1.0
+        while not websocket_queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert websocket_queue.empty()
 
 
 def test_lifespan_starts_runtime_and_closes_it_exactly_once(tmp_path: Path) -> None:

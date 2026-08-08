@@ -63,6 +63,8 @@ class RapDemoDependencies:
     session_metadata: Mapping[str, Any] = field(default_factory=dict)
     recorder: Any | None = None
     projector: Any | None = None
+    websocket_queue: Any | None = None
+    configured_max_bars: int = 0
     _closed: bool = field(default=False, init=False)
     _close_lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
@@ -75,7 +77,17 @@ class RapDemoDependencies:
             raise ValueError("repetition_window_bars must be a positive integer")
         if not isinstance(self.session_metadata, Mapping):
             raise ValueError("session_metadata must be a mapping")
+        if (
+            not isinstance(self.configured_max_bars, int)
+            or isinstance(self.configured_max_bars, bool)
+            or self.configured_max_bars < 0
+        ):
+            raise ValueError("configured_max_bars must be a nonnegative integer")
         self.session_metadata = _freeze_metadata(self.session_metadata)
+
+    def start(self) -> None:
+        """Run with the bar limit resolved during CLI assembly."""
+        self.run(max_bars=self.configured_max_bars)
 
     def run(self, *, max_bars: int) -> None:
         payload = _thaw_metadata(self.session_metadata)

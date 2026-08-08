@@ -129,8 +129,9 @@ class _MonitorLifecycle:
     async def _broadcast_loop(self) -> None:
         assert self._broadcaster_stop is not None
         while not self._broadcaster_stop.is_set():
-            if await self.connections.has_connections():
-                for item in self._drain_queue():
+            items = self._drain_queue()
+            if items and await self.connections.has_connections():
+                for item in items:
                     await self.connections.send({"type": "event", "payload": _event_payload(item)})
             try:
                 await asyncio.wait_for(self._broadcaster_stop.wait(), timeout=_POLL_INTERVAL_S)

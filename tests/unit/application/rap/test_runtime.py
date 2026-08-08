@@ -46,6 +46,36 @@ def test_tick_loop_compensates_for_callback_time_instead_of_accumulating_drift()
     assert clock.sleeps == pytest.approx([0.1, 0.1])
 
 
+def test_demo_start_uses_the_configured_web_runtime_bar_limit(tmp_path, monkeypatch) -> None:
+    class Controller:
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class TickLoop:
+        def run(self, max_ticks: int | None = None) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    publisher = RapEventPublisher("session")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=())
+    dispatcher.start()
+    dependencies = RapDemoDependencies(
+        Tempo(120.0, 4, 4), Controller(), publisher, dispatcher, TickLoop(), tmp_path,
+        configured_max_bars=3,
+    )
+    observed: list[int] = []
+    monkeypatch.setattr(dependencies, "run", lambda *, max_bars: observed.append(max_bars))
+
+    dependencies.start()
+
+    assert observed == [3]
+
+
 def test_demo_session_start_records_resolved_repetition_window(tmp_path) -> None:
     class Controller:
         def start(self) -> None:

@@ -76,8 +76,12 @@ function currentFlow(snapshot, bar, decision) {
   return {};
 }
 
-function latestBatch() {
+function latestBatchEvent() {
   return latestEvent("candidate_batch_received");
+}
+
+function latestBatch(snapshot = monitor.snapshot || {}) {
+  return snapshot.latest_batch || payload(latestBatchEvent());
 }
 
 function renderHeader(snapshot, current) {
@@ -95,7 +99,7 @@ function renderHeader(snapshot, current) {
 }
 
 function renderDecision(snapshot, current, decision) {
-  const batch = payload(latestBatch());
+  const batch = latestBatch(snapshot);
   const fallback = decision.fallback === true;
   setText("selected-line", decision.text, "Waiting for the first frozen bar.");
   setText("source", decision.source);
@@ -172,11 +176,11 @@ function promptText(prompt) {
 }
 
 function renderContext(snapshot) {
-  const planning = snapshot.pending_request || payload(latestEvent("bar_planning_started"));
-  const batchEvent = latestBatch();
-  const batch = payload(batchEvent);
-  setText("request-id", (batchEvent && batchEvent.request_id) || planning.request_id, "no request");
-  setText("request-bar", planning.bar ?? (batchEvent && batchEvent.bar));
+  const planning = snapshot.latest_request || snapshot.pending_request || payload(latestEvent("bar_planning_started"));
+  const batchEvent = latestBatchEvent();
+  const batch = latestBatch(snapshot);
+  setText("request-id", batch.request_id || (batchEvent && batchEvent.request_id) || planning.request_id, "no request");
+  setText("request-bar", planning.bar ?? batch.bar ?? (batchEvent && batchEvent.bar));
   setText("required-syllables", planning.required_syllables);
   setText("requested-candidates", planning.candidate_count ?? batch.candidate_count);
   setText("request-seed", planning.seed);
