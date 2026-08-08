@@ -307,6 +307,7 @@ def test_dashboard_escapes_terminal_controls_from_model_content() -> None:
                 "seed": 7,
                 "flow": FLOW,
             },
+            request_id="request\x1b[2J",
         ),
         _event(
             2,
@@ -317,6 +318,7 @@ def test_dashboard_escapes_terminal_controls_from_model_content() -> None:
                 "prompt": [{"role": "user", "content": "prompt\x1b[2J\nnext"}],
                 "raw_response": "raw\x07response",
             },
+            request_id="request\x1b[2J",
         ),
         _event(
             3,
@@ -329,6 +331,7 @@ def test_dashboard_escapes_terminal_controls_from_model_content() -> None:
                 "rejection_reasons": [],
                 "total_score": 0.5,
             },
+            request_id="request\x1b[2J",
         ),
     )
     for event in events:
@@ -338,7 +341,7 @@ def test_dashboard_escapes_terminal_controls_from_model_content() -> None:
 
     assert "\x1b" not in output
     assert "\x07" not in output
-    assert output.count("\\x1b") >= 4
+    assert output.count("\\x1b") >= 7
     assert output.count("\\x07") >= 2
     assert "prompt\\x1b[2J" in output
     assert "next" in output

@@ -350,7 +350,8 @@ def _event_trace(state: TerminalRapViewState) -> RenderableType:
         (
             f"#{event.sequence}",
             Text(
-                f"{event.event_type.value}  bar={_display_bar(event.bar)} tick={event.tick} request={event.request_id or '-'}",
+                f"{event.event_type.value}  bar={_display_bar(event.bar)} tick={event.tick} "
+                f"request={_safe(event.request_id or '-')}",
                 style="red" if "error" in event.event_type.value or "failed" in event.event_type.value else "dim",
             ),
         )
