@@ -66,6 +66,7 @@ def test_build_demo_prevalidates_fallbacks_and_runs_finite_terminal_session(tmp_
     started = next(event for event in events if event["event_type"] == "session_started")
     assert started["payload"]["generator_config"] == manifest["generator_config"]
     assert started["payload"]["model_config"] == manifest["model_config"]
+    assert manifest["generator_config"]["output_length_policy"] is None
 
 
 def test_build_demo_records_resolved_terminal_layout(tmp_path: Path) -> None:

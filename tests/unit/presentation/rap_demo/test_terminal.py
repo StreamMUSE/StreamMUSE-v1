@@ -173,6 +173,26 @@ def test_rich_live_renderer_renders_and_closes_idempotently() -> None:
     assert "LIVE DELIVERY" in console.export_text()
 
 
+def test_rich_live_renderer_reads_console_width_on_each_refresh(monkeypatch) -> None:
+    projector = TerminalRapStateProjector()
+    state = projector.apply(_event(RapEventType.SESSION_STARTED, {"tempo_bpm": 92.0}, bar=None, tick=None))
+    console = Console(record=True, color_system=None, width=160)
+    widths: list[int] = []
+
+    def dashboard(_state, detail: str, width: int):
+        widths.append(width)
+        return f"{detail}:{width}"
+
+    monkeypatch.setattr("streammuse.presentation.rap_demo.terminal_dashboard.build_dashboard", dashboard)
+    renderer = RichLiveRenderer(detail="summary", console=console)
+    renderer.render(state)
+    console.width = 90
+    renderer.render(state)
+    renderer.close()
+
+    assert widths == [160, 90]
+
+
 @pytest.mark.parametrize("detail", ("minimal", "debug", ""))
 def test_sink_rejects_unknown_detail(detail: str) -> None:
     with pytest.raises(ValueError, match="terminal detail"):

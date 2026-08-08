@@ -22,6 +22,7 @@ class TerminalRapBarView:
     source: str | None
     fallback: bool | None
     fallback_reason: str | None
+    total_score: float | None
     frozen: bool
     scheduled_syllables: tuple[Mapping[str, Any], ...]
 
@@ -195,6 +196,7 @@ class TerminalRapStateProjector:
             source=_string(payload.get("source")) if "source" in payload else (old.source if old else None),
             fallback=fallback,
             fallback_reason=fallback_reason,
+            total_score=_number_value(payload.get("total_score")) if "total_score" in payload else (old.total_score if old else None),
             frozen=frozen if frozen is not None else (old.frozen if old else False),
             scheduled_syllables=scheduled,
         )
@@ -301,3 +303,7 @@ def _string(value: object) -> str | None:
 
 def _integer(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _number_value(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None

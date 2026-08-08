@@ -27,7 +27,7 @@ def test_projector_tracks_structured_request_candidates_and_bounded_history() ->
         _event(3, RapEventType.BAR_PLANNING_STARTED, {"topic": "space", "flow": flow, "context_lines": [], "seed": 20260808}),
         _event(4, RapEventType.CANDIDATE_BATCH_RECEIVED, {"prompt": [{"role": "system", "content": "exact"}], "source": "local_chat"}),
         _event(5, RapEventType.CANDIDATE_EVALUATED, {"candidate_id": "bad", "text": "bad", "rejection_reasons": ["syllable_count:10!=9"], "selected": False}),
-        _event(6, RapEventType.BAR_REPLACED, {"source": "local_chat", "text": "Galaxies dance in a cosmic fight", "scheduled_syllables": scheduled, "flow": flow}),
+        _event(6, RapEventType.BAR_REPLACED, {"source": "local_chat", "text": "Galaxies dance in a cosmic fight", "scheduled_syllables": scheduled, "flow": flow, "total_score": 0.84}),
         _event(7, RapEventType.BAR_FROZEN, {"source": "local_chat", "text": "Galaxies dance in a cosmic fight", "scheduled_syllables": scheduled, "flow": flow}),
         _event(8, RapEventType.TICK, {"beat": 0, "tick_in_beat": 0}),
         _event(9, RapEventType.SYLLABLE_EMITTED, {"label": "Galaxies"}),
@@ -39,6 +39,7 @@ def test_projector_tracks_structured_request_candidates_and_bounded_history() ->
     state = projector.state
     assert state.current_bar == 1
     assert state.bars[1].text == "Galaxies dance in a cosmic fight"
+    assert state.bars[1].total_score == 0.84
     assert state.bars[1].scheduled_syllables[0]["tick_in_bar"] == 0
     assert state.latest_request.flow["template_id"] == "baseline_syncopated_9"
     assert state.latest_batch.prompt[0]["role"] == "system"

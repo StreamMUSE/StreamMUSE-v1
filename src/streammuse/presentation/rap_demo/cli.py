@@ -286,7 +286,7 @@ def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[st
             "prompt_schema_version": "beat_aligned_flow_v1",
             "candidate_parser_version": "plain_lines_v1",
             "temperature": 0.8 if args.generator == "local_chat" else None,
-            "max_tokens_policy": "max(64,candidate_count*24)" if args.generator == "local_chat" else None,
+            "output_length_policy": "max(64,candidate_count*24)" if args.generator == "local_chat" else None,
         },
         model_config={
             "name": args.model if args.generator == "local_chat" else "none",

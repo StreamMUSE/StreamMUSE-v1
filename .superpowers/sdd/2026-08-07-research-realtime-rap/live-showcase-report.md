@@ -52,3 +52,27 @@ The endpoint refused the connection from this execution context. The demo visibl
 - Successful Qwen candidate evaluation/replacement was not observed because the local endpoint was unreachable during final smoke verification.
 - Session output intentionally contains only `session.json`; recorder/JSONL/summary/CSV artifacts are deferred by the urgent scope.
 - The terminal dispatcher disables a failing sink but does not yet republish a `presentation_error`; full Task 6 remains deferred.
+
+## Final H200 Qwen Verification (2026-08-08)
+
+This section supersedes the earlier urgent-slice limitations above. The final committed tree was archived at `ad61b7a5`, copied to the isolated H200 directory `/data/home/Andrew.Yang/StreamMUSE/rap_demo_runs/real_rap_ad61b7a5`, and installed editable without modifying the existing `StreamMUSE-v1` checkout. Qwen2.5-7B-Instruct was already served as `qwen-rap-gpu4` on H200 GPU 4 at `http://127.0.0.1:8002/v1`; GPUs 1, 5, and 6 were unused.
+
+```text
+streammuse-rap-demo --generator local_chat \
+  --model-url http://127.0.0.1:8002/v1 --model qwen-rap-gpu4 \
+  --timeout-s 3 --candidate-count 8 --lookahead-bars 2 \
+  --minimum-score 0.3 --seed 20260807 --max-bars 3 \
+  --terminal-layout stream --terminal-detail full --log-dir h200_logs --no-web
+```
+
+Observed session: `rap-20260808T032245Z-4722d150`.
+
+- Every planning and model row displayed the same `baseline_syncopated_9` template: ticks `[0, 2, 3, 5, 7, 8, 10, 13, 15]`, stress `[1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9]`, boundary strengths `[0, 0, 0, 0, 0, 0, 0, 0, 3]`, rhyme group `A`, and notation `S . w M | . w . M | S . w . | . M . S`.
+- The model returned four parsed candidates in each of two rounds despite eight requested. Two of eight parsed candidates passed the exact nine-syllable gate (25% validity).
+- Bar 2 selected `Dreaming of distant worlds, out of sight` at total score `0.495`; bar 3 selected `out past planets where silence calls loud` at `0.342`.
+- Generation latency was 290.1 ms and 246.9 ms (p50 268.5 ms); no deadline miss or generator error occurred.
+- Three bars froze with one initial fallback, for a 33.3% fallback rate. All 27 scheduled syllables emitted.
+- Emission jitter p50 was 0.268 ms, p95 0.764 ms, and maximum 3.916 ms.
+- Artifacts contain 98 canonical events, three `bars.csv` rows, a validated manifest, and deterministic summary data.
+
+The current system now includes the recorder, canonical projector, derived metrics, Rich terminal, WebSocket monitor, read-only web UI, and presentation-error events. This run demonstrates real-time symbolic generation and deadline-safe selection; it does not validate human-perceived rap quality.

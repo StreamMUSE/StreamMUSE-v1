@@ -152,6 +152,36 @@ def projected_state() -> TerminalRapViewState:
             6,
             RapEventType.CANDIDATE_EVALUATED,
             {
+                "candidate_id": "candidate-valid-low",
+                "text": "Lower valid comparison line",
+                "syllables": [{"label": item["label"]} for item in SCHEDULED],
+                "valid": True,
+                "selected": False,
+                "rejection_reasons": [],
+                "oov_words": [],
+                "total_score": 0.61,
+                "components": [{"name": "novelty", "value": 0.3, "weight": 0.05, "contribution": 0.015}],
+            },
+        ),
+        _event(
+            7,
+            RapEventType.CANDIDATE_EVALUATED,
+            {
+                "candidate_id": "candidate-valid-high",
+                "text": "Higher valid comparison line",
+                "syllables": [{"label": item["label"]} for item in SCHEDULED],
+                "valid": True,
+                "selected": False,
+                "rejection_reasons": [],
+                "oov_words": [],
+                "total_score": 0.72,
+                "components": [{"name": "novelty", "value": 0.8, "weight": 0.05, "contribution": 0.04}],
+            },
+        ),
+        _event(
+            8,
+            RapEventType.CANDIDATE_EVALUATED,
+            {
                 "candidate_id": "candidate-selected",
                 "text": "Galaxies dance in a cosmic fight",
                 "syllables": [{"label": item["label"]} for item in SCHEDULED],
@@ -167,7 +197,7 @@ def projected_state() -> TerminalRapViewState:
             },
         ),
         _event(
-            7,
+            9,
             RapEventType.BAR_REPLACED,
             {
                 "source": "local_chat",
@@ -181,7 +211,7 @@ def projected_state() -> TerminalRapViewState:
             },
         ),
         _event(
-            8,
+            10,
             RapEventType.BAR_FROZEN,
             {
                 "source": "local_chat",
@@ -191,8 +221,8 @@ def projected_state() -> TerminalRapViewState:
                 "fallback": False,
             },
         ),
-        _event(9, RapEventType.TICK, {"beat": 0, "tick_in_beat": 2}, tick=18),
-        _event(10, RapEventType.SYLLABLE_EMITTED, {"label": "ax", "stressed": False, "jitter_ms": 0.2}, tick=18),
+        _event(11, RapEventType.TICK, {"beat": 0, "tick_in_beat": 2}, tick=18),
+        _event(12, RapEventType.SYLLABLE_EMITTED, {"label": "ax", "stressed": False, "jitter_ms": 0.2}, tick=18),
     )
     for event in events:
         projector.apply(event)
@@ -223,6 +253,10 @@ def test_wide_dashboard_contains_performance_flow_context_and_ranking(
     assert "0  1  2  3" in output
     assert "S . w M" in output
     assert "Syllable ticks: [0, 2, 3, 5, 7, 8, 10, 13, 15]" in output
+    assert "Duration ticks: [2, 1, 2, 2, 1, 2, 3, 2, 1]" in output
+    assert "Boundary strengths: [0, 0, 0, 0, 0, 0, 0, 0, 3]" in output
+    assert "Rhyme groups: [None, None" in output
+    assert "None, 'A']" in output
 
 
 def test_dashboard_marks_candidates_scores_current_tick_and_scheduled_labels(
@@ -241,6 +275,9 @@ def test_dashboard_marks_candidates_scores_current_tick_and_scheduled_labels(
         "Gal ax ies dance in a cos mic fight",
     ):
         assert expected in output
+    assert output.index("candidate-selected") < output.index("candidate-valid-high")
+    assert output.index("candidate-valid-high") < output.index("candidate-valid-low")
+    assert "novelty=0.800 (contrib=0.040)" in output
 
 
 def test_full_dashboard_preserves_exact_prompt_and_raw_response(

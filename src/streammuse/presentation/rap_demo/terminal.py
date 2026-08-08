@@ -43,7 +43,8 @@ class TerminalRapSink:
         width = terminal_width or self._stream.terminal_width
         use_split = layout == "split" or (layout == "auto" and tty and width >= 120)
         factory = dashboard_factory or RichLiveRenderer
-        self._dashboard = factory(detail=detail, console=console, width=width) if use_split else None
+        dashboard_width = width if dashboard_factory is not None or terminal_width is not None else None
+        self._dashboard = factory(detail=detail, console=console, width=dashboard_width) if use_split else None
         self._dashboard_failed = False
 
     def __call__(self, event: RapEvent) -> None:

@@ -20,7 +20,7 @@ from streammuse.presentation.rap_demo.terminal_state import (
 class RichLiveRenderer:
     """Own a Rich Live display while delegating state interpretation to the builder."""
 
-    def __init__(self, *, detail: str = "full", console: Console | None = None, width: int = 120) -> None:
+    def __init__(self, *, detail: str = "full", console: Console | None = None, width: int | None = None) -> None:
         if detail not in {"summary", "candidates", "full"}:
             raise ValueError("terminal detail must be summary, candidates, or full")
         self._detail = detail
@@ -32,7 +32,8 @@ class RichLiveRenderer:
     def render(self, state: TerminalRapViewState) -> None:
         if self._closed:
             return
-        dashboard = build_dashboard(state, detail=self._detail, width=self._width)
+        width = self._width if self._width is not None else self._console.width
+        dashboard = build_dashboard(state, detail=self._detail, width=width)
         if self._live is None:
             self._live = Live(
                 dashboard,
@@ -89,7 +90,7 @@ def _research_sections(state: TerminalRapViewState, detail: str) -> tuple[Render
         sections.append(_exact_context(state))
     sections.append(_model_response(state, detail))
     if detail in {"candidates", "full"}:
-        sections.append(_candidate_ranking(state))
+        sections.append(_candidate_ranking(state, detail))
     if detail == "full":
         sections.extend((_selected_score(state), _event_trace(state)))
     return tuple(sections)
@@ -107,6 +108,7 @@ def _live_delivery(state: TerminalRapViewState, bar: TerminalRapBarView | None) 
                 ("Bar", Text(f"{bar.bar + 1:02d}  {bar.topic or '-'}  {status}", style=status_style)),
                 ("Lyric", Text(bar.text or "-", style="bold green" if not bar.fallback else "yellow")),
                 ("Source", Text(bar.source or "-", style="dim")),
+                ("Score", Text(_score(bar.total_score), style="green" if bar.total_score is not None else "dim")),
                 ("Fallback", Text(_fallback_status(bar), style="yellow" if bar.fallback else "dim")),
             )
         )
@@ -144,6 +146,9 @@ def _flow_strip(
     ]
     slot_ticks = [slot.get("tick_in_bar") for slot in slots]
     stresses = [slot.get("target_stress") for slot in slots]
+    durations = [slot.get("duration_ticks") for slot in slots]
+    boundaries = [slot.get("boundary_strength") for slot in slots]
+    rhymes = [slot.get("rhyme_group") for slot in slots]
     scheduled = bar.scheduled_syllables if bar is not None else ()
     labels = [str(item.get("label")) for item in scheduled if item.get("label") is not None]
     local_tick = state.current_tick % tick_count if isinstance(state.current_tick, int) else None
@@ -162,6 +167,9 @@ def _flow_strip(
             (
                 ("Exact", Text(f"Syllable ticks: {slot_ticks}")),
                 ("Stress", Text(f"Target stress: {stresses}")),
+                ("Duration", Text(f"Duration ticks: {durations}")),
+                ("Boundary", Text(f"Boundary strengths: {boundaries}")),
+                ("Rhyme", Text(f"Rhyme groups: {rhymes}")),
                 ("Meter", Text(f"{beats_per_bar}/4, {ticks_per_beat} ticks/beat", style="dim")),
                 ("Source", Text(_provenance(flow), style="dim")),
             )
@@ -180,6 +188,7 @@ def _queue(state: TerminalRapViewState) -> RenderableType:
                 ("Next", Text(f"Bar {next_bar.bar + 1:02d}  {next_bar.topic or '-'}", style="cyan")),
                 ("Lyric", Text(next_bar.text or "-")),
                 ("Safety", Text(_fallback_status(next_bar), style="yellow" if next_bar.fallback else "green")),
+                ("Score", Text(_score(next_bar.total_score), style="green" if next_bar.total_score is not None else "dim")),
             )
         )
     else:
@@ -228,6 +237,9 @@ def _llm_request(state: TerminalRapViewState) -> RenderableType:
         ("Flow", Text(str(flow.get("template_id", "-")), style="cyan")),
         ("Ticks", Text(f"Syllable ticks: {[slot.get('tick_in_bar') for slot in slots]}")),
         ("Stress", Text(f"Target stress: {[slot.get('target_stress') for slot in slots]}")),
+        ("Duration", Text(f"Duration ticks: {[slot.get('duration_ticks') for slot in slots]}")),
+        ("Boundary", Text(f"Boundary strengths: {[slot.get('boundary_strength') for slot in slots]}")),
+        ("Rhyme", Text(f"Rhyme groups: {[slot.get('rhyme_group') for slot in slots]}")),
     ]
     return _section("LLM REQUEST", rows)
 
@@ -266,7 +278,7 @@ def _model_response(state: TerminalRapViewState, detail: str) -> RenderableType:
     return _section("MODEL RESPONSE", rows)
 
 
-def _candidate_ranking(state: TerminalRapViewState) -> RenderableType:
+def _candidate_ranking(state: TerminalRapViewState, detail: str) -> RenderableType:
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(width=9)
     table.add_column(width=22)
@@ -276,7 +288,8 @@ def _candidate_ranking(state: TerminalRapViewState) -> RenderableType:
     required = request.required_syllables if request is not None else None
     if not state.candidates:
         table.add_row(Text("PENDING", style="yellow"), "-", "-", "No evaluated candidates")
-    for candidate in state.candidates:
+    candidates = sorted(state.candidates, key=_candidate_sort_key)
+    for candidate in candidates:
         marker, style = _candidate_marker(candidate)
         payload = candidate.payload
         syllables = payload.get("syllables")
@@ -292,8 +305,17 @@ def _candidate_ranking(state: TerminalRapViewState) -> RenderableType:
         oov = payload.get("oov_words")
         oov_words = ", ".join(str(item) for item in oov) if isinstance(oov, tuple) else ""
         if reasons or oov_words:
-            detail = " | ".join(item for item in (reasons, f"OOV: {oov_words}" if oov_words else "") if item)
-            table.add_row("", "", "", Text(detail, style="red"))
+            rejection_detail = " | ".join(item for item in (reasons, f"OOV: {oov_words}" if oov_words else "") if item)
+            table.add_row("", "", "", Text(rejection_detail, style="red"))
+        if detail == "full":
+            components = _mapping_items(payload.get("components"))
+            if components:
+                comparison = " | ".join(
+                    f"{item.get('name', 'component')}={_score(item.get('value'))}"
+                    f" (contrib={_score(item.get('contribution'))})"
+                    for item in components
+                )
+                table.add_row("", "", "", Text(comparison, style="dim"))
     return Group(_heading("CANDIDATE GATE + RANKING"), table, Text(""))
 
 
@@ -397,3 +419,10 @@ def _candidate_marker(candidate: TerminalRapCandidateView) -> tuple[str, str]:
     if candidate.valid is True:
         return "VALID", "green"
     return "REJECT", "red"
+
+
+def _candidate_sort_key(candidate: TerminalRapCandidateView) -> tuple[int, float, str]:
+    score = candidate.payload.get("total_score")
+    numeric_score = float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else float("-inf")
+    gate = 2 if candidate.selected is True else 1 if candidate.valid is True else 0
+    return (-gate, -numeric_score, candidate.candidate_id or "")

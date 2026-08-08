@@ -75,9 +75,11 @@ class StructuredStreamRenderer:
                 batch = state.latest_batch
                 prompt = batch.prompt if batch is not None else ()
                 for item in prompt:
-                    self._write(
-                        f"{_continuation()} [PROMPT][{_value(item.get('role'))}] {_value(item.get('content'))}"
-                    )
+                    role = _value(item.get("role"))
+                    content = "" if item.get("content") is None else str(item.get("content"))
+                    for index, line in enumerate(content.split("\n")):
+                        marker = "PROMPT" if index == 0 else "PROMPT+"
+                        self._write(f"{_continuation()} [{marker}][{role}] {_escape_controls(line)}")
                 raw_response = batch.raw_response if batch is not None else payload.get("raw_response")
                 self._write(f"{_continuation()} raw_response={raw_response!r}")
         elif kind == RapEventType.CANDIDATE_EVALUATED:
@@ -142,7 +144,7 @@ def _continuation() -> str:
 
 
 def _value(value: object) -> str:
-    return "-" if value is None else str(value)
+    return "-" if value is None else _escape_controls(str(value))
 
 
 def _quoted(value: object) -> str:
@@ -170,5 +172,24 @@ def _flow_summary(value: object) -> str:
         return "flow=-"
     slots = _mappings(value.get("slots"))
     ticks = [slot.get("tick_in_bar") for slot in slots]
+    durations = [slot.get("duration_ticks") for slot in slots]
     stresses = [slot.get("target_stress") for slot in slots]
-    return f"flow={_value(value.get('template_id'))} ticks={ticks} stress={stresses}"
+    boundaries = [slot.get("boundary_strength") for slot in slots]
+    rhymes = [slot.get("rhyme_group") for slot in slots]
+    return (
+        f"flow={_value(value.get('template_id'))} ticks={ticks} durations={durations} stress={stresses} "
+        f"boundaries={boundaries} rhymes={rhymes}"
+    )
+
+
+def _escape_controls(value: str) -> str:
+    escaped: list[str] = []
+    for character in value:
+        codepoint = ord(character)
+        if character == "\t":
+            escaped.append("\\t")
+        elif codepoint < 32 or codepoint == 127:
+            escaped.append(f"\\x{codepoint:02x}")
+        else:
+            escaped.append(character)
+    return "".join(escaped)

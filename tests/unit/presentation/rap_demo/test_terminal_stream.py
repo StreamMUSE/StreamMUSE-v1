@@ -15,7 +15,14 @@ FLOW = {
     "ticks_per_beat": 4,
     "beats_per_bar": 4,
     "slots": [
-        {"slot_index": index, "tick_in_bar": tick, "target_stress": stress}
+        {
+            "slot_index": index,
+            "tick_in_bar": tick,
+            "duration_ticks": 1,
+            "target_stress": stress,
+            "boundary_strength": 3 if index == 8 else 0,
+            "rhyme_group": "A" if index == 8 else None,
+        }
         for index, (tick, stress) in enumerate(
             zip((0, 2, 3, 5, 7, 8, 10, 13, 15), (1.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.5, 0.0, 1.0))
         )
@@ -133,8 +140,34 @@ def test_stream_groups_events_by_bar_and_phase_without_ansi() -> None:
     assert "9/9" in output
     assert "stress_alignment" in output
     assert "Write concise, clean rap lyric candidates." in output
-    assert "Use every supplied flow slot.\nSyllable ticks" in output
+    assert "[PROMPT][user] Use every supplied flow slot." in output
+    assert "[PROMPT+][user] Syllable ticks" in output
+    assert "durations=[1, 1, 1" in output
+    assert "boundaries=[0, 0, 0, 0, 0, 0, 0, 0, 3]" in output
+    assert "rhymes=[None, None, None, None, None, None, None, None, 'A']" in output
     assert "\x1b[" not in output
+
+
+def test_stream_escapes_control_characters_and_prefixes_every_prompt_line() -> None:
+    lines: list[str] = []
+    renderer = StructuredStreamRenderer(detail="full", write=lines.append)
+    projector = TerminalRapStateProjector()
+    _render(renderer, projector, _event(1, RapEventType.BAR_PLANNING_STARTED, {"flow": FLOW}))
+    _render(
+        renderer,
+        projector,
+        _event(
+            2,
+            RapEventType.CANDIDATE_BATCH_RECEIVED,
+            {"prompt": [{"role": "user", "content": "line one\n\x1b[31mline two\tend"}]},
+        ),
+    )
+
+    prompt_lines = [line for line in lines if "[PROMPT" in line]
+    assert len(prompt_lines) == 2
+    assert "[PROMPT][user] line one" in prompt_lines[0]
+    assert "[PROMPT+][user] \\x1b[31mline two\\tend" in prompt_lines[1]
+    assert all("\x1b" not in line for line in lines)
 
 
 @pytest.mark.parametrize(
