@@ -92,6 +92,18 @@ class FakeMonotonic:
         return self.value
 
 
+class AdvancingAnalyzer:
+    def __init__(self, clock: FakeMonotonic, delay: float) -> None:
+        self._delegate = CmuProsodyAnalyzer()
+        self._clock = clock
+        self._delay = delay
+
+    def analyze(self, text: str):
+        result = self._delegate.analyze(text)
+        self._clock.value += self._delay
+        return result
+
+
 def _templates() -> TemplateCatalog:
     return TemplateCatalog.from_templates(
         (
@@ -123,8 +135,9 @@ def _controller(
     minimum_score: float = 0.0,
     planning_bar_limit: int | None = None,
     monotonic_clock=None,
+    analyzer=None,
 ):
-    analyzer = CmuProsodyAnalyzer()
+    analyzer = analyzer or CmuProsodyAnalyzer()
     scenario = _scenario()
     templates = _templates()
     publisher = RapEventPublisher("test-session")
@@ -269,6 +282,31 @@ def test_completed_batch_emits_deadline_slack_for_summary_derivation() -> None:
     batch = next(event for event in events if event.event_type == event.event_type.CANDIDATE_BATCH_RECEIVED)
     assert isinstance(batch.payload["deadline_slack_ms"], float)
     assert derive_summary(events)["latencies"]["deadline_slack_ms"]["count"] == 1
+
+
+def test_batch_response_timing_is_distinct_from_late_ranking_decision() -> None:
+    executor = ManualExecutor()
+    clock = FakeMonotonic()
+    controller, _emitted, events, dispatcher = _controller(
+        primary=FixedGenerator(),
+        executor=executor,
+        monotonic_clock=clock,
+        analyzer=AdvancingAnalyzer(clock, 0.2),
+    )
+    clock.value = 0.0
+    controller.start()
+    controller.on_tick(0)
+    clock.value = 1.9
+    executor.complete()
+    controller.on_tick(1)
+    _finish(controller, dispatcher)
+
+    batch = next(event for event in events if event.event_type == event.event_type.CANDIDATE_BATCH_RECEIVED)
+    assert batch.payload["deadline_slack_ms"] == 100.00000000000009
+    assert batch.payload["late"] is False
+    assert batch.payload["decision_deadline_slack_ms"] == -100.00000000000009
+    assert batch.payload["decision_late"] is True
+    assert controller.bar_for(1).source == "prevalidated_fallback"
 
 
 def test_slow_generation_never_blocks_tick_path() -> None:

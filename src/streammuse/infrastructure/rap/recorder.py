@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 from copy import deepcopy
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ _SECRET_NAME = re.compile(r"[^a-z0-9]+")
 DEFAULT_REPETITION_WINDOW_BARS = 4
 _REQUIRED_MANIFEST_FIELDS = (
     "scenario_id",
+    "scenario",
     "seed",
     "tempo",
     "templates",
@@ -59,6 +61,7 @@ class RapSessionRecorder:
         validated_manifest = validate_session_manifest(manifest)
         session_dir.mkdir(parents=True, exist_ok=False)
         self._events_path = session_dir / "events.jsonl"
+        self._repetition_window_bars = validated_manifest["repetition_window_bars"]
         write_json(session_dir / "session.json", redact_manifest(validated_manifest))
         self._stream = self._events_path.open("a", encoding="utf-8", buffering=1)
         self._closed = False
@@ -74,7 +77,10 @@ class RapSessionRecorder:
         self._closed = True
         self._stream.close()
         events = read_events(self._events_path)
-        write_json(self._events_path.parent / "summary.json", derive_summary(events))
+        write_json(
+            self._events_path.parent / "summary.json",
+            derive_summary(events, expected_manifest_window=self._repetition_window_bars),
+        )
         write_bar_csv(self._events_path.parent / "bars.csv", derive_bar_rows(events))
 
 
@@ -115,7 +121,8 @@ def read_events(path: Path) -> list[RapEvent]:
             incomplete_final = (
                 index == len(lines)
                 and not raw_line.endswith(("\n", "\r"))
-                and _is_truncated_json(line)
+                and isinstance(error, json.JSONDecodeError)
+                and _is_recoverable_eof_json_error(line, error)
             )
             if incomplete_final:
                 break
@@ -154,6 +161,7 @@ class RapSessionManifest:
     """Complete reproducibility contract for a recorded rap session."""
 
     scenario_id: str
+    scenario: dict[str, Any]
     seed: int
     tempo: dict[str, Any]
     templates: list[dict[str, Any]]
@@ -180,6 +188,7 @@ class RapSessionManifest:
 def build_session_manifest(
     *,
     scenario_id: str,
+    scenario: dict[str, Any],
     seed: int,
     tempo: dict[str, Any],
     templates: list[dict[str, Any]],
@@ -201,6 +210,7 @@ def build_session_manifest(
     return validate_session_manifest(
         RapSessionManifest(
             scenario_id=scenario_id,
+            scenario=scenario,
             seed=seed,
             tempo=tempo,
             templates=templates,
@@ -228,20 +238,18 @@ def validate_session_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"session manifest missing required field: {missing[0]}")
     _require_string(manifest, "scenario_id")
     _require_int(manifest, "seed")
-    for field in ("tempo", "generator_config", "model_config", "score_weights"):
-        if not isinstance(manifest[field], dict) or not manifest[field]:
-            raise ValueError(f"session manifest field {field} must be a non-empty object")
-    templates = manifest["templates"]
-    if not isinstance(templates, list) or not templates:
-        raise ValueError("session manifest field templates must be a non-empty list")
-    for template in templates:
-        if not isinstance(template, dict) or not {"template_id", "definition", "provenance"} <= template.keys():
-            raise ValueError("session manifest template requires template_id, definition, and provenance")
-        if not isinstance(template["template_id"], str) or not isinstance(template["definition"], dict) or not isinstance(template["provenance"], dict):
-            raise ValueError("session manifest template definition/provenance is invalid")
-    for field in ("minimum_score", "timeout_seconds"):
-        if not isinstance(manifest[field], (int, float)) or isinstance(manifest[field], bool):
-            raise ValueError(f"session manifest field {field} must be numeric")
+    if manifest["seed"] < 0:
+        raise ValueError("session manifest field seed must be nonnegative")
+    _validate_tempo(manifest["tempo"])
+    _validate_scenario(manifest["scenario"], manifest["scenario_id"], manifest["tempo"]["bpm"])
+    _validate_templates(manifest["templates"])
+    _validate_identity_config(manifest["generator_config"], "generator_config")
+    _validate_identity_config(manifest["model_config"], "model_config")
+    _validate_score_weights(manifest["score_weights"])
+    _require_finite_number(manifest, "minimum_score")
+    if not 0.0 <= manifest["minimum_score"] <= 1.0:
+        raise ValueError("session manifest field minimum_score must be between zero and one")
+    _require_finite_number(manifest, "timeout_seconds")
     if manifest["timeout_seconds"] <= 0:
         raise ValueError("session manifest field timeout_seconds must be positive")
     for field in ("lookahead_bars", "repetition_window_bars"):
@@ -252,10 +260,18 @@ def validate_session_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         _require_string(manifest, field)
     if not isinstance(manifest["git_dirty"], bool):
         raise ValueError("session manifest field git_dirty must be a bool")
+    try:
+        json.dumps(manifest, allow_nan=False, sort_keys=True)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"session manifest must be strict JSON serializable: {error}") from error
     return deepcopy(manifest)
 
 
-def derive_summary(events: Iterable[RapEvent]) -> dict[str, Any]:
+def derive_summary(
+    events: Iterable[RapEvent],
+    *,
+    expected_manifest_window: int | None = None,
+) -> dict[str, Any]:
     """Derive research metrics from event evidence without hidden runtime state."""
 
     event_list = list(events)
@@ -269,7 +285,7 @@ def derive_summary(events: Iterable[RapEvent]) -> dict[str, Any]:
     deadline_misses = sum(request_id in plans and event.payload.get("late") is True for request_id, event in batches.items())
     generator_errors = _generator_error_requests(event_list, plans, batches)
     pronunciation_fallbacks, pronunciation_total = _pronunciation_counts(evaluations.values())
-    repetitions, generated_bigrams = _repetition_counts(event_list, frozen)
+    repetitions, generated_bigrams = _repetition_counts(event_list, frozen, expected_manifest_window)
 
     return {
         "events": {"count": len(event_list)},
@@ -318,9 +334,9 @@ def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
             row["generation_latency_ms"] = _number_or_none(payload.get("latency_ms"))
             row["deadline_slack_ms"] = _number_or_none(payload.get("deadline_slack_ms"))
             row["generator_error"] = payload.get("error_type") if isinstance(payload.get("error_type"), str) else None
-            supplied_count = _number_or_none(payload.get("candidate_count"))
+            supplied_count = _candidate_count(payload)
             if supplied_count is not None:
-                row["_declared_candidate_count"] = int(supplied_count)
+                row["_declared_candidate_count"] = supplied_count
         elif event.event_type == RapEventType.CANDIDATE_EVALUATED:
             candidate_id = payload.get("candidate_id")
             if not isinstance(event.request_id, str) or not isinstance(candidate_id, str):
@@ -344,6 +360,10 @@ def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
                     "fallback_reason": payload.get("fallback_reason") if isinstance(payload.get("fallback_reason"), str) else None,
                 }
             )
+        elif event.event_type == RapEventType.GENERATION_FAILED:
+            error_type = payload.get("error_type")
+            if isinstance(error_type, str) and error_type:
+                row["generator_error"] = error_type
         elif event.event_type == RapEventType.SYLLABLE_EMITTED:
             jitter = _number_or_none(payload.get("jitter_ms"))
             if jitter is not None:
@@ -356,6 +376,8 @@ def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
         jitters = row.pop("_jitters")
         declared_count = row.pop("_declared_candidate_count")
         evaluated_count = row.pop("_evaluated_candidate_count")
+        if declared_count is not None and evaluated_count > declared_count:
+            raise ValueError(f"candidate count contradiction for bar {bar}")
         row["candidate_count"] = declared_count if declared_count is not None else evaluated_count
         row["mean_emission_jitter_ms"] = sum(jitters) / len(jitters) if jitters else None
         result.append(row)
@@ -415,13 +437,17 @@ def _event_from_record(record: object) -> RapEvent:
     )
 
 
-def _is_truncated_json(value: str) -> bool:
-    """Recognize an unfinished JSON container without masking complete garbage."""
+def _is_recoverable_eof_json_error(value: str, error: json.JSONDecodeError) -> bool:
+    """Allow only conservative crash tails, never invalid JSON tokens before EOF."""
 
-    stack: list[str] = []
+    if error.pos == len(value):
+        return True
+    return error.msg.startswith("Unterminated string") and _ends_in_unterminated_string(value)
+
+
+def _ends_in_unterminated_string(value: str) -> bool:
     in_string = False
     escaped = False
-    pairs = {"}": "{", "]": "["}
     for character in value:
         if in_string:
             if escaped:
@@ -430,15 +456,9 @@ def _is_truncated_json(value: str) -> bool:
                 escaped = True
             elif character == '"':
                 in_string = False
-            continue
-        if character == '"':
+        elif character == '"':
             in_string = True
-        elif character in "{[":
-            stack.append(character)
-        elif character in "}]":
-            if not stack or stack.pop() != pairs[character]:
-                return False
-    return in_string or bool(stack)
+    return in_string
 
 
 def _require_string(manifest: dict[str, Any], field: str) -> None:
@@ -449,6 +469,109 @@ def _require_string(manifest: dict[str, Any], field: str) -> None:
 def _require_int(manifest: dict[str, Any], field: str) -> None:
     if not isinstance(manifest[field], int) or isinstance(manifest[field], bool):
         raise ValueError(f"session manifest field {field} must be an integer")
+
+
+def _require_finite_number(manifest: dict[str, Any], field: str) -> None:
+    value = manifest[field]
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        raise ValueError(f"session manifest field {field} must be finite")
+
+
+def _validate_tempo(tempo: object) -> None:
+    if not isinstance(tempo, dict):
+        raise ValueError("session manifest field tempo must be an object")
+    for field in ("bpm", "ticks_per_beat", "beats_per_bar"):
+        if field not in tempo:
+            raise ValueError(f"session manifest tempo missing {field}")
+    bpm = tempo["bpm"]
+    if not isinstance(bpm, (int, float)) or isinstance(bpm, bool) or not math.isfinite(bpm) or bpm <= 0:
+        raise ValueError("session manifest tempo bpm must be finite and positive")
+    for field in ("ticks_per_beat", "beats_per_bar"):
+        if not isinstance(tempo[field], int) or isinstance(tempo[field], bool) or tempo[field] <= 0:
+            raise ValueError(f"session manifest tempo {field} must be a positive integer")
+
+
+def _validate_scenario(scenario: object, scenario_id: str, tempo_bpm: object) -> None:
+    if not isinstance(scenario, dict):
+        raise ValueError("session manifest scenario must be an object")
+    if scenario.get("scenario_id") != scenario_id or not isinstance(scenario.get("loop"), bool):
+        raise ValueError("session manifest scenario ID or loop is invalid")
+    bpm = scenario.get("tempo_bpm")
+    if not isinstance(bpm, (int, float)) or isinstance(bpm, bool) or not math.isfinite(bpm) or bpm <= 0 or bpm != tempo_bpm:
+        raise ValueError("session manifest scenario tempo_bpm is invalid")
+    segments = scenario.get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise ValueError("session manifest scenario segments must be a non-empty list")
+    expected_start = 0
+    for segment in segments:
+        if not isinstance(segment, dict):
+            raise ValueError("session manifest scenario segment must be an object")
+        if segment.get("start_bar") != expected_start or not isinstance(segment.get("bars"), int) or isinstance(segment["bars"], bool) or segment["bars"] <= 0:
+            raise ValueError("session manifest scenario segment start_bar/bars is invalid")
+        for field in ("topic", "template_id"):
+            if not isinstance(segment.get(field), str) or not segment[field]:
+                raise ValueError(f"session manifest scenario segment {field} is invalid")
+        fallback_lines = segment.get("fallback_lines")
+        if not isinstance(fallback_lines, list) or not fallback_lines or not all(isinstance(line, str) and line for line in fallback_lines):
+            raise ValueError("session manifest scenario segment fallback_lines is invalid")
+        expected_start += segment["bars"]
+
+
+def _validate_templates(templates: object) -> None:
+    if not isinstance(templates, list) or not templates:
+        raise ValueError("session manifest field templates must be a non-empty list")
+    seen_ids: set[str] = set()
+    for template in templates:
+        if not isinstance(template, dict):
+            raise ValueError("session manifest template must be an object")
+        template_id = template.get("template_id")
+        if not isinstance(template_id, str) or not template_id or template_id in seen_ids:
+            raise ValueError("session manifest template_id is invalid")
+        seen_ids.add(template_id)
+        definition = template.get("definition")
+        provenance = template.get("provenance")
+        if not isinstance(definition, dict) or not definition or not isinstance(provenance, dict) or not provenance:
+            raise ValueError("session manifest template definition/provenance is invalid")
+        for field in ("ticks_per_beat", "beats_per_bar"):
+            if not isinstance(definition.get(field), int) or isinstance(definition[field], bool) or definition[field] <= 0:
+                raise ValueError(f"session manifest template {field} is invalid")
+        slots = definition.get("slots")
+        if not isinstance(slots, list) or not slots:
+            raise ValueError("session manifest template slots are invalid")
+        previous_tick = -1
+        ticks_per_bar = definition["ticks_per_beat"] * definition["beats_per_bar"]
+        for slot in slots:
+            if not isinstance(slot, dict):
+                raise ValueError("session manifest template slot is invalid")
+            tick = slot.get("tick_in_bar")
+            duration = slot.get("duration_ticks")
+            stress = slot.get("target_stress")
+            if not isinstance(tick, int) or isinstance(tick, bool) or tick <= previous_tick or tick < 0 or tick >= ticks_per_bar:
+                raise ValueError("session manifest template slot tick is invalid")
+            if not isinstance(duration, int) or isinstance(duration, bool) or duration <= 0:
+                raise ValueError("session manifest template slot duration is invalid")
+            if not isinstance(stress, (int, float)) or isinstance(stress, bool) or not math.isfinite(stress) or not 0 <= stress <= 1:
+                raise ValueError("session manifest template slot target_stress is invalid")
+            previous_tick = tick
+        for field in ("kind", "source"):
+            if not isinstance(provenance.get(field), str) or not provenance[field]:
+                raise ValueError(f"session manifest template provenance {field} is invalid")
+
+
+def _validate_identity_config(config: object, field: str) -> None:
+    if not isinstance(config, dict) or not config:
+        raise ValueError(f"session manifest field {field} must be a non-empty object")
+    identity = config.get("identity", config.get("name"))
+    if not isinstance(identity, str) or not identity:
+        raise ValueError(f"session manifest field {field} requires a non-empty identity")
+
+
+def _validate_score_weights(weights: object) -> None:
+    if not isinstance(weights, dict) or not weights:
+        raise ValueError("session manifest field score_weights must be a non-empty object")
+    for name, value in weights.items():
+        if not isinstance(name, str) or not name or not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+            raise ValueError("session manifest field score_weights must contain finite nonnegative named weights")
 
 
 def _requests(events: Iterable[RapEvent], event_type: RapEventType) -> dict[str, RapEvent]:
@@ -484,8 +607,10 @@ def _candidate_counts(
         batch_evaluations = [
             event for (evaluation_request_id, _candidate_id), event in evaluations.items() if evaluation_request_id == request_id
         ]
-        candidate_count = _number_or_none(batch.payload.get("candidate_count"))
-        parsed += int(candidate_count) if candidate_count is not None and candidate_count >= 0 else len(batch_evaluations)
+        candidate_count = _candidate_count(batch.payload)
+        if candidate_count is not None and len(batch_evaluations) > candidate_count:
+            raise ValueError(f"candidate count contradiction for request {request_id}")
+        parsed += candidate_count if candidate_count is not None else len(batch_evaluations)
         valid += sum(event.payload.get("valid") is True for event in batch_evaluations)
     return valid, parsed
 
@@ -506,8 +631,12 @@ def _generator_error_requests(
     return errors
 
 
-def _repetition_counts(events: Iterable[RapEvent], frozen: dict[int, RapEvent]) -> tuple[int, int]:
-    window = _repetition_window(events)
+def _repetition_counts(
+    events: Iterable[RapEvent],
+    frozen: dict[int, RapEvent],
+    expected_manifest_window: int | None,
+) -> tuple[int, int]:
+    window = _repetition_window(events, expected_manifest_window)
     recent: list[set[tuple[str, str]]] = []
     repeated = 0
     generated = 0
@@ -523,17 +652,39 @@ def _repetition_counts(events: Iterable[RapEvent], frozen: dict[int, RapEvent]) 
     return repeated, generated
 
 
-def _repetition_window(events: Iterable[RapEvent]) -> int:
+def _repetition_window(events: Iterable[RapEvent], expected_manifest_window: int | None) -> int:
+    if expected_manifest_window is not None and (
+        not isinstance(expected_manifest_window, int)
+        or isinstance(expected_manifest_window, bool)
+        or expected_manifest_window <= 0
+    ):
+        raise ValueError("expected manifest repetition window must be a positive integer")
     for event in events:
         if event.event_type != RapEventType.SESSION_STARTED:
             continue
         if "repetition_window_bars" not in event.payload:
-            return DEFAULT_REPETITION_WINDOW_BARS
+            window = DEFAULT_REPETITION_WINDOW_BARS
+            if expected_manifest_window is not None and expected_manifest_window != window:
+                raise ValueError("event and manifest repetition window disagree")
+            return window
         value = event.payload["repetition_window_bars"]
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise ValueError("session-start repetition_window_bars must be a positive integer")
+        if expected_manifest_window is not None and expected_manifest_window != value:
+            raise ValueError("event and manifest repetition window disagree")
         return value
+    if expected_manifest_window is not None and expected_manifest_window != DEFAULT_REPETITION_WINDOW_BARS:
+        raise ValueError("event and manifest repetition window disagree")
     return DEFAULT_REPETITION_WINDOW_BARS
+
+
+def _candidate_count(payload: dict[str, Any]) -> int | None:
+    if "candidate_count" not in payload:
+        return None
+    value = payload["candidate_count"]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("candidate_count must be a nonnegative integer")
+    return value
 
 
 def _normalized_bigrams(text: str) -> list[tuple[str, str]]:

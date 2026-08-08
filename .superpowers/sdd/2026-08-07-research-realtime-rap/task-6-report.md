@@ -243,3 +243,93 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap \
   derivation consumes that event evidence directly.
 - No terminal/controller behavior was changed beyond the new event payload
   timing evidence; the complete affected RAP/terminal suite remains green.
+
+## Fix Round 2/5
+
+### Changed Files
+
+- `src/streammuse/application/rap/__init__.py`
+- `src/streammuse/application/rap/monitoring.py`
+- `src/streammuse/application/rap/realtime.py`
+- `src/streammuse/application/rap/runtime.py`
+- `src/streammuse/infrastructure/rap/__init__.py`
+- `src/streammuse/infrastructure/rap/recorder.py`
+- `tests/unit/application/rap/test_monitoring.py`
+- `tests/unit/application/rap/test_realtime.py`
+- `tests/unit/application/rap/test_runtime.py`
+- `tests/unit/infrastructure/rap/test_recorder.py`
+- `.superpowers/sdd/2026-08-07-research-realtime-rap/task-6-report.md`
+
+### Findings Addressed
+
+1. EOF recovery now accepts only parser-confirmed EOF truncation or a genuine
+   unterminated string. Invalid pre-EOF tokens such as `NOT_JSON` raise rather
+   than being hidden as crash tails.
+2. The reproducibility manifest now contains full scenario ID/loop/tempo and
+   contiguous segment schedule with topic/template/fallback lines. Tempo,
+   template slots/provenance, identities, finite weights, threshold, timeout,
+   and dimensions are deeply validated. Strict `allow_nan=False` JSON encoding
+   is verified before directory creation.
+3. `RapDemoDependencies` carries a validated positive
+   `repetition_window_bars` value into `session_started`; recorder close passes
+   the manifest window to derivation, which rejects event/manifest disagreement.
+4. Worker results capture response completion immediately after generation and
+   decision completion after analysis/ranking. Batch `deadline_slack_ms` and
+   `late` are response metrics; separate decision completion/slack/late fields
+   represent readiness. Replacement is blocked by `decision_late`, preserving
+   the fallback when scoring misses the deadline.
+5. Candidate counts must be nonnegative integers. Distinct evaluations beyond
+   a declared batch count raise a clear contradiction error before summary or
+   CSV output; bar rows also expose generator failures with no batch evidence.
+6. The projector retains the latest request ID independently of pending status
+   and ignores evaluations without that exact request ID.
+7. Segment metadata retains the current and all future reserved bars; pruning
+   happens only after a tick passes a bar, so large lookahead cannot evict the
+   active segment.
+8. Both package initializers now have one docstring, one import block, and one
+   complete export list.
+
+### TDD Evidence
+
+The initial round-2 red suite produced the expected failures for stale
+candidates, manifest depth, invalid EOF tokens, missing manifest-window
+comparison, invalid/contradictory candidate counts, missing failure-only CSV
+errors, and post-ranking timing fields.
+
+```text
+uv run pytest tests/unit/application/rap/test_monitoring.py \
+  tests/unit/infrastructure/rap/test_recorder.py \
+  tests/unit/application/rap/test_realtime.py -v
+# 11 failures before implementation
+```
+
+The follow-up decision-gate and runtime-constructor RED run failed because a
+decision-late result replaced the fallback and zero repetition windows were
+accepted. Both regressions passed after using `decision_late` for replacement
+and validating the dependency field in `__post_init__`.
+
+Final verification:
+
+```text
+uv run pytest tests/unit/application/rap/test_monitoring.py \
+  tests/unit/infrastructure/rap/test_recorder.py \
+  tests/unit/application/rap/test_realtime.py \
+  tests/unit/application/rap/test_runtime.py -v
+# 40 passed
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap \
+  tests/unit/presentation/rap_demo -q --tb=no
+# 208 passed; one existing pretty_midi/pkg_resources deprecation warning
+```
+
+### Fix-Round Self-Review
+
+- Manifest serialization and schema validation complete before any session
+  directory mutation, preventing partial artifacts on bad research metadata.
+- The response/decision split preserves accurate generator metrics while the
+  decision deadline controls musical replacement safety.
+- Repetition-window evidence is canonical at session start and checked against
+  the manifest during recorder derivation and future regeneration.
+- Current-request filtering and past-only segment pruning keep the bounded
+  presentation state both truthful and usable with large lookahead values.

@@ -50,7 +50,8 @@ class _PlanningResult:
     request: CandidateRequest
     batch: CandidateBatch
     selection: SelectionResult
-    completed_monotonic: float
+    response_completed_monotonic: float
+    decision_completed_monotonic: float
 
 
 class RollingRapController:
@@ -278,6 +279,7 @@ class RollingRapController:
     ) -> _PlanningResult:
         assert self._primary_generator is not None
         batch = self._primary_generator.generate(request)
+        response_completed_monotonic = self._clock()
         candidates = tuple(
             (f"{request.request_id}-candidate-{index + 1}", text, self._analyzer.analyze(text))
             for index, text in enumerate(batch.candidates)
@@ -293,7 +295,13 @@ class RollingRapController:
             segment_start_bar=segment.start_bar,
             target_bar=request.target_bar,
         )
-        return _PlanningResult(request, batch, selection, completed_monotonic=self._clock())
+        return _PlanningResult(
+            request,
+            batch,
+            selection,
+            response_completed_monotonic=response_completed_monotonic,
+            decision_completed_monotonic=self._clock(),
+        )
 
     def _drain_primary_result(self) -> None:
         future = self._future
@@ -320,8 +328,12 @@ class RollingRapController:
 
         target = self._bars[target_bar]
         batch = result.batch
-        deadline_slack_ms = self._deadline_slack_ms(target_bar, result.completed_monotonic)
+        deadline_slack_ms = self._deadline_slack_ms(target_bar, result.response_completed_monotonic)
+        decision_deadline_slack_ms = self._deadline_slack_ms(target_bar, result.decision_completed_monotonic)
         late = target.frozen or (deadline_slack_ms is not None and deadline_slack_ms <= 0.0)
+        decision_late = target.frozen or (
+            decision_deadline_slack_ms is not None and decision_deadline_slack_ms <= 0.0
+        )
         self._event(
             RapEventType.CANDIDATE_BATCH_RECEIVED,
             bar=target_bar,
@@ -337,6 +349,10 @@ class RollingRapController:
                 "error_message": batch.error_message,
                 "late": late,
                 "deadline_slack_ms": deadline_slack_ms,
+                "response_completed_monotonic": result.response_completed_monotonic,
+                "decision_completed_monotonic": result.decision_completed_monotonic,
+                "decision_deadline_slack_ms": decision_deadline_slack_ms,
+                "decision_late": decision_late,
             },
         )
         selected_id = result.selection.selected.candidate_id if result.selection.selected else None
@@ -382,7 +398,7 @@ class RollingRapController:
                 },
             )
             return
-        if late:
+        if decision_late:
             return
         selected = result.selection.selected
         if selected is None:

@@ -220,6 +220,7 @@ class RapStateProjector:
         self._max_emitted_syllables = max_emitted_syllables
         self._max_candidates = max_candidates
         self._segments: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._latest_request_id: str | None = None
         self._state: dict[str, Any] = {
             "session_id": None,
             "last_sequence": 0,
@@ -250,8 +251,10 @@ class RapStateProjector:
                 self._state["current_tick"] = event.tick
                 if event.bar is not None and str(event.bar) in self._segments:
                     self._state["current_segment"] = deepcopy(self._segments[str(event.bar)])
+                    self._prune_past_segments(event.bar)
             elif event.event_type == RapEventType.BAR_PLANNING_STARTED:
                 self._state["candidates"].clear()
+                self._latest_request_id = event.request_id if isinstance(event.request_id, str) else None
                 self._state["pending_request"] = self._event_state(event)
             elif event.event_type == RapEventType.CANDIDATE_BATCH_RECEIVED:
                 if self._state["pending_request"] and self._state["pending_request"]["request_id"] == event.request_id:
@@ -260,7 +263,11 @@ class RapStateProjector:
                 self._add_payload_number(event.payload, "deadline_slack_ms", "deadline_slack_ms")
             elif event.event_type == RapEventType.CANDIDATE_EVALUATED:
                 candidate_id = event.payload.get("candidate_id")
-                if isinstance(candidate_id, str):
+                if (
+                    isinstance(candidate_id, str)
+                    and self._latest_request_id is not None
+                    and event.request_id == self._latest_request_id
+                ):
                     self._state["candidates"][candidate_id] = self._event_state(event)
                     self._state["candidates"].move_to_end(candidate_id)
                     self._trim_mapping(self._state["candidates"], self._max_candidates)
@@ -313,7 +320,11 @@ class RapStateProjector:
                 "template_id": template_id if isinstance(template_id, str) else None,
             }
             self._segments.move_to_end(str(event.bar))
-            self._trim_mapping(self._segments, self._max_recent_bars + 16)
+
+    def _prune_past_segments(self, current_bar: int) -> None:
+        for bar_key in tuple(self._segments):
+            if int(bar_key) < current_bar:
+                del self._segments[bar_key]
 
     @staticmethod
     def _trim_mapping(mapping: OrderedDict[str, Any], limit: int) -> None:

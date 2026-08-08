@@ -2,7 +2,8 @@
 
 import pytest
 
-from streammuse.application.rap.runtime import RapTickLoop
+from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
+from streammuse.application.rap.runtime import RapDemoDependencies, RapTickLoop
 from streammuse.domain.timing import Tempo
 
 
@@ -40,3 +41,57 @@ def test_tick_loop_compensates_for_callback_time_instead_of_accumulating_drift()
     loop.run(max_ticks=3)
 
     assert clock.sleeps == pytest.approx([0.1, 0.1])
+
+
+def test_demo_session_start_records_resolved_repetition_window(tmp_path) -> None:
+    class Controller:
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class TickLoop:
+        def run(self, max_ticks: int | None = None) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    events = []
+    publisher = RapEventPublisher("session")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(events.append,))
+    dispatcher.start()
+    dependencies = RapDemoDependencies(
+        Tempo(120.0, 4, 4),
+        Controller(),
+        publisher,
+        dispatcher,
+        TickLoop(),
+        tmp_path,
+        repetition_window_bars=7,
+    )
+    dependencies.run(max_bars=1)
+
+    assert events[0].payload["repetition_window_bars"] == 7
+
+
+def test_demo_dependencies_reject_nonpositive_repetition_window(tmp_path) -> None:
+    class Controller:
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class TickLoop:
+        def run(self, max_ticks: int | None = None) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    publisher = RapEventPublisher("session")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=())
+    with pytest.raises(ValueError, match="repetition_window_bars"):
+        RapDemoDependencies(Tempo(120.0, 4, 4), Controller(), publisher, dispatcher, TickLoop(), tmp_path, 0)

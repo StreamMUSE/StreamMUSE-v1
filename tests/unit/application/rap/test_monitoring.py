@@ -206,8 +206,8 @@ def test_state_projector_bounds_live_windows_and_tracks_request_failures() -> No
     projector.apply(_event(3, RapEventType.TICK, bar=0, tick=0))
     projector.apply(_event(4, RapEventType.BAR_PLANNING_STARTED, bar=0, request_id="r0"))
     projector.apply(_event(5, RapEventType.GENERATION_FAILED, bar=0, request_id="r0"))
-    projector.apply(_event(6, RapEventType.CANDIDATE_EVALUATED, payload={"candidate_id": "old"}))
-    projector.apply(_event(7, RapEventType.CANDIDATE_EVALUATED, payload={"candidate_id": "new"}))
+    projector.apply(_event(6, RapEventType.CANDIDATE_EVALUATED, request_id="r0", payload={"candidate_id": "old"}))
+    projector.apply(_event(7, RapEventType.CANDIDATE_EVALUATED, request_id="r0", payload={"candidate_id": "new"}))
     projector.apply(_event(8, RapEventType.BAR_FROZEN, bar=0, payload={"text": "old"}))
     projector.apply(_event(9, RapEventType.BAR_FROZEN, bar=1, payload={"text": "new"}))
     projector.apply(_event(10, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"label": "old"}))
@@ -229,6 +229,20 @@ def test_state_projector_replaces_candidates_when_a_new_request_starts() -> None
     projector.apply(_event(3, RapEventType.CANDIDATE_EVALUATED, request_id="new", payload={"candidate_id": "new"}))
 
     assert list(projector.snapshot()["candidates"]) == ["new"]
+
+
+def test_state_projector_ignores_stale_evaluations_and_retains_current_future_segments() -> None:
+    projector = RapStateProjector(max_recent_bars=1)
+    for bar in range(20):
+        projector.apply(_event(bar + 1, RapEventType.BAR_RESERVED, bar=bar, payload={"topic": str(bar), "template_id": "one"}))
+    projector.apply(_event(21, RapEventType.BAR_PLANNING_STARTED, bar=1, request_id="new"))
+    projector.apply(_event(22, RapEventType.CANDIDATE_EVALUATED, request_id="old", payload={"candidate_id": "old"}))
+    projector.apply(_event(23, RapEventType.CANDIDATE_EVALUATED, request_id="new", payload={"candidate_id": "new"}))
+    projector.apply(_event(24, RapEventType.TICK, bar=0, tick=0))
+
+    snapshot = projector.snapshot()
+    assert list(snapshot["candidates"]) == ["new"]
+    assert snapshot["current_segment"] == {"bar": 0, "topic": "0", "template_id": "one"}
 
 
 def test_rap_package_exports_preserve_existing_and_monitoring_public_apis() -> None:

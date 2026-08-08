@@ -56,12 +56,25 @@ class RapDemoDependencies:
     dispatcher: RapEventDispatcher
     tick_loop: RapTickLoop
     session_dir: Path
+    repetition_window_bars: int = 4
     _closed: bool = field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.repetition_window_bars, int)
+            or isinstance(self.repetition_window_bars, bool)
+            or self.repetition_window_bars <= 0
+        ):
+            raise ValueError("repetition_window_bars must be a positive integer")
 
     def run(self, *, max_bars: int) -> None:
         self.publisher.emit(
             RapEventType.SESSION_STARTED,
-            payload={"tempo_bpm": self.tempo.bpm, "max_bars": max_bars},
+            payload={
+                "tempo_bpm": self.tempo.bpm,
+                "max_bars": max_bars,
+                "repetition_window_bars": self.repetition_window_bars,
+            },
         )
         self.controller.start()
         max_ticks = None if max_bars == 0 else max_bars * self.tempo.ticks_per_bar

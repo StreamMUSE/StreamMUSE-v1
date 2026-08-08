@@ -64,9 +64,15 @@ def _scripted_session_events() -> tuple[RapEvent, ...]:
 def _manifest() -> dict[str, object]:
     return build_session_manifest(
         scenario_id="test",
+        scenario={
+            "scenario_id": "test",
+            "loop": True,
+            "tempo_bpm": 120.0,
+            "segments": [{"start_bar": 0, "bars": 1, "topic": "space", "template_id": "one", "fallback_lines": ["space"]}],
+        },
         seed=7,
         tempo={"bpm": 120.0, "ticks_per_beat": 4, "beats_per_bar": 4},
-        templates=[{"template_id": "one", "definition": {"slots": []}, "provenance": {"kind": "test", "source": "fixture"}}],
+        templates=[{"template_id": "one", "definition": {"ticks_per_beat": 4, "beats_per_bar": 4, "slots": [{"tick_in_bar": 0, "duration_ticks": 1, "target_stress": 1.0}]}, "provenance": {"kind": "test", "source": "fixture"}}],
         generator_config={"name": "phrase_bank"},
         model_config={"name": "none"},
         score_weights={"stress_alignment": 1.0},
@@ -204,10 +210,11 @@ def test_manifest_builder_validator_and_recorder_require_reproducibility_contrac
 
 def test_recorder_redacts_secret_keys_in_event_payloads(tmp_path: Path) -> None:
     recorder = RapSessionRecorder(tmp_path / "session", manifest=_manifest())
-    recorder(_event(1, RapEventType.CANDIDATE_BATCH_RECEIVED, payload={"api_key": "secret", "nested": {"token": "hidden"}, "safe": "kept"}))
+    recorder(_event(1, RapEventType.SESSION_STARTED, payload={"repetition_window_bars": 2}))
+    recorder(_event(2, RapEventType.CANDIDATE_BATCH_RECEIVED, payload={"api_key": "secret", "nested": {"token": "hidden"}, "safe": "kept"}))
     recorder.close()
 
-    event = json.loads((tmp_path / "session" / "events.jsonl").read_text(encoding="utf-8"))
+    event = json.loads((tmp_path / "session" / "events.jsonl").read_text(encoding="utf-8").splitlines()[1])
     assert event["payload"] == {"api_key": "[REDACTED]", "nested": {"token": "[REDACTED]"}, "safe": "kept"}
 
 
@@ -242,6 +249,10 @@ def test_read_events_rejects_interior_corruption_complete_final_corruption_and_m
     final_without_newline.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n{bad}", encoding="utf-8")
     with pytest.raises(ValueError, match="line 2"):
         read_events(final_without_newline)
+    invalid_prefix = tmp_path / "invalid-prefix.jsonl"
+    invalid_prefix.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n{\"payload\": NOT_JSON", encoding="utf-8")
+    with pytest.raises(ValueError, match="line 2"):
+        read_events(invalid_prefix)
     mixed = tmp_path / "mixed.jsonl"
     mixed.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n" + json.dumps(event_to_dict(RapEvent("other", 2, RapEventType.TICK, "time", 2, None, None, None, {}))) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="session"):
@@ -273,3 +284,56 @@ def test_derivations_deduplicate_candidate_and_request_identities_and_only_emit_
     assert summary["metrics"]["deadline_miss"] == {"numerator": 1, "denominator": 2, "rate": 0.5}
     assert summary["metrics"]["generator_error"] == {"numerator": 1, "denominator": 2, "rate": 0.5}
     assert [row["bar"] for row in derive_bar_rows(events)] == [0]
+
+
+def test_manifest_validation_is_deep_json_strict_and_does_not_create_artifacts(tmp_path: Path) -> None:
+    manifest = _manifest()
+    malformed = dict(manifest)
+    malformed["tempo"] = {"bpm": 120.0, "ticks_per_beat": 0, "beats_per_bar": 4}
+    with pytest.raises(ValueError, match="tempo"):
+        RapSessionRecorder(tmp_path / "bad-tempo", malformed)
+    malformed = _manifest()
+    malformed["score_weights"] = {"score": float("nan")}
+    with pytest.raises(ValueError, match="score_weights"):
+        RapSessionRecorder(tmp_path / "bad-weight", malformed)
+    malformed = _manifest()
+    malformed["scenario"] = {"scenario_id": "test", "loop": True, "tempo_bpm": 120.0, "segments": []}
+    with pytest.raises(ValueError, match="segments"):
+        RapSessionRecorder(tmp_path / "bad-scenario", malformed)
+    malformed = _manifest()
+    malformed["model_config"] = {"name": "valid", "nested": object()}
+    with pytest.raises(ValueError):
+        RapSessionRecorder(tmp_path / "bad-json", malformed)
+    assert not any(tmp_path.iterdir())
+
+
+def test_summary_rejects_manifest_repetition_window_disagreement() -> None:
+    events = (_event(1, RapEventType.SESSION_STARTED, payload={"repetition_window_bars": 2}),)
+    with pytest.raises(ValueError, match="repetition window"):
+        derive_summary(events, expected_manifest_window=3)
+
+
+def test_derivations_reject_invalid_or_contradictory_candidate_counts() -> None:
+    invalid_count = (
+        _event(1, RapEventType.CANDIDATE_BATCH_RECEIVED, request_id="r0", payload={"candidate_count": 1.5}),
+    )
+    with pytest.raises(ValueError, match="candidate_count"):
+        derive_summary(invalid_count)
+    contradiction = (
+        _event(1, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 1}),
+        _event(2, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "one", "valid": True}),
+        _event(3, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "two", "valid": True}),
+        _event(4, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "one", "fallback": False}),
+    )
+    with pytest.raises(ValueError, match="candidate count"):
+        derive_summary(contradiction)
+    with pytest.raises(ValueError, match="candidate count"):
+        derive_bar_rows(contradiction)
+
+
+def test_bar_rows_capture_generator_failure_without_a_batch() -> None:
+    rows = derive_bar_rows((
+        _event(1, RapEventType.GENERATION_FAILED, bar=0, request_id="r0", payload={"error_type": "generation_error"}),
+        _event(2, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "fallback", "fallback": True}),
+    ))
+    assert rows[0]["generator_error"] == "generation_error"
