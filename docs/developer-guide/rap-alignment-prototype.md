@@ -9,6 +9,14 @@ result as a terminal schedule and optional JSON artifact. It is intentionally
 separate from the accompaniment process so that beat-aligned text can be judged
 before adding speech synthesis, keyboard drum capture, or audio mixing.
 
+This page documents the original standalone scheduler and its first integration
+with `streammuse-cli`. For the newer continuous scenario runner, exact flow
+context, candidate diagnostics, live terminal/browser monitors, canonical
+artifacts, and reproducible analysis, see
+[`research-realtime-rap.md`](research-realtime-rap.md). The newer runner is the
+research entry point; this command remains useful as a small alignment smoke
+test.
+
 ## Run It
 
 The default path needs no model server:
@@ -118,6 +126,13 @@ prosody from the standalone command. The next useful increment is a
 timestamped drum-hit buffer that updates the accent-weighted slot plan while
 preserving a one- to two-bar lyric lookahead, followed by a
 duration-controlled TTS layer.
+
+The continuous research runner now addresses lookahead generation, immutable
+bar freezing, fallback continuity, and structured observation, but it does not
+remove the core scientific limitations above. Its dictionary/OOV prosody,
+fixed sixteenth-note grid, lexical score proxies, and hand-authored live
+templates remain engineering approximations. No current result validates
+human-perceived rap quality or expressive audio timing.
 
 ## Development Record
 
