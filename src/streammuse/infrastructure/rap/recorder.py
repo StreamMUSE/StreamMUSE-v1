@@ -241,8 +241,8 @@ def validate_session_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest["seed"] < 0:
         raise ValueError("session manifest field seed must be nonnegative")
     _validate_tempo(manifest["tempo"])
-    _validate_scenario(manifest["scenario"], manifest["scenario_id"], manifest["tempo"]["bpm"])
-    _validate_templates(manifest["templates"])
+    template_ids = _validate_templates(manifest["templates"], manifest["tempo"])
+    _validate_scenario(manifest["scenario"], manifest["scenario_id"], manifest["tempo"]["bpm"], template_ids)
     _validate_identity_config(manifest["generator_config"], "generator_config")
     _validate_identity_config(manifest["model_config"], "model_config")
     _validate_score_weights(manifest["score_weights"])
@@ -438,16 +438,48 @@ def _event_from_record(record: object) -> RapEvent:
 
 
 def _is_recoverable_eof_json_error(value: str, error: json.JSONDecodeError) -> bool:
-    """Allow only conservative crash tails, never invalid JSON tokens before EOF."""
+    """Recover only tails that can be completed into valid JSON at EOF."""
 
-    if error.pos == len(value):
+    for completion in _eof_json_completions(value, error):
+        try:
+            json.loads(completion)
+        except json.JSONDecodeError:
+            continue
         return True
-    return error.msg.startswith("Unterminated string") and _ends_in_unterminated_string(value)
+    return False
 
 
-def _ends_in_unterminated_string(value: str) -> bool:
+def _eof_json_completions(value: str, error: json.JSONDecodeError) -> tuple[str, ...]:
+    closers, in_string = _open_container_closers(value)
+    if closers is None:
+        return ()
+    suffixes: list[str] = []
+    trimmed = value.rstrip()
+    if error.msg.startswith("Unterminated string") and in_string:
+        suffixes.append('"')
+    elif trimmed.endswith((":", ",")):
+        suffixes.append("null")
+    elif error.pos == len(trimmed):
+        suffixes.append("")
+
+    literal_completions = {"t": "rue", "tr": "ue", "tru": "e", "f": "alse", "fa": "lse", "fal": "se", "fals": "e", "n": "ull", "nu": "ll", "nul": "l"}
+    for partial, completion in literal_completions.items():
+        if trimmed.endswith(partial):
+            suffixes.append(completion)
+            break
+    if re.search(r"-?(?:0|[1-9]\d*)(?:\.\d+)?[eE][+-]?$", trimmed):
+        suffixes.append("0")
+    elif re.search(r"-?(?:0|[1-9]\d*)\.$", trimmed):
+        suffixes.append("0")
+
+    return tuple(f"{value}{suffix}{closers}" for suffix in dict.fromkeys(suffixes))
+
+
+def _open_container_closers(value: str) -> tuple[str | None, bool]:
+    stack: list[str] = []
     in_string = False
     escaped = False
+    pairs = {"}": "{", "]": "["}
     for character in value:
         if in_string:
             if escaped:
@@ -456,9 +488,15 @@ def _ends_in_unterminated_string(value: str) -> bool:
                 escaped = True
             elif character == '"':
                 in_string = False
-        elif character == '"':
+            continue
+        if character == '"':
             in_string = True
-    return in_string
+        elif character in "{[":
+            stack.append(character)
+        elif character in "}]":
+            if not stack or stack.pop() != pairs[character]:
+                return None, in_string
+    return "".join("}" if opening == "{" else "]" for opening in reversed(stack)), in_string
 
 
 def _require_string(manifest: dict[str, Any], field: str) -> None:
@@ -491,7 +529,7 @@ def _validate_tempo(tempo: object) -> None:
             raise ValueError(f"session manifest tempo {field} must be a positive integer")
 
 
-def _validate_scenario(scenario: object, scenario_id: str, tempo_bpm: object) -> None:
+def _validate_scenario(scenario: object, scenario_id: str, tempo_bpm: object, template_ids: set[str]) -> None:
     if not isinstance(scenario, dict):
         raise ValueError("session manifest scenario must be an object")
     if scenario.get("scenario_id") != scenario_id or not isinstance(scenario.get("loop"), bool):
@@ -511,13 +549,15 @@ def _validate_scenario(scenario: object, scenario_id: str, tempo_bpm: object) ->
         for field in ("topic", "template_id"):
             if not isinstance(segment.get(field), str) or not segment[field]:
                 raise ValueError(f"session manifest scenario segment {field} is invalid")
+        if segment["template_id"] not in template_ids:
+            raise ValueError("session manifest scenario segment template_id does not resolve to a recorded template")
         fallback_lines = segment.get("fallback_lines")
         if not isinstance(fallback_lines, list) or not fallback_lines or not all(isinstance(line, str) and line for line in fallback_lines):
             raise ValueError("session manifest scenario segment fallback_lines is invalid")
         expected_start += segment["bars"]
 
 
-def _validate_templates(templates: object) -> None:
+def _validate_templates(templates: object, tempo: dict[str, Any]) -> set[str]:
     if not isinstance(templates, list) or not templates:
         raise ValueError("session manifest field templates must be a non-empty list")
     seen_ids: set[str] = set()
@@ -528,6 +568,8 @@ def _validate_templates(templates: object) -> None:
         if not isinstance(template_id, str) or not template_id or template_id in seen_ids:
             raise ValueError("session manifest template_id is invalid")
         seen_ids.add(template_id)
+        if not isinstance(template.get("name"), str) or not template["name"]:
+            raise ValueError("session manifest template name is invalid")
         definition = template.get("definition")
         provenance = template.get("provenance")
         if not isinstance(definition, dict) or not definition or not isinstance(provenance, dict) or not provenance:
@@ -535,6 +577,8 @@ def _validate_templates(templates: object) -> None:
         for field in ("ticks_per_beat", "beats_per_bar"):
             if not isinstance(definition.get(field), int) or isinstance(definition[field], bool) or definition[field] <= 0:
                 raise ValueError(f"session manifest template {field} is invalid")
+            if definition[field] != tempo[field]:
+                raise ValueError("session manifest template meter must match session tempo")
         slots = definition.get("slots")
         if not isinstance(slots, list) or not slots:
             raise ValueError("session manifest template slots are invalid")
@@ -543,19 +587,46 @@ def _validate_templates(templates: object) -> None:
         for slot in slots:
             if not isinstance(slot, dict):
                 raise ValueError("session manifest template slot is invalid")
+            required_slot_fields = {"tick_in_bar", "duration_ticks", "target_stress", "boundary_strength", "rhyme_group"}
+            missing_fields = required_slot_fields - slot.keys()
+            if missing_fields:
+                missing_field = sorted(missing_fields)[0]
+                raise ValueError(
+                    f"session manifest template slot missing {missing_field}"
+                )
             tick = slot.get("tick_in_bar")
             duration = slot.get("duration_ticks")
             stress = slot.get("target_stress")
+            boundary_strength = slot.get("boundary_strength")
+            rhyme_group = slot.get("rhyme_group")
             if not isinstance(tick, int) or isinstance(tick, bool) or tick <= previous_tick or tick < 0 or tick >= ticks_per_bar:
                 raise ValueError("session manifest template slot tick is invalid")
             if not isinstance(duration, int) or isinstance(duration, bool) or duration <= 0:
                 raise ValueError("session manifest template slot duration is invalid")
             if not isinstance(stress, (int, float)) or isinstance(stress, bool) or not math.isfinite(stress) or not 0 <= stress <= 1:
                 raise ValueError("session manifest template slot target_stress is invalid")
+            if not isinstance(boundary_strength, int) or isinstance(boundary_strength, bool) or not 0 <= boundary_strength <= 5:
+                raise ValueError("session manifest template slot boundary_strength is invalid")
+            if rhyme_group is not None and (not isinstance(rhyme_group, str) or not rhyme_group):
+                raise ValueError("session manifest template slot rhyme_group is invalid")
             previous_tick = tick
         for field in ("kind", "source"):
             if not isinstance(provenance.get(field), str) or not provenance[field]:
                 raise ValueError(f"session manifest template provenance {field} is invalid")
+        if "source_hash" not in provenance or "quantization_error_ticks" not in provenance:
+            raise ValueError("session manifest template provenance fields are incomplete")
+        source_hash = provenance["source_hash"]
+        if source_hash is not None and (not isinstance(source_hash, str) or not source_hash):
+            raise ValueError("session manifest template provenance source_hash is invalid")
+        quantization_error = provenance["quantization_error_ticks"]
+        if (
+            not isinstance(quantization_error, (int, float))
+            or isinstance(quantization_error, bool)
+            or not math.isfinite(quantization_error)
+            or quantization_error < 0
+        ):
+            raise ValueError("session manifest template provenance quantization_error_ticks is invalid")
+    return seen_ids
 
 
 def _validate_identity_config(config: object, field: str) -> None:
@@ -569,9 +640,21 @@ def _validate_identity_config(config: object, field: str) -> None:
 def _validate_score_weights(weights: object) -> None:
     if not isinstance(weights, dict) or not weights:
         raise ValueError("session manifest field score_weights must be a non-empty object")
+    required_names = {
+        "stress_alignment",
+        "boundary_fit",
+        "rhyme_quality",
+        "topic_coverage",
+        "lexical_continuity",
+        "novelty",
+    }
+    if set(weights) != required_names:
+        raise ValueError("session manifest field score_weights must contain exactly the ScoreWeights components")
     for name, value in weights.items():
         if not isinstance(name, str) or not name or not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
             raise ValueError("session manifest field score_weights must contain finite nonnegative named weights")
+    if abs(math.fsum(weights.values()) - 1.0) > 1e-9:
+        raise ValueError("session manifest field score_weights must sum to one")
 
 
 def _requests(events: Iterable[RapEvent], event_type: RapEventType) -> dict[str, RapEvent]:

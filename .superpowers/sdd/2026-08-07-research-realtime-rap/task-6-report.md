@@ -333,3 +333,65 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap \
   the manifest during recorder derivation and future regeneration.
 - Current-request filtering and past-only segment pruning keep the bounded
   presentation state both truthful and usable with large lookahead values.
+
+## Fix Round 3/5
+
+### Changed Files
+
+- `src/streammuse/infrastructure/rap/recorder.py`
+- `tests/unit/infrastructure/rap/test_recorder.py`
+- `.superpowers/sdd/2026-08-07-research-realtime-rap/task-6-report.md`
+
+### Findings Addressed
+
+1. Manifest validation now verifies the schedule as a cross-object contract:
+   every segment template reference resolves to one unique recorded template,
+   and each template meter exactly matches the session tempo.
+2. Template records now require a nonempty display name; each slot must carry
+   tick, duration, stress, boundary strength (integer 0 through 5), and a null
+   or nonempty rhyme group. Provenance requires nonempty kind/source, a null or
+   nonempty source hash, and finite nonnegative quantization error.
+3. Score weights must contain exactly the six canonical `ScoreWeights`
+   components, use finite nonnegative values, and sum to one within `1e-9`.
+4. EOF recovery now forms candidate completions for true/false/null prefixes
+   and incomplete decimal or exponent forms, appends outstanding container
+   closers, and accepts a tail only after `json.loads` succeeds. Invalid token
+   near-matches remain persisted-stream corruption and raise `ValueError`.
+
+### TDD Evidence
+
+The initial recorder-only RED run failed the seven valid scalar tail cases and
+the eight new manifest cross-object/schema cases before implementation.
+
+```text
+uv run pytest tests/unit/infrastructure/rap/test_recorder.py -v
+# 15 failures before implementation
+```
+
+Final verification:
+
+```text
+uv run pytest tests/unit/infrastructure/rap/test_recorder.py -v
+# 36 passed
+
+uv run pytest tests/unit/application/rap/test_monitoring.py \
+  tests/unit/infrastructure/rap/test_recorder.py \
+  tests/unit/application/rap/test_realtime.py \
+  tests/unit/application/rap/test_runtime.py -v
+# 61 passed
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap \
+  tests/unit/presentation/rap_demo -q --tb=no
+# 229 passed; one existing pretty_midi/pkg_resources deprecation warning
+```
+
+### Fix-Round Self-Review
+
+- The manifest fixture is complete and cross-object negative tests cover
+  unresolved template references, meter mismatch, missing/invalid slot and
+  provenance fields, and both illegal score-weight names and totals.
+- EOF recovery is deliberately parser-confirmed: an incomplete lexical token
+  is recoverable only when completing it and all still-open containers yields
+  valid JSON. This retains crash recovery without treating invalid token text
+  as a recoverable final line.

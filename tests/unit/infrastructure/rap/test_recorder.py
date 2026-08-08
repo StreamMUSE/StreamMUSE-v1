@@ -72,10 +72,17 @@ def _manifest() -> dict[str, object]:
         },
         seed=7,
         tempo={"bpm": 120.0, "ticks_per_beat": 4, "beats_per_bar": 4},
-        templates=[{"template_id": "one", "definition": {"ticks_per_beat": 4, "beats_per_bar": 4, "slots": [{"tick_in_bar": 0, "duration_ticks": 1, "target_stress": 1.0}]}, "provenance": {"kind": "test", "source": "fixture"}}],
+        templates=[{"template_id": "one", "name": "One slot", "definition": {"ticks_per_beat": 4, "beats_per_bar": 4, "slots": [{"tick_in_bar": 0, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": "A"}]}, "provenance": {"kind": "test", "source": "fixture", "source_hash": None, "quantization_error_ticks": 0.0}}],
         generator_config={"name": "phrase_bank"},
         model_config={"name": "none"},
-        score_weights={"stress_alignment": 1.0},
+        score_weights={
+            "stress_alignment": 0.30,
+            "boundary_fit": 0.10,
+            "rhyme_quality": 0.20,
+            "topic_coverage": 0.20,
+            "lexical_continuity": 0.15,
+            "novelty": 0.05,
+        },
         minimum_score=0.5,
         timeout_seconds=1.0,
         lookahead_bars=2,
@@ -265,6 +272,23 @@ def test_read_events_ignores_only_an_incomplete_final_line(tmp_path: Path) -> No
     assert [event.sequence for event in read_events(path)] == [1]
 
 
+@pytest.mark.parametrize("token", ("tru", "fals", "nul", "1e", "1e+", "1e-", "1."))
+def test_read_events_recovers_valid_scalar_token_crash_tails(tmp_path: Path, token: str) -> None:
+    path = tmp_path / f"{token.replace('+', 'plus').replace('-', 'minus').replace('.', 'dot')}.jsonl"
+    path.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + f"\n{{\"payload\": {token}", encoding="utf-8")
+
+    assert [event.sequence for event in read_events(path)] == [1]
+
+
+@pytest.mark.parametrize("token", ("trux", "falsehood", "nullx", "1ex", "1e+z", "1.."))
+def test_read_events_rejects_invalid_scalar_token_crash_tails(tmp_path: Path, token: str) -> None:
+    path = tmp_path / f"invalid-{token.replace('+', 'plus').replace('.', 'dot')}.jsonl"
+    path.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + f"\n{{\"payload\": {token}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="line 2"):
+        read_events(path)
+
+
 def test_derivations_deduplicate_candidate_and_request_identities_and_only_emit_frozen_rows() -> None:
     events = (
         _event(1, RapEventType.SESSION_STARTED, payload={"repetition_window_bars": 2}),
@@ -305,6 +329,32 @@ def test_manifest_validation_is_deep_json_strict_and_does_not_create_artifacts(t
     with pytest.raises(ValueError):
         RapSessionRecorder(tmp_path / "bad-json", malformed)
     assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (lambda manifest: manifest["scenario"]["segments"][0].__setitem__("template_id", "missing"), "template"),
+        (lambda manifest: manifest["templates"][0]["definition"].__setitem__("ticks_per_beat", 8), "meter"),
+        (lambda manifest: manifest["templates"][0]["definition"]["slots"][0].pop("boundary_strength"), "boundary_strength"),
+        (lambda manifest: manifest["templates"][0]["definition"]["slots"][0].__setitem__("rhyme_group", ""), "rhyme_group"),
+        (lambda manifest: manifest["templates"][0]["provenance"].__setitem__("source_hash", ""), "source_hash"),
+        (lambda manifest: manifest["templates"][0]["provenance"].__setitem__("quantization_error_ticks", -1.0), "quantization_error_ticks"),
+        (lambda manifest: manifest.__setitem__("score_weights", {"not_a_weight": 1.0}), "score_weights"),
+        (lambda manifest: manifest["score_weights"].__setitem__("novelty", 0.06), "score_weights"),
+    ),
+)
+def test_manifest_cross_validates_templates_slots_provenance_and_score_weights(
+    tmp_path: Path,
+    mutate,
+    message: str,
+) -> None:
+    manifest = _manifest()
+    mutate(manifest)
+
+    with pytest.raises(ValueError, match=message):
+        RapSessionRecorder(tmp_path / "invalid", manifest)
+    assert not (tmp_path / "invalid").exists()
 
 
 def test_summary_rejects_manifest_repetition_window_disagreement() -> None:
