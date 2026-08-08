@@ -76,12 +76,21 @@ function currentFlow(snapshot, bar, decision) {
   return {};
 }
 
-function latestBatchEvent() {
-  return latestEvent("candidate_batch_received");
+function latestBatchEvent(requestId = null) {
+  for (let index = monitor.events.length - 1; index >= 0; index -= 1) {
+    const event = monitor.events[index];
+    const eventRequestId = event && (event.request_id || payload(event).request_id);
+    if (eventType(event) === "candidate_batch_received" && (requestId === null || eventRequestId === requestId)) {
+      return event;
+    }
+  }
+  return null;
 }
 
-function latestBatch(snapshot = monitor.snapshot || {}) {
-  return snapshot.latest_batch || payload(latestBatchEvent());
+function latestBatch(snapshot = monitor.snapshot || {}, requestId = null) {
+  const snapshotBatch = snapshot.latest_batch || null;
+  if (snapshotBatch && (requestId === null || snapshotBatch.request_id === requestId)) return snapshotBatch;
+  return payload(latestBatchEvent(requestId));
 }
 
 function renderHeader(snapshot, current) {
@@ -99,7 +108,7 @@ function renderHeader(snapshot, current) {
 }
 
 function renderDecision(snapshot, current, decision) {
-  const batch = latestBatch(snapshot);
+  const batch = latestBatch(snapshot, decision.request_id || null);
   const fallback = decision.fallback === true;
   setText("selected-line", decision.text, "Waiting for the first frozen bar.");
   setText("source", decision.source);
@@ -177,9 +186,10 @@ function promptText(prompt) {
 
 function renderContext(snapshot) {
   const planning = snapshot.latest_request || snapshot.pending_request || payload(latestEvent("bar_planning_started"));
-  const batchEvent = latestBatchEvent();
-  const batch = latestBatch(snapshot);
-  setText("request-id", batch.request_id || (batchEvent && batchEvent.request_id) || planning.request_id, "no request");
+  const requestId = planning.request_id || null;
+  const batchEvent = latestBatchEvent(requestId);
+  const batch = latestBatch(snapshot, requestId);
+  setText("request-id", requestId || batch.request_id || (batchEvent && batchEvent.request_id), "no request");
   setText("request-bar", planning.bar ?? batch.bar ?? (batchEvent && batchEvent.bar));
   setText("required-syllables", planning.required_syllables);
   setText("requested-candidates", planning.candidate_count ?? batch.candidate_count);
@@ -371,7 +381,10 @@ function connect() {
       monitor.events = Array.isArray(message.payload.recent_events) ? message.payload.recent_events.slice(-240) : [];
     }
     else if (message.type === "event") {
-      monitor.events.push(message.payload);
+      const sequence = message.payload && message.payload.sequence;
+      const duplicate = sequence !== null && sequence !== undefined &&
+        monitor.events.some((event) => event && event.sequence === sequence);
+      if (!duplicate) monitor.events.push(message.payload);
       if (monitor.events.length > 240) monitor.events.splice(0, monitor.events.length - 240);
       scheduleSnapshotRefresh();
     }

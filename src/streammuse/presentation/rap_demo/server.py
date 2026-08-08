@@ -33,12 +33,22 @@ class _ConnectionPool:
         self._connections: list[WebSocket] = []
         self._lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket, snapshot: object) -> None:
+    async def connect(
+        self,
+        websocket: WebSocket,
+        snapshot: object,
+        catch_up_events: tuple[object, ...] = (),
+    ) -> None:
         await websocket.accept()
         await asyncio.wait_for(
             websocket.send_json({"type": "snapshot", "payload": snapshot}),
             timeout=_SEND_TIMEOUT_S,
         )
+        for event in catch_up_events:
+            await asyncio.wait_for(
+                websocket.send_json({"type": "event", "payload": event}),
+                timeout=_SEND_TIMEOUT_S,
+            )
         async with self._lock:
             self._connections.append(websocket)
 
@@ -82,6 +92,7 @@ class _MonitorLifecycle:
         self._shutdown_lock = Lock()
         self._closed = False
         self._runtime_error: BaseException | None = None
+        self._handoff_lock = asyncio.Lock()
 
     def snapshot(self) -> object:
         snapshot = getattr(self.projector, "snapshot", None)
@@ -107,6 +118,16 @@ class _MonitorLifecycle:
         self._broadcaster_task = asyncio.create_task(self._broadcast_loop(), name="rap-websocket-broadcaster")
         self._runtime_thread = Thread(target=self._start_runtime, name="streammuse-rap-runtime", daemon=True)
         self._runtime_thread.start()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        """Send an authoritative snapshot plus its ordered live-event catch-up."""
+
+        async with self._handoff_lock:
+            snapshot = self.snapshot()
+            last_sequence = _snapshot_sequence(snapshot)
+            pending = tuple(_event_payload(item) for item in self._drain_queue())
+            catch_up = tuple(item for item in pending if _is_newer_event(item, last_sequence))
+            await self.connections.connect(websocket, snapshot, catch_up)
 
     async def close(self) -> None:
         with self._shutdown_lock:
@@ -170,10 +191,11 @@ class _MonitorLifecycle:
     async def _broadcast_loop(self) -> None:
         assert self._broadcaster_stop is not None
         while not self._broadcaster_stop.is_set():
-            items = self._drain_queue()
-            if items and await self.connections.has_connections():
-                for item in items:
-                    await self.connections.send({"type": "event", "payload": _event_payload(item)})
+            async with self._handoff_lock:
+                items = self._drain_queue()
+                if items and await self.connections.has_connections():
+                    for item in items:
+                        await self.connections.send({"type": "event", "payload": _event_payload(item)})
             try:
                 await asyncio.wait_for(self._broadcaster_stop.wait(), timeout=_POLL_INTERVAL_S)
             except asyncio.TimeoutError:
@@ -226,7 +248,7 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        await lifecycle.connections.connect(websocket, lifecycle.snapshot())
+        await lifecycle.connect(websocket)
         try:
             while True:
                 await websocket.receive()
@@ -249,6 +271,22 @@ def _event_payload(value: object) -> object:
         except json.JSONDecodeError:
             value = {"raw": value}
     return _json_safe(value)
+
+
+def _snapshot_sequence(snapshot: object) -> int | None:
+    if not isinstance(snapshot, Mapping):
+        return None
+    value = snapshot.get("last_sequence")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _is_newer_event(event: object, last_sequence: int | None) -> bool:
+    if last_sequence is None or not isinstance(event, Mapping):
+        return True
+    sequence = event.get("sequence")
+    if not isinstance(sequence, int) or isinstance(sequence, bool):
+        return True
+    return sequence > last_sequence
 
 
 def _json_safe(value: object, *, _seen: set[int] | None = None) -> object:

@@ -150,6 +150,48 @@ def test_websocket_sends_snapshot_before_ordered_live_events(tmp_path: Path) -> 
     assert [second["payload"]["sequence"], third["payload"]["sequence"]] == [21, 22]
 
 
+def test_connect_replays_events_newer_than_snapshot_before_live_registration(tmp_path: Path) -> None:
+    class Projector:
+        def snapshot(self) -> dict[str, object]:
+            return {
+                "session_id": "rap-test",
+                "last_sequence": 40,
+                "recent_events": [{"sequence": 40, "event_type": "tick"}],
+            }
+
+    class Socket:
+        def __init__(self) -> None:
+            self.messages: list[object] = []
+
+        async def accept(self) -> None:
+            return None
+
+        async def send_json(self, message: object) -> None:
+            self.messages.append(message)
+
+    websocket_queue: Queue[Any] = Queue()
+    websocket_queue.put({"sequence": 41, "event_type": "syllable_emitted", "payload": {"label": "new"}})
+    lifecycle = _MonitorLifecycle(FakeRuntime(tmp_path), Projector(), websocket_queue)
+    socket = Socket()
+
+    asyncio.run(lifecycle.connect(socket))  # type: ignore[arg-type]
+
+    assert socket.messages == [
+        {
+            "type": "snapshot",
+            "payload": {
+                "session_id": "rap-test",
+                "last_sequence": 40,
+                "recent_events": [{"sequence": 40, "event_type": "tick"}],
+            },
+        },
+        {
+            "type": "event",
+            "payload": {"sequence": 41, "event_type": "syllable_emitted", "payload": {"label": "new"}},
+        },
+    ]
+
+
 def test_disconnected_websocket_does_not_block_later_clients(tmp_path: Path) -> None:
     app, _, websocket_queue = _app(tmp_path)
 
