@@ -209,9 +209,9 @@ class RollingRapController:
         for bar in range(last_bar + 1):
             if bar in self._bars:
                 continue
-            request = self._request_for_bar(bar)
             segment = self._scenario.segment_for_bar(bar)
             template = self._templates.get(segment.template_id)
+            request = self._request_for_bar(bar, template)
             fallback = self._fallback_catalog.line_for(request)
             reason = "initial_bar" if bar == 0 else "no_primary_generator" if self._primary_generator is None else "generation_pending"
             self._bars[bar] = PlannedRapBar(
@@ -248,7 +248,7 @@ class RollingRapController:
         if target.frozen:
             self._next_primary_bar = target_bar + 1
             return
-        request = self._request_for_bar(target_bar)
+        request = self._request_for_bar(target_bar, target.template)
         target.request_id = request.request_id
         history = tuple(self._frozen_history)
         anchors = dict(self._rhyme_anchors)
@@ -264,14 +264,13 @@ class RollingRapController:
                 "candidate_count": request.count,
             },
         )
-        self._future = self._executor.submit(self._generate_and_rank, request, target.template, target.segment, history, anchors)
+        self._future = self._executor.submit(self._generate_and_rank, request, target.segment, history, anchors)
         self._future_bar = target_bar
         self._next_primary_bar = target_bar + 1
 
     def _generate_and_rank(
         self,
         request: CandidateRequest,
-        template: FlowTemplate,
         segment: ScenarioSegment,
         history: tuple[ProsodyAnalysis, ...],
         anchors: dict[tuple[int, str], tuple[str, ...]],
@@ -284,7 +283,7 @@ class RollingRapController:
         )
         selection = rank_candidates(
             candidates,
-            template=template,
+            template=request.flow_template,
             topic=segment.topic,
             history=history,
             rhyme_anchors=anchors,
@@ -431,16 +430,14 @@ class RollingRapController:
         if fallback:
             self._event(RapEventType.FALLBACK_ACTIVATED, bar=bar_index, tick=tick, request_id=bar.request_id, payload=payload)
 
-    def _request_for_bar(self, bar: int) -> CandidateRequest:
+    def _request_for_bar(self, bar: int, template: FlowTemplate) -> CandidateRequest:
         segment = self._scenario.segment_for_bar(bar)
-        template = self._templates.get(segment.template_id)
         context = tuple(item.text for item in self._bars.values() if item.frozen)[-4:]
         return CandidateRequest(
             request_id=f"{self._scenario.scenario_id}-bar-{bar}-seed-{self._seed + bar}",
             target_bar=bar,
             topic=segment.topic,
-            template_id=template.template_id,
-            required_syllables=len(template.slots),
+            flow_template=template,
             count=self._candidate_count,
             context_lines=context,
             seed=self._seed + bar,

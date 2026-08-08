@@ -2,7 +2,39 @@
 
 import pytest
 
-from streammuse.domain.rap import FlowProvenance, FlowSlot, FlowTemplate, materialize_flow
+from streammuse.domain.rap import CandidateRequest, FlowProvenance, FlowSlot, FlowTemplate, materialize_flow
+from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
+
+
+def test_candidate_request_derives_template_identity_and_syllable_count() -> None:
+    template = BUILTIN_TEMPLATES.get("baseline_syncopated_9")
+
+    request = CandidateRequest(
+        request_id="request-1",
+        target_bar=1,
+        topic="space",
+        flow_template=template,
+        count=4,
+        context_lines=("stars cross night",),
+        seed=7,
+    )
+
+    assert request.template_id == "baseline_syncopated_9"
+    assert request.required_syllables == 9
+    assert request.flow_template is template
+
+
+def test_candidate_request_rejects_non_flow_template() -> None:
+    with pytest.raises(ValueError, match="candidate flow_template must be a FlowTemplate"):
+        CandidateRequest(
+            request_id="request-1",
+            target_bar=1,
+            topic="space",
+            flow_template="baseline_syncopated_9",  # type: ignore[arg-type]
+            count=4,
+            context_lines=(),
+            seed=7,
+        )
 
 
 def test_materialize_flow_preserves_relative_structure_at_absolute_bar() -> None:

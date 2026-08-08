@@ -9,7 +9,11 @@ from streammuse.infrastructure.rap.generators import PhraseBankGenerator
 
 
 class FixedGenerator:
+    def __init__(self) -> None:
+        self.requests: list[CandidateRequest] = []
+
     def generate(self, request: CandidateRequest) -> CandidateBatch:
+        self.requests.append(request)
         return CandidateBatch(
             request_id=request.request_id,
             candidates=(
@@ -48,6 +52,21 @@ def test_service_preserves_generator_metadata_and_warning() -> None:
     assert plan.candidate_source == "fixed"
     assert plan.warning is None
     assert plan.pattern == "straight_8"
+
+
+def test_boom_bap_service_requests_sixteen_prompt_slots_and_preserves_pattern() -> None:
+    generator = FixedGenerator()
+
+    plan = RapPrototypeService(
+        Tempo(bpm=92, ticks_per_beat=4, beats_per_bar=4),
+        "boom_bap",
+        generator,
+    ).build_plan("space travel", bars=1, candidate_count=2)
+
+    assert generator.requests[0].template_id == "legacy_boom_bap"
+    assert generator.requests[0].required_syllables == 16
+    assert len(generator.requests[0].flow_template.slots) == 16
+    assert plan.pattern == "boom_bap"
 
 
 @pytest.mark.parametrize("bars,candidate_count", [(0, 2), (1, 0)])

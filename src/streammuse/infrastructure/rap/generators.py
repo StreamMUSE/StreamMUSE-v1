@@ -8,6 +8,7 @@ from math import isfinite
 from typing import Protocol
 
 from streammuse.domain.rap import CandidateBatch, CandidateRequest
+from streammuse.infrastructure.rap.flow_prompt import format_flow_for_prompt
 
 
 _TOPIC_WORDS = re.compile(r"[a-zA-Z]+(?:'[a-zA-Z]+)?")
@@ -114,6 +115,7 @@ def _normalise_topic(topic: str) -> str:
 
 def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
     history = "\n".join(f"- {line}" for line in request.context_lines) or "- (none)"
+    flow = format_flow_for_prompt(request.flow_template)
     return (
         {
             "role": "system",
@@ -125,7 +127,10 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
                 f"Request {request.request_id} targets bar {request.target_bar} using flow template "
                 f"{request.template_id!r}. Give {request.count} distinct one-bar lyric lines about "
                 f"{request.topic!r}. Each line must contain exactly {request.required_syllables} spoken "
-                "syllables, have no label or numbering, and be suitable for a four-four beat. "
+                "syllables and be suitable for a four-four beat. Place naturally stressed syllables near "
+                "stronger flow slots, close the phrase at the final slot, and return plain lyric lines without "
+                "syllable markup, labels, or numbering. "
+                f"\n{flow}\n"
                 f"Recent frozen lines:\n{history}\nDeterministic variation seed: {request.seed}."
             ),
         },

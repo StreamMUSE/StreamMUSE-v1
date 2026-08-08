@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from streammuse.domain.rap import BeatSlot
+from streammuse.domain.rap import BeatSlot, FlowProvenance, FlowSlot, FlowTemplate
 from streammuse.domain.timing import Tempo
 
 
@@ -90,4 +90,27 @@ def build_bar_slots(tempo: Tempo, pattern: str, bar: int) -> tuple[BeatSlot, ...
             accent=accent,
         )
         for tick_in_bar, accent in enumerate(accents)
+    )
+
+
+def flow_template_for_pattern(tempo: Tempo, pattern: str) -> FlowTemplate:
+    """Adapt a legacy named rhythm preset into an authoritative flow template."""
+    slots = build_bar_slots(tempo, pattern, bar=0)
+    final = len(slots) - 1
+    return FlowTemplate(
+        template_id=f"legacy_{pattern}",
+        name=f"Legacy {pattern} rhythm preset",
+        ticks_per_beat=tempo.ticks_per_beat,
+        beats_per_bar=tempo.beats_per_bar,
+        slots=tuple(
+            FlowSlot(
+                tick_in_bar=slot.tick,
+                duration_ticks=1,
+                target_stress=slot.accent,
+                boundary_strength=3 if index == final else 0,
+                rhyme_group="A" if index == final else None,
+            )
+            for index, slot in enumerate(slots)
+        ),
+        provenance=FlowProvenance(kind="legacy_rhythm_preset", source=pattern),
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from streammuse.application.rap.alignment import choose_best_line
-from streammuse.application.rap.rhythm import build_bar_slots
+from streammuse.application.rap.rhythm import build_bar_slots, flow_template_for_pattern
 from streammuse.domain.rap import CandidateBatch, CandidateRequest, ProsodyAnalysis, RapPlan
 from streammuse.domain.timing import Tempo
 
@@ -39,14 +39,13 @@ class RapPrototypeService:
         if candidate_count <= 0:
             raise ValueError("candidate_count must be positive")
 
-        initial_slots = build_bar_slots(self._tempo, self._pattern, 0)
+        flow_template = flow_template_for_pattern(self._tempo, self._pattern)
         batch = self._generator.generate(
             CandidateRequest(
                 request_id="prototype-bar-0",
                 target_bar=0,
                 topic=topic,
-                template_id=self._pattern,
-                required_syllables=len(initial_slots),
+                flow_template=flow_template,
                 count=candidate_count,
                 context_lines=(),
                 seed=0,

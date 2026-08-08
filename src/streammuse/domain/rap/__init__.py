@@ -3,14 +3,13 @@
 from streammuse.domain.rap.models import (
     AlignedLine,
     BeatSlot,
-    CandidateBatch,
-    CandidateRequest,
     ProsodyAnalysis,
     RapPlan,
     ScheduledSyllable,
     Syllable,
 )
 from streammuse.domain.rap.flow import FlowProvenance, FlowSlot, FlowTemplate, materialize_flow
+from streammuse.domain.rap.generation import CandidateBatch, CandidateRequest
 from streammuse.domain.rap.evaluation import CandidateEvaluation, ScoreComponent, ScoreWeights, SelectionResult
 from streammuse.domain.rap.events import RapEvent, RapEventType
 from streammuse.domain.rap.prosody import analyse_syllables, extract_words, normalize_text

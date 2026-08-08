@@ -4,10 +4,11 @@ import json
 
 import pytest
 
-from streammuse.domain.rap import CandidateBatch, CandidateRequest
+from streammuse.domain.rap import CandidateBatch, CandidateRequest, FlowTemplate
 from streammuse.domain.tasks import ChatModelResponse
 from streammuse.infrastructure.rap import generators as generator_module
 from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator, _sanitize_error
+from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 
 
 class FailingClient:
@@ -59,13 +60,12 @@ class RaisingPromptTokensResponse:
         raise RuntimeError("prompt token counter unavailable")
 
 
-def request_for_bar(bar: int = 2) -> CandidateRequest:
+def request_for_bar(bar: int = 2, *, flow_template: FlowTemplate | None = None) -> CandidateRequest:
     return CandidateRequest(
         request_id=f"bar-{bar}-request-1",
         target_bar=bar,
         topic="space travel",
-        template_id="baseline_syncopated_9",
-        required_syllables=9,
+        flow_template=flow_template or BUILTIN_TEMPLATES.get("baseline_syncopated_9"),
         count=4,
         context_lines=("stars cross the night",),
         seed=20260807,
@@ -77,8 +77,7 @@ def test_phrase_bank_normalizes_empty_topic_and_returns_requested_candidates() -
         request_id="phrase-bank-1",
         target_bar=0,
         topic="!!!",
-        template_id="baseline_syncopated_9",
-        required_syllables=9,
+        flow_template=BUILTIN_TEMPLATES.get("baseline_syncopated_9"),
         count=3,
         context_lines=(),
         seed=20260807,
@@ -112,6 +111,19 @@ def test_local_chat_request_preserves_structure_history_and_raw_diagnostics() ->
         "We move through stars with rhythm",
     )
     assert client.calls[0][1]["max_tokens"] > 0
+
+
+def test_local_chat_prompt_contains_actual_flow_not_only_template_id() -> None:
+    request = request_for_bar(flow_template=BUILTIN_TEMPLATES.get("baseline_syncopated_9"))
+    client = FakeClient("one line")
+
+    LocalChatCandidateGenerator(client).generate(request)
+
+    user = client.calls[0][0][0][1]["content"]
+    assert "Syllable ticks: [0, 2, 3, 5, 7, 8, 10, 13, 15]" in user
+    assert "Target stress: [1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9]" in user
+    assert "S . w M | . w . M | S . w . | . M . S" in user
+    assert "plain lyric lines without syllable markup" in user
 
 
 def test_local_chat_error_returns_explicit_empty_batch_without_phrase_bank_fallback() -> None:

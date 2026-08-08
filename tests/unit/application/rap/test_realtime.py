@@ -35,8 +35,10 @@ class FixedGenerator:
         self.candidates = candidates
         self.source = source
         self.error_type = error_type
+        self.requests: list[CandidateRequest] = []
 
     def generate(self, request: CandidateRequest) -> CandidateBatch:
+        self.requests.append(request)
         return CandidateBatch(
             request_id=request.request_id,
             candidates=self.candidates,
@@ -191,6 +193,18 @@ def test_valid_primary_replaces_only_unfrozen_reservation_and_logs_components() 
     assert evaluated.payload["selected"] is True
     assert evaluated.payload["components"]
     assert evaluated.payload["word_analysis_sources"] == [{"word": "space", "source": "cmudict_first_pronunciation"}]
+
+
+def test_realtime_request_owns_the_reserved_template_used_for_ranking() -> None:
+    executor = ManualExecutor()
+    generator = FixedGenerator()
+    controller, _emitted, _events, dispatcher = _controller(primary=generator, executor=executor)
+    controller.start()
+    executor.complete()
+    controller.on_tick(0)
+    _finish(controller, dispatcher)
+
+    assert generator.requests[0].flow_template is controller.bar_for(1).template
 
 
 def test_invalid_and_error_batches_retain_fallback_with_visible_reasons() -> None:
