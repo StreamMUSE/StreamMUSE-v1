@@ -81,3 +81,16 @@ Observed session: `rap-20260808T040122Z-97a25a2b`.
 - Because deployment used a source archive rather than a Git checkout, the session manifest reports unknown Git state; this report binds the archive and run directory to local commit `ffb5bc74`.
 
 The current system now includes the recorder, canonical projector, derived metrics, Rich terminal, WebSocket monitor, read-only web UI, and presentation-error events. This run demonstrates real-time symbolic generation and deadline-safe selection; it does not validate human-perceived rap quality.
+
+## Final Prototype Acceptance (2026-08-09)
+
+The remaining symbolic-prototype tasks are closed on `feature/real_rap` at
+`8f0cc65f`. Active model requests now cancel without blocking shutdown, the
+deferred MCFlow tests are present, and the full H200 workflow matrix covers
+phrase-bank success, forced generator failure, continuous real-Qwen generation,
+clean interruption, REST/WebSocket monitoring, and deterministic artifact
+regeneration. The affected H200 suite passes 315 tests.
+
+See [the final acceptance report](../../../docs/developer-guide/rap-acceptance-report-2026-08-09.md)
+for exact revisions, session IDs, commands, metrics, excluded attempts, and
+remaining research work.
