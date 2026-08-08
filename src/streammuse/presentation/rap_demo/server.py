@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import math
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime
@@ -23,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 STATIC_DIR = Path(__file__).parent / "static"
 _POLL_INTERVAL_S = 0.02
 _MAX_EVENTS_PER_POLL = 256
+_SEND_TIMEOUT_S = 0.25
+_RUNTIME_SHUTDOWN_TIMEOUT_S = 10.0
 
 
 class _ConnectionPool:
@@ -32,8 +35,11 @@ class _ConnectionPool:
 
     async def connect(self, websocket: WebSocket, snapshot: object) -> None:
         await websocket.accept()
+        await asyncio.wait_for(
+            websocket.send_json({"type": "snapshot", "payload": snapshot}),
+            timeout=_SEND_TIMEOUT_S,
+        )
         async with self._lock:
-            await websocket.send_json({"type": "snapshot", "payload": snapshot})
             self._connections.append(websocket)
 
     async def remove(self, websocket: WebSocket) -> None:
@@ -43,14 +49,21 @@ class _ConnectionPool:
 
     async def send(self, message: object) -> None:
         async with self._lock:
-            disconnected: list[WebSocket] = []
-            for websocket in tuple(self._connections):
-                try:
-                    await websocket.send_json(message)
-                except Exception:
-                    disconnected.append(websocket)
-            for websocket in disconnected:
-                self._connections.remove(websocket)
+            connections = tuple(self._connections)
+
+        async def deliver(websocket: WebSocket) -> WebSocket | None:
+            try:
+                await asyncio.wait_for(websocket.send_json(message), timeout=_SEND_TIMEOUT_S)
+                return None
+            except Exception:
+                return websocket
+
+        disconnected = [item for item in await asyncio.gather(*(deliver(item) for item in connections)) if item]
+        if disconnected:
+            async with self._lock:
+                for websocket in disconnected:
+                    if websocket in self._connections:
+                        self._connections.remove(websocket)
 
     async def has_connections(self) -> bool:
         async with self._lock:
@@ -68,6 +81,7 @@ class _MonitorLifecycle:
         self._broadcaster_task: asyncio.Task[None] | None = None
         self._shutdown_lock = Lock()
         self._closed = False
+        self._runtime_error: BaseException | None = None
 
     def snapshot(self) -> object:
         snapshot = getattr(self.projector, "snapshot", None)
@@ -99,32 +113,59 @@ class _MonitorLifecycle:
             if self._closed:
                 return
             self._closed = True
+        failures: list[BaseException] = []
         close = getattr(self.runtime, "close", None)
-        if callable(close):
-            close()
-        if self._runtime_thread is not None:
-            await asyncio.to_thread(self._runtime_thread.join, 1.0)
-        if self._broadcaster_stop is not None:
-            self._broadcaster_stop.set()
-        if self._broadcaster_task is not None:
-            try:
-                await asyncio.wait_for(self._broadcaster_task, timeout=1.0)
-            except asyncio.TimeoutError:
-                self._broadcaster_task.cancel()
+        try:
+            if callable(close):
+                close_failure: list[BaseException] = []
+
+                def close_runtime() -> None:
+                    try:
+                        close()
+                    except BaseException as error:
+                        close_failure.append(error)
+
+                close_thread = Thread(target=close_runtime, name="streammuse-rap-web-close", daemon=True)
+                close_thread.start()
+                await asyncio.to_thread(close_thread.join, _RUNTIME_SHUTDOWN_TIMEOUT_S)
+                if close_thread.is_alive():
+                    failures.append(RuntimeError("rap runtime close exceeded shutdown deadline"))
+                failures.extend(close_failure)
+            if self._runtime_thread is not None:
+                await asyncio.to_thread(self._runtime_thread.join, _RUNTIME_SHUTDOWN_TIMEOUT_S)
+                if self._runtime_thread.is_alive():
+                    failures.append(RuntimeError("rap runtime thread exceeded shutdown deadline"))
+            if self._runtime_error is not None:
+                failures.append(self._runtime_error)
+        finally:
+            if self._broadcaster_stop is not None:
+                self._broadcaster_stop.set()
+            if self._broadcaster_task is not None:
+                try:
+                    await asyncio.wait_for(self._broadcaster_task, timeout=1.0)
+                except asyncio.TimeoutError:
+                    self._broadcaster_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await self._broadcaster_task
+        if failures:
+            raise failures[0]
 
     def _start_runtime(self) -> None:
-        start = getattr(self.runtime, "start", None)
-        if callable(start):
-            start()
-            return
-        run = getattr(self.runtime, "run", None)
-        if not callable(run):
-            return
-        parameters = inspect.signature(run).parameters
-        if "max_bars" in parameters:
-            run(max_bars=0)
-        else:
-            run()
+        try:
+            start = getattr(self.runtime, "start", None)
+            if callable(start):
+                start()
+                return
+            run = getattr(self.runtime, "run", None)
+            if not callable(run):
+                return
+            parameters = inspect.signature(run).parameters
+            if "max_bars" in parameters:
+                run(max_bars=0)
+            else:
+                run()
+        except BaseException as error:
+            self._runtime_error = error
 
     async def _broadcast_loop(self) -> None:
         assert self._broadcaster_stop is not None

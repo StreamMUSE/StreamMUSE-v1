@@ -158,6 +158,10 @@ def build_demo(
     assert isinstance(generator_config, dict) and isinstance(model_config, dict)
     session_metadata = {
         "scenario_id": scenario.scenario_id,
+        "tempo_bpm": tempo.bpm,
+        "ticks_per_beat": tempo.ticks_per_beat,
+        "beats_per_bar": tempo.beats_per_bar,
+        "max_bars": args.max_bars,
         "generator": generator_config["name"],
         "model_url": model_config["base_url"],
         "model": model_config["name"],

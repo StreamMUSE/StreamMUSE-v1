@@ -129,14 +129,16 @@ def _event(
 def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
     projector = RapStateProjector()
     events = (
-        _event(1, RapEventType.BAR_RESERVED, bar=2, payload={"topic": "space", "template_id": "nine"}),
-        _event(2, RapEventType.BAR_PLANNING_STARTED, bar=2, tick=32, request_id="r2", payload={"topic": "space", "template_id": "nine", "context_lines": ["prior line"], "flow": {"slots": [{"tick_in_bar": 0}]}}),
-        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=2, tick=33, request_id="r2", payload={"latency_ms": 12.5, "prompt": [{"role": "user", "content": "exact prompt"}], "raw_response": "raw line"}),
-        _event(4, RapEventType.CANDIDATE_EVALUATED, bar=2, request_id="r2", payload={"candidate_id": "c1", "valid": True}),
-        _event(5, RapEventType.BAR_FROZEN, bar=2, tick=64, request_id="r2", payload={"text": "space line", "fallback": True, "fallback_reason": "deadline_miss"}),
-        _event(6, RapEventType.FALLBACK_ACTIVATED, bar=2, request_id="r2", payload={"fallback_reason": "deadline_miss"}),
-        _event(7, RapEventType.TICK, bar=2, tick=65),
-        _event(8, RapEventType.SYLLABLE_EMITTED, bar=2, tick=65, payload={"label": "space", "jitter_ms": 0.25}),
+        _event(1, RapEventType.SESSION_STARTED, payload={"tempo_bpm": 92.0, "generator": "local_chat"}),
+        _event(2, RapEventType.BAR_RESERVED, bar=2, payload={"topic": "space", "template_id": "nine"}),
+        _event(3, RapEventType.BAR_PLANNING_STARTED, bar=2, tick=32, request_id="r2", payload={"topic": "space", "template_id": "nine", "context_lines": ["prior line"], "flow": {"slots": [{"tick_in_bar": 0}]}}),
+        _event(4, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=2, tick=33, request_id="r2", payload={"latency_ms": 12.5, "prompt": [{"role": "user", "content": "exact prompt"}], "raw_response": "raw line"}),
+        _event(5, RapEventType.CANDIDATE_EVALUATED, bar=2, request_id="r2", payload={"candidate_id": "c1", "valid": True}),
+        _event(6, RapEventType.BAR_FROZEN, bar=2, tick=64, request_id="r2", payload={"text": "space line", "fallback": True, "fallback_reason": "deadline_miss"}),
+        _event(7, RapEventType.FALLBACK_ACTIVATED, bar=2, request_id="r2", payload={"fallback_reason": "deadline_miss"}),
+        _event(8, RapEventType.TICK, bar=2, tick=65),
+        _event(9, RapEventType.SYLLABLE_EMITTED, bar=2, tick=65, payload={"label": "space", "jitter_ms": 0.25}),
+        _event(10, RapEventType.SESSION_STOPPED),
     )
     for event in events:
         projector.apply(event)
@@ -144,6 +146,9 @@ def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
     snapshot = projector.snapshot()
 
     assert snapshot["current_tick"] == 65
+    assert snapshot["session_metadata"]["tempo_bpm"] == 92.0
+    assert snapshot["stopped"] is True
+    assert snapshot["recent_events"][-1]["event_type"] == "session_stopped"
     assert snapshot["current_segment"] == {"bar": 2, "topic": "space", "template_id": "nine"}
     assert snapshot["pending_request"] is None
     assert snapshot["latest_request"]["context_lines"] == ["prior line"]
@@ -203,7 +208,7 @@ def test_publisher_detaches_nested_payloads_before_dispatch() -> None:
 
 
 def test_state_projector_bounds_live_windows_and_tracks_request_failures() -> None:
-    projector = RapStateProjector(max_recent_bars=1, max_emitted_syllables=1, max_candidates=1)
+    projector = RapStateProjector(max_recent_bars=1, max_emitted_syllables=1, max_candidates=1, max_recent_events=2)
     projector.apply(_event(1, RapEventType.BAR_RESERVED, bar=0, payload={"topic": "now", "template_id": "one"}))
     projector.apply(_event(2, RapEventType.BAR_RESERVED, bar=1, payload={"topic": "future", "template_id": "two"}))
     assert projector.snapshot()["current_segment"] is None
@@ -223,6 +228,7 @@ def test_state_projector_bounds_live_windows_and_tracks_request_failures() -> No
     assert list(snapshot["candidates"]) == ["new"]
     assert list(snapshot["frozen_bars"]) == ["1"]
     assert snapshot["emitted_syllables"] == [{"bar": 1, "tick": 16, "label": "new"}]
+    assert [event["sequence"] for event in snapshot["recent_events"]] == [10, 11]
     json.dumps(snapshot)
 
 

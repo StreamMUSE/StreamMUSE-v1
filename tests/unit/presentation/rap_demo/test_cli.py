@@ -83,6 +83,7 @@ def test_build_demo_records_resolved_terminal_layout(tmp_path: Path) -> None:
     try:
         manifest = json.loads((demo.session_dir / "session.json").read_text(encoding="utf-8"))
         assert demo.session_metadata["terminal_layout"] == "stream"
+        assert demo.session_metadata["tempo_bpm"] == 92.0
         assert manifest["terminal_layout"] == "stream"
     finally:
         demo.close()

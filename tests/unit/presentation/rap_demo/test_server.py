@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import time
 from enum import Enum
 from pathlib import Path
@@ -12,8 +13,9 @@ from types import MappingProxyType
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pytest
 
-from streammuse.presentation.rap_demo.server import create_app
+from streammuse.presentation.rap_demo.server import _ConnectionPool, _MonitorLifecycle, create_app
 
 
 class _State(Enum):
@@ -181,3 +183,51 @@ def test_lifespan_starts_runtime_and_closes_it_exactly_once(tmp_path: Path) -> N
 
     assert runtime.start_calls == 1
     assert runtime.close_calls == 1
+
+
+def test_slow_websocket_is_dropped_without_blocking_a_healthy_client() -> None:
+    class Socket:
+        def __init__(self) -> None:
+            self.block = False
+            self.messages: list[object] = []
+
+        async def accept(self) -> None:
+            return None
+
+        async def send_json(self, message: object) -> None:
+            if self.block:
+                await asyncio.Event().wait()
+            self.messages.append(message)
+
+    async def exercise() -> tuple[list[object], bool]:
+        pool = _ConnectionPool()
+        slow = Socket()
+        healthy = Socket()
+        await pool.connect(slow, {})  # type: ignore[arg-type]
+        await pool.connect(healthy, {})  # type: ignore[arg-type]
+        slow.block = True
+        await pool.send({"type": "event", "payload": {"sequence": 1}})
+        return healthy.messages, slow in pool._connections
+
+    messages, slow_connected = asyncio.run(exercise())
+    assert messages[-1] == {"type": "event", "payload": {"sequence": 1}}
+    assert slow_connected is False
+
+
+def test_monitor_cleanup_stops_broadcaster_even_when_runtime_close_raises(tmp_path: Path) -> None:
+    class Runtime(FakeRuntime):
+        def close(self) -> None:
+            super().close()
+            raise RuntimeError("close failed")
+
+    runtime = Runtime(tmp_path)
+    lifecycle = _MonitorLifecycle(runtime, FakeProjector(), Queue())
+
+    async def exercise() -> None:
+        await lifecycle.start()
+        with pytest.raises(RuntimeError, match="close failed"):
+            await lifecycle.close()
+        assert lifecycle._broadcaster_task is not None and lifecycle._broadcaster_task.done()
+        assert lifecycle._runtime_thread is not None and not lifecycle._runtime_thread.is_alive()
+
+    asyncio.run(exercise())

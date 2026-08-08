@@ -212,13 +212,15 @@ class RapStateProjector:
         max_recent_bars: int = 16,
         max_emitted_syllables: int = 128,
         max_candidates: int = 64,
+        max_recent_events: int = 128,
     ) -> None:
-        if min(max_recent_bars, max_emitted_syllables, max_candidates) <= 0:
+        if min(max_recent_bars, max_emitted_syllables, max_candidates, max_recent_events) <= 0:
             raise ValueError("projector limits must be positive")
         self._lock = Lock()
         self._max_recent_bars = max_recent_bars
         self._max_emitted_syllables = max_emitted_syllables
         self._max_candidates = max_candidates
+        self._max_recent_events = max_recent_events
         self._segments: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._latest_request_id: str | None = None
         self._state: dict[str, Any] = {
@@ -229,6 +231,9 @@ class RapStateProjector:
             "pending_request": None,
             "latest_request": None,
             "latest_batch": None,
+            "session_metadata": {},
+            "stopped": False,
+            "recent_events": [],
             "candidates": OrderedDict(),
             "frozen_bars": OrderedDict(),
             "emitted_syllables": [],
@@ -247,9 +252,16 @@ class RapStateProjector:
         with self._lock:
             self._state["session_id"] = event.session_id
             self._state["last_sequence"] = event.sequence
+            self._state["recent_events"].append(self._canonical_event_state(event))
+            del self._state["recent_events"][:-self._max_recent_events]
             self._remember_segment(event)
 
-            if event.event_type == RapEventType.TICK:
+            if event.event_type == RapEventType.SESSION_STARTED:
+                self._state["session_metadata"] = deepcopy(event.payload)
+                self._state["stopped"] = False
+            elif event.event_type == RapEventType.SESSION_STOPPED:
+                self._state["stopped"] = True
+            elif event.event_type == RapEventType.TICK:
                 self._state["current_tick"] = event.tick
                 if event.bar is not None and str(event.bar) in self._segments:
                     self._state["current_segment"] = deepcopy(self._segments[str(event.bar)])
@@ -312,6 +324,20 @@ class RapStateProjector:
             "tick": event.tick,
             "request_id": event.request_id,
             **deepcopy(event.payload),
+        }
+
+    @staticmethod
+    def _canonical_event_state(event: RapEvent) -> dict[str, Any]:
+        return {
+            "session_id": event.session_id,
+            "sequence": event.sequence,
+            "event_type": event.event_type.value,
+            "utc_time": event.utc_time,
+            "monotonic_ns": event.monotonic_ns,
+            "bar": event.bar,
+            "tick": event.tick,
+            "request_id": event.request_id,
+            "payload": deepcopy(event.payload),
         }
 
     def _remember_segment(self, event: RapEvent) -> None:

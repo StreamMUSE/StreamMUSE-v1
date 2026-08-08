@@ -27,6 +27,12 @@ body {
   min-width: 320px;
 }
 
+.topbar, main, .primary-grid, .secondary-grid,
+.performance-pane, .context-pane, .section-heading, .flow-heading {
+  min-width: 0;
+  max-width: 100%;
+}
+
 button, input, select { font: inherit; }
 
 .topbar {
@@ -331,7 +337,15 @@ tr.invalid-row { color: #6e514f; background: #fff8f7; }
   .performance-pane, .context-pane, .data-section { padding-left: 10px; padding-right: 10px; }
   .decision-grid { grid-template-columns: repeat(2, 1fr); }
   .request-grid { grid-template-columns: repeat(2, 1fr); }
-  .flow-track { grid-template-columns: repeat(16, 24px); overflow-x: auto; }
+  .section-heading, .flow-heading { flex-wrap: wrap; }
+  .source-badge, .request-id { max-width: 100%; white-space: normal; }
+  .flow-track {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    grid-template-columns: repeat(16, 24px);
+    overflow-x: auto;
+  }
   .metric-strip { grid-template-columns: repeat(2, 1fr); }
   .metric-strip > div:last-child { grid-column: span 2; }
   .event-console li { grid-template-columns: 42px 1fr; }

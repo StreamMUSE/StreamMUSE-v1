@@ -236,7 +236,7 @@ function renderCandidates(snapshot) {
     pick.textContent = candidate.selected === true ? "SELECTED" : candidate.valid === false ? "REJECTED" : "--";
     appendCell(row, pick);
     appendCell(row, candidate.text || "--");
-    appendCell(row, candidate.syllable_count ?? (candidate.analysis && candidate.analysis.syllables && candidate.analysis.syllables.length) ?? "--");
+    appendCell(row, candidate.syllable_count ?? (Array.isArray(candidate.syllables) ? candidate.syllables.length : null) ?? (candidate.analysis && candidate.analysis.syllables && candidate.analysis.syllables.length) ?? "--");
     appendCell(row, candidate.valid === true ? "yes" : candidate.valid === false ? "no" : "--");
     const total = number(candidate.total_score);
     appendCell(row, total === null ? "--" : total.toFixed(3));
@@ -366,7 +366,10 @@ function connect() {
   socket.onopen = () => connectionState("live", "Live");
   socket.onmessage = ({ data }) => {
     const message = JSON.parse(data);
-    if (message.type === "snapshot") monitor.snapshot = message.payload;
+    if (message.type === "snapshot") {
+      monitor.snapshot = message.payload;
+      monitor.events = Array.isArray(message.payload.recent_events) ? message.payload.recent_events.slice(-240) : [];
+    }
     else if (message.type === "event") {
       monitor.events.push(message.payload);
       if (monitor.events.length > 240) monitor.events.splice(0, monitor.events.length - 240);
