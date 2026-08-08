@@ -9,3 +9,6 @@ __all__ = [
     "PrevalidatedFallbackCatalog",
     "PrevalidatedFallbackLine",
 ]
+from streammuse.infrastructure.rap.recorder import RapSessionRecorder, derive_bar_rows, derive_summary
+
+__all__ = ["RapSessionRecorder", "derive_bar_rows", "derive_summary"]

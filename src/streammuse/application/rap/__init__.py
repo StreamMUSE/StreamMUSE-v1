@@ -16,3 +16,6 @@ __all__ = [
     "evaluate_candidate",
     "rank_candidates",
 ]
+from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
+
+__all__ = ["RapEventDispatcher", "RapEventPublisher", "RapStateProjector"]
