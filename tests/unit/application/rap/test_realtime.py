@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
-from threading import Event
+from threading import Event, Thread, current_thread
 from time import monotonic
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
@@ -53,15 +53,22 @@ class FixedGenerator:
 
 
 class BlockingGenerator(FixedGenerator):
-    def __init__(self) -> None:
+    def __init__(self, *, timeout_s: float = 1.0) -> None:
         super().__init__()
+        self.timeout_s = timeout_s
         self.release = Event()
         self.started = Event()
+        self.finished = Event()
+        self.worker: Thread | None = None
 
     def generate(self, request: CandidateRequest) -> CandidateBatch:
+        self.worker = current_thread()
         self.started.set()
-        self.release.wait(timeout=1.0)
-        return super().generate(request)
+        try:
+            self.release.wait(timeout=self.timeout_s)
+            return super().generate(request)
+        finally:
+            self.finished.set()
 
 
 class ManualExecutor:
@@ -136,6 +143,7 @@ def _controller(
     planning_bar_limit: int | None = None,
     monotonic_clock=None,
     analyzer=None,
+    close_primary=None,
 ):
     analyzer = analyzer or CmuProsodyAnalyzer()
     scenario = _scenario()
@@ -160,6 +168,7 @@ def _controller(
         seed=7,
         planning_bar_limit=planning_bar_limit,
         emit=emitted.append,
+        close_primary=close_primary,
         executor=executor,
         monotonic=monotonic_clock or monotonic,
     )
@@ -351,6 +360,33 @@ def test_slow_generation_never_blocks_tick_path() -> None:
     _finish(controller, dispatcher)
     assert elapsed < 0.1
     assert [item.slot.tick for item in emitted] == [0]
+
+
+def test_close_waits_for_inflight_planner_before_closing_primary_client() -> None:
+    primary = BlockingGenerator(timeout_s=0.05)
+    close_observations: list[tuple[bool, bool]] = []
+
+    def close_primary() -> None:
+        close_observations.append(
+            (
+                primary.finished.is_set(),
+                primary.worker is not None and primary.worker.is_alive(),
+            )
+        )
+
+    controller, _emitted, _events, dispatcher = _controller(
+        primary=primary,
+        close_primary=close_primary,
+    )
+    controller.start()
+    assert primary.started.wait(timeout=0.5)
+
+    controller.close()
+    dispatcher.flush_and_close()
+
+    assert primary.finished.is_set()
+    assert primary.worker is not None and not primary.worker.is_alive()
+    assert close_observations == [(True, False)]
 
 
 def test_fast_generation_keeps_reservations_and_plans_inside_bounded_lookahead() -> None:

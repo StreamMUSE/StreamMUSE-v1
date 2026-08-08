@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
-from threading import Event
+from threading import Event, RLock
 from types import MappingProxyType
 from typing import Any, Callable
 
@@ -64,6 +64,7 @@ class RapDemoDependencies:
     recorder: Any | None = None
     projector: Any | None = None
     _closed: bool = field(default=False, init=False)
+    _close_lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if (
@@ -98,15 +99,36 @@ class RapDemoDependencies:
             self.close()
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self.tick_loop.stop()
-        self.controller.close()
-        self.publisher.emit(RapEventType.SESSION_STOPPED, payload={})
-        self.dispatcher.flush_and_close()
-        if self.recorder is not None:
-            self.recorder.close()
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            failures: list[tuple[str, BaseException]] = []
+
+            def attempt(phase: str, action: Callable[[], None]) -> None:
+                try:
+                    action()
+                except BaseException as exc:
+                    failures.append((phase, exc))
+
+            attempt("tick loop stop", self.tick_loop.stop)
+            attempt("controller close", self.controller.close)
+            attempt(
+                "session stopped publication",
+                lambda: self.publisher.emit(RapEventType.SESSION_STOPPED, payload={}),
+            )
+            attempt("dispatcher close", self.dispatcher.flush_and_close)
+            if self.recorder is not None:
+                attempt("recorder close", self.recorder.close)
+
+            if failures:
+                first_phase, first_error = failures[0]
+                add_note = getattr(first_error, "add_note", None)
+                if callable(add_note):
+                    add_note(f"rap runtime teardown first failed during {first_phase}")
+                    for phase, error in failures[1:]:
+                        add_note(f"additional teardown failure during {phase}: {type(error).__name__}: {error}")
+                raise first_error
 
 
 def _freeze_metadata(value: Any) -> Any:

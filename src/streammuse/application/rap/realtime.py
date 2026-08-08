@@ -182,7 +182,9 @@ class RollingRapController:
         if future is not None:
             future.cancel()
         if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+            # Active HTTP planning is bounded by the client's configured
+            # request timeout; wait for that worker before closing its client.
+            executor.shutdown(wait=True, cancel_futures=True)
         if close_primary is not None:
             try:
                 close_primary()

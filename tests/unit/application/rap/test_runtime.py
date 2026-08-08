@@ -122,6 +122,69 @@ def test_demo_closes_dispatcher_and_recorder_when_controller_start_fails(tmp_pat
     assert calls.count("recorder_close") == 1
 
 
+@pytest.mark.parametrize(
+    "failing_phase",
+    ("tick_stop", "controller_close", "session_stopped", "dispatcher_close"),
+)
+def test_demo_close_attempts_every_teardown_phase_once_after_failure(tmp_path, failing_phase: str) -> None:
+    calls: list[str] = []
+    failure = RuntimeError(f"{failing_phase} failed")
+
+    def record(phase: str) -> None:
+        calls.append(phase)
+        if phase == failing_phase:
+            raise failure
+
+    class TickLoop:
+        def stop(self) -> None:
+            record("tick_stop")
+
+    class Controller:
+        def close(self) -> None:
+            record("controller_close")
+
+    class Publisher:
+        def emit(self, _event_type, *, payload) -> None:
+            record("session_stopped")
+
+    class Dispatcher:
+        def flush_and_close(self) -> None:
+            record("dispatcher_close")
+
+    class Recorder:
+        def close(self) -> None:
+            record("recorder_close")
+
+    dependencies = RapDemoDependencies(
+        Tempo(120.0, 4, 4),
+        Controller(),
+        Publisher(),
+        Dispatcher(),
+        TickLoop(),
+        tmp_path,
+        recorder=Recorder(),
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        dependencies.close()
+
+    assert raised.value is failure
+    assert calls == [
+        "tick_stop",
+        "controller_close",
+        "session_stopped",
+        "dispatcher_close",
+        "recorder_close",
+    ]
+
+    dependencies.close()
+    assert calls.count("tick_stop") == 1
+    assert calls.count("controller_close") == 1
+    assert calls.count("session_stopped") == 1
+    assert calls.count("dispatcher_close") == 1
+    assert calls.count("recorder_close") == 1
+
+
 def test_demo_session_metadata_is_copied_and_cannot_override_canonical_values(tmp_path) -> None:
     class Controller:
         def start(self) -> None:
