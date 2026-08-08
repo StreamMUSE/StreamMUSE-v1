@@ -122,6 +122,8 @@ def test_local_chat_prompt_contains_actual_flow_not_only_template_id() -> None:
     user = client.calls[0][0][0][1]["content"]
     assert "Syllable ticks: [0, 2, 3, 5, 7, 8, 10, 13, 15]" in user
     assert "Target stress: [1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9]" in user
+    assert "Boundary strengths: [0, 0, 0, 0, 0, 0, 0, 0, 3]" in user
+    assert 'Rhyme groups: [null, null, null, null, null, null, null, null, "A"]' in user
     assert "S . w M | . w . M | S . w . | . M . S" in user
     assert "plain lyric lines without syllable markup" in user
 

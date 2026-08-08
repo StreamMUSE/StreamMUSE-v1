@@ -21,10 +21,11 @@ def test_available_patterns_exposes_supported_presets() -> None:
     assert available_patterns() == ("boom_bap", "straight_8", "trap_sparse")
 
 
-def test_boom_bap_adapts_to_a_validated_sixteen_slot_flow_template() -> None:
-    template = flow_template_for_pattern(Tempo(bpm=92, ticks_per_beat=4, beats_per_bar=4), "boom_bap")
+@pytest.mark.parametrize("pattern", ("boom_bap", "straight_8", "trap_sparse"))
+def test_legacy_pattern_adapts_to_a_validated_sixteen_slot_flow_template(pattern: str) -> None:
+    template = flow_template_for_pattern(Tempo(bpm=92, ticks_per_beat=4, beats_per_bar=4), pattern)
 
-    assert template.template_id == "legacy_boom_bap"
+    assert template.template_id == f"legacy_{pattern}"
     assert len(template.slots) == 16
     assert template.slots[-1].boundary_strength == 3
     assert template.slots[-1].rhyme_group == "A"

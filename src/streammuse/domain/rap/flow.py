@@ -40,6 +40,10 @@ class FlowTemplate:
     provenance: FlowProvenance
 
     def __post_init__(self) -> None:
+        if not isinstance(self.slots, tuple) or not all(isinstance(slot, FlowSlot) for slot in self.slots):
+            raise ValueError("flow template slots must be a tuple of FlowSlot values")
+        if not isinstance(self.provenance, FlowProvenance):
+            raise ValueError("flow template provenance must be a FlowProvenance")
         if self.ticks_per_beat != 4 or self.beats_per_bar != 4:
             raise ValueError("flow templates require four ticks per beat and four beats per bar")
         ticks_per_bar = self.ticks_per_beat * self.beats_per_bar

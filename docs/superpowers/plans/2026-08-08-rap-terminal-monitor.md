@@ -128,7 +128,7 @@ class CandidateRequest:
         return len(self.flow_template.slots)
 ```
 
-Validate `flow_template` with `isinstance(value, FlowTemplate)` and update every constructor in production and tests. In `RollingRapController`, resolve the catalog template once and pass that same object into the request and later alignment/ranking calls.
+Validate `flow_template` with `isinstance(value, FlowTemplate)` and update every constructor in production and tests. Require `FlowTemplate.slots` to be a tuple containing only `FlowSlot` values and require `FlowTemplate.provenance` to be a `FlowProvenance`, so the validated template remains immutable and fails deterministically on malformed runtime inputs. In `RollingRapController`, resolve the catalog template once and pass that same object into the request and later alignment/ranking calls.
 
 Preserve the older `RapPrototypeService` by adapting each named 16-slot preset into a validated flow template:
 
@@ -158,7 +158,7 @@ def flow_template_for_pattern(tempo: Tempo, pattern: str) -> FlowTemplate:
     )
 ```
 
-`RapPrototypeService` passes this template into `CandidateRequest` while retaining its existing `pattern` field and `build_bar_slots()` alignment behavior. Add a regression asserting `boom_bap` yields 16 prompt slots and keeps `plan.pattern == "boom_bap"`.
+`RapPrototypeService` passes this template into `CandidateRequest` while retaining its existing `pattern` field and `build_bar_slots()` alignment behavior. Parameterize adapter coverage across `boom_bap`, `straight_8`, and `trap_sparse`, and add a service regression asserting `boom_bap` yields 16 prompt slots and keeps `plan.pattern == "boom_bap"`.
 
 - [ ] **Step 4: Run request and existing rap tests and verify GREEN**
 
@@ -183,7 +183,11 @@ def test_syncopated_template_formats_exact_ticks_stress_boundary_and_rhyme() -> 
 
     assert description.ticks == (0, 2, 3, 5, 7, 8, 10, 13, 15)
     assert description.stresses == (1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9)
+    assert description.boundary_strengths == (0, 0, 0, 0, 0, 0, 0, 0, 3)
+    assert description.rhyme_groups == (None, None, None, None, None, None, None, None, "A")
     assert description.notation == "S . w M | . w . M | S . w . | . M . S"
+    assert "Boundary strengths: [0, 0, 0, 0, 0, 0, 0, 0, 3]" in rendered
+    assert 'Rhyme groups: [null, null, null, null, null, null, null, null, "A"]' in rendered
     assert "phrase boundary strength 3" in rendered
     assert "rhyme group A" in rendered
 
@@ -210,10 +214,15 @@ Expected: import failure because `flow_prompt.py` does not exist.
 Create:
 
 ```python
+import json
+
+
 @dataclass(frozen=True)
 class FlowPromptDescription:
     ticks: tuple[int, ...]
     stresses: tuple[float, ...]
+    boundary_strengths: tuple[int, ...]
+    rhyme_groups: tuple[str | None, ...]
     notation: str
     final_boundary_strength: int
     final_rhyme_group: str | None
@@ -222,6 +231,8 @@ class FlowPromptDescription:
 def describe_flow(template: FlowTemplate) -> FlowPromptDescription:
     ticks = tuple(slot.tick_in_bar for slot in template.slots)
     stresses = tuple(slot.target_stress for slot in template.slots)
+    boundary_strengths = tuple(slot.boundary_strength for slot in template.slots)
+    rhyme_groups = tuple(slot.rhyme_group for slot in template.slots)
     grid = ["."] * (template.ticks_per_beat * template.beats_per_bar)
     for slot in template.slots:
         grid[slot.tick_in_bar] = "S" if slot.target_stress >= 0.85 else "M" if slot.target_stress >= 0.5 else "w"
@@ -233,6 +244,8 @@ def describe_flow(template: FlowTemplate) -> FlowPromptDescription:
     return FlowPromptDescription(
         ticks=ticks,
         stresses=stresses,
+        boundary_strengths=boundary_strengths,
+        rhyme_groups=rhyme_groups,
         notation=" | ".join(beats),
         final_boundary_strength=final.boundary_strength,
         final_rhyme_group=final.rhyme_group,
@@ -242,18 +255,22 @@ def describe_flow(template: FlowTemplate) -> FlowPromptDescription:
 def format_flow_for_prompt(template: FlowTemplate) -> str:
     flow = describe_flow(template)
     ticks = ", ".join(str(value) for value in flow.ticks)
-    stresses = ", ".join(f"{value:.1f}" for value in flow.stresses)
+    stresses = ", ".join(repr(float(value)) for value in flow.stresses)
+    boundary_strengths = ", ".join(str(value) for value in flow.boundary_strengths)
+    rhyme_groups = json.dumps(flow.rhyme_groups)
     rhyme = flow.final_rhyme_group or "none"
     return (
         f"Flow template: {template.template_id}\n"
         f"Syllable ticks: [{ticks}]\n"
         f"Target stress: [{stresses}]\n"
+        f"Boundary strengths: [{boundary_strengths}]\n"
+        f"Rhyme groups: {rhyme_groups}\n"
         f"Pattern: {flow.notation}\n"
         f"Final slot: phrase boundary strength {flow.final_boundary_strength}, rhyme group {rhyme}"
     )
 ```
 
-Build a 16-position notation grid. Use `S` for stress `>= 0.85`, `M` for `>= 0.5`, `w` for lower occupied slots, and `.` for rests. Insert ` | ` between beats. Format numeric arrays deterministically with one decimal place.
+Build a 16-position notation grid. Use `S` for stress `>= 0.85`, `M` for `>= 0.5`, `w` for lower occupied slots, and `.` for rests. Insert ` | ` between beats. Serialize every slot's boundary strength and rhyme group in aligned arrays. Format stress values deterministically with `repr(float(value))` so values such as `0.15`, `0.35`, and `0.75` round-trip without precision loss.
 
 - [ ] **Step 8: Write failing generator tests for actual flow context**
 
@@ -269,6 +286,8 @@ def test_local_chat_prompt_contains_actual_flow_not_only_template_id() -> None:
     user = client.messages[1]["content"]
     assert "Syllable ticks: [0, 2, 3, 5, 7, 8, 10, 13, 15]" in user
     assert "Target stress: [1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9]" in user
+    assert "Boundary strengths: [0, 0, 0, 0, 0, 0, 0, 0, 3]" in user
+    assert 'Rhyme groups: [null, null, null, null, null, null, null, null, "A"]' in user
     assert "S . w M | . w . M | S . w . | . M . S" in user
     assert "plain lyric lines without syllable markup" in user
 ```

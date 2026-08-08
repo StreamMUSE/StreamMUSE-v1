@@ -37,6 +37,37 @@ def test_candidate_request_rejects_non_flow_template() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "slots",
+    (
+        [FlowSlot(tick_in_bar=0, duration_ticks=1, target_stress=1.0)],
+        (object(),),
+    ),
+)
+def test_flow_template_rejects_mutable_or_untyped_slots(slots: object) -> None:
+    with pytest.raises(ValueError, match="flow template slots must be a tuple of FlowSlot values"):
+        FlowTemplate(
+            template_id="invalid_slots",
+            name="Invalid slots",
+            ticks_per_beat=4,
+            beats_per_bar=4,
+            slots=slots,  # type: ignore[arg-type]
+            provenance=FlowProvenance(kind="test", source="unit-test"),
+        )
+
+
+def test_flow_template_rejects_untyped_provenance() -> None:
+    with pytest.raises(ValueError, match="flow template provenance must be a FlowProvenance"):
+        FlowTemplate(
+            template_id="invalid_provenance",
+            name="Invalid provenance",
+            ticks_per_beat=4,
+            beats_per_bar=4,
+            slots=(FlowSlot(tick_in_bar=0, duration_ticks=1, target_stress=1.0),),
+            provenance={"kind": "test", "source": "unit-test"},  # type: ignore[arg-type]
+        )
+
+
 def test_materialize_flow_preserves_relative_structure_at_absolute_bar() -> None:
     template = FlowTemplate(
         template_id="test_syncopated",
