@@ -266,6 +266,7 @@ def test_dashboard_marks_candidates_scores_current_tick_and_scheduled_labels(
     projected_state: TerminalRapViewState,
 ) -> None:
     output = _text(projected_state)
+    normalized = " ".join(output.split())
 
     for expected in (
         "SELECTED",
@@ -277,7 +278,7 @@ def test_dashboard_marks_candidates_scores_current_tick_and_scheduled_labels(
         "Current tick: 18",
         "Gal ax ies dance in a cos mic fight",
     ):
-        assert expected in output
+        assert expected in normalized
     assert output.index("candidate-selected") < output.index("candidate-valid-high")
     assert output.index("candidate-valid-high") < output.index("candidate-valid-low")
     assert "novelty=0.800 (contrib=0.040)" in output
