@@ -126,6 +126,9 @@ class _MonitorLifecycle:
             snapshot = self.snapshot()
             last_sequence = _snapshot_sequence(snapshot)
             pending = tuple(_event_payload(item) for item in self._drain_queue())
+            if pending and await self.connections.has_connections():
+                for item in pending:
+                    await self.connections.send({"type": "event", "payload": item})
             catch_up = tuple(item for item in pending if _is_newer_event(item, last_sequence))
             await self.connections.connect(websocket, snapshot, catch_up)
 

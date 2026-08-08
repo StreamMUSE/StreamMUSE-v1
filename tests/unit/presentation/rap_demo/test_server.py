@@ -192,6 +192,45 @@ def test_connect_replays_events_newer_than_snapshot_before_live_registration(tmp
     ]
 
 
+def test_connect_forwards_drained_events_to_existing_clients(tmp_path: Path) -> None:
+    class Projector:
+        def snapshot(self) -> dict[str, object]:
+            return {"session_id": "rap-test", "last_sequence": 41, "recent_events": [{"sequence": 41}]}
+
+    class Socket:
+        def __init__(self) -> None:
+            self.messages: list[object] = []
+
+        async def accept(self) -> None:
+            return None
+
+        async def send_json(self, message: object) -> None:
+            self.messages.append(message)
+
+    async def exercise() -> tuple[list[object], list[object]]:
+        websocket_queue: Queue[Any] = Queue()
+        lifecycle = _MonitorLifecycle(FakeRuntime(tmp_path), Projector(), websocket_queue)
+        existing = Socket()
+        joining = Socket()
+        await lifecycle.connections.connect(existing, {"last_sequence": 40})  # type: ignore[arg-type]
+        websocket_queue.put({"sequence": 41, "event_type": "tick", "payload": {}})
+        await lifecycle.connect(joining)  # type: ignore[arg-type]
+        return existing.messages, joining.messages
+
+    existing_messages, joining_messages = asyncio.run(exercise())
+
+    assert existing_messages[-1] == {
+        "type": "event",
+        "payload": {"sequence": 41, "event_type": "tick", "payload": {}},
+    }
+    assert joining_messages == [
+        {
+            "type": "snapshot",
+            "payload": {"session_id": "rap-test", "last_sequence": 41, "recent_events": [{"sequence": 41}]},
+        }
+    ]
+
+
 def test_disconnected_websocket_does_not_block_later_clients(tmp_path: Path) -> None:
     app, _, websocket_queue = _app(tmp_path)
 

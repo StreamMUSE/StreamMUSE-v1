@@ -293,6 +293,57 @@ def test_full_dashboard_preserves_exact_prompt_and_raw_response(
     assert "…" not in output
 
 
+def test_dashboard_escapes_terminal_controls_from_model_content() -> None:
+    projector = TerminalRapStateProjector()
+    events = (
+        _event(
+            1,
+            RapEventType.BAR_PLANNING_STARTED,
+            {
+                "topic": "space\x1b[2J",
+                "required_syllables": 9,
+                "candidate_count": 1,
+                "context_lines": ["prior\x07line"],
+                "seed": 7,
+                "flow": FLOW,
+            },
+        ),
+        _event(
+            2,
+            RapEventType.CANDIDATE_BATCH_RECEIVED,
+            {
+                "source": "model\x1b]0;title",
+                "candidate_count": 1,
+                "prompt": [{"role": "user", "content": "prompt\x1b[2J\nnext"}],
+                "raw_response": "raw\x07response",
+            },
+        ),
+        _event(
+            3,
+            RapEventType.CANDIDATE_EVALUATED,
+            {
+                "candidate_id": "candidate-1",
+                "text": "line\x1b[2J",
+                "valid": True,
+                "selected": True,
+                "rejection_reasons": [],
+                "total_score": 0.5,
+            },
+        ),
+    )
+    for event in events:
+        projector.apply(event)
+
+    output = _text(projector.state)
+
+    assert "\x1b" not in output
+    assert "\x07" not in output
+    assert output.count("\\x1b") >= 4
+    assert output.count("\\x07") >= 2
+    assert "prompt\\x1b[2J" in output
+    assert "next" in output
+
+
 @pytest.mark.parametrize(
     ("detail", "has_candidates", "has_prompt", "has_trace"),
     (

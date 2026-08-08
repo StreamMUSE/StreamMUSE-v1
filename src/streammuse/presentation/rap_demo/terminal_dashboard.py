@@ -105,9 +105,9 @@ def _live_delivery(state: TerminalRapViewState, bar: TerminalRapBarView | None) 
         status_style = "green" if bar.frozen and not bar.fallback else "yellow"
         rows.extend(
             (
-                ("Bar", Text(f"{bar.bar + 1:02d}  {bar.topic or '-'}  {status}", style=status_style)),
-                ("Lyric", Text(bar.text or "-", style="bold green" if not bar.fallback else "yellow")),
-                ("Source", Text(bar.source or "-", style="dim")),
+                ("Bar", Text(f"{bar.bar + 1:02d}  {_safe(bar.topic or '-')}  {status}", style=status_style)),
+                ("Lyric", Text(_safe(bar.text or "-"), style="bold green" if not bar.fallback else "yellow")),
+                ("Source", Text(_safe(bar.source or "-"), style="dim")),
                 ("Score", Text(_score(bar.total_score), style="green" if bar.total_score is not None else "dim")),
                 ("Fallback", Text(_fallback_status(bar), style="yellow" if bar.fallback else "dim")),
             )
@@ -150,12 +150,12 @@ def _flow_strip(
     boundaries = [slot.get("boundary_strength") for slot in slots]
     rhymes = [slot.get("rhyme_group") for slot in slots]
     scheduled = bar.scheduled_syllables if bar is not None else ()
-    labels = [str(item.get("label")) for item in scheduled if item.get("label") is not None]
+    labels = [_safe(item.get("label")) for item in scheduled if item.get("label") is not None]
     local_tick = state.current_tick % tick_count if isinstance(state.current_tick, int) else None
 
     rows.extend(
         (
-            ("Template", Text(str(flow.get("template_id", "-")), style="cyan")),
+            ("Template", Text(_safe(flow.get("template_id", "-")), style="cyan")),
             ("Ticks", Text(" | ".join(beat_ticks), style="cyan")),
             ("Pattern", Text(" | ".join(beat_pattern), style="cyan")),
             ("Now", Text(f"Current tick: {state.current_tick} (bar tick {local_tick})", style="bold cyan")),
@@ -185,8 +185,8 @@ def _queue(state: TerminalRapViewState) -> RenderableType:
         next_bar = future[0]
         rows.extend(
             (
-                ("Next", Text(f"Bar {next_bar.bar + 1:02d}  {next_bar.topic or '-'}", style="cyan")),
-                ("Lyric", Text(next_bar.text or "-")),
+                ("Next", Text(f"Bar {next_bar.bar + 1:02d}  {_safe(next_bar.topic or '-')}", style="cyan")),
+                ("Lyric", Text(_safe(next_bar.text or "-"))),
                 ("Safety", Text(_fallback_status(next_bar), style="yellow" if next_bar.fallback else "green")),
                 ("Score", Text(_score(next_bar.total_score), style="green" if next_bar.total_score is not None else "dim")),
             )
@@ -216,7 +216,7 @@ def _clock_and_health(state: TerminalRapViewState) -> RenderableType:
 def _recent_commits(state: TerminalRapViewState) -> RenderableType:
     frozen = [bar for _, bar in sorted(state.bars.items()) if bar.frozen][-3:]
     rows = [
-        (f"Bar {bar.bar + 1:02d}", Text(f"{bar.source or '-'} | {bar.text or '-'}", style="dim"))
+        (f"Bar {bar.bar + 1:02d}", Text(f"{_safe(bar.source or '-')} | {_safe(bar.text or '-')}", style="dim"))
         for bar in frozen
     ]
     if not rows:
@@ -231,10 +231,10 @@ def _llm_request(state: TerminalRapViewState) -> RenderableType:
     flow = request.flow or {}
     slots = _mapping_items(flow.get("slots"))
     rows: list[tuple[str, RenderableType]] = [
-        ("Request", Text(request.request_id or "-", style="cyan")),
-        ("Target", Text(f"Bar {_display_bar(request.bar)}  topic={request.topic or '-'}")),
+        ("Request", Text(_safe(request.request_id or "-"), style="cyan")),
+        ("Target", Text(f"Bar {_display_bar(request.bar)}  topic={_safe(request.topic or '-')}")),
         ("Shape", Text(f"{request.required_syllables} syllables  {request.candidate_count} candidates  seed={request.seed}")),
-        ("Flow", Text(str(flow.get("template_id", "-")), style="cyan")),
+        ("Flow", Text(_safe(flow.get("template_id", "-")), style="cyan")),
         ("Ticks", Text(f"Syllable ticks: {[slot.get('tick_in_bar') for slot in slots]}")),
         ("Stress", Text(f"Target stress: {[slot.get('target_stress') for slot in slots]}")),
         ("Duration", Text(f"Duration ticks: {[slot.get('duration_ticks') for slot in slots]}")),
@@ -248,11 +248,17 @@ def _exact_context(state: TerminalRapViewState) -> RenderableType:
     rows: list[tuple[str, RenderableType]] = []
     request = state.latest_request
     if request is not None:
-        rows.append(("History", Text("\n".join(request.context_lines) if request.context_lines else "(none)")))
+        history = "\n".join(_safe(item) for item in request.context_lines) if request.context_lines else "(none)"
+        rows.append(("History", Text(history)))
     batch = state.latest_batch
     if batch is not None:
         for item in batch.prompt:
-            rows.append((str(item.get("role", "message")).upper(), Text(str(item.get("content", "")))))
+            rows.append(
+                (
+                    _safe(item.get("role", "message")).upper(),
+                    Text(_safe(item.get("content", ""), preserve_newlines=True)),
+                )
+            )
     if not rows:
         rows.append(("Prompt", Text("Not received", style="dim")))
     return _section("EXACT CONTEXT", rows)
@@ -269,12 +275,12 @@ def _model_response(state: TerminalRapViewState, detail: str) -> RenderableType:
     style = "red" if error else "yellow" if late else "green"
     rows: list[tuple[str, RenderableType]] = [
         ("Status", Text(status, style=style)),
-        ("Source", Text(batch.source or "-")),
+        ("Source", Text(_safe(batch.source or "-"))),
         ("Timing", Text(f"latency={payload.get('latency_ms', '-')} ms  slack={payload.get('deadline_slack_ms', '-')} ms")),
         ("Count", Text(str(payload.get("candidate_count", "-")))),
     ]
     if detail == "full":
-        rows.append(("Raw", Text(batch.raw_response or "-")))
+        rows.append(("Raw", Text(_safe(batch.raw_response or "-", preserve_newlines=True))))
     return _section("MODEL RESPONSE", rows)
 
 
@@ -297,16 +303,16 @@ def _candidate_ranking(state: TerminalRapViewState, detail: str) -> RenderableTy
         score = payload.get("total_score")
         table.add_row(
             Text(marker, style=style),
-            Text(candidate.candidate_id or "-", style="dim"),
+            Text(_safe(candidate.candidate_id or "-"), style="dim"),
             Text(f"{observed}/{required}  {_score(score)}"),
-            Text(candidate.text or "-"),
+            Text(_safe(candidate.text or "-")),
         )
         reasons = ", ".join(candidate.rejection_reasons)
         oov = payload.get("oov_words")
         oov_words = ", ".join(str(item) for item in oov) if isinstance(oov, tuple) else ""
         if reasons or oov_words:
             rejection_detail = " | ".join(item for item in (reasons, f"OOV: {oov_words}" if oov_words else "") if item)
-            table.add_row("", "", "", Text(rejection_detail, style="red"))
+            table.add_row("", "", "", Text(_safe(rejection_detail), style="red"))
         if detail == "full":
             components = _mapping_items(payload.get("components"))
             if components:
@@ -315,7 +321,7 @@ def _candidate_ranking(state: TerminalRapViewState, detail: str) -> RenderableTy
                     f" (contrib={_score(item.get('contribution'))})"
                     for item in components
                 )
-                table.add_row("", "", "", Text(comparison, style="dim"))
+                table.add_row("", "", "", Text(_safe(comparison), style="dim"))
     return Group(_heading("CANDIDATE GATE + RANKING"), table, Text(""))
 
 
@@ -329,7 +335,7 @@ def _selected_score(state: TerminalRapViewState) -> RenderableType:
         for component in _mapping_items(selected.payload.get("components")):
             rows.append(
                 (
-                    str(component.get("name", "component")),
+                    _safe(component.get("name", "component")),
                     Text(
                         f"value={component.get('value', '-')}  weight={component.get('weight', '-')}  "
                         f"contribution={component.get('contribution', '-')}"
@@ -396,13 +402,26 @@ def _provenance(flow: Mapping[str, Any]) -> str:
     provenance = flow.get("provenance")
     if not isinstance(provenance, Mapping):
         return "-"
-    return f"{provenance.get('kind', '-')} | {provenance.get('source', '-')}"
+    return f"{_safe(provenance.get('kind', '-'))} | {_safe(provenance.get('source', '-'))}"
 
 
 def _fallback_status(bar: TerminalRapBarView) -> str:
     if not bar.fallback:
         return "disarmed"
-    return f"armed: {bar.fallback_reason or 'unspecified'}"
+    return f"armed: {_safe(bar.fallback_reason or 'unspecified')}"
+
+
+def _safe(value: object, *, preserve_newlines: bool = False) -> str:
+    escaped: list[str] = []
+    for character in str(value):
+        codepoint = ord(character)
+        if character == "\n" and preserve_newlines:
+            escaped.append(character)
+        elif codepoint < 32 or codepoint == 127:
+            escaped.append(f"\\x{codepoint:02x}")
+        else:
+            escaped.append(character)
+    return "".join(escaped)
 
 
 def _display_bar(bar: int | None) -> str:
