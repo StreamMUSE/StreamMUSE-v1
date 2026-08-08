@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from threading import Event, Thread
+from time import sleep
+
+import pytest
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
 from streammuse.domain.rap import RapEvent, RapEventType
@@ -150,3 +154,90 @@ def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
 
     snapshot["frozen_bars"]["2"]["text"] = "mutated"
     assert projector.snapshot()["frozen_bars"]["2"]["text"] == "space line"
+
+
+def test_flush_coordinates_with_an_inflight_emit_and_rejects_later_external_events() -> None:
+    entered_clock = Event()
+    release_clock = Event()
+    seen: list[RapEvent] = []
+
+    def blocking_utc() -> str:
+        entered_clock.set()
+        assert release_clock.wait(timeout=1)
+        return "2026-08-07T00:00:00+00:00"
+
+    publisher = RapEventPublisher("session-1", utc_now=blocking_utc)
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(seen.append,))
+    dispatcher.start()
+    emitter = Thread(target=lambda: publisher.emit(RapEventType.TICK, bar=0, tick=0))
+    closer = Thread(target=dispatcher.flush_and_close)
+    emitter.start()
+    assert entered_clock.wait(timeout=1)
+    closer.start()
+    sleep(0.02)
+    assert closer.is_alive()
+    release_clock.set()
+    emitter.join(timeout=1)
+    closer.join(timeout=1)
+
+    assert [event.sequence for event in seen] == [1]
+    with pytest.raises(RuntimeError, match="closed"):
+        publisher.emit(RapEventType.TICK, bar=0, tick=1)
+
+
+def test_publisher_detaches_nested_payloads_before_dispatch() -> None:
+    payload = {"nested": {"value": 1}}
+    seen: list[RapEvent] = []
+    publisher = RapEventPublisher("session-1")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(seen.append,))
+    dispatcher.start()
+    publisher.emit(RapEventType.TICK, payload=payload)
+    payload["nested"]["value"] = 99
+    dispatcher.flush_and_close()
+
+    assert seen[0].payload == {"nested": {"value": 1}}
+
+
+def test_state_projector_bounds_live_windows_and_tracks_request_failures() -> None:
+    projector = RapStateProjector(max_recent_bars=1, max_emitted_syllables=1, max_candidates=1)
+    projector.apply(_event(1, RapEventType.BAR_RESERVED, bar=0, payload={"topic": "now", "template_id": "one"}))
+    projector.apply(_event(2, RapEventType.BAR_RESERVED, bar=1, payload={"topic": "future", "template_id": "two"}))
+    assert projector.snapshot()["current_segment"] is None
+    projector.apply(_event(3, RapEventType.TICK, bar=0, tick=0))
+    projector.apply(_event(4, RapEventType.BAR_PLANNING_STARTED, bar=0, request_id="r0"))
+    projector.apply(_event(5, RapEventType.GENERATION_FAILED, bar=0, request_id="r0"))
+    projector.apply(_event(6, RapEventType.CANDIDATE_EVALUATED, payload={"candidate_id": "old"}))
+    projector.apply(_event(7, RapEventType.CANDIDATE_EVALUATED, payload={"candidate_id": "new"}))
+    projector.apply(_event(8, RapEventType.BAR_FROZEN, bar=0, payload={"text": "old"}))
+    projector.apply(_event(9, RapEventType.BAR_FROZEN, bar=1, payload={"text": "new"}))
+    projector.apply(_event(10, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"label": "old"}))
+    projector.apply(_event(11, RapEventType.SYLLABLE_EMITTED, bar=1, tick=16, payload={"label": "new"}))
+
+    snapshot = projector.snapshot()
+    assert snapshot["current_segment"] == {"bar": 0, "topic": "now", "template_id": "one"}
+    assert snapshot["pending_request"] is None
+    assert list(snapshot["candidates"]) == ["new"]
+    assert list(snapshot["frozen_bars"]) == ["1"]
+    assert snapshot["emitted_syllables"] == [{"bar": 1, "tick": 16, "label": "new"}]
+    json.dumps(snapshot)
+
+
+def test_state_projector_replaces_candidates_when_a_new_request_starts() -> None:
+    projector = RapStateProjector()
+    projector.apply(_event(1, RapEventType.CANDIDATE_EVALUATED, request_id="old", payload={"candidate_id": "old"}))
+    projector.apply(_event(2, RapEventType.BAR_PLANNING_STARTED, bar=1, request_id="new"))
+    projector.apply(_event(3, RapEventType.CANDIDATE_EVALUATED, request_id="new", payload={"candidate_id": "new"}))
+
+    assert list(projector.snapshot()["candidates"]) == ["new"]
+
+
+def test_rap_package_exports_preserve_existing_and_monitoring_public_apis() -> None:
+    from streammuse.application.rap import RollingRapController, align_exact
+    from streammuse.application.rap import RapEventDispatcher as ExportedDispatcher
+    from streammuse.infrastructure.rap import PhraseBankGenerator, RapSessionRecorder
+
+    assert RollingRapController is not None
+    assert align_exact is not None
+    assert ExportedDispatcher is RapEventDispatcher
+    assert PhraseBankGenerator is not None
+    assert RapSessionRecorder is not None

@@ -6,8 +6,19 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
 from streammuse.domain.rap import RapEvent, RapEventType
-from streammuse.infrastructure.rap.recorder import RapSessionRecorder, derive_bar_rows, derive_summary, read_events
+from streammuse.infrastructure.rap.recorder import (
+    DEFAULT_REPETITION_WINDOW_BARS,
+    RapSessionRecorder,
+    build_session_manifest,
+    derive_bar_rows,
+    derive_summary,
+    event_to_dict,
+    read_events,
+    validate_session_manifest,
+)
 
 
 def _event(
@@ -34,25 +45,47 @@ def _event(
 
 def _scripted_session_events() -> tuple[RapEvent, ...]:
     return (
-        _event(1, RapEventType.SESSION_STARTED),
+        _event(1, RapEventType.SESSION_STARTED, payload={"repetition_window_bars": 2}),
         _event(2, RapEventType.BAR_PLANNING_STARTED, bar=0, request_id="r0"),
-        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"latency_ms": 10.0, "deadline_slack_ms": 50.0}),
+        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 1, "latency_ms": 10.0, "deadline_slack_ms": 50.0, "late": False}),
         _event(4, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c0", "valid": True, "word_analysis_sources": [{"word": "clean", "source": "cmudict_first_pronunciation"}, {"word": "line", "source": "vowel_group_heuristic"}]}),
-        _event(5, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "clean line", "source": "local_chat", "fallback": False, "fallback_reason": None}),
+        _event(5, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "clean line now", "source": "local_chat", "fallback": False, "fallback_reason": None}),
         _event(6, RapEventType.BAR_PLANNING_STARTED, bar=1, request_id="r1"),
-        _event(7, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=1, request_id="r1", payload={"latency_ms": 20.0, "deadline_slack_ms": 10.0, "error_type": "generation_error"}),
+        _event(7, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=1, request_id="r1", payload={"latency_ms": 20.0, "deadline_slack_ms": 10.0, "error_type": "generation_error", "late": True}),
         _event(8, RapEventType.CANDIDATE_EVALUATED, bar=1, request_id="r1", payload={"candidate_id": "c1", "valid": False, "rejection_reasons": ["duplicate_normalized_text"], "word_analysis_sources": [{"word": "repeat", "source": "heuristic"}]}),
-        _event(9, RapEventType.BAR_FROZEN, bar=1, request_id="r1", payload={"text": "fallback line", "source": "prevalidated_fallback", "fallback": True, "fallback_reason": "deadline_miss"}),
-        _event(10, RapEventType.FALLBACK_ACTIVATED, bar=1, request_id="r1", payload={"fallback_reason": "deadline_miss"}),
-        _event(11, RapEventType.SYLLABLE_EMITTED, bar=0, tick=1, payload={"label": "clean", "jitter_ms": 1.0}),
-        _event(12, RapEventType.SYLLABLE_EMITTED, bar=1, tick=17, payload={"label": "fallback", "jitter_ms": -2.0}),
+        _event(9, RapEventType.GENERATION_FAILED, bar=1, request_id="r1", payload={"error_type": "generation_error"}),
+        _event(10, RapEventType.BAR_FROZEN, bar=1, request_id="r1", payload={"text": "line now again", "source": "local_chat", "fallback": True, "fallback_reason": "deadline_miss"}),
+        _event(11, RapEventType.FALLBACK_ACTIVATED, bar=1, request_id="r1", payload={"fallback_reason": "deadline_miss"}),
+        _event(12, RapEventType.SYLLABLE_EMITTED, bar=0, tick=1, payload={"label": "clean", "jitter_ms": 1.0}),
+        _event(13, RapEventType.SYLLABLE_EMITTED, bar=1, tick=17, payload={"label": "fallback", "jitter_ms": -2.0}),
+    )
+
+
+def _manifest() -> dict[str, object]:
+    return build_session_manifest(
+        scenario_id="test",
+        seed=7,
+        tempo={"bpm": 120.0, "ticks_per_beat": 4, "beats_per_bar": 4},
+        templates=[{"template_id": "one", "definition": {"slots": []}, "provenance": {"kind": "test", "source": "fixture"}}],
+        generator_config={"name": "phrase_bank"},
+        model_config={"name": "none"},
+        score_weights={"stress_alignment": 1.0},
+        minimum_score=0.5,
+        timeout_seconds=1.0,
+        lookahead_bars=2,
+        python_version="3.10",
+        platform="test",
+        package_version="0.1.0",
+        git_revision="abc123",
+        git_dirty=False,
+        repetition_window_bars=2,
     )
 
 
 def test_recorder_writes_redacted_manifest_recoverable_jsonl_and_summary(tmp_path: Path) -> None:
     recorder = RapSessionRecorder(
         tmp_path / "session",
-        manifest={"scenario_id": "test", "api_key": "do-not-record", "nested": {"authorization": "Bearer no"}},
+        manifest={**_manifest(), "api_key": "do-not-record", "nested": {"authorization": "Bearer no"}},
     )
     for event in _scripted_session_events():
         recorder(event)
@@ -65,7 +98,9 @@ def test_recorder_writes_redacted_manifest_recoverable_jsonl_and_summary(tmp_pat
     manifest = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
     summary = json.loads((session_dir / "summary.json").read_text(encoding="utf-8"))
 
-    assert manifest == {"api_key": "[REDACTED]", "nested": {"authorization": "[REDACTED]"}, "scenario_id": "test"}
+    assert manifest["api_key"] == "[REDACTED]"
+    assert manifest["nested"] == {"authorization": "[REDACTED]"}
+    assert manifest["scenario_id"] == "test"
     assert len(read_events(session_dir / "events.jsonl")) == len(_scripted_session_events())
     assert summary["bars"]["frozen"] == 2
     assert summary["bars"]["fallback_rate"] == 0.5
@@ -80,7 +115,7 @@ def test_summary_uses_explicit_ratio_denominators_and_null_empty_observations() 
         "deadline_miss": {"numerator": 1, "denominator": 2, "rate": 0.5},
         "generator_error": {"numerator": 1, "denominator": 2, "rate": 0.5},
         "pronunciation_fallback": {"numerator": 2, "denominator": 3, "rate": 2 / 3},
-        "repetition": {"numerator": 1, "denominator": 2, "rate": 0.5},
+        "repetition": {"numerator": 1, "denominator": 4, "rate": 0.25},
     }
     assert summary["latencies"] == {
         "generation_latency_ms": {"count": 2, "p50": 15.0, "p95": 19.5, "max": 20.0},
@@ -98,7 +133,7 @@ def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:
             "bar": 0,
             "request_id": "r0",
             "source": "local_chat",
-            "text": "clean line",
+            "text": "clean line now",
             "frozen": True,
             "fallback": False,
             "fallback_reason": None,
@@ -114,8 +149,8 @@ def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:
         {
             "bar": 1,
             "request_id": "r1",
-            "source": "prevalidated_fallback",
-            "text": "fallback line",
+            "source": "local_chat",
+            "text": "line now again",
             "frozen": True,
             "fallback": True,
             "fallback_reason": "deadline_miss",
@@ -130,7 +165,7 @@ def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:
         },
     ]
 
-    recorder = RapSessionRecorder(tmp_path / "session", manifest={"scenario_id": "test"})
+    recorder = RapSessionRecorder(tmp_path / "session", manifest=_manifest())
     for event in _scripted_session_events():
         recorder(event)
     recorder.close()
@@ -145,6 +180,96 @@ def test_bar_rows_do_not_double_count_declared_and_evaluated_candidates() -> Non
     events = (
         _event(1, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 1}),
         _event(2, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c0", "valid": True}),
+        _event(3, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "one", "fallback": False}),
     )
 
     assert derive_bar_rows(events)[0]["candidate_count"] == 1
+
+
+def test_manifest_builder_validator_and_recorder_require_reproducibility_contract(tmp_path: Path) -> None:
+    manifest = _manifest()
+    assert validate_session_manifest(manifest) == manifest
+    incomplete = dict(manifest)
+    incomplete.pop("git_revision")
+    with pytest.raises(ValueError, match="git_revision"):
+        validate_session_manifest(incomplete)
+    with pytest.raises(ValueError, match="git_revision"):
+        RapSessionRecorder(tmp_path / "incomplete", incomplete)
+    assert not (tmp_path / "incomplete").exists()
+    malformed = dict(manifest, git_dirty="false")
+    with pytest.raises(ValueError, match="git_dirty"):
+        validate_session_manifest(malformed)
+    assert DEFAULT_REPETITION_WINDOW_BARS > 0
+
+
+def test_recorder_redacts_secret_keys_in_event_payloads(tmp_path: Path) -> None:
+    recorder = RapSessionRecorder(tmp_path / "session", manifest=_manifest())
+    recorder(_event(1, RapEventType.CANDIDATE_BATCH_RECEIVED, payload={"api_key": "secret", "nested": {"token": "hidden"}, "safe": "kept"}))
+    recorder.close()
+
+    event = json.loads((tmp_path / "session" / "events.jsonl").read_text(encoding="utf-8"))
+    assert event["payload"] == {"api_key": "[REDACTED]", "nested": {"token": "[REDACTED]"}, "safe": "kept"}
+
+
+@pytest.mark.parametrize(
+    ("records", "message"),
+    (
+        ((1, 1), "sequence"),
+        ((1, 3), "sequence"),
+    ),
+)
+def test_read_events_rejects_duplicate_and_gapped_sequences(tmp_path: Path, records: tuple[int, int], message: str) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text("".join(json.dumps(event_to_dict(_event(sequence, RapEventType.TICK))) + "\n" for sequence in records), encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        read_events(path)
+
+
+def test_read_events_rejects_interior_corruption_complete_final_corruption_and_mixed_sessions(tmp_path: Path) -> None:
+    interior = tmp_path / "interior.jsonl"
+    interior.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n{bad}\n" + json.dumps(event_to_dict(_event(2, RapEventType.TICK))) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line 2"):
+        read_events(interior)
+    blank = tmp_path / "blank.jsonl"
+    blank.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n\n" + json.dumps(event_to_dict(_event(2, RapEventType.TICK))) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line 2"):
+        read_events(blank)
+    final = tmp_path / "final.jsonl"
+    final.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n{bad}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line 2"):
+        read_events(final)
+    final_without_newline = tmp_path / "final-without-newline.jsonl"
+    final_without_newline.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n{bad}", encoding="utf-8")
+    with pytest.raises(ValueError, match="line 2"):
+        read_events(final_without_newline)
+    mixed = tmp_path / "mixed.jsonl"
+    mixed.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n" + json.dumps(event_to_dict(RapEvent("other", 2, RapEventType.TICK, "time", 2, None, None, None, {}))) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="session"):
+        read_events(mixed)
+
+
+def test_read_events_ignores_only_an_incomplete_final_line(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + "\n{\"partial\":", encoding="utf-8")
+    assert [event.sequence for event in read_events(path)] == [1]
+
+
+def test_derivations_deduplicate_candidate_and_request_identities_and_only_emit_frozen_rows() -> None:
+    events = (
+        _event(1, RapEventType.SESSION_STARTED, payload={"repetition_window_bars": 2}),
+        _event(2, RapEventType.BAR_PLANNING_STARTED, bar=0, request_id="r0"),
+        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 2}),
+        _event(4, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 99}),
+        _event(5, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c0", "valid": True}),
+        _event(6, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c0", "valid": True}),
+        _event(7, RapEventType.BAR_PLANNING_STARTED, bar=1, request_id="r1"),
+        _event(8, RapEventType.GENERATION_FAILED, bar=1, request_id="r1", payload={"error_type": "generation_error"}),
+        _event(9, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=1, request_id="r1", payload={"error_type": "generation_error", "late": True}),
+        _event(10, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "one two three", "fallback": False}),
+    )
+
+    summary = derive_summary(events)
+    assert summary["metrics"]["candidate_validity"] == {"numerator": 1, "denominator": 2, "rate": 0.5}
+    assert summary["metrics"]["deadline_miss"] == {"numerator": 1, "denominator": 2, "rate": 0.5}
+    assert summary["metrics"]["generator_error"] == {"numerator": 1, "denominator": 2, "rate": 0.5}
+    assert [row["bar"] for row in derive_bar_rows(events)] == [0]

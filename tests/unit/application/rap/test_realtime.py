@@ -20,6 +20,7 @@ from streammuse.domain.rap import (
 )
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
+from streammuse.infrastructure.rap.recorder import derive_summary
 from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 from streammuse.infrastructure.rap.templates import TemplateCatalog
 
@@ -83,6 +84,14 @@ class ManualExecutor:
         self.shutdown_calls.append((wait, cancel_futures))
 
 
+class FakeMonotonic:
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+
 def _templates() -> TemplateCatalog:
     return TemplateCatalog.from_templates(
         (
@@ -113,6 +122,7 @@ def _controller(
     lookahead_bars: int = 2,
     minimum_score: float = 0.0,
     planning_bar_limit: int | None = None,
+    monotonic_clock=None,
 ):
     analyzer = CmuProsodyAnalyzer()
     scenario = _scenario()
@@ -138,6 +148,7 @@ def _controller(
         planning_bar_limit=planning_bar_limit,
         emit=emitted.append,
         executor=executor,
+        monotonic=monotonic_clock or monotonic,
     )
     return controller, emitted, events, dispatcher
 
@@ -229,16 +240,35 @@ def test_invalid_and_error_batches_retain_fallback_with_visible_reasons() -> Non
 
 def test_late_result_is_logged_and_cannot_replace_frozen_bar() -> None:
     executor = ManualExecutor()
-    controller, _emitted, events, dispatcher = _controller(primary=FixedGenerator(), executor=executor)
+    clock = FakeMonotonic()
+    controller, _emitted, events, dispatcher = _controller(primary=FixedGenerator(), executor=executor, monotonic_clock=clock)
     controller.start()
+    controller.on_tick(0)
+    clock.value = 2.0
     controller.on_tick(16)
+    clock.value = 2.1
     executor.complete()
+    clock.value = 2.2
     controller.on_tick(17)
     _finish(controller, dispatcher)
 
     assert controller.bar_for(1).source == "prevalidated_fallback"
     batch = next(event for event in events if event.event_type.value == "candidate_batch_received")
     assert batch.payload["late"] is True
+    assert batch.payload["deadline_slack_ms"] == -100.00000000000009
+
+
+def test_completed_batch_emits_deadline_slack_for_summary_derivation() -> None:
+    executor = ManualExecutor()
+    controller, _emitted, events, dispatcher = _controller(primary=FixedGenerator(), executor=executor)
+    controller.start()
+    executor.complete()
+    controller.on_tick(0)
+    _finish(controller, dispatcher)
+
+    batch = next(event for event in events if event.event_type == event.event_type.CANDIDATE_BATCH_RECEIVED)
+    assert isinstance(batch.payload["deadline_slack_ms"], float)
+    assert derive_summary(events)["latencies"]["deadline_slack_ms"]["count"] == 1
 
 
 def test_slow_generation_never_blocks_tick_path() -> None:

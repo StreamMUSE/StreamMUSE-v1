@@ -50,6 +50,7 @@ class _PlanningResult:
     request: CandidateRequest
     batch: CandidateBatch
     selection: SelectionResult
+    completed_monotonic: float
 
 
 class RollingRapController:
@@ -292,7 +293,7 @@ class RollingRapController:
             segment_start_bar=segment.start_bar,
             target_bar=request.target_bar,
         )
-        return _PlanningResult(request, batch, selection)
+        return _PlanningResult(request, batch, selection, completed_monotonic=self._clock())
 
     def _drain_primary_result(self) -> None:
         future = self._future
@@ -319,7 +320,8 @@ class RollingRapController:
 
         target = self._bars[target_bar]
         batch = result.batch
-        late = target.frozen or target_bar * self._tempo.ticks_per_bar <= self._last_tick
+        deadline_slack_ms = self._deadline_slack_ms(target_bar, result.completed_monotonic)
+        late = target.frozen or (deadline_slack_ms is not None and deadline_slack_ms <= 0.0)
         self._event(
             RapEventType.CANDIDATE_BATCH_RECEIVED,
             bar=target_bar,
@@ -334,6 +336,7 @@ class RollingRapController:
                 "error_type": batch.error_type,
                 "error_message": batch.error_message,
                 "late": late,
+                "deadline_slack_ms": deadline_slack_ms,
             },
         )
         selected_id = result.selection.selected.candidate_id if result.selection.selected else None
@@ -450,6 +453,12 @@ class RollingRapController:
         if self._planning_bar_limit is None:
             return requested
         return min(requested, self._planning_bar_limit - 1)
+
+    def _deadline_slack_ms(self, bar: int, completed_monotonic: float) -> float | None:
+        if self._clock_origin is None:
+            return None
+        deadline = self._clock_origin + self._tempo.tick_to_seconds(bar * self._tempo.ticks_per_bar)
+        return (deadline - completed_monotonic) * 1000.0
 
     def _event(self, event_type: RapEventType, **kwargs: object) -> None:
         if self._publisher is not None:

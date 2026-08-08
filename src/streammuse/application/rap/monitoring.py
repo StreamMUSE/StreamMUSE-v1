@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timezone
 from queue import Empty, SimpleQueue
@@ -32,8 +33,7 @@ class _RapEventQueue:
         return self._queue.get_nowait()
 
     def publish_presentation_error(self, event: RapEvent, sink: Callable[[RapEvent], None], error: Exception) -> None:
-        self._publisher.emit(
-            RapEventType.PRESENTATION_ERROR,
+        self._publisher._emit_presentation_error(
             bar=event.bar,
             tick=event.tick,
             request_id=event.request_id,
@@ -44,6 +44,9 @@ class _RapEventQueue:
                 "error_message": str(error),
             },
         )
+
+    def close_publication(self) -> None:
+        self._publisher.close()
 
 
 class RapEventPublisher:
@@ -62,6 +65,7 @@ class RapEventPublisher:
         self._monotonic_ns = monotonic_ns
         self._lock = Lock()
         self._sequence = 0
+        self._closed = False
 
     def emit(
         self,
@@ -72,7 +76,53 @@ class RapEventPublisher:
         request_id: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> RapEvent:
+        return self._emit(
+            event_type,
+            bar=bar,
+            tick=tick,
+            request_id=request_id,
+            payload=payload,
+        )
+
+    def close(self) -> None:
+        """Close external publication after all in-flight emitters have queued."""
+
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self.queue.put(_SENTINEL)
+
+    def _emit_presentation_error(
+        self,
+        *,
+        bar: int | None,
+        tick: int | None,
+        request_id: str | None,
+        payload: dict[str, Any],
+    ) -> RapEvent:
+        return self._emit(
+            RapEventType.PRESENTATION_ERROR,
+            bar=bar,
+            tick=tick,
+            request_id=request_id,
+            payload=payload,
+            internal=True,
+        )
+
+    def _emit(
+        self,
+        event_type: RapEventType,
+        *,
+        bar: int | None,
+        tick: int | None,
+        request_id: str | None,
+        payload: dict[str, Any] | None,
+        internal: bool = False,
+    ) -> RapEvent:
+        with self._lock:
+            if self._closed and not internal:
+                raise RuntimeError("rap event publisher is closed")
             self._sequence += 1
             event = RapEvent(
                 session_id=self.session_id,
@@ -83,7 +133,7 @@ class RapEventPublisher:
                 bar=bar,
                 tick=tick,
                 request_id=request_id,
-                payload=dict(payload or {}),
+                payload=deepcopy(payload or {}),
             )
             # Sequence allocation and publication are one critical section so the
             # FIFO queue order is also canonical event order across producers.
@@ -108,7 +158,11 @@ class RapEventDispatcher:
     def flush_and_close(self) -> None:
         if not self._started:
             return
-        self._queue.put(_SENTINEL)
+        close_publication = getattr(self._queue, "close_publication", None)
+        if callable(close_publication):
+            close_publication()
+        else:
+            self._queue.put(_SENTINEL)
         self._thread.join()
         self._started = False
 
@@ -152,16 +206,28 @@ class RapEventDispatcher:
 class RapStateProjector:
     """Build a serializable consumer snapshot from canonical events only."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_recent_bars: int = 16,
+        max_emitted_syllables: int = 128,
+        max_candidates: int = 64,
+    ) -> None:
+        if min(max_recent_bars, max_emitted_syllables, max_candidates) <= 0:
+            raise ValueError("projector limits must be positive")
         self._lock = Lock()
+        self._max_recent_bars = max_recent_bars
+        self._max_emitted_syllables = max_emitted_syllables
+        self._max_candidates = max_candidates
+        self._segments: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._state: dict[str, Any] = {
             "session_id": None,
             "last_sequence": 0,
             "current_tick": None,
             "current_segment": None,
             "pending_request": None,
-            "candidates": {},
-            "frozen_bars": {},
+            "candidates": OrderedDict(),
+            "frozen_bars": OrderedDict(),
             "emitted_syllables": [],
             "latencies": {
                 "generation_latency_ms": self._aggregate(),
@@ -178,11 +244,14 @@ class RapStateProjector:
         with self._lock:
             self._state["session_id"] = event.session_id
             self._state["last_sequence"] = event.sequence
-            self._update_segment(event)
+            self._remember_segment(event)
 
             if event.event_type == RapEventType.TICK:
                 self._state["current_tick"] = event.tick
+                if event.bar is not None and str(event.bar) in self._segments:
+                    self._state["current_segment"] = deepcopy(self._segments[str(event.bar)])
             elif event.event_type == RapEventType.BAR_PLANNING_STARTED:
+                self._state["candidates"].clear()
                 self._state["pending_request"] = self._event_state(event)
             elif event.event_type == RapEventType.CANDIDATE_BATCH_RECEIVED:
                 if self._state["pending_request"] and self._state["pending_request"]["request_id"] == event.request_id:
@@ -193,8 +262,15 @@ class RapStateProjector:
                 candidate_id = event.payload.get("candidate_id")
                 if isinstance(candidate_id, str):
                     self._state["candidates"][candidate_id] = self._event_state(event)
+                    self._state["candidates"].move_to_end(candidate_id)
+                    self._trim_mapping(self._state["candidates"], self._max_candidates)
             elif event.event_type == RapEventType.BAR_FROZEN and event.bar is not None:
                 self._state["frozen_bars"][str(event.bar)] = self._event_state(event)
+                self._state["frozen_bars"].move_to_end(str(event.bar))
+                self._trim_mapping(self._state["frozen_bars"], self._max_recent_bars)
+            elif event.event_type == RapEventType.GENERATION_FAILED:
+                if self._state["pending_request"] and self._state["pending_request"]["request_id"] == event.request_id:
+                    self._state["pending_request"] = None
             elif event.event_type == RapEventType.FALLBACK_ACTIVATED:
                 fallbacks = self._state["fallbacks"]
                 fallbacks["count"] += 1
@@ -204,6 +280,7 @@ class RapStateProjector:
             elif event.event_type == RapEventType.SYLLABLE_EMITTED:
                 syllable = {"bar": event.bar, "tick": event.tick, **deepcopy(event.payload)}
                 self._state["emitted_syllables"].append(syllable)
+                del self._state["emitted_syllables"][:-self._max_emitted_syllables]
                 self._add_payload_number(event.payload, "jitter_ms", "emission_jitter_ms")
 
     def snapshot(self) -> dict[str, Any]:
@@ -224,17 +301,24 @@ class RapStateProjector:
             **deepcopy(event.payload),
         }
 
-    def _update_segment(self, event: RapEvent) -> None:
+    def _remember_segment(self, event: RapEvent) -> None:
         if event.bar is None:
             return
         topic = event.payload.get("topic")
         template_id = event.payload.get("template_id")
         if isinstance(topic, str) or isinstance(template_id, str):
-            self._state["current_segment"] = {
+            self._segments[str(event.bar)] = {
                 "bar": event.bar,
                 "topic": topic if isinstance(topic, str) else None,
                 "template_id": template_id if isinstance(template_id, str) else None,
             }
+            self._segments.move_to_end(str(event.bar))
+            self._trim_mapping(self._segments, self._max_recent_bars + 16)
+
+    @staticmethod
+    def _trim_mapping(mapping: OrderedDict[str, Any], limit: int) -> None:
+        while len(mapping) > limit:
+            mapping.popitem(last=False)
 
     def _add_payload_number(self, payload: dict[str, Any], payload_key: str, aggregate_key: str) -> None:
         value = payload.get(payload_key)

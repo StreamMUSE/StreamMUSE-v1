@@ -6,13 +6,33 @@ import csv
 import json
 import re
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from streammuse.domain.rap import RapEvent, RapEventType
+from streammuse.domain.rap import RapEvent, RapEventType, normalize_text
 
 
 _SECRET_NAME = re.compile(r"[^a-z0-9]+")
+DEFAULT_REPETITION_WINDOW_BARS = 4
+_REQUIRED_MANIFEST_FIELDS = (
+    "scenario_id",
+    "seed",
+    "tempo",
+    "templates",
+    "generator_config",
+    "model_config",
+    "score_weights",
+    "minimum_score",
+    "timeout_seconds",
+    "lookahead_bars",
+    "python_version",
+    "platform",
+    "package_version",
+    "git_revision",
+    "git_dirty",
+    "repetition_window_bars",
+)
 _BAR_FIELDS = (
     "bar",
     "request_id",
@@ -36,9 +56,10 @@ class RapSessionRecorder:
     """Append canonical events first, then derive artifacts after a clean close."""
 
     def __init__(self, session_dir: Path, manifest: dict[str, Any]) -> None:
+        validated_manifest = validate_session_manifest(manifest)
         session_dir.mkdir(parents=True, exist_ok=False)
         self._events_path = session_dir / "events.jsonl"
-        write_json(session_dir / "session.json", redact_manifest(manifest))
+        write_json(session_dir / "session.json", redact_manifest(validated_manifest))
         self._stream = self._events_path.open("a", encoding="utf-8", buffering=1)
         self._closed = False
 
@@ -69,35 +90,44 @@ def event_to_dict(event: RapEvent) -> dict[str, Any]:
         "bar": event.bar,
         "tick": event.tick,
         "request_id": event.request_id,
-        "payload": deepcopy(event.payload),
+        "payload": redact_manifest(event.payload),
     }
 
 
 def read_events(path: Path) -> list[RapEvent]:
-    """Recover all complete records, ignoring incomplete/corrupt JSONL lines."""
+    """Recover complete canonical records while rejecting evidence corruption."""
 
-    events: list[RapEvent] = []
     if not path.exists():
-        return events
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
+        return []
+    content = path.read_text(encoding="utf-8")
+    lines = content.splitlines(keepends=True)
+    events: list[RapEvent] = []
+    expected_sequence = 1
+    session_id: str | None = None
+    for index, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            raise ValueError(f"invalid event JSONL at line {index}: empty record")
         try:
             record = json.loads(line)
-            event = RapEvent(
-                session_id=record["session_id"],
-                sequence=record["sequence"],
-                event_type=RapEventType(record["event_type"]),
-                utc_time=record["utc_time"],
-                monotonic_ns=record["monotonic_ns"],
-                bar=record["bar"],
-                tick=record["tick"],
-                request_id=record["request_id"],
-                payload=record["payload"],
+            event = _event_from_record(record)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            incomplete_final = (
+                index == len(lines)
+                and not raw_line.endswith(("\n", "\r"))
+                and _is_truncated_json(line)
             )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            continue
+            if incomplete_final:
+                break
+            raise ValueError(f"invalid event JSONL at line {index}: {error}") from error
+        if event.sequence != expected_sequence:
+            raise ValueError(f"invalid event sequence at line {index}: expected {expected_sequence}, got {event.sequence}")
+        if session_id is None:
+            session_id = event.session_id
+        elif event.session_id != session_id:
+            raise ValueError(f"mixed session IDs at line {index}")
         events.append(event)
+        expected_sequence += 1
     return events
 
 
@@ -119,22 +149,127 @@ def redact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     return redact(manifest)
 
 
+@dataclass(frozen=True)
+class RapSessionManifest:
+    """Complete reproducibility contract for a recorded rap session."""
+
+    scenario_id: str
+    seed: int
+    tempo: dict[str, Any]
+    templates: list[dict[str, Any]]
+    generator_config: dict[str, Any]
+    model_config: dict[str, Any]
+    score_weights: dict[str, Any]
+    minimum_score: float
+    timeout_seconds: float
+    lookahead_bars: int
+    python_version: str
+    platform: str
+    package_version: str
+    git_revision: str
+    git_dirty: bool
+    repetition_window_bars: int = DEFAULT_REPETITION_WINDOW_BARS
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            field: deepcopy(getattr(self, field))
+            for field in _REQUIRED_MANIFEST_FIELDS
+        }
+
+
+def build_session_manifest(
+    *,
+    scenario_id: str,
+    seed: int,
+    tempo: dict[str, Any],
+    templates: list[dict[str, Any]],
+    generator_config: dict[str, Any],
+    model_config: dict[str, Any],
+    score_weights: dict[str, Any],
+    minimum_score: float,
+    timeout_seconds: float,
+    lookahead_bars: int,
+    python_version: str,
+    platform: str,
+    package_version: str,
+    git_revision: str,
+    git_dirty: bool,
+    repetition_window_bars: int = DEFAULT_REPETITION_WINDOW_BARS,
+) -> dict[str, Any]:
+    """Build and validate a complete JSON-ready research manifest."""
+
+    return validate_session_manifest(
+        RapSessionManifest(
+            scenario_id=scenario_id,
+            seed=seed,
+            tempo=tempo,
+            templates=templates,
+            generator_config=generator_config,
+            model_config=model_config,
+            score_weights=score_weights,
+            minimum_score=minimum_score,
+            timeout_seconds=timeout_seconds,
+            lookahead_bars=lookahead_bars,
+            python_version=python_version,
+            platform=platform,
+            package_version=package_version,
+            git_revision=git_revision,
+            git_dirty=git_dirty,
+            repetition_window_bars=repetition_window_bars,
+        ).to_dict()
+    )
+
+
+def validate_session_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Reject incomplete or non-reproducible session metadata before recording."""
+
+    missing = [field for field in _REQUIRED_MANIFEST_FIELDS if field not in manifest]
+    if missing:
+        raise ValueError(f"session manifest missing required field: {missing[0]}")
+    _require_string(manifest, "scenario_id")
+    _require_int(manifest, "seed")
+    for field in ("tempo", "generator_config", "model_config", "score_weights"):
+        if not isinstance(manifest[field], dict) or not manifest[field]:
+            raise ValueError(f"session manifest field {field} must be a non-empty object")
+    templates = manifest["templates"]
+    if not isinstance(templates, list) or not templates:
+        raise ValueError("session manifest field templates must be a non-empty list")
+    for template in templates:
+        if not isinstance(template, dict) or not {"template_id", "definition", "provenance"} <= template.keys():
+            raise ValueError("session manifest template requires template_id, definition, and provenance")
+        if not isinstance(template["template_id"], str) or not isinstance(template["definition"], dict) or not isinstance(template["provenance"], dict):
+            raise ValueError("session manifest template definition/provenance is invalid")
+    for field in ("minimum_score", "timeout_seconds"):
+        if not isinstance(manifest[field], (int, float)) or isinstance(manifest[field], bool):
+            raise ValueError(f"session manifest field {field} must be numeric")
+    if manifest["timeout_seconds"] <= 0:
+        raise ValueError("session manifest field timeout_seconds must be positive")
+    for field in ("lookahead_bars", "repetition_window_bars"):
+        _require_int(manifest, field)
+        if manifest[field] <= 0:
+            raise ValueError(f"session manifest field {field} must be positive")
+    for field in ("python_version", "platform", "package_version", "git_revision"):
+        _require_string(manifest, field)
+    if not isinstance(manifest["git_dirty"], bool):
+        raise ValueError("session manifest field git_dirty must be a bool")
+    return deepcopy(manifest)
+
+
 def derive_summary(events: Iterable[RapEvent]) -> dict[str, Any]:
     """Derive research metrics from event evidence without hidden runtime state."""
 
     event_list = list(events)
     frozen = _frozen_bars(event_list)
-    evaluations = [event for event in event_list if event.event_type == RapEventType.CANDIDATE_EVALUATED]
-    batches = [event for event in event_list if event.event_type == RapEventType.CANDIDATE_BATCH_RECEIVED]
+    plans = _requests(event_list, RapEventType.BAR_PLANNING_STARTED)
+    batches = _requests(event_list, RapEventType.CANDIDATE_BATCH_RECEIVED)
+    evaluations = _candidate_evaluations(event_list)
 
-    candidate_validity = sum(event.payload.get("valid") is True for event in evaluations)
+    candidate_validity, parsed_candidates = _candidate_counts(batches, evaluations)
     fallback_count = sum(event.payload.get("fallback") is True for event in frozen.values())
-    deadline_misses = sum(event.payload.get("fallback_reason") == "deadline_miss" for event in frozen.values())
-    generator_errors = sum(bool(event.payload.get("error_type")) for event in batches)
-    pronunciation_fallbacks, pronunciation_total = _pronunciation_counts(evaluations)
-    repetitions = sum(
-        "duplicate_normalized_text" in _string_list(event.payload.get("rejection_reasons")) for event in evaluations
-    )
+    deadline_misses = sum(request_id in plans and event.payload.get("late") is True for request_id, event in batches.items())
+    generator_errors = _generator_error_requests(event_list, plans, batches)
+    pronunciation_fallbacks, pronunciation_total = _pronunciation_counts(evaluations.values())
+    repetitions, generated_bigrams = _repetition_counts(event_list, frozen)
 
     return {
         "events": {"count": len(event_list)},
@@ -144,16 +279,16 @@ def derive_summary(events: Iterable[RapEvent]) -> dict[str, Any]:
             "fallback_rate": _ratio(fallback_count, len(frozen))["rate"],
         },
         "metrics": {
-            "candidate_validity": _ratio(candidate_validity, len(evaluations)),
+            "candidate_validity": _ratio(candidate_validity, parsed_candidates),
             "fallback": _ratio(fallback_count, len(frozen)),
-            "deadline_miss": _ratio(deadline_misses, len(frozen)),
-            "generator_error": _ratio(generator_errors, len(batches)),
+            "deadline_miss": _ratio(deadline_misses, len(plans)),
+            "generator_error": _ratio(len(generator_errors), len(plans)),
             "pronunciation_fallback": _ratio(pronunciation_fallbacks, pronunciation_total),
-            "repetition": _ratio(repetitions, len(evaluations)),
+            "repetition": _ratio(repetitions, generated_bigrams),
         },
         "latencies": {
-            "generation_latency_ms": _distribution(_payload_numbers(batches, "latency_ms")),
-            "deadline_slack_ms": _distribution(_payload_numbers(batches, "deadline_slack_ms")),
+            "generation_latency_ms": _distribution(_payload_numbers(batches.values(), "latency_ms")),
+            "deadline_slack_ms": _distribution(_payload_numbers(batches.values(), "deadline_slack_ms")),
             "emission_jitter_ms": _distribution(
                 _payload_numbers((event for event in event_list if event.event_type == RapEventType.SYLLABLE_EMITTED), "jitter_ms")
             ),
@@ -164,22 +299,36 @@ def derive_summary(events: Iterable[RapEvent]) -> dict[str, Any]:
 def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
     """Derive deterministic, one-row-per-bar CSV-ready research evidence."""
 
+    event_list = list(events)
+    frozen = _frozen_bars(event_list)
     bars: dict[int, dict[str, Any]] = {}
-    for event in events:
-        if event.bar is None:
+    seen_batches: set[str] = set()
+    seen_candidates: set[tuple[str, str]] = set()
+    for event in event_list:
+        if event.bar is None or event.bar not in frozen:
             continue
         row = bars.setdefault(event.bar, _empty_bar_row(event.bar))
         if event.request_id is not None:
             row["request_id"] = event.request_id
         payload = event.payload
         if event.event_type == RapEventType.CANDIDATE_BATCH_RECEIVED:
+            if not isinstance(event.request_id, str) or event.request_id in seen_batches:
+                continue
+            seen_batches.add(event.request_id)
             row["generation_latency_ms"] = _number_or_none(payload.get("latency_ms"))
             row["deadline_slack_ms"] = _number_or_none(payload.get("deadline_slack_ms"))
             row["generator_error"] = payload.get("error_type") if isinstance(payload.get("error_type"), str) else None
             supplied_count = _number_or_none(payload.get("candidate_count"))
             if supplied_count is not None:
-                row["candidate_count"] = max(row["candidate_count"], int(supplied_count))
+                row["_declared_candidate_count"] = int(supplied_count)
         elif event.event_type == RapEventType.CANDIDATE_EVALUATED:
+            candidate_id = payload.get("candidate_id")
+            if not isinstance(event.request_id, str) or not isinstance(candidate_id, str):
+                continue
+            identity = (event.request_id, candidate_id)
+            if identity in seen_candidates:
+                continue
+            seen_candidates.add(identity)
             row["_evaluated_candidate_count"] += 1
             if payload.get("valid") is True:
                 row["valid_candidate_count"] += 1
@@ -205,7 +354,9 @@ def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
     for bar in sorted(bars):
         row = bars[bar]
         jitters = row.pop("_jitters")
-        row["candidate_count"] = max(row["candidate_count"], row.pop("_evaluated_candidate_count"))
+        declared_count = row.pop("_declared_candidate_count")
+        evaluated_count = row.pop("_evaluated_candidate_count")
+        row["candidate_count"] = declared_count if declared_count is not None else evaluated_count
         row["mean_emission_jitter_ms"] = sum(jitters) / len(jitters) if jitters else None
         result.append(row)
     return result
@@ -224,6 +375,170 @@ def write_bar_csv(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 
 def _ratio(numerator: int, denominator: int) -> dict[str, int | float | None]:
     return {"numerator": numerator, "denominator": denominator, "rate": numerator / denominator if denominator else None}
+
+
+def _event_from_record(record: object) -> RapEvent:
+    if not isinstance(record, dict):
+        raise ValueError("event record must be an object")
+    session_id = record.get("session_id")
+    sequence = record.get("sequence")
+    utc_time = record.get("utc_time")
+    monotonic = record.get("monotonic_ns")
+    bar = record.get("bar")
+    tick = record.get("tick")
+    request_id = record.get("request_id")
+    payload = record.get("payload")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("event session_id must be a non-empty string")
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= 0:
+        raise ValueError("event sequence must be a positive integer")
+    if not isinstance(utc_time, str) or not isinstance(monotonic, int) or isinstance(monotonic, bool):
+        raise ValueError("event timestamps are invalid")
+    if bar is not None and (not isinstance(bar, int) or isinstance(bar, bool)):
+        raise ValueError("event bar is invalid")
+    if tick is not None and (not isinstance(tick, int) or isinstance(tick, bool)):
+        raise ValueError("event tick is invalid")
+    if request_id is not None and not isinstance(request_id, str):
+        raise ValueError("event request_id is invalid")
+    if not isinstance(payload, dict):
+        raise ValueError("event payload must be an object")
+    return RapEvent(
+        session_id=session_id,
+        sequence=sequence,
+        event_type=RapEventType(record["event_type"]),
+        utc_time=utc_time,
+        monotonic_ns=monotonic,
+        bar=bar,
+        tick=tick,
+        request_id=request_id,
+        payload=payload,
+    )
+
+
+def _is_truncated_json(value: str) -> bool:
+    """Recognize an unfinished JSON container without masking complete garbage."""
+
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    pairs = {"}": "{", "]": "["}
+    for character in value:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            stack.append(character)
+        elif character in "}]":
+            if not stack or stack.pop() != pairs[character]:
+                return False
+    return in_string or bool(stack)
+
+
+def _require_string(manifest: dict[str, Any], field: str) -> None:
+    if not isinstance(manifest[field], str) or not manifest[field]:
+        raise ValueError(f"session manifest field {field} must be a non-empty string")
+
+
+def _require_int(manifest: dict[str, Any], field: str) -> None:
+    if not isinstance(manifest[field], int) or isinstance(manifest[field], bool):
+        raise ValueError(f"session manifest field {field} must be an integer")
+
+
+def _requests(events: Iterable[RapEvent], event_type: RapEventType) -> dict[str, RapEvent]:
+    records: dict[str, RapEvent] = {}
+    for event in events:
+        if event.event_type == event_type and isinstance(event.request_id, str) and event.request_id:
+            records.setdefault(event.request_id, event)
+    return records
+
+
+def _candidate_evaluations(events: Iterable[RapEvent]) -> dict[tuple[str, str], RapEvent]:
+    evaluations: dict[tuple[str, str], RapEvent] = {}
+    for event in events:
+        candidate_id = event.payload.get("candidate_id")
+        if (
+            event.event_type == RapEventType.CANDIDATE_EVALUATED
+            and isinstance(event.request_id, str)
+            and event.request_id
+            and isinstance(candidate_id, str)
+            and candidate_id
+        ):
+            evaluations.setdefault((event.request_id, candidate_id), event)
+    return evaluations
+
+
+def _candidate_counts(
+    batches: dict[str, RapEvent],
+    evaluations: dict[tuple[str, str], RapEvent],
+) -> tuple[int, int]:
+    parsed = 0
+    valid = 0
+    for request_id, batch in batches.items():
+        batch_evaluations = [
+            event for (evaluation_request_id, _candidate_id), event in evaluations.items() if evaluation_request_id == request_id
+        ]
+        candidate_count = _number_or_none(batch.payload.get("candidate_count"))
+        parsed += int(candidate_count) if candidate_count is not None and candidate_count >= 0 else len(batch_evaluations)
+        valid += sum(event.payload.get("valid") is True for event in batch_evaluations)
+    return valid, parsed
+
+
+def _generator_error_requests(
+    events: Iterable[RapEvent],
+    plans: dict[str, RapEvent],
+    batches: dict[str, RapEvent],
+) -> set[str]:
+    errors = {request_id for request_id, batch in batches.items() if request_id in plans and bool(batch.payload.get("error_type"))}
+    for event in events:
+        if (
+            event.event_type == RapEventType.GENERATION_FAILED
+            and isinstance(event.request_id, str)
+            and event.request_id in plans
+        ):
+            errors.add(event.request_id)
+    return errors
+
+
+def _repetition_counts(events: Iterable[RapEvent], frozen: dict[int, RapEvent]) -> tuple[int, int]:
+    window = _repetition_window(events)
+    recent: list[set[tuple[str, str]]] = []
+    repeated = 0
+    generated = 0
+    frozen_events = sorted(frozen.values(), key=lambda event: event.sequence)
+    for event in frozen_events:
+        text = event.payload.get("text")
+        bigrams = _normalized_bigrams(text) if isinstance(text, str) else []
+        prior_bigrams = set().union(*recent) if recent else set()
+        generated += len(bigrams)
+        repeated += sum(bigram in prior_bigrams for bigram in bigrams)
+        recent.append(set(bigrams))
+        del recent[:-window]
+    return repeated, generated
+
+
+def _repetition_window(events: Iterable[RapEvent]) -> int:
+    for event in events:
+        if event.event_type != RapEventType.SESSION_STARTED:
+            continue
+        if "repetition_window_bars" not in event.payload:
+            return DEFAULT_REPETITION_WINDOW_BARS
+        value = event.payload["repetition_window_bars"]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError("session-start repetition_window_bars must be a positive integer")
+        return value
+    return DEFAULT_REPETITION_WINDOW_BARS
+
+
+def _normalized_bigrams(text: str) -> list[tuple[str, str]]:
+    words = normalize_text(text).split()
+    return list(zip(words, words[1:]))
 
 
 def _distribution(values: Iterable[float]) -> dict[str, int | float | None]:
@@ -248,11 +563,11 @@ def _percentile(values: list[float], quantile: float) -> float:
 
 
 def _frozen_bars(events: Iterable[RapEvent]) -> dict[int, RapEvent]:
-    return {
-        event.bar: event
-        for event in events
-        if event.event_type == RapEventType.BAR_FROZEN and event.bar is not None
-    }
+    frozen: dict[int, RapEvent] = {}
+    for event in events:
+        if event.event_type == RapEventType.BAR_FROZEN and event.bar is not None:
+            frozen.setdefault(event.bar, event)
+    return frozen
 
 
 def _pronunciation_counts(events: Iterable[RapEvent]) -> tuple[int, int]:
@@ -302,6 +617,7 @@ def _empty_bar_row(bar: int) -> dict[str, Any]:
         "generator_error": None,
         "emitted_syllables": 0,
         "mean_emission_jitter_ms": None,
+        "_declared_candidate_count": None,
         "_evaluated_candidate_count": 0,
         "_jitters": [],
     }
