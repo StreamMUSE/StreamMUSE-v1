@@ -111,18 +111,17 @@ def read_events(path: Path) -> list[RapEvent]:
     expected_sequence = 1
     session_id: str | None = None
     for index, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-        if not line:
+        if not raw_line.strip():
             raise ValueError(f"invalid event JSONL at line {index}: empty record")
         try:
-            record = json.loads(line)
+            record = json.loads(raw_line)
             event = _event_from_record(record)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             incomplete_final = (
                 index == len(lines)
                 and not raw_line.endswith(("\n", "\r"))
                 and isinstance(error, json.JSONDecodeError)
-                and _is_recoverable_eof_json_error(line, error)
+                and _is_recoverable_eof_json_error(raw_line, error)
             )
             if incomplete_final:
                 break
@@ -437,66 +436,227 @@ def _event_from_record(record: object) -> RapEvent:
     )
 
 
-def _is_recoverable_eof_json_error(value: str, error: json.JSONDecodeError) -> bool:
-    """Recover only tails that can be completed into valid JSON at EOF."""
-
-    for completion in _eof_json_completions(value, error):
-        try:
-            json.loads(completion)
-        except json.JSONDecodeError:
-            continue
-        return True
-    return False
+class _IncompleteJsonPrefix(Exception):
+    """The parsed input ended in a JSON grammar state that can be extended."""
 
 
-def _eof_json_completions(value: str, error: json.JSONDecodeError) -> tuple[str, ...]:
-    closers, in_string = _open_container_closers(value)
-    if closers is None:
-        return ()
-    suffixes: list[str] = []
-    trimmed = value.rstrip()
-    if error.msg.startswith("Unterminated string") and in_string:
-        suffixes.append('"')
-    elif trimmed.endswith((":", ",")):
-        suffixes.append("null")
-    elif error.pos == len(trimmed):
-        suffixes.append("")
-
-    literal_completions = {"t": "rue", "tr": "ue", "tru": "e", "f": "alse", "fa": "lse", "fal": "se", "fals": "e", "n": "ull", "nu": "ll", "nul": "l"}
-    for partial, completion in literal_completions.items():
-        if trimmed.endswith(partial):
-            suffixes.append(completion)
-            break
-    if re.search(r"-?(?:0|[1-9]\d*)(?:\.\d+)?[eE][+-]?$", trimmed):
-        suffixes.append("0")
-    elif re.search(r"-?(?:0|[1-9]\d*)\.$", trimmed):
-        suffixes.append("0")
-
-    return tuple(f"{value}{suffix}{closers}" for suffix in dict.fromkeys(suffixes))
+class _InvalidJsonPrefix(Exception):
+    """The parsed input cannot be extended into a valid JSON document."""
 
 
-def _open_container_closers(value: str) -> tuple[str | None, bool]:
-    stack: list[str] = []
-    in_string = False
-    escaped = False
-    pairs = {"}": "{", "]": "["}
-    for character in value:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
+class _JsonPrefixParser:
+    _WHITESPACE = " \t\r\n"
+    _DIGITS = frozenset("0123456789")
+    _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+    _SIMPLE_ESCAPES = frozenset('"\\/bfnrt')
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+        self._position = 0
+
+    def parse(self) -> None:
+        self._skip_whitespace()
+        if self._at_end():
+            raise _IncompleteJsonPrefix
+        self._parse_value()
+        self._skip_whitespace()
+        if not self._at_end():
+            raise _InvalidJsonPrefix
+
+    def _parse_value(self) -> None:
+        if self._at_end():
+            raise _IncompleteJsonPrefix
+        character = self._peek()
         if character == '"':
-            in_string = True
-        elif character in "{[":
-            stack.append(character)
-        elif character in "}]":
-            if not stack or stack.pop() != pairs[character]:
-                return None, in_string
-    return "".join("}" if opening == "{" else "]" for opening in reversed(stack)), in_string
+            self._parse_string()
+        elif character == "{":
+            self._parse_object()
+        elif character == "[":
+            self._parse_array()
+        elif character == "t":
+            self._parse_literal("true")
+        elif character == "f":
+            self._parse_literal("false")
+        elif character == "n":
+            self._parse_literal("null")
+        elif character == "-" or character in self._DIGITS:
+            self._parse_number()
+        else:
+            raise _InvalidJsonPrefix
+
+    def _parse_object(self) -> None:
+        self._position += 1
+        self._skip_whitespace()
+        if self._at_end():
+            raise _IncompleteJsonPrefix
+        if self._peek() == "}":
+            self._position += 1
+            return
+
+        while True:
+            if self._peek() != '"':
+                raise _InvalidJsonPrefix
+            self._parse_string()
+            self._skip_whitespace()
+            self._consume_required(":")
+            self._skip_whitespace()
+            self._parse_value()
+            self._skip_whitespace()
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+            character = self._peek()
+            if character == "}":
+                self._position += 1
+                return
+            if character != ",":
+                raise _InvalidJsonPrefix
+            self._position += 1
+            self._skip_whitespace()
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+
+    def _parse_array(self) -> None:
+        self._position += 1
+        self._skip_whitespace()
+        if self._at_end():
+            raise _IncompleteJsonPrefix
+        if self._peek() == "]":
+            self._position += 1
+            return
+
+        while True:
+            self._parse_value()
+            self._skip_whitespace()
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+            character = self._peek()
+            if character == "]":
+                self._position += 1
+                return
+            if character != ",":
+                raise _InvalidJsonPrefix
+            self._position += 1
+            self._skip_whitespace()
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+
+    def _parse_string(self) -> None:
+        self._position += 1
+        while True:
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+            character = self._peek()
+            if character == '"':
+                self._position += 1
+                return
+            if character == "\\":
+                self._position += 1
+                self._parse_escape()
+                continue
+            if ord(character) < 0x20:
+                raise _InvalidJsonPrefix
+            self._position += 1
+
+    def _parse_escape(self) -> None:
+        if self._at_end():
+            raise _IncompleteJsonPrefix
+        character = self._peek()
+        if character in self._SIMPLE_ESCAPES:
+            self._position += 1
+            return
+        if character != "u":
+            raise _InvalidJsonPrefix
+        self._position += 1
+        for _ in range(4):
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+            if self._peek() not in self._HEX_DIGITS:
+                raise _InvalidJsonPrefix
+            self._position += 1
+
+    def _parse_literal(self, literal: str) -> None:
+        for expected in literal:
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+            if self._peek() != expected:
+                raise _InvalidJsonPrefix
+            self._position += 1
+
+    def _parse_number(self) -> None:
+        if self._peek() == "-":
+            self._position += 1
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+
+        if self._peek() == "0":
+            self._position += 1
+            if not self._at_end() and self._peek() in self._DIGITS:
+                raise _InvalidJsonPrefix
+        elif self._peek() in "123456789":
+            self._consume_digits()
+        else:
+            raise _InvalidJsonPrefix
+
+        if not self._at_end() and self._peek() == ".":
+            self._position += 1
+            self._require_digit()
+            self._consume_digits()
+
+        if not self._at_end() and self._peek() in "eE":
+            self._position += 1
+            if self._at_end():
+                raise _IncompleteJsonPrefix
+            if self._peek() in "+-":
+                self._position += 1
+                if self._at_end():
+                    raise _IncompleteJsonPrefix
+            self._require_digit()
+            self._consume_digits()
+
+    def _require_digit(self) -> None:
+        if self._at_end():
+            raise _IncompleteJsonPrefix
+        if self._peek() not in self._DIGITS:
+            raise _InvalidJsonPrefix
+
+    def _consume_digits(self) -> None:
+        while not self._at_end() and self._peek() in self._DIGITS:
+            self._position += 1
+
+    def _consume_required(self, character: str) -> None:
+        if self._at_end():
+            raise _IncompleteJsonPrefix
+        if self._peek() != character:
+            raise _InvalidJsonPrefix
+        self._position += 1
+
+    def _skip_whitespace(self) -> None:
+        while not self._at_end() and self._peek() in self._WHITESPACE:
+            self._position += 1
+
+    def _peek(self) -> str:
+        return self._value[self._position]
+
+    def _at_end(self) -> bool:
+        return self._position == len(self._value)
+
+
+def _is_json_prefix(value: str) -> bool:
+    """Return whether the entire input can be extended into valid JSON."""
+
+    try:
+        _JsonPrefixParser(value).parse()
+    except _IncompleteJsonPrefix:
+        return True
+    except _InvalidJsonPrefix:
+        return False
+    return True
+
+
+def _is_recoverable_eof_json_error(value: str, _error: json.JSONDecodeError) -> bool:
+    """Recover a failed final record only when it is a valid JSON prefix."""
+
+    return _is_json_prefix(value)
 
 
 def _require_string(manifest: dict[str, Any], field: str) -> None:

@@ -12,6 +12,7 @@ from streammuse.domain.rap import RapEvent, RapEventType
 from streammuse.infrastructure.rap.recorder import (
     DEFAULT_REPETITION_WINDOW_BARS,
     RapSessionRecorder,
+    _is_json_prefix,
     build_session_manifest,
     derive_bar_rows,
     derive_summary,
@@ -272,7 +273,90 @@ def test_read_events_ignores_only_an_incomplete_final_line(tmp_path: Path) -> No
     assert [event.sequence for event in read_events(path)] == [1]
 
 
-@pytest.mark.parametrize("token", ("tru", "fals", "nul", "1e", "1e+", "1e-", "1."))
+def test_every_strict_prefix_of_a_canonical_event_line_is_recoverable() -> None:
+    event = _event(
+        1,
+        RapEventType.CANDIDATE_BATCH_RECEIVED,
+        payload={
+            "escaped": "quote \" backslash \\ snowman \u2603",
+            "exponent": -1.25e-7,
+            "flag": True,
+        },
+    )
+    canonical_line = json.dumps(event_to_dict(event), sort_keys=True)
+
+    prefixes = (canonical_line[:end] for end in range(1, len(canonical_line)))
+    rejected = [prefix for prefix in prefixes if not _is_json_prefix(prefix)]
+
+    assert rejected == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        " ",
+        "{",
+        '{"key',
+        '{"key"',
+        '{"key":',
+        '{"key": [',
+        '{"key": [1,',
+        '{"key": [1, {',
+        ' [ true, false, null, -',
+        '"unterminated',
+        '"dangling\\',
+        '"unicode\\u',
+        '"unicode\\u12',
+        *(f'"escape\\{escape}' for escape in '"\\/bfnrt'),
+        "t",
+        "fa",
+        "nul",
+        "-",
+        "-0",
+        "12.",
+        "12.3e",
+        "12.3e+",
+        "12.3e-",
+    ),
+)
+def test_json_prefix_recognizer_accepts_standard_json_prefix_states(value: str) -> None:
+    assert _is_json_prefix(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "]",
+        "{]",
+        '{"key" 1',
+        '{"key": }',
+        '{"key": 1,}',
+        "[1,]",
+        "[,",
+        "[1 2",
+        '{"key": 1]',
+        '"bad\\x',
+        '"bad\\u12g',
+        '"bad\x1f',
+        "trux",
+        "falsehood",
+        "nullx",
+        "01",
+        "-01",
+        "1\u0662",
+        ".1",
+        "+1",
+        "1..",
+        "1ex",
+        "1e++",
+        "{} trailing",
+    ),
+)
+def test_json_prefix_recognizer_rejects_invalid_json_near_matches(value: str) -> None:
+    assert not _is_json_prefix(value)
+
+
+@pytest.mark.parametrize("token", ("tru", "fals", "nul", "-", "1e", "1e+", "1e-", "1."))
 def test_read_events_recovers_valid_scalar_token_crash_tails(tmp_path: Path, token: str) -> None:
     path = tmp_path / f"{token.replace('+', 'plus').replace('-', 'minus').replace('.', 'dot')}.jsonl"
     path.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + f"\n{{\"payload\": {token}", encoding="utf-8")
@@ -280,7 +364,7 @@ def test_read_events_recovers_valid_scalar_token_crash_tails(tmp_path: Path, tok
     assert [event.sequence for event in read_events(path)] == [1]
 
 
-@pytest.mark.parametrize("token", ("trux", "falsehood", "nullx", "1ex", "1e+z", "1.."))
+@pytest.mark.parametrize("token", ("trux", "tru ", "falsehood", "nullx", "1ex", "1e ", "1e+z", "1.."))
 def test_read_events_rejects_invalid_scalar_token_crash_tails(tmp_path: Path, token: str) -> None:
     path = tmp_path / f"invalid-{token.replace('+', 'plus').replace('.', 'dot')}.jsonl"
     path.write_text(json.dumps(event_to_dict(_event(1, RapEventType.TICK))) + f"\n{{\"payload\": {token}", encoding="utf-8")

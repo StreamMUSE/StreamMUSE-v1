@@ -395,3 +395,73 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap \
   is recoverable only when completing it and all still-open containers yields
   valid JSON. This retains crash recovery without treating invalid token text
   as a recoverable final line.
+
+## Fix Round 4/5
+
+### Changed Files
+
+- `src/streammuse/infrastructure/rap/recorder.py`
+- `tests/unit/infrastructure/rap/test_recorder.py`
+- `.superpowers/sdd/2026-08-07-research-realtime-rap/task-6-report.md`
+
+### Finding Addressed
+
+The completion-suffix heuristic was replaced by a recursive-descent JSON-prefix
+recognizer. It follows the standard JSON grammar for nested objects and arrays,
+whitespace, key and value strings, every simple escape, partial Unicode escapes,
+literals, and every number state. EOF is recoverable only from a grammar state
+that can still be extended into one valid document. Illegal escapes and control
+characters, malformed structure and delimiters, literal near-matches,
+leading-zero and other invalid number forms, non-ASCII number digits, and
+trailing garbage are rejected.
+
+`read_events()` still calls `json.loads()` first for every complete record. The
+prefix recognizer is consulted only for a JSON decoding failure on the final
+physical line when that line has no newline. Interior corruption, complete
+final corruption, sequence checks, and session checks are unchanged. The
+physical line is no longer stripped before either parser runs, preventing an
+invalid partial token followed by whitespace from being reclassified as a
+recoverable prefix.
+
+### TDD Evidence
+
+The initial focused RED failed during collection because `_is_json_prefix` did
+not exist. After the parser implementation, a separate mixed-digit regression
+proved that `str.isdigit()` incorrectly accepted `1\u0662`; replacing all number
+states with ASCII digit checks made that test pass. A second RED showed that
+trailing whitespace was stripped from invalid `tru ` and `1e ` tails; preserving
+the complete physical line made both reject without changing empty-line checks.
+
+The canonical-prefix test builds one actual recorder line with
+`json.dumps(event_to_dict(event), sort_keys=True)`. Its payload includes escaped
+quotes and backslashes, a Unicode escape, a negative exponent number, and a
+boolean. Every nonempty strict prefix of that line is recognized as recoverable.
+Focused cases cover all simple escapes, dangling escapes, partial `\\uXXXX`,
+container and delimiter states, literal prefixes, bare minus, fraction and
+exponent states, and representative invalid structural/string/number inputs.
+
+### Verification
+
+```text
+uv run pytest tests/unit/infrastructure/rap/test_recorder.py -v
+# 94 passed
+
+uv run pytest tests/unit/application/rap/test_monitoring.py \
+  tests/unit/infrastructure/rap/test_recorder.py \
+  tests/unit/application/rap/test_realtime.py \
+  tests/unit/application/rap/test_runtime.py -v
+# 119 passed
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap \
+  tests/unit/presentation/rap_demo -q --tb=no
+# 287 passed; one existing pretty_midi/pkg_resources deprecation warning
+```
+
+### Fix-Round Self-Review
+
+- Recovery scope remains limited to a non-newline final line that failed
+  `json.loads()`; no interior or canonical event validation path was relaxed.
+- The parser consumes the entire supplied prefix and has no completion guesses
+  that can skip an invalid token or trailing character.
+- This round changes no manifest, metric, controller, or runtime behavior.
