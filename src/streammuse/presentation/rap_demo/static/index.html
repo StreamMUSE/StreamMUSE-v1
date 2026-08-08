@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>StreamMUSE Rap Research Monitor</title>
+    <link rel="stylesheet" href="/static/css/rap-demo.css">
+    <script src="/static/js/rap-demo.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="identity">
+        <span class="wordmark">StreamMUSE</span>
+        <h1>Rap Research Monitor</h1>
+      </div>
+      <div class="connection" id="connection" data-state="connecting">
+        <span class="connection-mark" aria-hidden="true"></span>
+        <span id="connection-label">Connecting</span>
+      </div>
+      <dl class="session-identity">
+        <div><dt>Session</dt><dd id="session-id">--</dd></div>
+        <div><dt>Generator</dt><dd id="generator">--</dd></div>
+        <div><dt>Model</dt><dd id="model">--</dd></div>
+      </dl>
+    </header>
+
+    <main>
+      <section class="telemetry" aria-label="Live session telemetry">
+        <div><span>State</span><strong id="session-state">waiting</strong></div>
+        <div><span>Tempo</span><strong id="tempo">--</strong></div>
+        <div><span>Tick</span><strong id="tick">--</strong></div>
+        <div><span>Bar</span><strong id="bar">--</strong></div>
+        <div class="wide"><span>Topic</span><strong id="topic">--</strong></div>
+        <div class="wide"><span>Flow template</span><strong id="template">--</strong></div>
+        <div><span>Generator</span><strong id="generator-state">idle</strong></div>
+      </section>
+
+      <div class="primary-grid">
+        <section class="performance-pane" aria-labelledby="performance-title">
+          <div class="section-heading">
+            <div><span class="eyebrow">Now performing</span><h2 id="performance-title">Current bar</h2></div>
+            <span class="source-badge" id="source-badge">UNRESOLVED</span>
+          </div>
+          <p class="selected-line" id="selected-line">Waiting for the first frozen bar.</p>
+          <dl class="decision-grid">
+            <div><dt>Source</dt><dd id="source">--</dd></div>
+            <div><dt>Score</dt><dd id="total-score">--</dd></div>
+            <div><dt>Generation</dt><dd id="generation-latency">--</dd></div>
+            <div><dt>Deadline slack</dt><dd id="deadline-slack">--</dd></div>
+            <div class="span-two"><dt>Fallback reason</dt><dd id="fallback-reason">none</dd></div>
+          </dl>
+
+          <div class="flow-heading">
+            <h3>Beat-aligned flow</h3>
+            <span id="flow-meter">4 beats / 16 ticks</span>
+          </div>
+          <div class="flow-track" id="flow-track" aria-label="Sixteen tick flow timeline"></div>
+          <div class="flow-legend" aria-label="Flow legend">
+            <span><i class="legend-slot"></i>syllable slot</span>
+            <span><i class="legend-stress"></i>target stress</span>
+            <span><i class="legend-playhead"></i>active tick</span>
+          </div>
+        </section>
+
+        <section class="context-pane" aria-labelledby="context-title">
+          <div class="section-heading">
+            <div><span class="eyebrow">Generator input</span><h2 id="context-title">Exact LLM context</h2></div>
+            <span class="request-id" id="request-id">no request</span>
+          </div>
+          <pre class="prompt" id="prompt">No prompt received.</pre>
+          <dl class="request-grid">
+            <div><dt>Target bar</dt><dd id="request-bar">--</dd></div>
+            <div><dt>Required syllables</dt><dd id="required-syllables">--</dd></div>
+            <div><dt>Requested candidates</dt><dd id="requested-candidates">--</dd></div>
+            <div><dt>Seed</dt><dd id="request-seed">--</dd></div>
+          </dl>
+        </section>
+      </div>
+
+      <section class="metric-strip" aria-label="Cumulative research metrics">
+        <div><span>Candidate yield</span><strong id="candidate-yield">0 / 0</strong></div>
+        <div><span>Fallback rate</span><strong id="fallback-rate">0.0%</strong></div>
+        <div><span>Deadline miss rate</span><strong id="deadline-rate">0.0%</strong></div>
+        <div><span>Pronunciation fallback</span><strong id="pronunciation-rate">0.0%</strong></div>
+        <div><span>Emission jitter p95</span><strong id="jitter-p95">--</strong></div>
+      </section>
+
+      <section class="data-section" aria-labelledby="candidates-title">
+        <div class="section-heading table-heading">
+          <div><span class="eyebrow">Current generation round</span><h2 id="candidates-title">Candidate evaluations</h2></div>
+          <span id="candidate-count">0 candidates</span>
+        </div>
+        <div class="table-scroll">
+          <table id="candidate-table">
+            <thead>
+              <tr>
+                <th><button type="button" data-sort="selected">Pick</button></th>
+                <th><button type="button" data-sort="text">Raw text</button></th>
+                <th><button type="button" data-sort="syllable_count">Syllables</button></th>
+                <th><button type="button" data-sort="valid">Valid</button></th>
+                <th><button type="button" data-sort="total_score">Total</button></th>
+                <th>Component scores</th>
+                <th>Rejection reasons</th>
+                <th>OOV / fallback words</th>
+              </tr>
+            </thead>
+            <tbody id="candidate-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="secondary-grid">
+        <section class="data-section" aria-labelledby="history-title">
+          <div class="section-heading table-heading">
+            <div><span class="eyebrow">Committed output</span><h2 id="history-title">Frozen-bar history</h2></div>
+          </div>
+          <div class="table-scroll compact-scroll">
+            <table>
+              <thead><tr><th>Bar</th><th>Line</th><th>Source</th><th>Decision</th></tr></thead>
+              <tbody id="history-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="data-section event-section" aria-labelledby="events-title">
+          <div class="section-heading table-heading">
+            <div><span class="eyebrow">Canonical stream</span><h2 id="events-title">Event console</h2></div>
+            <span id="event-count">0 events</span>
+          </div>
+          <ol class="event-console" id="event-console"></ol>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
