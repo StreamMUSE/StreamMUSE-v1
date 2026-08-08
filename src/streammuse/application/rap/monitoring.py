@@ -10,7 +10,7 @@ from threading import Lock, Thread
 from time import monotonic_ns
 from typing import Any, Callable
 
-from streammuse.domain.rap import RapEvent, RapEventType
+from streammuse.domain.rap import RapEvent, RapEventType, normalize_text
 
 
 _SENTINEL = object()
@@ -203,6 +203,150 @@ class RapEventDispatcher:
                 publish_error(item, sink, error)
 
 
+class _CumulativeResearchMetrics:
+    """Incrementally mirror recorder metrics without retaining the event stream."""
+
+    def __init__(self) -> None:
+        self._planned: set[str] = set()
+        self._batches: dict[str, int | None] = {}
+        self._candidates: set[tuple[str, str]] = set()
+        self._errored: set[str] = set()
+        self._frozen: set[int] = set()
+        self._valid_candidates = 0
+        self._parsed_candidates = 0
+        self._fallback_bars = 0
+        self._deadline_misses = 0
+        self._pronunciation_fallbacks = 0
+        self._pronunciation_total = 0
+        self._repeated_bigrams = 0
+        self._generated_bigrams = 0
+        self._repetition_window = 4
+        self._recent_bigrams: list[set[tuple[str, str]]] = []
+        self._latencies: dict[str, list[float]] = {
+            "generation_latency_ms": [],
+            "deadline_slack_ms": [],
+            "emission_jitter_ms": [],
+        }
+
+    def apply(self, event: RapEvent) -> dict[str, Any]:
+        request_id = event.request_id if isinstance(event.request_id, str) else None
+        payload = event.payload
+        if event.event_type == RapEventType.SESSION_STARTED:
+            window = payload.get("repetition_window_bars")
+            if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+                self._repetition_window = window
+        elif event.event_type == RapEventType.BAR_PLANNING_STARTED and request_id is not None:
+            self._planned.add(request_id)
+        elif event.event_type == RapEventType.CANDIDATE_BATCH_RECEIVED and request_id is not None:
+            if request_id not in self._batches:
+                candidate_count = payload.get("candidate_count")
+                declared = (
+                    candidate_count
+                    if isinstance(candidate_count, int) and not isinstance(candidate_count, bool) and candidate_count >= 0
+                    else None
+                )
+                self._batches[request_id] = declared
+                if declared is not None:
+                    self._parsed_candidates += declared
+                if request_id in self._planned and payload.get("late") is True:
+                    self._deadline_misses += 1
+                self._remember_number(payload.get("latency_ms"), "generation_latency_ms")
+                self._remember_number(payload.get("deadline_slack_ms"), "deadline_slack_ms")
+                if request_id in self._planned and payload.get("error_type"):
+                    self._errored.add(request_id)
+        elif event.event_type == RapEventType.CANDIDATE_EVALUATED and request_id in self._batches:
+            candidate_id = payload.get("candidate_id")
+            identity = (request_id, candidate_id) if isinstance(candidate_id, str) else None
+            if identity is not None and identity not in self._candidates:
+                self._candidates.add(identity)
+                if self._batches[request_id] is None:
+                    self._parsed_candidates += 1
+                if payload.get("valid") is True:
+                    self._valid_candidates += 1
+                self._remember_pronunciations(payload.get("word_analysis_sources"))
+        elif event.event_type == RapEventType.GENERATION_FAILED and request_id in self._planned:
+            self._errored.add(request_id)
+        elif event.event_type == RapEventType.BAR_FROZEN and event.bar is not None and event.bar not in self._frozen:
+            self._frozen.add(event.bar)
+            if payload.get("fallback") is True:
+                self._fallback_bars += 1
+            self._remember_repetition(payload.get("text"))
+        elif event.event_type == RapEventType.SYLLABLE_EMITTED:
+            self._remember_number(payload.get("jitter_ms"), "emission_jitter_ms")
+        return self.snapshot()
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "metrics": {
+                "candidate_validity": self._ratio(self._valid_candidates, self._parsed_candidates),
+                "fallback": self._ratio(self._fallback_bars, len(self._frozen)),
+                "deadline_miss": self._ratio(self._deadline_misses, len(self._planned)),
+                "generator_error": self._ratio(len(self._errored), len(self._planned)),
+                "pronunciation_fallback": self._ratio(
+                    self._pronunciation_fallbacks,
+                    self._pronunciation_total,
+                ),
+                "repetition": self._ratio(self._repeated_bigrams, self._generated_bigrams),
+            },
+            "latencies": {
+                name: self._distribution(values)
+                for name, values in self._latencies.items()
+            },
+        }
+
+    def _remember_pronunciations(self, value: object) -> None:
+        if not isinstance(value, list):
+            return
+        for item in value:
+            if not isinstance(item, dict) or not isinstance(item.get("source"), str):
+                continue
+            self._pronunciation_total += 1
+            if item["source"] != "cmudict_first_pronunciation":
+                self._pronunciation_fallbacks += 1
+
+    def _remember_repetition(self, value: object) -> None:
+        words = normalize_text(value).split() if isinstance(value, str) else []
+        bigrams = list(zip(words, words[1:]))
+        prior = set().union(*self._recent_bigrams) if self._recent_bigrams else set()
+        self._generated_bigrams += len(bigrams)
+        self._repeated_bigrams += sum(bigram in prior for bigram in bigrams)
+        self._recent_bigrams.append(set(bigrams))
+        del self._recent_bigrams[:-self._repetition_window]
+
+    def _remember_number(self, value: object, name: str) -> None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            self._latencies[name].append(float(value))
+
+    @staticmethod
+    def _ratio(numerator: int, denominator: int) -> dict[str, int | float | None]:
+        return {
+            "numerator": numerator,
+            "denominator": denominator,
+            "rate": numerator / denominator if denominator else None,
+        }
+
+    @classmethod
+    def _distribution(cls, values: list[float]) -> dict[str, int | float | None]:
+        ordered = sorted(values)
+        if not ordered:
+            return {"count": 0, "p50": None, "p95": None, "max": None}
+        return {
+            "count": len(ordered),
+            "p50": cls._percentile(ordered, 0.50),
+            "p95": cls._percentile(ordered, 0.95),
+            "max": ordered[-1],
+        }
+
+    @staticmethod
+    def _percentile(values: list[float], quantile: float) -> float:
+        if len(values) == 1:
+            return values[0]
+        position = (len(values) - 1) * quantile
+        lower = int(position)
+        upper = min(lower + 1, len(values) - 1)
+        return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+
 class RapStateProjector:
     """Build a serializable consumer snapshot from canonical events only."""
 
@@ -223,6 +367,7 @@ class RapStateProjector:
         self._max_recent_events = max_recent_events
         self._segments: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._latest_request_id: str | None = None
+        self._research_metrics = _CumulativeResearchMetrics()
         self._state: dict[str, Any] = {
             "session_id": None,
             "last_sequence": 0,
@@ -243,6 +388,7 @@ class RapStateProjector:
                 "emission_jitter_ms": self._aggregate(),
             },
             "fallbacks": {"count": 0, "by_reason": {}},
+            "research_metrics": self._research_metrics.snapshot(),
         }
 
     def __call__(self, event: RapEvent) -> None:
@@ -307,6 +453,7 @@ class RapStateProjector:
                 self._state["emitted_syllables"].append(syllable)
                 del self._state["emitted_syllables"][:-self._max_emitted_syllables]
                 self._add_payload_number(event.payload, "jitter_ms", "emission_jitter_ms")
+            self._state["research_metrics"] = self._research_metrics.apply(event)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

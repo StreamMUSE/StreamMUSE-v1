@@ -10,6 +10,7 @@ import pytest
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
 from streammuse.domain.rap import RapEvent, RapEventType
+from streammuse.infrastructure.rap.recorder import derive_summary
 
 
 def test_publisher_assigns_one_ordered_sequence_to_every_sink() -> None:
@@ -163,6 +164,63 @@ def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
 
     snapshot["frozen_bars"]["2"]["text"] = "mutated"
     assert projector.snapshot()["frozen_bars"]["2"]["text"] == "space line"
+
+
+def test_state_projector_cumulative_metrics_match_recorder_derivation() -> None:
+    events = (
+        _event(1, RapEventType.SESSION_STARTED, payload={"repetition_window_bars": 2}),
+        _event(2, RapEventType.BAR_PLANNING_STARTED, bar=0, request_id="r0"),
+        _event(
+            3,
+            RapEventType.CANDIDATE_BATCH_RECEIVED,
+            bar=0,
+            request_id="r0",
+            payload={"candidate_count": 2, "latency_ms": 10.0, "deadline_slack_ms": 20.0, "late": False},
+        ),
+        _event(
+            4,
+            RapEventType.CANDIDATE_EVALUATED,
+            bar=0,
+            request_id="r0",
+            payload={
+                "candidate_id": "c0",
+                "valid": True,
+                "word_analysis_sources": [
+                    {"word": "clean", "source": "cmudict_first_pronunciation"},
+                    {"word": "orbit", "source": "vowel_group_heuristic"},
+                ],
+            },
+        ),
+        _event(5, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c1", "valid": False}),
+        _event(6, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "clean orbit now", "fallback": False}),
+        _event(7, RapEventType.BAR_PLANNING_STARTED, bar=1, request_id="r1"),
+        _event(
+            8,
+            RapEventType.CANDIDATE_BATCH_RECEIVED,
+            bar=1,
+            request_id="r1",
+            payload={
+                "candidate_count": 0,
+                "latency_ms": 30.0,
+                "deadline_slack_ms": -5.0,
+                "late": True,
+                "error_type": "generation_error",
+            },
+        ),
+        _event(9, RapEventType.GENERATION_FAILED, bar=1, request_id="r1", payload={"error_type": "generation_error"}),
+        _event(10, RapEventType.BAR_FROZEN, bar=1, request_id="r1", payload={"text": "orbit now returns", "fallback": True}),
+        _event(11, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"jitter_ms": 1.0}),
+        _event(12, RapEventType.SYLLABLE_EMITTED, bar=1, tick=16, payload={"jitter_ms": 3.0}),
+    )
+    projector = RapStateProjector(max_recent_bars=1, max_emitted_syllables=1, max_candidates=1, max_recent_events=1)
+    for event in events:
+        projector.apply(event)
+
+    snapshot = projector.snapshot()
+    summary = derive_summary(events)
+
+    assert snapshot["research_metrics"]["metrics"] == summary["metrics"]
+    assert snapshot["research_metrics"]["latencies"] == summary["latencies"]
 
 
 def test_flush_coordinates_with_an_inflight_emit_and_rejects_later_external_events() -> None:

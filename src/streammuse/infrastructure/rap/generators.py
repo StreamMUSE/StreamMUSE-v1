@@ -103,6 +103,11 @@ class LocalChatCandidateGenerator:
                 latency_ms=diagnostics.latency_ms,
                 prompt_tokens=diagnostics.prompt_tokens,
                 completion_tokens=diagnostics.completion_tokens,
+                warning=(
+                    f"requested_{request.count}_received_{len(lines)}"
+                    if len(lines) < request.count
+                    else None
+                ),
             )
         except Exception as exc:
             return _error_batch(request, prompt, str(exc), diagnostics=diagnostics)

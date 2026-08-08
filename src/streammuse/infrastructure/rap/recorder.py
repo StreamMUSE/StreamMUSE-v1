@@ -15,6 +15,7 @@ from streammuse.domain.rap import RapEvent, RapEventType, normalize_text
 
 
 _SECRET_NAME = re.compile(r"[^a-z0-9]+")
+_NON_SECRET_DIAGNOSTIC_KEYS = {"prompt_tokens", "completion_tokens"}
 DEFAULT_REPETITION_WINDOW_BARS = 4
 _REQUIRED_MANIFEST_FIELDS = (
     "scenario_id",
@@ -141,6 +142,10 @@ def redact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """Recursively redact values associated with secret-looking manifest keys."""
 
     def redact(value: Any, key: str | None = None) -> Any:
+        if key in _NON_SECRET_DIAGNOSTIC_KEYS and (
+            value is None or isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        ):
+            return value
         normalized = _SECRET_NAME.sub("", key.lower()) if key else ""
         if any(token in normalized for token in ("key", "token", "secret", "authorization")):
             return "[REDACTED]"
@@ -307,6 +312,13 @@ def derive_summary(
             "emission_jitter_ms": _distribution(
                 _payload_numbers((event for event in event_list if event.event_type == RapEventType.SYLLABLE_EMITTED), "jitter_ms")
             ),
+        },
+        "generation_diagnostics": {
+            "prompt_tokens": _token_usage(batches.values(), "prompt_tokens"),
+            "completion_tokens": _token_usage(batches.values(), "completion_tokens"),
+            "warnings": {
+                "count": sum(isinstance(event.payload.get("warning"), str) and bool(event.payload["warning"]) for event in batches.values())
+            },
         },
     }
 
@@ -982,6 +994,15 @@ def _pronunciation_counts(events: Iterable[RapEvent]) -> tuple[int, int]:
 
 def _payload_numbers(events: Iterable[RapEvent], key: str) -> list[float]:
     return [number for event in events if (number := _number_or_none(event.payload.get(key))) is not None]
+
+
+def _token_usage(events: Iterable[RapEvent], key: str) -> dict[str, int]:
+    values = [
+        value
+        for event in events
+        if isinstance((value := event.payload.get(key)), int) and not isinstance(value, bool) and value >= 0
+    ]
+    return {"count": len(values), "total": sum(values)}
 
 
 def _number_or_none(value: object) -> float | None:

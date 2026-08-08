@@ -131,6 +131,9 @@ def projected_state() -> TerminalRapViewState:
                 "latency_ms": 86.4,
                 "deadline_slack_ms": 410.0,
                 "late": False,
+                "prompt_tokens": 21,
+                "completion_tokens": 13,
+                "warning": "short_batch",
             },
         ),
         _event(
@@ -290,6 +293,8 @@ def test_full_dashboard_preserves_exact_prompt_and_raw_response(
     assert "Exact user prompt body that must remain completely visible to the researcher." in normalized
     assert "candidate one" in output
     assert "candidate two" in output
+    assert "21 / 13" in output
+    assert "short_batch" in output
     assert "…" not in output
 
 

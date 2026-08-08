@@ -278,6 +278,8 @@ def _model_response(state: TerminalRapViewState, detail: str) -> RenderableType:
         ("Source", Text(_safe(batch.source or "-"))),
         ("Timing", Text(f"latency={payload.get('latency_ms', '-')} ms  slack={payload.get('deadline_slack_ms', '-')} ms")),
         ("Count", Text(str(payload.get("candidate_count", "-")))),
+        ("Tokens", Text(f"{payload.get('prompt_tokens', '-')} / {payload.get('completion_tokens', '-')}")),
+        ("Warning", Text(_safe(payload.get("warning") or "none"), style="yellow" if payload.get("warning") else "dim")),
     ]
     if detail == "full":
         rows.append(("Raw", Text(_safe(batch.raw_response or "-", preserve_newlines=True))))

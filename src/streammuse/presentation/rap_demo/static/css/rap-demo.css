@@ -257,7 +257,7 @@ h3 { font: 800 .76rem var(--condensed); text-transform: uppercase; }
   font: .68rem/1.42 var(--mono);
 }
 
-.request-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.request-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .metric-strip {
   display: grid;

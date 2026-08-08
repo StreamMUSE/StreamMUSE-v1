@@ -94,6 +94,9 @@ def test_stream_groups_events_by_bar_and_phase_without_ansi() -> None:
                 "candidate_count": 3,
                 "latency_ms": 86.4,
                 "late": False,
+                "prompt_tokens": 21,
+                "completion_tokens": 13,
+                "warning": "short_batch",
                 "prompt": list(PROMPT),
                 "raw_response": "Galaxies dance in a cosmic fight",
             },
@@ -145,6 +148,8 @@ def test_stream_groups_events_by_bar_and_phase_without_ansi() -> None:
     assert "durations=[1, 1, 1" in output
     assert "boundaries=[0, 0, 0, 0, 0, 0, 0, 0, 3]" in output
     assert "rhymes=[None, None, None, None, None, None, None, None, 'A']" in output
+    assert "tokens=21/13" in output
+    assert "warning=short_batch" in output
     assert "\x1b[" not in output
 
 

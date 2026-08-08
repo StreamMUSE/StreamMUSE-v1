@@ -194,6 +194,9 @@ function renderContext(snapshot) {
   setText("required-syllables", planning.required_syllables);
   setText("requested-candidates", planning.candidate_count ?? batch.candidate_count);
   setText("request-seed", planning.seed);
+  setText("prompt-tokens", batch.prompt_tokens);
+  setText("completion-tokens", batch.completion_tokens);
+  setText("batch-warning", batch.warning, "none");
   setText("prompt", promptText(batch.prompt), "No prompt received.");
 }
 
@@ -265,30 +268,19 @@ function appendCell(row, content) {
 }
 
 function renderMetrics(snapshot) {
-  const values = candidates(snapshot);
-  const valid = values.filter((candidate) => candidate.valid === true).length;
-  setText("candidate-yield", `${valid} / ${values.length}`);
-
-  const frozen = objectValues(snapshot.frozen_bars);
-  const fallbackCount = frozen.filter((bar) => bar && bar.fallback === true).length;
-  const frozenCount = frozen.length;
-  setText("fallback-rate", percentage(fallbackCount, frozenCount));
-
-  const batches = monitor.events.filter((event) => eventType(event) === "candidate_batch_received");
-  const misses = batches.filter((event) => payload(event).late === true || payload(event).decision_late === true).length;
-  setText("deadline-rate", percentage(misses, batches.length));
-
-  const words = values.flatMap((candidate) => objectValues(candidate.word_analysis_sources));
-  const pronunciationFallbacks = words.filter((item) => item && !String(item.source || "").startsWith("cmudict")).length;
-  setText("pronunciation-rate", percentage(pronunciationFallbacks, words.length));
-
-  const jitter = objectValues(snapshot.emitted_syllables)
-    .map((item) => item && number(item.jitter_ms))
-    .filter((value) => value !== null)
-    .map(Math.abs)
-    .sort((a, b) => a - b);
-  const p95 = jitter.length ? jitter[Math.min(jitter.length - 1, Math.ceil(jitter.length * .95) - 1)] : null;
+  const research = snapshot.research_metrics || {};
+  const metrics = research.metrics || {};
+  const candidateValidity = metrics.candidate_validity || {};
+  setText("candidate-yield", `${candidateValidity.numerator ?? 0} / ${candidateValidity.denominator ?? 0}`);
+  setText("fallback-rate", metricPercentage(metrics.fallback));
+  setText("deadline-rate", metricPercentage(metrics.deadline_miss));
+  setText("pronunciation-rate", metricPercentage(metrics.pronunciation_fallback));
+  const p95 = number(research.latencies && research.latencies.emission_jitter_ms && research.latencies.emission_jitter_ms.p95);
   setText("jitter-p95", p95 === null ? null : `${p95.toFixed(2)} ms`);
+}
+
+function metricPercentage(metric) {
+  return metric && number(metric.rate) !== null ? `${(metric.rate * 100).toFixed(1)}%` : "--";
 }
 
 function renderHistory(snapshot) {

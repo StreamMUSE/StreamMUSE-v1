@@ -184,6 +184,9 @@ src/streammuse/presentation/rap_demo/terminal.py
 src/streammuse/presentation/rap_demo/terminal_dashboard.py
 src/streammuse/presentation/rap_demo/terminal_state.py
 src/streammuse/presentation/rap_demo/terminal_stream.py
+src/streammuse/presentation/rap_demo/static/index.html
+src/streammuse/presentation/rap_demo/static/css/rap-demo.css
+src/streammuse/presentation/rap_demo/static/js/rap-demo.js
 src/streammuse/presentation/task/__init__.py
 src/streammuse/presentation/task/cli.py
 src/streammuse/presentation/web/__init__.py

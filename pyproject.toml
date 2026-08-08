@@ -5,6 +5,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"streammuse.presentation.rap_demo" = ["static/*.html", "static/css/*.css", "static/js/*.js"]
+
 [project]
 name = "streammuse"
 version = "0.1.0"

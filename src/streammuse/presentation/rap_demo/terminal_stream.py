@@ -69,7 +69,8 @@ class StructuredStreamRenderer:
             self._write(
                 f"{prefix('MODEL')} source={_value(payload.get('source'))} count={_value(payload.get('candidate_count'))} "
                 f"latency_ms={_number(payload.get('latency_ms'))} late={_value(payload.get('late'))} "
-                f"error={_value(payload.get('error_type'))}"
+                f"tokens={_value(payload.get('prompt_tokens'))}/{_value(payload.get('completion_tokens'))} "
+                f"warning={_value(payload.get('warning'))} error={_value(payload.get('error_type'))}"
             )
             if self._detail == "full":
                 batch = state.latest_batch

@@ -106,6 +106,7 @@ def test_local_chat_request_preserves_structure_history_and_raw_diagnostics() ->
     assert batch.latency_ms == 12.5
     assert batch.prompt_tokens == 21
     assert batch.completion_tokens == 13
+    assert batch.warning == "requested_4_received_2"
     assert batch.candidates == (
         "Space travel keeps the whole night bright",
         "We move through stars with rhythm",

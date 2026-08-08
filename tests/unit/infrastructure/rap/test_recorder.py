@@ -48,11 +48,11 @@ def _scripted_session_events() -> tuple[RapEvent, ...]:
     return (
         _event(1, RapEventType.SESSION_STARTED, payload={"repetition_window_bars": 2}),
         _event(2, RapEventType.BAR_PLANNING_STARTED, bar=0, request_id="r0"),
-        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 1, "latency_ms": 10.0, "deadline_slack_ms": 50.0, "late": False}),
+        _event(3, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 1, "latency_ms": 10.0, "deadline_slack_ms": 50.0, "late": False, "prompt_tokens": 21, "completion_tokens": 13, "warning": "short_batch"}),
         _event(4, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c0", "valid": True, "word_analysis_sources": [{"word": "clean", "source": "cmudict_first_pronunciation"}, {"word": "line", "source": "vowel_group_heuristic"}]}),
         _event(5, RapEventType.BAR_FROZEN, bar=0, request_id="r0", payload={"text": "clean line now", "source": "local_chat", "fallback": False, "fallback_reason": None}),
         _event(6, RapEventType.BAR_PLANNING_STARTED, bar=1, request_id="r1"),
-        _event(7, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=1, request_id="r1", payload={"latency_ms": 20.0, "deadline_slack_ms": 10.0, "error_type": "generation_error", "late": True}),
+        _event(7, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=1, request_id="r1", payload={"latency_ms": 20.0, "deadline_slack_ms": 10.0, "error_type": "generation_error", "late": True, "prompt_tokens": 9}),
         _event(8, RapEventType.CANDIDATE_EVALUATED, bar=1, request_id="r1", payload={"candidate_id": "c1", "valid": False, "rejection_reasons": ["duplicate_normalized_text"], "word_analysis_sources": [{"word": "repeat", "source": "heuristic"}]}),
         _event(9, RapEventType.GENERATION_FAILED, bar=1, request_id="r1", payload={"error_type": "generation_error"}),
         _event(10, RapEventType.BAR_FROZEN, bar=1, request_id="r1", payload={"text": "line now again", "source": "local_chat", "fallback": True, "fallback_reason": "deadline_miss"}),
@@ -118,6 +118,7 @@ def test_recorder_writes_redacted_manifest_recoverable_jsonl_and_summary(tmp_pat
     assert len(read_events(session_dir / "events.jsonl")) == len(_scripted_session_events())
     assert summary["bars"]["frozen"] == 2
     assert summary["bars"]["fallback_rate"] == 0.5
+    assert summary["generation_diagnostics"]["prompt_tokens"] == {"count": 2, "total": 30}
 
 
 def test_summary_uses_explicit_ratio_denominators_and_null_empty_observations() -> None:
@@ -135,6 +136,11 @@ def test_summary_uses_explicit_ratio_denominators_and_null_empty_observations() 
         "generation_latency_ms": {"count": 2, "p50": 15.0, "p95": 19.5, "max": 20.0},
         "deadline_slack_ms": {"count": 2, "p50": 30.0, "p95": 48.0, "max": 50.0},
         "emission_jitter_ms": {"count": 2, "p50": -0.5, "p95": 0.8499999999999996, "max": 1.0},
+    }
+    assert summary["generation_diagnostics"] == {
+        "prompt_tokens": {"count": 2, "total": 30},
+        "completion_tokens": {"count": 1, "total": 13},
+        "warnings": {"count": 1},
     }
     empty = derive_summary(())
     assert empty["latencies"]["generation_latency_ms"] == {"count": 0, "p50": None, "p95": None, "max": None}

@@ -47,6 +47,9 @@ class FixedGenerator:
             prompt=({"role": "user", "content": "prompt"},),
             raw_response="\n".join(self.candidates),
             latency_ms=4.0,
+            prompt_tokens=21,
+            completion_tokens=13,
+            warning="model_returned_fewer_candidates",
             error_type=self.error_type,
             error_message="scripted failure" if self.error_type else None,
         )
@@ -244,10 +247,14 @@ def test_controller_events_include_structured_request_flow_and_alignment() -> No
     planning = _payload_for_bar(events, "bar_planning_started", 1)
     replaced = _payload_for_bar(events, "bar_replaced", 1)
     frozen = _payload_for_bar(events, "bar_frozen", 0)
+    batch = _payload_for_bar(events, "candidate_batch_received", 1)
     assert reserved["flow"]["slots"][0]["tick_in_bar"] == 0
     assert planning["context_lines"] == []
     assert planning["seed"] == 8
     assert planning["flow"]["template_id"] == "one_slot"
+    assert batch["prompt_tokens"] == 21
+    assert batch["completion_tokens"] == 13
+    assert batch["warning"] == "model_returned_fewer_candidates"
     assert replaced["scheduled_syllables"][0]["tick_in_bar"] == 0
     assert frozen["scheduled_syllables"][0]["slot_index"] == 0
     assert frozen["flow"]["template_id"] == "one_slot"

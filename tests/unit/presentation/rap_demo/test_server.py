@@ -125,6 +125,8 @@ def test_static_monitor_routes_are_served_and_model_text_uses_text_content(tmp_p
     assert index.status_code == css.status_code == script.status_code == 200
     assert "StreamMUSE Rap Research Monitor" in index.text
     assert "candidate-table" in index.text
+    assert "prompt-tokens" in index.text
+    assert "research_metrics" in script.text
     assert "textContent" in script.text
     assert "innerHTML" not in script.text
 
