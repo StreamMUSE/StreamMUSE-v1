@@ -8,6 +8,7 @@ from streammuse.domain.rap import CandidateBatch, CandidateRequest, FlowTemplate
 from streammuse.domain.tasks import ChatModelResponse
 from streammuse.infrastructure.rap import generators as generator_module
 from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator, _sanitize_error
+from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 
 
@@ -91,6 +92,30 @@ def test_phrase_bank_normalizes_empty_topic_and_returns_requested_candidates() -
     assert batch.latency_ms == 0.0
     assert len(batch.candidates) == 3
     assert all("the moment" in line for line in batch.candidates)
+
+
+@pytest.mark.parametrize("topic", ("space", "deep sea", "code", "space travel"))
+def test_phrase_bank_candidates_match_requested_flow_syllable_count(topic: str) -> None:
+    request = CandidateRequest(
+        request_id="phrase-bank-exact-flow",
+        target_bar=1,
+        topic=topic,
+        flow_template=BUILTIN_TEMPLATES.get("baseline_syncopated_9"),
+        count=8,
+        context_lines=(),
+        seed=20260807,
+    )
+
+    batch = PhraseBankGenerator().generate(request)
+    analyzer = CmuProsodyAnalyzer()
+
+    assert len(batch.candidates) == request.count
+    assert len(set(batch.candidates)) == request.count
+    assert all(topic in line for line in batch.candidates)
+    assert {
+        len(analyzer.analyze(candidate).syllables)
+        for candidate in batch.candidates
+    } == {request.required_syllables}
 
 
 def test_local_chat_request_preserves_structure_history_and_raw_diagnostics() -> None:

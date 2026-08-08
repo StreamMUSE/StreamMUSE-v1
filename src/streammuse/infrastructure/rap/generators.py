@@ -9,21 +9,24 @@ from typing import Protocol
 
 from streammuse.domain.rap import CandidateBatch, CandidateRequest
 from streammuse.infrastructure.rap.flow_prompt import format_flow_for_prompt
+from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 
 
 _TOPIC_WORDS = re.compile(r"[a-zA-Z]+(?:'[a-zA-Z]+)?")
 _NUMBERED_LINE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s*")
-_TEMPLATES = (
-    "{topic} in the midnight all the speakers keep it bright",
-    "we bring {topic} through the rhythm making every pulse ignite",
-    "the room turns to {topic} every kick makes sparks arrive",
-    "with {topic} in our hands we let the chorus cut the night",
-    "we trace {topic} through the smoke and let the drums begin",
-    "all of {topic} moves with every word we send tonight",
-    "the bass lifts {topic} up and keeps the floor alive",
-    "we make {topic} fit the pocket every time",
-    "the rhythm holds {topic} while the whole crowd stays awake",
-    "we turn {topic} into sparks that dance across the room",
+_MONOSYLLABIC_SKELETONS = (
+    "we make beats hit hard and spark the night",
+    "bright drums knock while bold words shake the ground",
+    "bass runs deep as sharp rhymes wake the crowd",
+    "kick snare snap and make heads nod real fast",
+    "words land clean when strong drums drive us home",
+    "new flows cut through dark rooms all night long",
+    "we ride each pulse and keep the sound tight",
+    "hard truths ring when drums strike through the haze",
+    "these lines move swift while bass rolls through town",
+    "each bar burns bright and turns cold nights gold",
+    "raw thoughts rise while kick drums hold the pace",
+    "we bend each phrase till all the words lock",
 )
 
 
@@ -37,10 +40,25 @@ class ChatClient(Protocol):
 class PhraseBankGenerator:
     """Always-available baseline candidate source for local evaluation."""
 
+    def __init__(self) -> None:
+        self._analyzer = CmuProsodyAnalyzer()
+
     def generate(self, request: CandidateRequest) -> CandidateBatch:
         clean_topic = _normalise_topic(request.topic)
+        topic_words, topic_syllables = _topic_prefix(
+            clean_topic,
+            request.required_syllables,
+            self._analyzer,
+        )
         candidates = tuple(
-            _TEMPLATES[index % len(_TEMPLATES)].format(topic=clean_topic) for index in range(request.count)
+            _fit_phrase_bank_line(
+                topic_words,
+                topic_syllables,
+                request.required_syllables,
+                index,
+                request.seed,
+            )
+            for index in range(request.count)
         )
         return CandidateBatch(
             request_id=request.request_id,
@@ -116,6 +134,42 @@ class LocalChatCandidateGenerator:
 def _normalise_topic(topic: str) -> str:
     words = _TOPIC_WORDS.findall(topic.lower())[:4]
     return " ".join(words) if words else "the moment"
+
+
+def _topic_prefix(
+    topic: str,
+    required_syllables: int,
+    analyzer: CmuProsodyAnalyzer,
+) -> tuple[tuple[str, ...], int]:
+    words: list[str] = []
+    syllable_count = 0
+    for word in topic.split():
+        word_syllables = len(analyzer.analyze(word).syllables)
+        if word_syllables <= 0 or syllable_count + word_syllables >= required_syllables:
+            break
+        words.append(word)
+        syllable_count += word_syllables
+    return tuple(words), syllable_count
+
+
+def _fit_phrase_bank_line(
+    topic_words: tuple[str, ...],
+    topic_syllables: int,
+    required_syllables: int,
+    index: int,
+    seed: int,
+) -> str:
+    skeleton_index = (seed + index) % len(_MONOSYLLABIC_SKELETONS)
+    cycle_index = index // len(_MONOSYLLABIC_SKELETONS)
+    skeleton = _MONOSYLLABIC_SKELETONS[skeleton_index].split()
+    rotation = cycle_index % len(skeleton)
+    if rotation:
+        skeleton = skeleton[rotation:] + skeleton[:rotation]
+    filler = tuple(
+        skeleton[position % len(skeleton)]
+        for position in range(topic_syllables, required_syllables)
+    )
+    return " ".join((*topic_words, *filler))
 
 
 def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
