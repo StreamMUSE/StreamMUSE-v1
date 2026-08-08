@@ -186,7 +186,11 @@ def test_build_demo_rolls_back_dispatcher_recorder_and_generator_on_late_assembl
     monkeypatch.setattr("streammuse.presentation.rap_demo.cli.RapEventDispatcher", Dispatcher)
     monkeypatch.setattr(
         "streammuse.presentation.rap_demo.cli._build_generator",
-        lambda _args: (object(), lambda: calls.append("generator_closed")),
+        lambda _args: (
+            object(),
+            lambda: calls.append("generator_stopped"),
+            lambda: calls.append("generator_closed"),
+        ),
     )
     monkeypatch.setattr(
         "streammuse.presentation.rap_demo.cli.RollingRapController",
@@ -197,7 +201,7 @@ def test_build_demo_rolls_back_dispatcher_recorder_and_generator_on_late_assembl
     with pytest.raises(RuntimeError, match="controller failed"):
         build_demo(args)
 
-    assert calls[-3:] == ["dispatcher_closed", "recorder_closed", "generator_closed"]
+    assert calls[-4:] == ["dispatcher_closed", "recorder_closed", "generator_stopped", "generator_closed"]
 
 
 def test_repository_discovery_failure_is_never_reported_as_clean(monkeypatch) -> None:

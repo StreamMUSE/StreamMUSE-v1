@@ -122,6 +122,7 @@ def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRap
     analyzer = CmuProsodyAnalyzer()
     fallback_catalog = PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer)
     primary = PhraseBankGenerator()
+    stop_primary = None
     close_primary = None
     if rap.generator == "local_chat":
         client = LocalChatModelClient(
@@ -132,6 +133,7 @@ def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRap
             )
         )
         primary = LocalChatCandidateGenerator(client)
+        stop_primary = client.stop_accepting_and_abort
         close_primary = client.close
 
     def emit(event) -> None:
@@ -156,6 +158,7 @@ def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRap
         minimum_score=0.0,
         seed=0,
         emit=emit,
+        stop_primary=stop_primary,
         close_primary=close_primary,
     )
 

@@ -42,6 +42,32 @@ def test_cli_writes_underfilled_catalog_and_aggregate_only_report(tmp_path: Path
     assert "source_hash" not in json.dumps(report_payload)
 
 
+def test_cli_writes_inspectable_artifacts_for_an_entirely_empty_selection(tmp_path: Path, capsys, load_script) -> None:
+    """Catches an empty local corpus exiting before it persists inspectable evidence."""
+    source_dir = tmp_path / "empty-inputs"
+    source_dir.mkdir()
+    catalog = tmp_path / "out" / "catalog.json"
+    report = tmp_path / "out" / "report.json"
+    script = load_script("build_mcflow_sample_catalog")
+
+    assert script.main(
+        [
+            "--mcflow-dir",
+            str(source_dir),
+            "--catalog-output",
+            str(catalog),
+            "--report-output",
+            str(report),
+        ]
+    ) == 1
+
+    catalog_payload = json.loads(catalog.read_text(encoding="utf-8"))
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+    assert catalog_payload["templates"] == []
+    assert report_payload["selected_templates"] == 0
+    assert "selected_templates=0" in capsys.readouterr().out
+
+
 def test_cli_returns_two_for_invalid_input_without_echoing_source_path(tmp_path: Path, capsys, load_script) -> None:
     """Catches invalid argument handling that leaks a caller's local source location."""
     script = load_script("build_mcflow_sample_catalog")

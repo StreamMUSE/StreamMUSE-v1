@@ -139,6 +139,35 @@ def test_extract_records_anonymous_quantization_rejections(tmp_path: Path) -> No
     assert "unquantized" not in json.dumps(extraction.to_dict())
 
 
+def test_complete_off_grid_measure_respects_quantization_tolerance_boundary(tmp_path: Path) -> None:
+    """Catches off-grid structures being accepted above or rejected at the configured tolerance."""
+    source = tmp_path / "off-grid.rap"
+    source.write_text(
+        "\n".join(
+            (
+                "**recip\t**stress\t**break\t**rhyme\t**lyrics",
+                "*M4/4\t*M4/4\t*M4/4\t*M4/4\t*M4/4",
+                "=1\t=1\t=1\t=1\t=1",
+                "40%3\t1\t.\tA\tza",
+                "5\t0\t.\t.\tzb",
+                "40%29r\t.\t.\t.\tR",
+                "*-\t*-\t*-\t*-\t*-",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    accepted = extract_anonymous_templates(source, max_quantization_error_ticks=0.2)
+    rejected = extract_anonymous_templates(source, max_quantization_error_ticks=0.19)
+
+    assert len(accepted.templates) == 1
+    assert accepted.templates[0].provenance.quantization_error_ticks == pytest.approx(0.2)
+    assert [(slot.tick_in_bar, slot.duration_ticks) for slot in accepted.templates[0].slots] == [(0, 1), (1, 3)]
+    assert not rejected.templates
+    assert [(item.measure_ordinal, item.error_code) for item in rejected.rejections] == [(1, "quantization_error")]
+
+
 def test_extract_records_invalid_break_values_without_stopping_other_measures(tmp_path: Path) -> None:
     """Catches one unsupported prosodic value aborting a whole local corpus extraction."""
     source = tmp_path / "input.rap"

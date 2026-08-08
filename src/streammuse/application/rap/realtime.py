@@ -75,6 +75,7 @@ class RollingRapController:
         seed: int,
         planning_bar_limit: int | None = None,
         emit: Callable[[ScheduledSyllable], None] | None = None,
+        stop_primary: Callable[[], None] | None = None,
         close_primary: Callable[[], None] | None = None,
         executor: Executor | None = None,
         monotonic: Callable[[], float] = time.monotonic,
@@ -99,6 +100,7 @@ class RollingRapController:
         self._seed = seed
         self._planning_bar_limit = planning_bar_limit
         self._emit = emit
+        self._stop_primary = stop_primary
         self._close_primary = close_primary
         self._executor = executor or (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="streammuse-rap-planner")
@@ -178,12 +180,19 @@ class RollingRapController:
             self._closed = True
             future = self._future
             executor = self._executor
+            stop_primary = self._stop_primary
             close_primary = self._close_primary
         if future is not None:
             future.cancel()
+        if stop_primary is not None:
+            try:
+                stop_primary()
+            except Exception as exc:
+                self._event(
+                    RapEventType.GENERATION_FAILED,
+                    payload={"error_type": "abort_error", "error_message": str(exc)},
+                )
         if executor is not None:
-            # Active HTTP planning is bounded by the client's configured
-            # request timeout; wait for that worker before closing its client.
             executor.shutdown(wait=True, cancel_futures=True)
         if close_primary is not None:
             try:

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import Future
 from threading import Event, Thread, current_thread
 from time import monotonic
+
+import httpx
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
 from streammuse.application.rap.realtime import RollingRapController
@@ -19,7 +22,9 @@ from streammuse.domain.rap import (
     ScoreWeights,
 )
 from streammuse.domain.timing import Tempo
+from streammuse.infrastructure.inference.local_chat_client import LocalChatModelClient, LocalChatModelClientConfig
 from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
+from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator
 from streammuse.infrastructure.rap.recorder import derive_summary
 from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 from streammuse.infrastructure.rap.templates import TemplateCatalog
@@ -70,6 +75,24 @@ class BlockingGenerator(FixedGenerator):
         try:
             self.release.wait(timeout=self.timeout_s)
             return super().generate(request)
+        finally:
+            self.finished.set()
+
+
+class GatedGenerator:
+    def __init__(self, delegate) -> None:
+        self.delegate = delegate
+        self.started = Event()
+        self.release = Event()
+        self.finished = Event()
+        self.batch: CandidateBatch | None = None
+
+    def generate(self, request: CandidateRequest) -> CandidateBatch:
+        self.started.set()
+        self.release.wait()
+        try:
+            self.batch = self.delegate.generate(request)
+            return self.batch
         finally:
             self.finished.set()
 
@@ -146,6 +169,7 @@ def _controller(
     planning_bar_limit: int | None = None,
     monotonic_clock=None,
     analyzer=None,
+    stop_primary=None,
     close_primary=None,
 ):
     analyzer = analyzer or CmuProsodyAnalyzer()
@@ -156,6 +180,7 @@ def _controller(
     dispatcher = RapEventDispatcher(publisher.queue, sinks=(events.append,))
     dispatcher.start()
     emitted = []
+    kwargs = {"stop_primary": stop_primary} if stop_primary is not None else {}
     controller = RollingRapController(
         tempo=Tempo(120.0, 4, 4),
         scenario=scenario,
@@ -174,6 +199,7 @@ def _controller(
         close_primary=close_primary,
         executor=executor,
         monotonic=monotonic_clock or monotonic,
+        **kwargs,
     )
     return controller, emitted, events, dispatcher
 
@@ -394,6 +420,99 @@ def test_close_waits_for_inflight_planner_before_closing_primary_client() -> Non
     assert primary.finished.is_set()
     assert primary.worker is not None and not primary.worker.is_alive()
     assert close_observations == [(True, False)]
+
+
+def test_close_durably_stops_client_before_executor_worker_enters_generate() -> None:
+    transport_calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        transport_calls.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "space"}}]})
+
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(model="test"),
+        transport=httpx.MockTransport(handler),
+    )
+    primary = GatedGenerator(LocalChatCandidateGenerator(client))
+    stop_called = Event()
+
+    def stop_primary() -> None:
+        client.stop_accepting_and_abort()
+        stop_called.set()
+
+    controller, _emitted, _events, dispatcher = _controller(
+        primary=primary,
+        stop_primary=stop_primary,
+        close_primary=client.close,
+    )
+    controller.start()
+    assert primary.started.wait(timeout=0.5)
+
+    closer = Thread(target=controller.close)
+    closer.start()
+    assert stop_called.wait(timeout=0.5)
+    primary.release.set()
+    closer.join(timeout=0.5)
+    dispatcher.flush_and_close()
+
+    assert not closer.is_alive()
+    assert primary.finished.is_set()
+    assert primary.batch is not None
+    assert primary.batch.error_type == "generation_error"
+    assert "stopped" in (primary.batch.error_message or "")
+    assert transport_calls == []
+
+
+def test_close_aborts_active_client_request_before_http_timeout() -> None:
+    request_started = Event()
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        request_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(model="test", timeout_s=60.0),
+        transport=httpx.MockTransport(handler),
+    )
+    controller, _emitted, _events, dispatcher = _controller(
+        primary=LocalChatCandidateGenerator(client),
+        stop_primary=client.stop_accepting_and_abort,
+        close_primary=client.close,
+    )
+    controller.start()
+    assert request_started.wait(timeout=0.5)
+
+    started = monotonic()
+    controller.close()
+    elapsed = monotonic() - started
+    dispatcher.flush_and_close()
+
+    assert elapsed < 0.5
+
+
+def test_abort_error_does_not_skip_executor_shutdown_or_primary_close() -> None:
+    executor = ManualExecutor()
+    close_calls: list[str] = []
+
+    def stop_primary() -> None:
+        raise RuntimeError("abort failed")
+
+    controller, _emitted, events, dispatcher = _controller(
+        primary=FixedGenerator(),
+        executor=executor,
+        stop_primary=stop_primary,
+        close_primary=lambda: close_calls.append("closed"),
+    )
+    controller.start()
+
+    controller.close()
+    dispatcher.flush_and_close()
+
+    abort_error = next(event for event in events if event.payload.get("error_type") == "abort_error")
+    assert abort_error.payload["error_message"] == "abort failed"
+    assert executor.shutdown_calls == [(True, True)]
+    assert close_calls == ["closed"]
 
 
 def test_fast_generation_keeps_reservations_and_plans_inside_bounded_lookahead() -> None:

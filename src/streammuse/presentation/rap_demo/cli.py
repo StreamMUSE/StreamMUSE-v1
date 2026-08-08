@@ -104,7 +104,7 @@ def build_demo(
             "terminal_detail": args.terminal_detail,
         }
     )
-    generator, close_primary = _build_generator(args)
+    generator, stop_primary, close_primary = _build_generator(args)
     recorder = None
     dispatcher = None
     try:
@@ -136,6 +136,7 @@ def build_demo(
             minimum_score=args.minimum_score,
             seed=args.seed,
             planning_bar_limit=args.max_bars or (None if scenario.loop else scenario.total_bars),
+            stop_primary=stop_primary,
             close_primary=close_primary,
             monotonic=clock,
         )
@@ -149,8 +150,12 @@ def build_demo(
                 if recorder is not None:
                     recorder.close()
             finally:
-                if close_primary is not None:
-                    close_primary()
+                try:
+                    if stop_primary is not None:
+                        stop_primary()
+                finally:
+                    if close_primary is not None:
+                        close_primary()
         raise
 
     generator_config = manifest["generator_config"]
@@ -208,9 +213,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_generator(args: argparse.Namespace):
     if args.generator == "phrase_bank":
-        return PhraseBankGenerator(), None
+        return PhraseBankGenerator(), None, None
     if args.generator == "scripted_failure":
-        return ScriptedFailureGenerator(), None
+        return ScriptedFailureGenerator(), None, None
     client = LocalChatModelClient(
         LocalChatModelClientConfig(
             base_url=args.model_url,
@@ -218,7 +223,7 @@ def _build_generator(args: argparse.Namespace):
             timeout_s=args.timeout_s,
         )
     )
-    return LocalChatCandidateGenerator(client), client.close
+    return LocalChatCandidateGenerator(client), client.stop_accepting_and_abort, client.close
 
 
 def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[str, object]:
