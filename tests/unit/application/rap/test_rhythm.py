@@ -2,7 +2,12 @@
 
 import pytest
 
-from streammuse.application.rap.rhythm import available_patterns, build_bar_slots, flow_template_for_pattern
+from streammuse.application.rap.rhythm import (
+    LEGACY_PATTERN_TEMPLATE_IDS,
+    available_patterns,
+    build_bar_slots,
+    flow_template_for_pattern,
+)
 from streammuse.domain.timing import Tempo
 
 
@@ -19,6 +24,14 @@ def test_boom_bap_slots_share_streammuse_tick_coordinates() -> None:
 
 def test_available_patterns_exposes_supported_presets() -> None:
     assert available_patterns() == ("boom_bap", "straight_8", "trap_sparse")
+
+
+def test_legacy_patterns_map_explicitly_to_research_template_ids() -> None:
+    assert LEGACY_PATTERN_TEMPLATE_IDS == {
+        "boom_bap": "baseline_syncopated_9",
+        "straight_8": "baseline_straight_9",
+        "trap_sparse": "baseline_staggered_9",
+    }
 
 
 @pytest.mark.parametrize("pattern", ("boom_bap", "straight_8", "trap_sparse"))

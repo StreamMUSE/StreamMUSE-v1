@@ -63,6 +63,14 @@ _PATTERN_ACCENTS: dict[str, tuple[float, ...]] = {
     ),
 }
 
+# The active CLI's historical rhythm names select an explicit research flow.
+# Keeping this mapping public makes that compatibility decision inspectable.
+LEGACY_PATTERN_TEMPLATE_IDS: dict[str, str] = {
+    "boom_bap": "baseline_syncopated_9",
+    "straight_8": "baseline_straight_9",
+    "trap_sparse": "baseline_staggered_9",
+}
+
 
 def available_patterns() -> tuple[str, ...]:
     """Return the stable presentation order of supported rhythm presets."""

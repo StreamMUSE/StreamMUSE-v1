@@ -13,6 +13,7 @@ from streammuse.domain.interfaces import InferenceEngine
 from streammuse.application.services.input_timing import effective_input_snap_forward_fraction
 from streammuse.domain.musical import EventType, MusicalEvent, Note
 from streammuse.application.rap.realtime import RollingRapController
+from streammuse.application.rap.rhythm import LEGACY_PATTERN_TEMPLATE_IDS
 from streammuse.domain.rap import RapScenario, ScenarioSegment, ScoreWeights
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.input.midi_file import MidiFileInput
@@ -106,10 +107,11 @@ def _build_rap_controller(config: ApplicationConfig, tempo: Tempo) -> RollingRap
     if not rap.topic:
         return None
 
-    template_id, fallback_line = {
-        "boom_bap": ("baseline_syncopated_9", "space dreams rise while bright stars cross dark night"),
-        "straight_8": ("baseline_straight_9", "deep sea winds move while moon lights guide ships"),
-        "trap_sparse": ("baseline_staggered_9", "code sparks grow as quick hands shape new sound"),
+    template_id = LEGACY_PATTERN_TEMPLATE_IDS[rap.pattern]
+    fallback_line = {
+        "boom_bap": "space dreams rise while bright stars cross dark night",
+        "straight_8": "deep sea winds move while moon lights guide ships",
+        "trap_sparse": "code sparks grow as quick hands shape new sound",
     }[rap.pattern]
     scenario = RapScenario(
         scenario_id="streammuse_cli_compatibility",

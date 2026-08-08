@@ -65,6 +65,7 @@ def test_existing_main_cli_builds_the_scenario_aware_controller() -> None:
 
     assert controller is not None
     assert controller.scenario.segment_for_bar(0).topic == "space"
+    assert controller.scenario.segment_for_bar(0).template_id == "baseline_syncopated_9"
     controller.start()
     controller.on_tick(0)
     controller.close()
