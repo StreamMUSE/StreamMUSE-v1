@@ -79,6 +79,49 @@ def test_demo_session_start_records_resolved_repetition_window(tmp_path) -> None
     assert events[0].payload["repetition_window_bars"] == 7
 
 
+def test_demo_closes_dispatcher_and_recorder_when_controller_start_fails(tmp_path) -> None:
+    calls: list[str] = []
+
+    class Controller:
+        def start(self) -> None:
+            calls.append("start")
+            raise RuntimeError("cannot start")
+
+        def close(self) -> None:
+            calls.append("controller_close")
+
+    class TickLoop:
+        def run(self, max_ticks: int | None = None) -> None:
+            raise AssertionError("tick loop must not run")
+
+        def stop(self) -> None:
+            calls.append("tick_stop")
+
+    class Recorder:
+        def __call__(self, event) -> None:
+            calls.append(event.event_type.value)
+
+        def close(self) -> None:
+            calls.append("recorder_close")
+
+    recorder = Recorder()
+    publisher = RapEventPublisher("session")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(recorder,))
+    dispatcher.start()
+    dependencies = RapDemoDependencies(
+        Tempo(120.0, 4, 4), Controller(), publisher, dispatcher, TickLoop(), tmp_path,
+        recorder=recorder,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot start"):
+        dependencies.run(max_bars=1)
+
+    assert "session_started" in calls
+    assert calls.index("tick_stop") < calls.index("controller_close")
+    assert calls.index("session_stopped") < calls.index("recorder_close")
+    assert calls.count("recorder_close") == 1
+
+
 def test_demo_session_metadata_is_copied_and_cannot_override_canonical_values(tmp_path) -> None:
     class Controller:
         def start(self) -> None:

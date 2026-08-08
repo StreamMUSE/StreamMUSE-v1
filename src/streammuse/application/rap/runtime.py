@@ -61,6 +61,8 @@ class RapDemoDependencies:
     session_dir: Path
     repetition_window_bars: int = 4
     session_metadata: Mapping[str, Any] = field(default_factory=dict)
+    recorder: Any | None = None
+    projector: Any | None = None
     _closed: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -86,9 +88,9 @@ class RapDemoDependencies:
             }
         )
         self.publisher.emit(RapEventType.SESSION_STARTED, payload=payload)
-        self.controller.start()
         max_ticks = None if max_bars == 0 else max_bars * self.tempo.ticks_per_bar
         try:
+            self.controller.start()
             self.tick_loop.run(max_ticks=max_ticks)
         except KeyboardInterrupt:
             pass
@@ -103,6 +105,8 @@ class RapDemoDependencies:
         self.controller.close()
         self.publisher.emit(RapEventType.SESSION_STOPPED, payload={})
         self.dispatcher.flush_and_close()
+        if self.recorder is not None:
+            self.recorder.close()
 
 
 def _freeze_metadata(value: Any) -> Any:
