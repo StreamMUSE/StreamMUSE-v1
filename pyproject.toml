@@ -56,6 +56,7 @@ streammuse-rap = "streammuse.presentation.rap.cli:main"
 streammuse-rap-demo = "streammuse.presentation.rap_demo.cli:main"
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = [
   "consistency: realtime/offline end-to-end consistency test (needs GPU + checkpoint; opt-in via checkpoint env)",
 ]
