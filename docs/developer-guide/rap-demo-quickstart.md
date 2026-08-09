@@ -63,6 +63,35 @@ The model proposes candidates; it does not control the clock. Candidates with
 the wrong syllable count, low score, errors, or late responses are rejected and
 the prevalidated fallback remains available.
 
+## Open the H200 Website Through SSH
+
+Keep the rap demo running on the H200 with web port `8012`. Then open a separate
+terminal on your laptop, not inside the H200 SSH session, and start the tunnel:
+
+```bash
+ssh -o ExitOnForwardFailure=yes -N \
+  -L 8012:127.0.0.1:8012 \
+  Andrew.Yang@masdar
+```
+
+Keep that terminal open and visit:
+
+```text
+http://127.0.0.1:8012/
+```
+
+The first `8012` is the port on your laptop; the second is the website port on
+the H200. If laptop port `8012` is already occupied, use a different local port:
+
+```bash
+ssh -o ExitOnForwardFailure=yes -N \
+  -L 18012:127.0.0.1:8012 \
+  Andrew.Yang@masdar
+```
+
+Then visit `http://127.0.0.1:18012/`. Stop the tunnel with `Ctrl-C`; this does
+not stop the rap demo running on the H200.
+
 ## Read the Monitor
 
 - **Live delivery** shows the frozen lyric, sounding syllable, beat/subdivision,
@@ -87,8 +116,7 @@ the prevalidated fallback remains available.
   intentionally uses a fallback so playback can start immediately.
 - `*` marks a stressed syllable in stream output.
 
-Unless `--no-web` is supplied, open `http://127.0.0.1:8012`. When connecting to
-the H200 remotely, use the corresponding SSH-forwarded local URL.
+Unless `--no-web` is supplied, open the local or SSH-forwarded website URL.
 
 ## Stop and Inspect Results
 
