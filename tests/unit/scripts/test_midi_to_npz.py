@@ -67,6 +67,30 @@ def _campaign(tmp_path: Path, name: str = "campaign") -> tuple[Path, Path]:
     return root, root / "input_manifest.json"
 
 
+def _write_delayed_pair(root: Path) -> tuple[Path, Path]:
+    mel_dir = root / "delayed" / "mel"
+    acc_dir = root / "delayed" / "acc"
+    mel_dir.mkdir(parents=True)
+    acc_dir.mkdir(parents=True)
+
+    melody = mido.MidiFile(type=1, ticks_per_beat=480)
+    melody_track = mido.MidiTrack()
+    melody_track.append(mido.Message("note_on", note=60, velocity=80, time=960))
+    melody_track.append(mido.Message("note_off", note=60, velocity=0, time=480))
+    melody.tracks.append(melody_track)
+    melody.save(mel_dir / "song.mid")
+
+    accompaniment = mido.MidiFile(type=1, ticks_per_beat=480)
+    accompaniment_track = mido.MidiTrack()
+    accompaniment_track.append(mido.Message("note_on", note=48, velocity=80, time=0))
+    accompaniment_track.append(mido.Message("note_off", note=48, velocity=0, time=480))
+    accompaniment_track.append(mido.Message("note_on", note=52, velocity=80, time=480))
+    accompaniment_track.append(mido.Message("note_off", note=52, velocity=0, time=480))
+    accompaniment.tracks.append(accompaniment_track)
+    accompaniment.save(acc_dir / "song.mid")
+    return mel_dir, acc_dir
+
+
 def test_strict_manifest_conversion_updates_hashes_and_passes_all_roll_gates(
     tmp_path: Path,
 ) -> None:
@@ -124,6 +148,30 @@ def test_roll_gate_detects_corrupt_npz_cell(tmp_path: Path) -> None:
     np.savez(npz_path, **payload)
     with pytest.raises(AssertionError, match="roll mismatch"):
         midi_to_npz.verify_midi_npz_roll(mel_dir / "song.mid", npz_path)
+
+
+def test_trim_leading_rest_uses_melody_offset_for_both_tracks(tmp_path: Path) -> None:
+    mel_dir, acc_dir = _write_delayed_pair(tmp_path)
+    npz_path = tmp_path / "trimmed.npz"
+
+    assert midi_to_npz.midi_pair_to_npz(
+        str(mel_dir / "song.mid"),
+        str(acc_dir / "song.mid"),
+        str(npz_path),
+        trim_leading_rest=True,
+    )
+
+    with np.load(npz_path, allow_pickle=True) as archive:
+        metadata = archive["metadata"].item()
+        measures = [
+            archive[f"measure_{index}"]
+            for index in range(int(metadata["num_measures"]))
+        ]
+    roll = np.concatenate(measures, axis=2)
+    assert metadata["leading_offset_ticks"] == 8
+    assert metadata["trim_leading_rest"] is True
+    assert np.flatnonzero(roll[1].any(axis=0)).tolist() == [0]
+    assert np.flatnonzero(roll[3].any(axis=0)).tolist() == [0]
 
 
 def test_npz_loader_rejects_missing_measure_key(tmp_path: Path) -> None:

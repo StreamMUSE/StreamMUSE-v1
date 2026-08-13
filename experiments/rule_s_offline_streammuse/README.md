@@ -104,6 +104,24 @@ GPU=2 EXECUTION_PATHS=offline \
   bash scripts/run_rule_s_offline_streammuse_h200.sh
 ```
 
+The command above still exercises the prompt-continuation backend scheduler.
+For a direct comparison with the earlier NPZ bundles, use the pure offline
+schedule runner instead:
+
+```bash
+PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 .venv/bin/python \
+  scripts/run_rule_s_npz_offline.py \
+  --npz-file /path/to/prepared/song.npz \
+  --output-dir /path/to/output \
+  --prompt-checkpoint /path/to/prompt/model.safetensors \
+  --continuation-checkpoint /path/to/continuation/model.safetensors \
+  --candidate-count 5 \
+  --continuation-seeds 0,1
+```
+
+This path is `NPZ -> Prompt batch -> Rule-S -> direct offline schedule -> MIDI`.
+It does not instantiate the StreamMUSE scheduler or apply playback timing.
+
 `MAX_EVAL_BEATS=0` is the default and preserves the complete Melody after
 leading-rest removal. A bounded consistency diagnostic must opt in explicitly,
 for example `MAX_EVAL_BEATS=32`.

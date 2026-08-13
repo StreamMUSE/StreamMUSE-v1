@@ -49,6 +49,7 @@ def midi_pair_to_npz(
     acc_path: str,
     output_path: str,
     ticks_per_beat: int = TICKS_PER_BEAT,
+    trim_leading_rest: bool = False,
 ) -> bool:
     """Convert one (melody, accompaniment) MIDI pair to a single NPZ file."""
     converter = MidiConverter(ticks_per_beat=ticks_per_beat)
@@ -71,6 +72,35 @@ def midi_pair_to_npz(
         return False
 
     acc_notes, acc_max_tick = converter.midi_to_notes(acc_pm)
+
+    leading_offset = min((int(note["tick"]) for note in mel_notes), default=0)
+    if trim_leading_rest and leading_offset > 0:
+        def shift_notes(notes: list[dict]) -> list[dict]:
+            shifted = []
+            for note in notes:
+                original_start = int(note["tick"])
+                original_end = original_start + int(note["duration"])
+                if original_end <= leading_offset:
+                    continue
+                copied = dict(note)
+                copied["tick"] = max(0, original_start - leading_offset)
+                copied["duration"] = max(
+                    1,
+                    original_end - leading_offset - int(copied["tick"]),
+                )
+                shifted.append(copied)
+            return shifted
+
+        mel_notes = shift_notes(mel_notes)
+        acc_notes = shift_notes(acc_notes)
+        mel_max_tick = max(
+            (int(note["tick"]) + int(note["duration"]) for note in mel_notes),
+            default=0,
+        )
+        acc_max_tick = max(
+            (int(note["tick"]) + int(note["duration"]) for note in acc_notes),
+            default=0,
+        )
 
     # --- Determine metadata ---
     bpm = mel_meta["bpm"]
@@ -103,6 +133,8 @@ def midi_pair_to_npz(
             "bpm": int(round(bpm)),
             "num_measures": num_measures,
             "is_continuation": False,
+            "trim_leading_rest": bool(trim_leading_rest),
+            "leading_offset_ticks": int(leading_offset if trim_leading_rest else 0),
         },
     }
 
@@ -406,6 +438,11 @@ def main() -> None:
     parser.add_argument("--acc-dir", type=Path, help="Directory containing accompaniment MIDI files")
     parser.add_argument("--output-dir", type=Path, help="Directory for NPZ files")
     parser.add_argument("--ticks-per-beat", type=int, default=TICKS_PER_BEAT)
+    parser.add_argument(
+        "--trim-leading-rest",
+        action="store_true",
+        help="Shift both tracks by the Melody first-note tick and discard earlier accompaniment",
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--expected-manifest", type=Path)
     parser.add_argument("--summary-json", type=Path)
@@ -452,7 +489,13 @@ def main() -> None:
         output_path = os.path.join(args.output_dir, f"{stem}.npz")
 
         print(f"Converting {mel_file} ...", end=" ")
-        ok = midi_pair_to_npz(mel_path, acc_path, output_path, ticks_per_beat=args.ticks_per_beat)
+        ok = midi_pair_to_npz(
+            mel_path,
+            acc_path,
+            output_path,
+            ticks_per_beat=args.ticks_per_beat,
+            trim_leading_rest=args.trim_leading_rest,
+        )
         if ok:
             print("OK")
             converted += 1
