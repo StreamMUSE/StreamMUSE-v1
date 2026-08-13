@@ -37,14 +37,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-count", type=int, default=5)
     parser.add_argument("--continuation-seeds", default="0,1")
     parser.add_argument("--prompt-seed-base", type=int, default=20260813)
-    parser.add_argument("--tempo", type=int, default=120)
+    parser.add_argument("--condition-bpm", type=int, default=120)
+    parser.add_argument("--playback-tempo", type=int, default=15)
     parser.add_argument("--ticks-per-beat", type=int, default=4)
     parser.add_argument("--prompt-length-ticks", type=int, default=32)
     parser.add_argument("--generation-interval-ticks", type=int, default=4)
     parser.add_argument("--generation-length-frames", type=int, default=4)
     parser.add_argument("--prompt-context-beats", type=int, default=32)
     parser.add_argument("--history-max-ticks", type=int, default=128)
-    parser.add_argument("--tail-beats", type=int, default=24)
+    parser.add_argument("--max-eval-beats", type=int, default=32)
+    parser.add_argument("--tail-beats", type=int, default=0)
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--prompt-temperature", type=float, default=0.8)
     parser.add_argument("--prompt-top-k", type=int, default=50)
@@ -125,7 +127,12 @@ def wait_for_server(
     raise TimeoutError(f"server did not become healthy within {timeout_s}s")
 
 
-def midi_max_tick(path: Path, ticks_per_beat: int, tail_beats: int) -> int:
+def midi_max_tick(
+    path: Path,
+    ticks_per_beat: int,
+    tail_beats: int,
+    max_eval_beats: int,
+) -> int:
     _notes, _resolution, actual_max_tick = MidiFileInput._midi_to_notes(
         str(path),
         beat_div=int(ticks_per_beat),
@@ -134,7 +141,11 @@ def midi_max_tick(path: Path, ticks_per_beat: int, tail_beats: int) -> int:
         program=None,
         max_tick=None,
     )
-    return int(actual_max_tick) + int(tail_beats) * int(ticks_per_beat)
+    requested_max_tick = (
+        int(actual_max_tick) + int(tail_beats) * int(ticks_per_beat)
+    )
+    eval_max_tick = int(max_eval_beats) * int(ticks_per_beat)
+    return min(requested_max_tick, eval_max_tick)
 
 
 def experiment_env(
@@ -165,8 +176,8 @@ def experiment_env(
             "LEKAI_PROMPT_SELECTION_MODE": condition,
             "LEKAI_PROMPT_BATCH_CANDIDATES": str(args.candidate_count),
             "LEKAI_PROMPT_SEED": str(prompt_seed),
-            "LEKAI_PROMPT_BPM": str(args.tempo),
-            "LEKAI_DEFAULT_BPM": str(args.tempo),
+            "LEKAI_PROMPT_BPM": str(args.condition_bpm),
+            "LEKAI_DEFAULT_BPM": str(args.condition_bpm),
             "LEKAI_PROMPT_TEMPERATURE": str(args.prompt_temperature),
             "LEKAI_PROMPT_TOP_K": str(args.prompt_top_k),
             "LEKAI_PROMPT_TOP_P": str(args.prompt_top_p),
@@ -214,6 +225,54 @@ def run_logged(
         )
 
 
+def validate_streammuse_session(streammuse_dir: Path) -> dict[str, Any]:
+    sessions = sorted(path for path in streammuse_dir.rglob("session_*") if path.is_dir())
+    if not sessions:
+        raise RuntimeError(f"no StreamMUSE session found under {streammuse_dir}")
+    session_dir = sessions[-1]
+    status_path = session_dir / "prompt_continuation_history_status.json"
+    if not status_path.is_file():
+        raise RuntimeError(f"missing StreamMUSE history status: {status_path}")
+
+    history_status = json.loads(status_path.read_text(encoding="utf-8"))
+    not_ready = []
+    for key in ("prompt_status", "raw_status"):
+        status = history_status.get(key)
+        if not isinstance(status, dict) or not status.get("is_playback_ready"):
+            not_ready.append(
+                {
+                    "stream": key,
+                    "phase": status.get("phase") if isinstance(status, dict) else None,
+                    "melody_history_beats": (
+                        status.get("melody_history_beats")
+                        if isinstance(status, dict)
+                        else None
+                    ),
+                    "accompaniment_history_beats": (
+                        status.get("accompaniment_history_beats")
+                        if isinstance(status, dict)
+                        else None
+                    ),
+                    "beats_needed_for_playback": (
+                        status.get("beats_needed_for_playback")
+                        if isinstance(status, dict)
+                        else None
+                    ),
+                }
+            )
+    if not_ready:
+        raise RuntimeError(
+            "StreamMUSE continuation did not become playback-ready: "
+            + json.dumps(not_ready, sort_keys=True)
+        )
+    return {
+        "session_dir": str(session_dir),
+        "history_status": str(status_path),
+        "prompt_status": history_status["prompt_status"],
+        "raw_status": history_status["raw_status"],
+    }
+
+
 def run_case(
     args: argparse.Namespace,
     *,
@@ -234,7 +293,12 @@ def run_case(
 
     case_dir.mkdir(parents=True, exist_ok=True)
     prompt_seed = int(args.prompt_seed_base) + piece_index - 1
-    max_ticks = midi_max_tick(midi_path, args.ticks_per_beat, args.tail_beats)
+    max_ticks = midi_max_tick(
+        midi_path,
+        args.ticks_per_beat,
+        args.tail_beats,
+        args.max_eval_beats,
+    )
     port = free_port()
     env = experiment_env(
         args,
@@ -259,7 +323,7 @@ def run_case(
         "--prompt-batch-candidates", str(args.candidate_count),
         "--prompt-length-ticks", str(args.prompt_length_ticks),
         "--generation-interval-ticks", str(args.generation_interval_ticks),
-        "--bpm", str(args.tempo),
+        "--bpm", str(args.condition_bpm),
         "--max-tick", str(max_ticks),
         "--prompt-seed", str(prompt_seed),
         "--prompt-temperature", str(args.prompt_temperature),
@@ -284,8 +348,8 @@ def run_case(
         "--generation-interval-ticks", str(args.generation_interval_ticks),
         "--generation-length-frames", str(args.generation_length_frames),
         "--max-ticks", str(max_ticks),
-        "--tempo", str(args.tempo),
-        "--model-condition-bpm", str(args.tempo),
+        "--tempo", str(args.playback_tempo),
+        "--model-condition-bpm", str(args.condition_bpm),
         "--output-type", "session",
         "--log-dir", str(streammuse_dir),
     ]
@@ -344,7 +408,7 @@ def run_case(
                     )
                 write_json(streammuse_dir / "runtime_info.json", runtime_info)
                 wallclock_s = max_ticks * 60.0 / (
-                    args.tempo * args.ticks_per_beat
+                    args.playback_tempo * args.ticks_per_beat
                 )
                 run_logged(
                     cli_cmd,
@@ -361,6 +425,13 @@ def run_case(
                 write_json(
                     streammuse_dir / "prompt_generation_log.json",
                     prompt_generation_log,
+                )
+                streammuse_validation = validate_streammuse_session(
+                    streammuse_dir
+                )
+                write_json(
+                    streammuse_dir / "validation.json",
+                    streammuse_validation,
                 )
             finally:
                 server.terminate()
@@ -381,6 +452,7 @@ def run_case(
             "offline_reused": offline_reused,
             "offline_dir": str(offline_dir),
             "streammuse_dir": str(streammuse_dir),
+            "streammuse_validation": streammuse_validation,
         }
         write_json(status_path, status)
         return status
@@ -403,8 +475,12 @@ def main() -> None:
     args = parse_args()
     if args.candidate_count < 2:
         raise ValueError("--candidate-count must be at least 2")
+    if args.condition_bpm < 1 or args.playback_tempo < 1:
+        raise ValueError("condition and playback tempos must be positive")
     if args.prompt_context_beats < 1 or args.history_max_ticks < 1:
         raise ValueError("context and history limits must be positive")
+    if args.max_eval_beats * args.ticks_per_beat <= args.prompt_length_ticks:
+        raise ValueError("evaluation window must extend beyond the Prompt")
     args.prompt_checkpoint = require_file(args.prompt_checkpoint, "prompt checkpoint")
     args.continuation_checkpoint = require_file(
         args.continuation_checkpoint, "continuation checkpoint"
@@ -439,13 +515,15 @@ def main() -> None:
             "top_p": args.rt_top_p,
             "repetition_penalty": args.rt_repetition_penalty,
         },
-        "tempo": args.tempo,
+        "condition_bpm": args.condition_bpm,
+        "playback_tempo": args.playback_tempo,
         "ticks_per_beat": args.ticks_per_beat,
         "prompt_length_ticks": args.prompt_length_ticks,
         "generation_interval_ticks": args.generation_interval_ticks,
         "generation_length_frames": args.generation_length_frames,
         "prompt_context_beats": args.prompt_context_beats,
         "history_max_ticks": args.history_max_ticks,
+        "max_eval_beats": args.max_eval_beats,
         "tail_beats": args.tail_beats,
         "dry_run": args.dry_run,
     }

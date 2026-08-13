@@ -73,7 +73,9 @@ repetition_penalty = 1.0
 Shared system settings:
 
 ```text
-bpm = 120
+model condition bpm = 120
+StreamMUSE playback tempo = 15 bpm
+evaluation window = 32 beats total (8-beat Prompt + 24 beats continuation)
 ticks_per_beat = 4
 generation_interval_ticks = 4
 generation_length_frames = 4
@@ -86,11 +88,11 @@ strict representation loop = on
 
 ## H200 command
 
-The physical GPU is pinned to GPU 0:
+Choose an idle physical GPU explicitly:
 
 ```bash
 cd /data/home/yuanxin/StreamMUSE-rule-s-stanley
-GPU=0 bash scripts/run_rule_s_offline_streammuse_h200.sh
+GPU=2 bash scripts/run_rule_s_offline_streammuse_h200.sh
 ```
 
 The output root defaults to:
@@ -113,3 +115,8 @@ Before listening analysis:
 3. verify both paths loaded real checkpoints and used the frozen settings;
 4. inspect StreamMUSE traces for dropped or clipped events;
 5. compare only the continuation window after the first 8 beats.
+
+The slower playback tempo is a simulation control, not a model-conditioning
+change. Both offline and StreamMUSE model calls remain conditioned on 120 BPM;
+the StreamMUSE MIDI clock runs at 15 BPM so the H200 implementation can finish
+catch-up before the 32-beat listening window ends.
