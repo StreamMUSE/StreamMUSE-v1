@@ -267,13 +267,16 @@ def main() -> int:
         run_stop_tick = derived_run_stop
 
     try:
-        runtime.start(
-            run_stop_tick=run_stop_tick,
-            analysis_end_tick=analysis_end_tick,
-            last_input_note_off_tick=last_input_note_off_tick,
-            request_cutoff_tick=request_cutoff_tick,
-            drain_timeout_seconds=drain_timeout_seconds,
-        )
+        if config.continuation_mode == "prompt_continuation":
+            runtime.start(run_stop_tick=run_stop_tick)
+        else:
+            runtime.start(
+                run_stop_tick=run_stop_tick,
+                analysis_end_tick=analysis_end_tick,
+                last_input_note_off_tick=last_input_note_off_tick,
+                request_cutoff_tick=request_cutoff_tick,
+                drain_timeout_seconds=drain_timeout_seconds,
+            )
         while runtime.running:
             import time
             time.sleep(0.1)

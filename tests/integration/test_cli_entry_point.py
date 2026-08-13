@@ -126,6 +126,34 @@ def test_cli_main_builds_runtime_through_shared_builder(
     runtime.stop.assert_called_once()
 
 
+@patch("streammuse.presentation.cli.cli.RuntimeSessionBuilder")
+@patch("streammuse.presentation.cli.cli.parse_args")
+def test_prompt_continuation_cli_omits_standard_run_controls(
+    mock_parse_args,
+    builder_cls,
+) -> None:
+    args = MagicMock()
+    args.log_dir = "logs"
+    args.max_ticks = 320
+    args.run_stop_tick = None
+    args.analysis_end_tick = None
+    args.last_input_note_off_tick = None
+    args.request_cutoff_tick = None
+    args.tail_beats = None
+    args.drain_timeout_s = 15.0
+    mock_parse_args.return_value = args
+    runtime = MagicMock()
+    runtime.running = False
+    runtime.session_manager = None
+    builder_cls.return_value.build_cli.return_value = runtime
+    config = ApplicationConfig(continuation_mode="prompt_continuation")
+
+    with patch("streammuse.presentation.cli.cli.args_to_config", return_value=config):
+        assert main() == 0
+
+    runtime.start.assert_called_once_with(run_stop_tick=320)
+
+
 @patch("streammuse.application.runtime.builder.InputSourceFactory")
 @patch("streammuse.application.runtime.builder.OutputSinkFactory")
 @patch("streammuse.application.runtime.builder.InferenceEngineFactory")

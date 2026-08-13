@@ -302,13 +302,17 @@ def run_case(
 
     started = time.perf_counter()
     try:
-        run_logged(
-            offline_cmd,
-            env=env,
-            stdout_path=offline_dir / "stdout.log",
-            stderr_path=offline_dir / "stderr.log",
-            timeout_s=1800.0,
+        offline_reused = (
+            not args.no_resume and (offline_dir / "batch_summary.json").is_file()
         )
+        if not offline_reused:
+            run_logged(
+                offline_cmd,
+                env=env,
+                stdout_path=offline_dir / "stdout.log",
+                stderr_path=offline_dir / "stderr.log",
+                timeout_s=1800.0,
+            )
 
         server_log_path = streammuse_dir / "server.log"
         server_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -370,6 +374,7 @@ def run_case(
             "continuation_seed": continuation_seed,
             "max_ticks": max_ticks,
             "elapsed_s": time.perf_counter() - started,
+            "offline_reused": offline_reused,
             "offline_dir": str(offline_dir),
             "streammuse_dir": str(streammuse_dir),
         }
