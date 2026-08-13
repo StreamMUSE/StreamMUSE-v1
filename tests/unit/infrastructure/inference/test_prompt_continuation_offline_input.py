@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 _SCRIPT_PATH = (
     Path(__file__).resolve().parents[4]
@@ -16,6 +18,19 @@ _SPEC = importlib.util.spec_from_file_location(
 assert _SPEC is not None and _SPEC.loader is not None
 offline = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(offline)
+
+_RUNNER_PATH = (
+    Path(__file__).resolve().parents[4]
+    / "scripts"
+    / "run_rule_s_offline_streammuse_experiment.py"
+)
+_RUNNER_SPEC = importlib.util.spec_from_file_location(
+    "run_rule_s_offline_streammuse_experiment_under_test",
+    _RUNNER_PATH,
+)
+assert _RUNNER_SPEC is not None and _RUNNER_SPEC.loader is not None
+runner = importlib.util.module_from_spec(_RUNNER_SPEC)
+_RUNNER_SPEC.loader.exec_module(runner)
 
 
 def test_trim_leading_rest_applies_max_tick_after_shift(tmp_path, monkeypatch):
@@ -55,3 +70,18 @@ def test_trim_leading_rest_applies_max_tick_after_shift(tmp_path, monkeypatch):
     assert info["offset_ticks"] == 76
     assert info["original_max_tick"] == 206
     assert info["actual_max_tick"] == 128
+
+
+def test_parse_execution_paths_accepts_explicit_subsets():
+    assert runner.parse_execution_paths("offline") == ["offline"]
+    assert runner.parse_execution_paths("streammuse") == ["streammuse"]
+    assert runner.parse_execution_paths("offline,streammuse") == [
+        "offline",
+        "streammuse",
+    ]
+
+
+@pytest.mark.parametrize("raw", ["", "offline,offline", "offline,unknown"])
+def test_parse_execution_paths_rejects_invalid_values(raw):
+    with pytest.raises(ValueError):
+        runner.parse_execution_paths(raw)

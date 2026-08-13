@@ -97,6 +97,16 @@ cd /data/home/yuanxin/StreamMUSE-rule-s-stanley
 GPU=2 bash scripts/run_rule_s_offline_streammuse_h200.sh
 ```
 
+Run the formal trimmed offline set independently:
+
+```bash
+GPU=2 EXECUTION_PATHS=offline \
+  bash scripts/run_rule_s_offline_streammuse_h200.sh
+```
+
+Keep realtime and slowed-clock consistency runs in separate output roots by
+using `EXECUTION_PATHS=streammuse` with an explicit playback tempo.
+
 The output root defaults to:
 
 ```text

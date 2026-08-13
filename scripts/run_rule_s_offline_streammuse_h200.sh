@@ -21,5 +21,6 @@ exec "${PYTHON_BIN}" "${REPO_ROOT}/scripts/run_rule_s_offline_streammuse_experim
   --continuation-checkpoint "${CONT_CKPT}" \
   --candidate-count "${CANDIDATE_COUNT:-5}" \
   --continuation-seeds "${CONTINUATION_SEEDS:-0,1}" \
+  --execution-paths "${EXECUTION_PATHS:-offline,streammuse}" \
   --gpu "${GPU}" \
   "$@"

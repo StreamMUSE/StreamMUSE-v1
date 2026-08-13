@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--continuation-checkpoint", type=Path, required=True)
     parser.add_argument("--candidate-count", type=int, default=5)
     parser.add_argument("--continuation-seeds", default="0,1")
+    parser.add_argument(
+        "--execution-paths",
+        default="offline,streammuse",
+        help="Comma-separated subset of: offline,streammuse",
+    )
     parser.add_argument("--prompt-seed-base", type=int, default=20260813)
     parser.add_argument("--condition-bpm", type=int, default=120)
     parser.add_argument("--playback-tempo", type=int, default=15)
@@ -81,6 +86,17 @@ def parse_seeds(raw: str) -> list[int]:
     if not seeds or len(seeds) != len(set(seeds)):
         raise ValueError("--continuation-seeds must contain unique integers")
     return seeds
+
+
+def parse_execution_paths(raw: str) -> list[str]:
+    paths = [item.strip() for item in raw.split(",") if item.strip()]
+    allowed = {"offline", "streammuse"}
+    if not paths or len(paths) != len(set(paths)) or not set(paths) <= allowed:
+        raise ValueError(
+            "--execution-paths must contain unique values from: "
+            "offline,streammuse"
+        )
+    return paths
 
 
 def require_file(path: Path, label: str) -> Path:
@@ -408,99 +424,116 @@ def run_case(
             "continuation_seed": continuation_seed,
             "evaluation_max_tick": evaluation_max_tick,
             "streammuse_run_stop_tick": streammuse_run_stop_tick,
-            "offline_command": offline_cmd,
-            "streammuse_command": cli_cmd,
+            "execution_paths": args.execution_paths,
+            "offline_command": (
+                offline_cmd if "offline" in args.execution_paths else None
+            ),
+            "streammuse_command": (
+                cli_cmd if "streammuse" in args.execution_paths else None
+            ),
         }
         write_json(status_path, status)
         return status
 
     started = time.perf_counter()
     try:
-        offline_reused = (
-            not args.no_resume and (offline_dir / "batch_summary.json").is_file()
-        )
-        if not offline_reused:
-            run_logged(
-                offline_cmd,
-                env=env,
-                stdout_path=offline_dir / "stdout.log",
-                stderr_path=offline_dir / "stderr.log",
-                timeout_s=1800.0,
+        offline_reused: bool | None = None
+        if "offline" in args.execution_paths:
+            offline_reused = (
+                not args.no_resume
+                and (offline_dir / "batch_summary.json").is_file()
             )
-
-        server_log_path = streammuse_dir / "server.log"
-        server_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with server_log_path.open("w", encoding="utf-8") as server_log:
-            server = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "streammuse.infrastructure.inference.server_lekai",
-                ],
-                cwd=str(REPO_ROOT),
-                env=env,
-                stdout=server_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            try:
-                runtime_info = wait_for_server(
-                    f"http://127.0.0.1:{port}", server, server_log_path
-                )
-                if runtime_info.get("prompt_selection_mode") != condition:
-                    raise RuntimeError(
-                        "server selection mode mismatch: "
-                        f"{runtime_info.get('prompt_selection_mode')} != {condition}"
-                    )
-                write_json(streammuse_dir / "runtime_info.json", runtime_info)
-                wallclock_s = streammuse_run_stop_tick * 60.0 / (
-                    args.playback_tempo * args.ticks_per_beat
-                )
+            if not offline_reused:
                 run_logged(
-                    cli_cmd,
+                    offline_cmd,
                     env=env,
-                    stdout_path=streammuse_dir / "stdout.log",
-                    stderr_path=streammuse_dir / "stderr.log",
-                    timeout_s=max(600.0, wallclock_s * 2.0 + 300.0),
+                    stdout_path=offline_dir / "stdout.log",
+                    stderr_path=offline_dir / "stderr.log",
+                    timeout_s=1800.0,
                 )
-                prompt_generation_log = request_json(
-                    f"http://127.0.0.1:{port}/prompt_continuation/"
-                    "prompt_generation_log",
-                    timeout=30.0,
+
+        streammuse_validation: dict[str, Any] | None = None
+        if "streammuse" in args.execution_paths:
+            server_log_path = streammuse_dir / "server.log"
+            server_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with server_log_path.open("w", encoding="utf-8") as server_log:
+                server = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "streammuse.infrastructure.inference.server_lekai",
+                    ],
+                    cwd=str(REPO_ROOT),
+                    env=env,
+                    stdout=server_log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
                 )
-                write_json(
-                    streammuse_dir / "prompt_generation_log.json",
-                    prompt_generation_log,
-                )
-                streammuse_validation = validate_streammuse_session(
-                    streammuse_dir,
-                    prompt_length_ticks=args.prompt_length_ticks,
-                    evaluation_max_tick=evaluation_max_tick,
-                )
-                write_json(
-                    streammuse_dir / "validation.json",
-                    streammuse_validation,
-                )
-            finally:
-                server.terminate()
                 try:
-                    server.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    server.kill()
-                    server.wait(timeout=30)
+                    runtime_info = wait_for_server(
+                        f"http://127.0.0.1:{port}", server, server_log_path
+                    )
+                    if runtime_info.get("prompt_selection_mode") != condition:
+                        raise RuntimeError(
+                            "server selection mode mismatch: "
+                            f"{runtime_info.get('prompt_selection_mode')} != {condition}"
+                        )
+                    write_json(streammuse_dir / "runtime_info.json", runtime_info)
+                    wallclock_s = streammuse_run_stop_tick * 60.0 / (
+                        args.playback_tempo * args.ticks_per_beat
+                    )
+                    run_logged(
+                        cli_cmd,
+                        env=env,
+                        stdout_path=streammuse_dir / "stdout.log",
+                        stderr_path=streammuse_dir / "stderr.log",
+                        timeout_s=max(600.0, wallclock_s * 2.0 + 300.0),
+                    )
+                    prompt_generation_log = request_json(
+                        f"http://127.0.0.1:{port}/prompt_continuation/"
+                        "prompt_generation_log",
+                        timeout=30.0,
+                    )
+                    write_json(
+                        streammuse_dir / "prompt_generation_log.json",
+                        prompt_generation_log,
+                    )
+                    streammuse_validation = validate_streammuse_session(
+                        streammuse_dir,
+                        prompt_length_ticks=args.prompt_length_ticks,
+                        evaluation_max_tick=evaluation_max_tick,
+                    )
+                    write_json(
+                        streammuse_dir / "validation.json",
+                        streammuse_validation,
+                    )
+                finally:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait(timeout=30)
 
         status = {
             "status": "complete",
             "midi": str(midi_path),
             "condition": condition,
+            "execution_paths": args.execution_paths,
             "prompt_seed": prompt_seed,
             "continuation_seed": continuation_seed,
             "evaluation_max_tick": evaluation_max_tick,
             "streammuse_run_stop_tick": streammuse_run_stop_tick,
             "elapsed_s": time.perf_counter() - started,
             "offline_reused": offline_reused,
-            "offline_dir": str(offline_dir),
-            "streammuse_dir": str(streammuse_dir),
+            "offline_dir": (
+                str(offline_dir) if "offline" in args.execution_paths else None
+            ),
+            "streammuse_dir": (
+                str(streammuse_dir)
+                if "streammuse" in args.execution_paths
+                else None
+            ),
             "streammuse_validation": streammuse_validation,
         }
         write_json(status_path, status)
@@ -541,6 +574,7 @@ def main() -> None:
     )
     midi_files = collect_midis(args.midi_dir)
     seeds = parse_seeds(args.continuation_seeds)
+    args.execution_paths = parse_execution_paths(args.execution_paths)
     run_root = args.output_dir.expanduser().resolve()
     run_root.mkdir(parents=True, exist_ok=True)
 
@@ -550,6 +584,7 @@ def main() -> None:
         "midi_files": [str(path) for path in midi_files],
         "conditions": list(CONDITIONS),
         "continuation_seeds": seeds,
+        "execution_paths": args.execution_paths,
         "candidate_count": args.candidate_count,
         "baseline": "candidate 1 from the same Batch=N Prompt generation",
         "rule_s": "highest frozen Rule-S score from the same Batch=N",
