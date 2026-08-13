@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-seed", type=int, default=20260813)
     parser.add_argument("--continuation-seeds", default="0")
     parser.add_argument("--prompt-prefix-beats", type=int, default=8)
+    parser.add_argument(
+        "--include-gt-accompaniment",
+        action="store_true",
+        help="Add a condition using the NPZ GT accompaniment for the Prompt prefix",
+    )
     parser.add_argument("--prompt-num-bars", type=int, default=2)
     parser.add_argument("--prompt-max-new-tokens", type=int, default=1024)
     parser.add_argument("--prompt-temperature", type=float, default=0.8)
@@ -311,22 +316,38 @@ def main() -> None:
     )
     converter.gt_to_midi(str(npz_path), str(output_dir / "00_input_decoded.mid"))
 
-    conditions = {
-        "batch_first": 0,
-        "rule_s": int(rule_s["selected_index"]),
-    }
+    conditions: list[tuple[str, int | None, list[Any]]] = [
+        ("batch_first", 0, prompt_prefixes[0]),
+        (
+            "rule_s",
+            int(rule_s["selected_index"]),
+            prompt_prefixes[int(rule_s["selected_index"])],
+        ),
+    ]
+    if args.include_gt_accompaniment:
+        conditions.append(
+            (
+                "gt_accompaniment",
+                None,
+                prepared["acc_beats_gt"][: args.prompt_prefix_beats],
+            )
+        )
     outputs = []
-    for condition, candidate_index in conditions.items():
-        raw_prefix = prompt_prefixes[candidate_index]
+    for condition, candidate_index, raw_prefix in conditions:
         if len(raw_prefix) != args.prompt_prefix_beats:
             raise RuntimeError(
-                f"{condition} candidate has {len(raw_prefix)} complete beats; "
+                f"{condition} has {len(raw_prefix)} complete Prompt beats; "
                 f"expected {args.prompt_prefix_beats}"
             )
-        converted_prefix = [
-            convert_prompt_beat(prompt_tokenizer, tokenizer, beat)
-            for beat in raw_prefix
-        ]
+        if candidate_index is None:
+            converted_prefix = raw_prefix
+            prompt_source = "npz_gt_accompaniment"
+        else:
+            converted_prefix = [
+                convert_prompt_beat(prompt_tokenizer, tokenizer, beat)
+                for beat in raw_prefix
+            ]
+            prompt_source = "prompt_model_candidate"
         schedule = inject_prompt_prefix(prepared["schedule"], converted_prefix)
         if args.max_schedule_steps > 0:
             schedule = schedule[: args.max_schedule_steps]
@@ -363,7 +384,10 @@ def main() -> None:
             outputs.append(
                 {
                     "condition": condition,
-                    "candidate_number": candidate_index + 1,
+                    "prompt_source": prompt_source,
+                    "candidate_number": (
+                        candidate_index + 1 if candidate_index is not None else None
+                    ),
                     "continuation_seed": seed,
                     "continuation_seconds": elapsed,
                     "acc_beats": len(acc_beats),
@@ -388,6 +412,7 @@ def main() -> None:
                 "top_k": args.prompt_top_k,
                 "top_p": args.prompt_top_p,
                 "repetition_penalty": args.prompt_repetition_penalty,
+                "include_gt_accompaniment": args.include_gt_accompaniment,
             },
             "continuation_parameters": {
                 "seeds": continuation_seeds,

@@ -116,6 +116,7 @@ PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 .venv/bin/python \
   --prompt-checkpoint /path/to/prompt/model.safetensors \
   --continuation-checkpoint /path/to/continuation/model.safetensors \
   --candidate-count 5 \
+  --include-gt-accompaniment \
   --continuation-seeds 0,1
 ```
 
