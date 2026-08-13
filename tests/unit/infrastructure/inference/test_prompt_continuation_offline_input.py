@@ -45,6 +45,12 @@ def test_trim_leading_rest_applies_max_tick_after_shift(tmp_path, monkeypatch):
         (62, 51),
         (64, 127),
     ]
+    assert all(int(event["tick"]) < 128 for event in events)
+    assert not any(
+        event["type"] == "note_off"
+        and event["pitch"] == 64
+        for event in events
+    )
     assert info["first_note_tick_original"] == 76
     assert info["offset_ticks"] == 76
     assert info["original_max_tick"] == 206

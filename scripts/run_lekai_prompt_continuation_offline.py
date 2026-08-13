@@ -215,7 +215,9 @@ def load_midi_events(
         pitch = int(note["pitch"])
         duration = max(1, int(note["duration"]))
         events.append({"type": "note_on", "pitch": pitch, "tick": tick, "velocity": int(velocity)})
-        events.append({"type": "note_off", "pitch": pitch, "tick": tick + duration, "velocity": 0})
+        note_off_tick = tick + duration
+        if max_tick is None or note_off_tick < int(max_tick):
+            events.append({"type": "note_off", "pitch": pitch, "tick": note_off_tick, "velocity": 0})
     events.sort(key=event_sort_key)
     return events, {
         "midi_path": str(midi_path),
@@ -338,10 +340,20 @@ def run_one(
             trim_leading_rest=bool(args.trim_leading_rest),
         )
         melody_end_tick = max([int(event.get("tick", 0)) for event in melody_events] or [0])
-        final_observed_until_tick = max(
-            int(args.prompt_length_ticks),
-            ((int(melody_end_tick) + TIMESTEPS_PER_BEAT - 1) // TIMESTEPS_PER_BEAT) * TIMESTEPS_PER_BEAT,
-        )
+        if args.max_tick is not None:
+            final_observed_until_tick = max(
+                int(args.prompt_length_ticks),
+                int(args.max_tick),
+            )
+        else:
+            final_observed_until_tick = max(
+                int(args.prompt_length_ticks),
+                (
+                    (int(melody_end_tick) + TIMESTEPS_PER_BEAT - 1)
+                    // TIMESTEPS_PER_BEAT
+                )
+                * TIMESTEPS_PER_BEAT,
+            )
         prompt_events = events_until(melody_events, 0, int(args.prompt_length_ticks))
         append_events = events_until(melody_events, int(args.prompt_length_ticks), final_observed_until_tick)
 
