@@ -679,8 +679,9 @@ class LekaiHttpBackend:
 
         device = str(getattr(self._model_adapter, "device", "cpu"))
         use_cache = bool(getattr(self._model_adapter, "use_cache", True))
-        part1_end_marker = 171
+        part1_end_marker = 170
         part1_empty_marker = 169
+        beat_token = 172
         bar_token = int(getattr(self._model_adapter, "BAR_TOKEN", 255))
 
         generated = prompt_tokens.unsqueeze(0).to(device)
@@ -711,7 +712,7 @@ class LekaiHttpBackend:
                 generated = torch.cat([generated, next_token], dim=1)
                 raw_tokens.append(token_val)
 
-                if token_val in {part1_end_marker, part1_empty_marker, bar_token}:
+                if token_val in {part1_end_marker, beat_token, bar_token}:
                     break
 
         return raw_tokens or [part1_empty_marker]
@@ -840,7 +841,7 @@ class LekaiHttpBackend:
                     events=accompaniment_context_events,
                     beat_start_tick=beat_start_tick,
                     active_pitches=accompaniment_active,
-                    end_marker=171,
+                    end_marker=170,
                 )
             else:
                 acc_tokens = torch.tensor(generated_history_tokens, dtype=torch.long)
@@ -863,7 +864,7 @@ class LekaiHttpBackend:
                 events=self._melody_history,
                 beat_start_tick=beat_start_tick,
                 active_pitches=melody_active,
-                end_marker=170,
+                end_marker=171,
             )
             part0_tokens.extend(int(token) for token in mel_tokens.tolist())
             seq.append(mel_tokens)
@@ -1065,7 +1066,7 @@ class LekaiHttpBackend:
                 events=self._melody_history,
                 beat_start_tick=beat_start_tick,
                 active_pitches=melody_active,
-                end_marker=170,
+                end_marker=171,
             )
             part0_tokens.extend(int(token) for token in mel_tokens_current.tolist())
             if not boundary_pending:

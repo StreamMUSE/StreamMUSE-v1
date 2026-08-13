@@ -161,7 +161,21 @@ def test_prompt_context_defaults_to_retained_history_window(monkeypatch):
     assert backend._prompt_context_beats() == 64
 
 
-def test_generate_part1_tokens_preserves_generated_bar_token(monkeypatch):
+@pytest.mark.parametrize(
+    ("sampled_tokens", "expected"),
+    [
+        ([170, 99, 255], [170]),
+        ([172, 99, 255], [172]),
+        ([255, 99], [255]),
+        ([169, 170, 255], [169, 170]),
+        ([171, 170, 255], [171, 170]),
+        ([258, 170, 255], [258, 170]),
+    ],
+    ids=["acc-end", "beat", "bar", "empty", "mel-end", "pad"],
+)
+def test_generate_part1_tokens_uses_acc_structural_stops(
+    monkeypatch, sampled_tokens, expected
+):
     backend = LekaiHttpBackend()
 
     class _DummyModel:
@@ -181,9 +195,10 @@ def test_generate_part1_tokens_preserves_generated_bar_token(monkeypatch):
         model = _DummyModel()
 
     backend._model_adapter = _DummyAdapter()
+    sampled = iter(sampled_tokens)
     monkeypatch.setattr(
         "streammuse.infrastructure.inference.lekai_model.generation_utils.sample_token",
-        lambda *args, **kwargs: torch.tensor([[255]], dtype=torch.long),
+        lambda *args, **kwargs: torch.tensor([[next(sampled)]], dtype=torch.long),
     )
 
     generated = backend._generate_part1_tokens_from_prompt(
@@ -194,7 +209,7 @@ def test_generate_part1_tokens_preserves_generated_bar_token(monkeypatch):
         repetition_penalty=1.2,
     )
 
-    assert generated == [255]
+    assert generated == expected
 
 
 def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
@@ -241,7 +256,7 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
     def _encode(events, beat_start_tick, active_pitches, end_marker):
         _ = events
         encoded_calls.append((beat_start_tick, end_marker))
-        return torch.tensor([169], dtype=torch.long), set(active_pitches)
+        return torch.tensor([end_marker], dtype=torch.long), set(active_pitches)
 
     generated_beats = iter(([255], [169]))
     prompts = []
@@ -259,6 +274,8 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
         generation_interval_ticks=4,
         generation_length_frames=4,
     )
+    assert encoded_calls == [(0, 170), (0, 171), (4, 171)]
+    assert prompts[0][-2:] == [170, 171]
     assert backend._accompaniment_token_history[1] == [255]
     assert generation_logs[0]["diagnostics"] == {
         "context_start_tick": 0,
@@ -288,9 +305,8 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
         generation_length_frames=4,
     )
 
-    assert (4, 171) not in encoded_calls
-    assert (4, 170) in encoded_calls
-    assert prompts[1][-2:] == [255, 169]
+    assert encoded_calls == [(0, 170), (0, 171), (4, 171), (8, 171)]
+    assert prompts[1][-2:] == [255, 171]
 
 
 def test_measure_boundary_slot_is_generated_in_offline_order(monkeypatch):
