@@ -22,5 +22,6 @@ exec "${PYTHON_BIN}" "${REPO_ROOT}/scripts/run_rule_s_offline_streammuse_experim
   --candidate-count "${CANDIDATE_COUNT:-5}" \
   --continuation-seeds "${CONTINUATION_SEEDS:-0,1}" \
   --execution-paths "${EXECUTION_PATHS:-offline,streammuse}" \
+  --max-eval-beats "${MAX_EVAL_BEATS:-0}" \
   --gpu "${GPU}" \
   "$@"

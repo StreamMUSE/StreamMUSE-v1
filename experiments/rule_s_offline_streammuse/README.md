@@ -75,7 +75,7 @@ Shared system settings:
 ```text
 model condition bpm = 120
 StreamMUSE playback tempo = 15 bpm
-evaluation window = 32 beats total (8-beat Prompt + 24 beats continuation)
+formal offline evaluation window = full post-trim Melody
 final catch-up grace = 3 ticks (below the 4-tick generation interval)
 Melody leading-rest trimming = on (first retained note moves to tick 0)
 ticks_per_beat = 4
@@ -104,6 +104,10 @@ GPU=2 EXECUTION_PATHS=offline \
   bash scripts/run_rule_s_offline_streammuse_h200.sh
 ```
 
+`MAX_EVAL_BEATS=0` is the default and preserves the complete Melody after
+leading-rest removal. A bounded consistency diagnostic must opt in explicitly,
+for example `MAX_EVAL_BEATS=32`.
+
 Keep realtime and slowed-clock consistency runs in separate output roots by
 using `EXECUTION_PATHS=streammuse` with an explicit playback tempo.
 
@@ -129,12 +133,10 @@ Before listening analysis:
 5. compare only the continuation window after the first 8 beats.
 
 The slower playback tempo is a simulation control, not a model-conditioning
-change. Both offline and StreamMUSE model calls remain conditioned on 120 BPM;
-the StreamMUSE MIDI clock runs at 15 BPM so the H200 implementation can finish
-catch-up before the 32-beat listening window ends. Offline output stops at tick
-128. StreamMUSE stops at tick 131, giving the final tick-128 append request
-three seconds to finish without crossing another generation boundary or
-submitting another Melody beat.
+change. For the bounded `MAX_EVAL_BEATS=32` diagnostic, both model paths remain
+conditioned on 120 BPM while the StreamMUSE MIDI clock runs at 15 BPM. Offline
+then stops at tick 128 and StreamMUSE at tick 131, giving the final append
+request three seconds to finish without crossing another generation boundary.
 
 Leading-rest trimming uses the existing offline and MIDI-file input options in
 both paths. The evaluation end tick is computed after subtracting the same

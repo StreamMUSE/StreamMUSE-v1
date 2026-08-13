@@ -50,7 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generation-length-frames", type=int, default=4)
     parser.add_argument("--prompt-context-beats", type=int, default=32)
     parser.add_argument("--history-max-ticks", type=int, default=128)
-    parser.add_argument("--max-eval-beats", type=int, default=32)
+    parser.add_argument(
+        "--max-eval-beats",
+        type=int,
+        default=0,
+        help="Evaluation cap in beats; 0 keeps the full post-trim Melody",
+    )
     parser.add_argument("--final-catchup-grace-ticks", type=int, default=3)
     parser.add_argument("--tail-beats", type=int, default=0)
     parser.add_argument(
@@ -170,8 +175,13 @@ def midi_max_tick(
     if trim_leading_rest:
         retained_max_tick = max(0, retained_max_tick - first_note_tick)
     requested_max_tick = retained_max_tick + int(tail_beats) * int(ticks_per_beat)
-    eval_max_tick = int(max_eval_beats) * int(ticks_per_beat)
-    return min(requested_max_tick, eval_max_tick)
+    if int(max_eval_beats) > 0:
+        eval_max_tick = int(max_eval_beats) * int(ticks_per_beat)
+        return min(requested_max_tick, eval_max_tick)
+    return (
+        (requested_max_tick + int(ticks_per_beat) - 1)
+        // int(ticks_per_beat)
+    ) * int(ticks_per_beat)
 
 
 def experiment_env(
@@ -566,7 +576,11 @@ def main() -> None:
             "final catch-up grace must be at least one tick and remain below "
             "the generation interval"
         )
-    if args.max_eval_beats * args.ticks_per_beat <= args.prompt_length_ticks:
+    if (
+        args.max_eval_beats > 0
+        and args.max_eval_beats * args.ticks_per_beat
+        <= args.prompt_length_ticks
+    ):
         raise ValueError("evaluation window must extend beyond the Prompt")
     args.prompt_checkpoint = require_file(args.prompt_checkpoint, "prompt checkpoint")
     args.continuation_checkpoint = require_file(

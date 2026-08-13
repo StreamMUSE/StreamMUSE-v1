@@ -85,3 +85,27 @@ def test_parse_execution_paths_accepts_explicit_subsets():
 def test_parse_execution_paths_rejects_invalid_values(raw):
     with pytest.raises(ValueError):
         runner.parse_execution_paths(raw)
+
+
+def test_full_length_max_tick_is_trimmed_and_rounded_to_beat(monkeypatch):
+    notes = [{"pitch": 60, "tick": 76, "duration": 2}]
+
+    def _parse(*args, **kwargs):
+        return notes, 4, 1094
+
+    monkeypatch.setattr(runner.MidiFileInput, "_midi_to_notes", _parse)
+
+    assert runner.midi_max_tick(
+        Path("melody.mid"),
+        ticks_per_beat=4,
+        tail_beats=0,
+        max_eval_beats=0,
+        trim_leading_rest=True,
+    ) == 1020
+    assert runner.midi_max_tick(
+        Path("melody.mid"),
+        ticks_per_beat=4,
+        tail_beats=0,
+        max_eval_beats=32,
+        trim_leading_rest=True,
+    ) == 128
