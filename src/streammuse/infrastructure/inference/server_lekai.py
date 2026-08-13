@@ -457,6 +457,11 @@ async def prompt_continuation_runtime_info() -> dict[str, object]:
     return dict(prompt_continuation_backend.runtime_info())
 
 
+@app.get("/prompt_continuation/prompt_generation_log")
+async def prompt_continuation_prompt_generation_log() -> dict[str, Any]:
+    return prompt_continuation_backend.prompt_generation_log()
+
+
 @app.get(
     "/prompt_continuation/playable",
     response_model=PromptContinuationPlayableResponse,

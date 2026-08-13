@@ -85,6 +85,16 @@ def test_prompt_continuation_model_uses_lekai_length_validation():
     assert "multiple of 4" in response.text
 
 
+def test_prompt_continuation_prompt_generation_log_contract():
+    response = client.get("/prompt_continuation/prompt_generation_log")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "prompt_tokens" in payload
+    assert "generated_tokens" in payload
+    assert "generated_acc_beats" in payload
+
+
 def test_prompt_continuation_poll_endpoints_contract():
     client.post("/clear_history")
 

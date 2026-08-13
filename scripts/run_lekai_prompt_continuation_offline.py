@@ -57,6 +57,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trim-leading-rest", action="store_true")
 
     parser.add_argument("--prompt-seed", type=int, default=12345)
+    parser.add_argument(
+        "--prompt-selection-mode",
+        choices=("single", "batch_first", "rule_s"),
+        default="single",
+    )
+    parser.add_argument("--prompt-batch-candidates", type=int, default=5)
     parser.add_argument("--prompt-temperature", type=float, default=1.1)
     parser.add_argument("--prompt-top-k", type=int, default=0)
     parser.add_argument("--prompt-top-p", type=float, default=0.95)
@@ -65,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rt-top-k", type=int, default=1)
     parser.add_argument("--rt-top-p", type=float, default=0.0)
     parser.add_argument("--rt-repetition-penalty", type=float, default=1.0)
+    parser.add_argument("--rt-seed", type=int, default=0)
 
     return parser.parse_args()
 
@@ -137,6 +144,10 @@ def apply_runtime_env(args: argparse.Namespace, *, stage2_log_dir: Path) -> dict
     updates["LEKAI_DTYPE"] = str(rt_dtype)
 
     updates["LEKAI_PROMPT_SEED"] = str(int(args.prompt_seed))
+    updates["LEKAI_PROMPT_SELECTION_MODE"] = str(args.prompt_selection_mode)
+    updates["LEKAI_PROMPT_BATCH_CANDIDATES"] = str(
+        int(args.prompt_batch_candidates)
+    )
     updates["LEKAI_PROMPT_BPM"] = str(int(args.bpm))
     updates["LEKAI_DEFAULT_BPM"] = str(int(args.bpm))
     updates["LEKAI_PROMPT_TEMPERATURE"] = str(float(args.prompt_temperature))
@@ -147,6 +158,7 @@ def apply_runtime_env(args: argparse.Namespace, *, stage2_log_dir: Path) -> dict
     updates["LEKAI_RT_TOP_K"] = str(int(args.rt_top_k))
     updates["LEKAI_RT_TOP_P"] = str(float(args.rt_top_p))
     updates["LEKAI_RT_REPETITION_PENALTY"] = str(float(args.rt_repetition_penalty))
+    updates["LEKAI_RT_SEED"] = str(int(args.rt_seed))
     updates["LEKAI_PROMPT_CONTINUATION_ENGINE"] = "standard"
     updates["LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS"] = "0"
     updates["LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"] = "0"
@@ -401,6 +413,8 @@ def run_one(
                 "prompt_dtype": str(args.prompt_dtype or ("float16" if args.prompt_fp16 else args.dtype)),
                 "rt_dtype": str(args.rt_dtype or ("float16" if args.rt_fp16 else args.dtype)),
                 "prompt_seed": int(args.prompt_seed),
+                "prompt_selection_mode": str(args.prompt_selection_mode),
+                "prompt_batch_candidates": int(args.prompt_batch_candidates),
                 "prompt_temperature": float(args.prompt_temperature),
                 "prompt_top_k": int(args.prompt_top_k),
                 "prompt_top_p": float(args.prompt_top_p),
@@ -409,6 +423,7 @@ def run_one(
                 "rt_top_k": int(args.rt_top_k),
                 "rt_top_p": float(args.rt_top_p),
                 "rt_repetition_penalty": float(args.rt_repetition_penalty),
+                "rt_seed": int(args.rt_seed),
             },
             "midi_info": midi_info,
             "observed_until_tick": int(final_observed_until_tick),
@@ -440,6 +455,8 @@ def run_one(
 
 def main() -> None:
     args = parse_args()
+    if args.prompt_selection_mode != "single" and args.prompt_batch_candidates < 2:
+        raise ValueError("--prompt-batch-candidates must be at least 2")
     prompt_checkpoint = require_path(Path(args.prompt_checkpoint), "prompt_checkpoint")
     continuation_checkpoint = require_path(Path(args.continuation_checkpoint), "continuation_checkpoint")
     output_root = Path(args.output_dir).expanduser().resolve()

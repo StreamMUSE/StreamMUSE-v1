@@ -6,6 +6,7 @@ request-facing backend should not load or call this model directly.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from typing import Any, Optional
@@ -23,6 +24,12 @@ from streammuse.infrastructure.inference.runtime_device import (
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_model.my_tokenizer import (
     PianoMusicTokenizer,
+)
+from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_batch_selector import (
+    accompaniment_features_from_pianoroll,
+    score_prompt_batch_ppl,
+    select_rule_s_candidate,
+    trim_at_eos,
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.token_conversion import (
     copy_events,
@@ -105,6 +112,49 @@ class LekaiPromptEngine:
     @staticmethod
     def _env_bool(name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
+
+    def _selection_mode(self) -> str:
+        raw = os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "single").strip().lower()
+        aliases = {
+            "single": "single",
+            "off": "single",
+            "disabled": "single",
+            "batch_first": "batch_first",
+            "batch-first": "batch_first",
+            "rule_s": "rule_s",
+            "rule-s": "rule_s",
+            "best_of_n": "rule_s",
+        }
+        if raw not in aliases:
+            raise ValueError(
+                "LEKAI_PROMPT_SELECTION_MODE must be single, batch_first, or "
+                f"rule_s, got {raw!r}"
+            )
+        return aliases[raw]
+
+    def _batch_candidate_count(self) -> int:
+        count = self._env_positive_int("LEKAI_PROMPT_BATCH_CANDIDATES") or 5
+        if count < 2:
+            raise ValueError("LEKAI_PROMPT_BATCH_CANDIDATES must be at least 2")
+        return int(count)
+
+    def _generation_parameters(self, selection_mode: str) -> dict[str, float | int]:
+        if selection_mode == "single":
+            default_temperature = 1.1
+            default_top_k = 0
+        else:
+            default_temperature = 0.8
+            default_top_k = 50
+        return {
+            "temperature": self._env_float(
+                "LEKAI_PROMPT_TEMPERATURE", default_temperature
+            ),
+            "top_k": max(0, self._env_int("LEKAI_PROMPT_TOP_K", default_top_k)),
+            "top_p": self._env_float("LEKAI_PROMPT_TOP_P", 0.95),
+            "repetition_penalty": self._env_float(
+                "LEKAI_PROMPT_REPETITION_PENALTY", 1.0
+            ),
+        }
 
     def _require_real_model(self) -> bool:
         return self._env_bool("LEKAI_PROMPT_REQUIRE_REAL_MODEL", False) or self._env_bool(
@@ -217,7 +267,8 @@ class LekaiPromptEngine:
     def _has_real_model(self) -> bool:
         return self._model is not None
 
-    def runtime_info(self) -> dict[str, str | float | bool | None]:
+    def runtime_info(self) -> dict[str, str | float | bool | int | None]:
+        selection_mode = self._selection_mode()
         return {
             "mode": self._mode,
             "has_real_model": self._has_real_model(),
@@ -229,6 +280,10 @@ class LekaiPromptEngine:
             "warmup_time_ms": self._warmup_time_ms,
             "warmup_error": self._warmup_error,
             "is_warmed_up": self._is_warmed_up,
+            "selection_mode": selection_mode,
+            "batch_candidate_count": (
+                self._batch_candidate_count() if selection_mode != "single" else 1
+            ),
         }
 
     def _active_pitches_before_tick(
@@ -375,9 +430,7 @@ class LekaiPromptEngine:
         max_new_tokens: Optional[int] = None,
     ) -> torch.Tensor:
         assert self._model is not None
-        top_k = self._env_int("LEKAI_PROMPT_TOP_K", 0)
-        if top_k < 0:
-            top_k = 0
+        parameters = self._generation_parameters("single")
 
         self._seed_if_configured()
         return self._model.generate_music(
@@ -387,13 +440,152 @@ class LekaiPromptEngine:
                 prompt_token_count=int(prompt_tokens.numel()),
                 max_new_tokens=max_new_tokens,
             ),
-            temperature=self._env_float("LEKAI_PROMPT_TEMPERATURE", 1.1),
-            top_k=top_k,
-            top_p=self._env_float("LEKAI_PROMPT_TOP_P", 0.95),
-            repetition_penalty=self._env_float("LEKAI_PROMPT_REPETITION_PENALTY", 1.0),
+            **parameters,
         )
 
-    def warmup(self) -> dict[str, str | float | bool | None]:
+    def _generate_token_batch(
+        self,
+        prompt_tokens: torch.Tensor,
+        *,
+        candidate_count: int,
+    ) -> torch.Tensor:
+        assert self._model is not None
+        self._seed_if_configured()
+        return self._model.generate_music_batch(
+            initial_tokens=prompt_tokens,
+            batch_size=int(candidate_count),
+            device=self._resolved_device,
+            max_length=self._generation_max_length(
+                prompt_token_count=int(prompt_tokens.numel())
+            ),
+            **self._generation_parameters("rule_s"),
+        )
+
+    def _candidate_from_tokens(
+        self,
+        sequence: torch.Tensor,
+        *,
+        candidate_number: int,
+        prompt_length_ticks: int,
+        ppl_score: dict[str, Any],
+    ) -> dict[str, Any]:
+        trimmed = trim_at_eos(
+            sequence.detach().cpu(),
+            int(self._tokenizer.vocab.eos_token_id),
+        )
+        _mel_beats, all_acc_beats = self._tokenizer.parse_generated_sequence(trimmed)
+        required_beats = max(
+            0,
+            (int(prompt_length_ticks) + TIMESTEPS_PER_BEAT - 1)
+            // TIMESTEPS_PER_BEAT,
+        )
+        acc_beats = all_acc_beats[:required_beats]
+        if acc_beats:
+            acc_pr = self._tokenizer.decode_beats_to_pianoroll(
+                acc_beats,
+                track_marker_id=self._tokenizer.vocab.track_marker_acc,
+            )
+        else:
+            acc_pr = np.zeros(
+                (2, 88, int(prompt_length_ticks)),
+                dtype=np.uint8,
+            )
+        features = accompaniment_features_from_pianoroll(
+            acc_pr,
+            length_ticks=int(prompt_length_ticks),
+        )
+        ppl_available = bool(ppl_score.get("available"))
+        return {
+            "candidate_number": int(candidate_number),
+            "generated_beats": len(all_acc_beats),
+            "required_beats": required_beats,
+            "prompt_ppl_available": ppl_available,
+            "prompt_ppl": float(ppl_score["ppl"]) if ppl_available else None,
+            "prompt_ppl_scored_token_count": int(
+                ppl_score.get("scored_token_count", 0)
+            ),
+            "prompt_ppl_reason": ppl_score.get("reason"),
+            "generated_token_count": int(trimmed.numel()),
+            "prompt_token_hash": hashlib.sha256(
+                trimmed.numpy().tobytes()
+            ).hexdigest(),
+            **features,
+        }
+
+    def _generate_batch_selected_tokens(
+        self,
+        prompt_tokens: torch.Tensor,
+        *,
+        prompt_length_ticks: int,
+        selection_mode: str,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        assert self._model is not None
+        if selection_mode not in {"batch_first", "rule_s"}:
+            raise ValueError(f"invalid batch selection mode: {selection_mode}")
+        candidate_count = self._batch_candidate_count()
+
+        self._sync_device()
+        generation_started = time.perf_counter()
+        generated = self._generate_token_batch(
+            prompt_tokens,
+            candidate_count=candidate_count,
+        )
+        self._sync_device()
+        generation_time_ms = (time.perf_counter() - generation_started) * 1000
+
+        required_beats = max(
+            0,
+            (int(prompt_length_ticks) + TIMESTEPS_PER_BEAT - 1)
+            // TIMESTEPS_PER_BEAT,
+        )
+        self._sync_device()
+        scoring_started = time.perf_counter()
+        ppl_scores = score_prompt_batch_ppl(
+            self._model,
+            generated,
+            prompt_token_count=int(prompt_tokens.numel()),
+            device=self._resolved_device,
+            tokenizer=self._tokenizer,
+            max_acc_beats=required_beats,
+        )
+        self._sync_device()
+        scoring_time_ms = (time.perf_counter() - scoring_started) * 1000
+
+        candidates = [
+            self._candidate_from_tokens(
+                generated[index],
+                candidate_number=index + 1,
+                prompt_length_ticks=int(prompt_length_ticks),
+                ppl_score=ppl_scores[index],
+            )
+            for index in range(candidate_count)
+        ]
+        rule_s_decision = select_rule_s_candidate(candidates)
+        selected_index = (
+            0
+            if selection_mode == "batch_first"
+            else int(rule_s_decision["selected_index"])
+        )
+        return generated[selected_index].unsqueeze(0), {
+            "selection_mode": selection_mode,
+            "candidate_count": candidate_count,
+            "selected_candidate_number": selected_index + 1,
+            "rule_s_recommended_candidate_number": int(
+                rule_s_decision["selected_candidate_number"]
+            ),
+            "eligible_candidate_count": int(rule_s_decision["eligible_count"]),
+            "selection_fallback_reason": (
+                rule_s_decision["fallback_reason"]
+                if selection_mode == "rule_s"
+                else None
+            ),
+            "rule_s_id": rule_s_decision["rule_id"],
+            "prompt_batch_generation_time_ms": generation_time_ms,
+            "prompt_batch_scoring_time_ms": scoring_time_ms,
+            "prompt_candidates": rule_s_decision["candidates"],
+        }
+
+    def warmup(self) -> dict[str, str | float | bool | int | None]:
         """Run one dummy two-bar prompt generation to pay first-call overhead at startup."""
 
         if not self._has_real_model():
@@ -462,18 +654,30 @@ class LekaiPromptEngine:
         )
         prompt_token_ids = [int(token) for token in prompt_tokens.detach().cpu().flatten().tolist()]
         self._last_prompt_token_ids = prompt_token_ids
+        selection_mode = self._selection_mode()
+        generation_parameters = self._generation_parameters(selection_mode)
         self._last_generation_metadata = {
             "bpm": int(bpm),
             "prompt_start_tick": int(prompt_start_tick),
             "requested_prompt_length_ticks": int(prompt_length_ticks),
             "condition_length_ticks": int(condition_length_ticks),
             "window_ticks": int(window_ticks),
-            "temperature": self._env_float("LEKAI_PROMPT_TEMPERATURE", 1.1),
-            "top_k": max(0, self._env_int("LEKAI_PROMPT_TOP_K", 0)),
-            "top_p": self._env_float("LEKAI_PROMPT_TOP_P", 0.95),
-            "repetition_penalty": self._env_float("LEKAI_PROMPT_REPETITION_PENALTY", 1.0),
+            "selection_mode": selection_mode,
+            "candidate_count": (
+                self._batch_candidate_count() if selection_mode != "single" else 1
+            ),
+            "selected_candidate_number": 1,
+            **generation_parameters,
         }
-        generated = self._generate_tokens(prompt_tokens)
+        if selection_mode == "single":
+            generated = self._generate_tokens(prompt_tokens)
+        else:
+            generated, selection_metadata = self._generate_batch_selected_tokens(
+                prompt_tokens,
+                prompt_length_ticks=prompt_length_ticks,
+                selection_mode=selection_mode,
+            )
+            self._last_generation_metadata.update(selection_metadata)
         generated_token_ids = [int(token) for token in generated.detach().cpu().flatten().tolist()]
         self._last_generated_token_ids = generated_token_ids
         self._last_new_token_ids = generated_token_ids[len(prompt_token_ids):]

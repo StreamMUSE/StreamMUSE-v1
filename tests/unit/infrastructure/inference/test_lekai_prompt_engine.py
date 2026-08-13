@@ -53,3 +53,31 @@ def test_prompt_engine_condition_length_can_be_overridden_by_beats(monkeypatch):
     engine = LekaiPromptEngine()
 
     assert engine._prompt_condition_length_ticks(32) == 16
+
+
+def test_prompt_engine_defaults_to_stanley_single_candidate_path(monkeypatch):
+    monkeypatch.delenv("LEKAI_PROMPT_SELECTION_MODE", raising=False)
+    engine = LekaiPromptEngine()
+
+    info = engine.runtime_info()
+
+    assert info["selection_mode"] == "single"
+    assert info["batch_candidate_count"] == 1
+    assert engine._generation_parameters("single") == {
+        "temperature": 1.1,
+        "top_k": 0,
+        "top_p": 0.95,
+        "repetition_penalty": 1.0,
+    }
+
+
+def test_prompt_engine_exposes_paired_batch_selection_modes(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "batch_first")
+    monkeypatch.setenv("LEKAI_PROMPT_BATCH_CANDIDATES", "5")
+    engine = LekaiPromptEngine()
+
+    assert engine.runtime_info()["batch_candidate_count"] == 5
+    assert engine._generation_parameters("batch_first")["top_k"] == 50
+
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "rule_s")
+    assert engine.runtime_info()["selection_mode"] == "rule_s"

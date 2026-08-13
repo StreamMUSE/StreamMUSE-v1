@@ -74,6 +74,9 @@ class LekaiPromptContinuationBackend:
         info["runtime_model_name"] = self.MODEL_NAME
         return info
 
+    def prompt_generation_log(self) -> dict[str, Any]:
+        return self._engine.prompt_generation_log()
+
     def catchup_status(self) -> dict[str, int | bool]:
         return self._engine.catchup_status()
 
