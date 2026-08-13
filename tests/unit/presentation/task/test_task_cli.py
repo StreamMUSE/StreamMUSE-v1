@@ -256,6 +256,8 @@ def test_task_cli_voice_mode_passes_typed_configuration(tmp_path, capsys) -> Non
                 "model-commit",
                 "--voice-local-files-only",
                 "--voice-save-audio",
+                "--voice-max-utterance-ms",
+                "1000",
             ]
         )
 
@@ -269,6 +271,7 @@ def test_task_cli_voice_mode_passes_typed_configuration(tmp_path, capsys) -> Non
     assert config.voice.model_revision == "model-commit"
     assert config.voice.local_files_only is True
     assert config.voice.save_audio is True
+    assert config.voice.max_utterance_ms == 1000.0
     assert "interactive completed" in capsys.readouterr().out
 
 
@@ -281,6 +284,22 @@ def test_task_cli_rejects_voice_options_in_terminal_mode(capsys) -> None:
     assert exit_code == 2
     play_task.assert_not_called()
     assert "voice options require --human-input voice" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
+def test_task_cli_rejects_invalid_voice_max_utterance(value: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "play",
+                "--task",
+                "zip_zap_zop",
+                "--human-input",
+                "voice",
+                "--voice-max-utterance-ms",
+                value,
+            ]
+        )
 
 
 def test_voice_devices_needs_no_task_or_model_client(capsys) -> None:

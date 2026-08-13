@@ -9,8 +9,9 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -25,6 +26,7 @@ from . import SpeechSynthesisError, VoiceDependencyError, _json_safe
 class SynthesizedAudio:
     samples: np.ndarray
     sample_rate_hz: int
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         samples = np.ascontiguousarray(
@@ -34,6 +36,7 @@ class SynthesizedAudio:
             raise ValueError("sample_rate_hz must be positive")
         object.__setattr__(self, "samples", samples)
         object.__setattr__(self, "sample_rate_hz", int(self.sample_rate_hz))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
     @property
     def duration_ms(self) -> float:
@@ -151,6 +154,7 @@ class CommandSpeechSynthesizer:
         if self._executable is None or self._closed:
             raise SpeechSynthesisError("Speech synthesizer has not been started")
         temporary_path: Path | None = None
+        synthesis_started_s = time.perf_counter()
         try:
             handle = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             handle.close()
@@ -180,8 +184,53 @@ class CommandSpeechSynthesizer:
                 ]
                 if self.config.voice is not None:
                     command[1:1] = ["-v", self.config.voice]
+            command_started_s = time.perf_counter()
             self._run(command, input_text=str(text))
-            return _read_pcm_wav(temporary_path)
+            command_completed_s = time.perf_counter()
+            audio = _read_pcm_wav(temporary_path)
+            wav_decoded_s = time.perf_counter()
+            return replace(
+                audio,
+                metadata={
+                    "timing_breakdown": {
+                        "schema_version": 1,
+                        "clock": "monotonic",
+                        "origin": "synthesis_start",
+                        "anchors_ms": {
+                            "command_started": _elapsed_ms(
+                                synthesis_started_s,
+                                command_started_s,
+                            ),
+                            "command_completed": _elapsed_ms(
+                                synthesis_started_s,
+                                command_completed_s,
+                            ),
+                            "wav_decoded": _elapsed_ms(
+                                synthesis_started_s,
+                                wav_decoded_s,
+                            ),
+                        },
+                        "durations_ms": {
+                            "temporary_file_setup": _elapsed_ms(
+                                synthesis_started_s,
+                                command_started_s,
+                            ),
+                            "command_execution": _elapsed_ms(
+                                command_started_s,
+                                command_completed_s,
+                            ),
+                            "wav_decode": _elapsed_ms(
+                                command_completed_s,
+                                wav_decoded_s,
+                            ),
+                            "pipeline_total": _elapsed_ms(
+                                synthesis_started_s,
+                                wav_decoded_s,
+                            ),
+                        },
+                    }
+                },
+            )
         except (KeyboardInterrupt, SystemExit):
             self._terminate_active_process()
             raise
@@ -423,3 +472,7 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _elapsed_ms(start_s: float, end_s: float) -> float:
+    return max(0.0, (float(end_s) - float(start_s)) * 1000.0)

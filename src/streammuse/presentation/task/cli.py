@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     play.add_argument("--voice-model-revision", default=None)
     play.add_argument("--voice-local-files-only", action="store_true")
     play.add_argument("--voice-save-audio", action="store_true")
+    play.add_argument(
+        "--voice-max-utterance-ms",
+        type=_positive_finite_float,
+        default=None,
+        help="maximum captured utterance duration after speech starts (voice default: 5000 ms)",
+    )
     play.add_argument("--speech-output", choices=["off", "audio"], default=None)
     play.add_argument(
         "--speech-backend",
@@ -476,6 +482,7 @@ def _human_input_config_from_args(args: argparse.Namespace) -> HumanInputConfig:
         args.microphone_device,
         args.voice_model_cache,
         args.voice_model_revision,
+        args.voice_max_utterance_ms,
     )
     voice_flags = (bool(args.voice_local_files_only), bool(args.voice_save_audio))
     if args.human_input == "terminal":
@@ -494,6 +501,11 @@ def _human_input_config_from_args(args: argparse.Namespace) -> HumanInputConfig:
             model_revision=args.voice_model_revision,
             local_files_only=bool(args.voice_local_files_only),
             save_audio=bool(args.voice_save_audio),
+            max_utterance_ms=(
+                5000.0
+                if args.voice_max_utterance_ms is None
+                else args.voice_max_utterance_ms
+            ),
         ),
     )
 

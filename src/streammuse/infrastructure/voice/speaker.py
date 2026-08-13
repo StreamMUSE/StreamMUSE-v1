@@ -6,7 +6,7 @@ import math
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
@@ -51,6 +51,7 @@ class SpeakerPlayback:
     sample_rate_hz: int
     device: str
     error: SpeakerPlaybackError | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _import_sounddevice() -> Any:
@@ -159,12 +160,15 @@ class SpeakerPlayer:
             raise SpeakerPlaybackError("sounddevice is unavailable")
         play_started_s = self._now()
         samples, sample_rate = self._prepare_audio(audio)
+        audio_prepared_s = self._now()
         inactive_event = threading.Event()
         abort_requested = threading.Event()
         callback_errors: queue.Queue[BaseException] = queue.Queue(maxsize=1)
         termination_kind = ["running"]
         frame_cursor = [0]
+        first_callback_s: list[float | None] = [None]
         first_dac_s: list[float | None] = [None]
+        last_frame_submitted_s: list[float | None] = [None]
         stream_inactive_s: list[float | None] = [None]
         clock = PortAudioClockMapper("outputBufferDacTime")
 
@@ -180,6 +184,9 @@ class SpeakerPlayer:
         ) -> None:
             finished = False
             try:
+                callback_local_s = self._now()
+                if first_callback_s[0] is None:
+                    first_callback_s[0] = callback_local_s
                 if status:
                     raise SpeakerPlaybackError(f"Speaker callback status: {status}")
                 start = frame_cursor[0]
@@ -190,11 +197,12 @@ class SpeakerPlayer:
                     if first_dac_s[0] is None:
                         first_dac_s[0] = clock.buffer_start(
                             time_info,
-                            callback_local_s=self._now(),
+                            callback_local_s=callback_local_s,
                         )
                 frame_cursor[0] = end
                 finished = end >= samples.size
                 if finished:
+                    last_frame_submitted_s[0] = callback_local_s
                     termination_kind[0] = "normal"
             except Exception as exc:
                 termination_kind[0] = "callback_error"
@@ -205,8 +213,12 @@ class SpeakerPlayer:
 
         stream: Any | None = None
         playback_start_s = self._now()
+        stream_open_started_s = playback_start_s
+        stream_opened_s: float | None = None
+        stream_started_s: float | None = None
         try:
             try:
+                stream_open_started_s = self._now()
                 stream = sd.OutputStream(
                     samplerate=sample_rate,
                     blocksize=0,
@@ -216,6 +228,7 @@ class SpeakerPlayer:
                     callback=callback,
                     finished_callback=finished_callback,
                 )
+                stream_opened_s = self._now()
             except Exception as exc:
                 raise SpeakerPlaybackError(
                     f"Could not open speaker stream: {exc}"
@@ -226,6 +239,7 @@ class SpeakerPlayer:
             playback_start_s = self._now()
             try:
                 stream.start()
+                stream_started_s = self._now()
             except Exception as exc:
                 raise SpeakerPlaybackError(
                     f"Could not start speaker stream: {exc}"
@@ -259,6 +273,79 @@ class SpeakerPlayer:
             )
             inactive_s = stream_inactive_s[0]
             drained_s = inactive_s if completed_normally else None
+            timing = {
+                "schema_version": 1,
+                "clock": "monotonic",
+                "origin": "speaker_play_start",
+                "anchors_ms": {
+                    "audio_prepared": _offset_ms(
+                        audio_prepared_s,
+                        play_started_s,
+                    ),
+                    "stream_open_started": _offset_ms(
+                        stream_open_started_s,
+                        play_started_s,
+                    ),
+                    "stream_opened": _offset_ms(
+                        stream_opened_s,
+                        play_started_s,
+                    ),
+                    "stream_start_requested": _offset_ms(
+                        playback_start_s,
+                        play_started_s,
+                    ),
+                    "stream_started": _offset_ms(
+                        stream_started_s,
+                        play_started_s,
+                    ),
+                    "first_callback": _offset_ms(
+                        first_callback_s[0],
+                        play_started_s,
+                    ),
+                    "first_dac_sample": _offset_ms(
+                        first_dac_s[0],
+                        play_started_s,
+                    ),
+                    "last_frame_submitted": _offset_ms(
+                        last_frame_submitted_s[0],
+                        play_started_s,
+                    ),
+                    "stream_inactive": _offset_ms(
+                        inactive_s,
+                        play_started_s,
+                    ),
+                },
+                "durations_ms": {
+                    "audio_prepare": _elapsed_ms(
+                        play_started_s,
+                        audio_prepared_s,
+                    ),
+                    "stream_open": _optional_elapsed_ms(
+                        stream_open_started_s,
+                        stream_opened_s,
+                    ),
+                    "stream_start": _optional_elapsed_ms(
+                        playback_start_s,
+                        stream_started_s,
+                    ),
+                    "start_to_first_callback": _optional_elapsed_ms(
+                        playback_start_s,
+                        first_callback_s[0],
+                    ),
+                    "start_to_first_dac": _optional_elapsed_ms(
+                        playback_start_s,
+                        first_dac_s[0],
+                    ),
+                    "first_dac_to_inactive": _optional_elapsed_ms(
+                        first_dac_s[0],
+                        inactive_s,
+                    ),
+                    "pipeline_total": _optional_elapsed_ms(
+                        play_started_s,
+                        inactive_s,
+                    ),
+                },
+            }
             return SpeakerPlayback(
                 completed_normally=completed_normally,
                 playback_start_offset_ms=max(
@@ -276,6 +363,7 @@ class SpeakerPlayer:
                 sample_rate_hz=sample_rate,
                 device=self._device.name,
                 error=playback_error,
+                metadata={"timing_breakdown": timing},
             )
         except BaseException:
             abort_requested.set()
@@ -393,3 +481,16 @@ def _offset_ms(value_s: float | None, origin_s: float) -> float | None:
     if value_s is None:
         return None
     return max(0.0, (value_s - origin_s) * 1000.0)
+
+
+def _elapsed_ms(start_s: float, end_s: float) -> float:
+    return max(0.0, (float(end_s) - float(start_s)) * 1000.0)
+
+
+def _optional_elapsed_ms(
+    start_s: float | None,
+    end_s: float | None,
+) -> float | None:
+    if start_s is None or end_s is None:
+        return None
+    return _elapsed_ms(start_s, end_s)

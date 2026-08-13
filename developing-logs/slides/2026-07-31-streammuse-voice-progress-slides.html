@@ -1,0 +1,1711 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreamMUSE 语音交互进展</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #ffffff;
+      --canvas: #e3e8eb;
+      --ink: #172126;
+      --muted: #5c6970;
+      --line: #d5dde1;
+      --soft: #f3f6f7;
+      --teal: #087f8c;
+      --green: #3f8f57;
+      --gold: #c48516;
+      --red: #c84e4e;
+      --blue: #3d6fa6;
+      --violet: #795f9e;
+      --dark: #122126;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button,
+    video {
+      font: inherit;
+    }
+
+    #deck {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 1600px;
+      height: 900px;
+      transform: translate(-50%, -50%) scale(var(--deck-scale, 1));
+      transform-origin: center center;
+      background: var(--paper);
+      box-shadow: 0 24px 70px rgba(18, 33, 38, 0.18);
+    }
+
+    .slide {
+      display: none;
+      position: absolute;
+      inset: 0;
+      width: 1600px;
+      height: 900px;
+      padding: 62px 78px 66px;
+      overflow: hidden;
+      background: var(--paper);
+    }
+
+    .slide.active {
+      display: block;
+    }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 8px;
+      background: var(--teal);
+    }
+
+    .slide[data-accent="red"]::before { background: var(--red); }
+    .slide[data-accent="gold"]::before { background: var(--gold); }
+    .slide[data-accent="green"]::before { background: var(--green); }
+    .slide[data-accent="blue"]::before { background: var(--blue); }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--teal);
+      font-size: 17px;
+      line-height: 1;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      max-width: 1180px;
+      margin-bottom: 24px;
+      font-size: 86px;
+      line-height: 1.03;
+      font-weight: 820;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin-bottom: 26px;
+      font-size: 50px;
+      line-height: 1.08;
+      font-weight: 810;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin-bottom: 12px;
+      font-size: 25px;
+      line-height: 1.2;
+      font-weight: 780;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 1120px;
+      color: var(--muted);
+      font-size: 28px;
+      line-height: 1.45;
+    }
+
+    .body-copy {
+      color: var(--ink);
+      font-size: 22px;
+      line-height: 1.52;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .accent {
+      color: var(--teal);
+    }
+
+    .danger {
+      color: var(--red);
+    }
+
+    .gold {
+      color: var(--gold);
+    }
+
+    .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .footer {
+      position: absolute;
+      left: 78px;
+      right: 78px;
+      bottom: 25px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #758188;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .source {
+      max-width: 1220px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .counter {
+      font-variant-numeric: tabular-nums;
+      font-weight: 750;
+    }
+
+    .progress {
+      position: fixed;
+      left: 0;
+      top: 0;
+      z-index: 20;
+      width: var(--progress, 7.14%);
+      height: 4px;
+      background: var(--teal);
+      transition: width 160ms ease;
+    }
+
+    .controls {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 30;
+      display: flex;
+      gap: 8px;
+    }
+
+    .controls button {
+      width: 44px;
+      height: 44px;
+      border: 1px solid #bac5ca;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.94);
+      color: var(--ink);
+      box-shadow: 0 5px 18px rgba(18, 33, 38, 0.12);
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 750;
+    }
+
+    .controls button:hover {
+      border-color: var(--teal);
+      color: var(--teal);
+    }
+
+    .cover {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 72px;
+      align-items: center;
+      height: 100%;
+    }
+
+    .cover-note {
+      margin-top: 34px;
+      padding-left: 20px;
+      border-left: 6px solid var(--teal);
+      font-size: 26px;
+      line-height: 1.45;
+      max-width: 820px;
+    }
+
+    .cover-meta {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.6;
+    }
+
+    .cover-visual {
+      position: relative;
+      height: 600px;
+      border-left: 1px solid var(--line);
+      padding-left: 58px;
+      display: grid;
+      align-content: center;
+      gap: 24px;
+    }
+
+    .signal-row {
+      display: grid;
+      grid-template-columns: 95px 1fr;
+      gap: 18px;
+      align-items: center;
+    }
+
+    .signal-label {
+      font-size: 17px;
+      font-weight: 780;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    .signal-line {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .signal-line span {
+      display: block;
+      width: 12px;
+      height: var(--h);
+      min-height: 4px;
+      background: var(--teal);
+      border-radius: 2px;
+    }
+
+    .signal-line.gold-bars span { background: var(--gold); }
+    .signal-line.red-bars span { background: var(--red); }
+
+    .rule-layout {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 52px;
+      align-items: start;
+    }
+
+    .number-sequence {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .number-cell {
+      height: 112px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--soft);
+      font-size: 31px;
+      font-weight: 800;
+    }
+
+    .number-cell.zip { color: white; background: var(--teal); border-color: var(--teal); }
+    .number-cell.zap { color: white; background: var(--gold); border-color: var(--gold); }
+    .number-cell.zop { color: white; background: var(--red); border-color: var(--red); }
+
+    .rule-lines {
+      margin-top: 22px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .rule-line {
+      display: grid;
+      grid-template-columns: 74px 1fr;
+      align-items: center;
+      min-height: 64px;
+      border-bottom: 1px solid var(--line);
+      font-size: 23px;
+    }
+
+    .rule-word {
+      font-weight: 820;
+    }
+
+    .loop-list {
+      display: grid;
+      gap: 0;
+      margin-top: 12px;
+    }
+
+    .loop-step {
+      display: grid;
+      grid-template-columns: 62px 1fr;
+      gap: 17px;
+      align-items: center;
+      min-height: 91px;
+      position: relative;
+    }
+
+    .loop-step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      left: 29px;
+      top: 62px;
+      width: 3px;
+      height: 37px;
+      background: var(--line);
+    }
+
+    .step-index {
+      width: 58px;
+      height: 58px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--dark);
+      color: white;
+      font-size: 21px;
+      font-weight: 800;
+    }
+
+    .step-copy strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 23px;
+    }
+
+    .step-copy span {
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .architecture {
+      display: grid;
+      gap: 22px;
+      margin-top: 8px;
+    }
+
+    .arch-lane {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .lane-label {
+      font-size: 19px;
+      font-weight: 800;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    .arch-flow {
+      display: grid;
+      grid-template-columns: 1fr 45px 1fr 45px 1fr 45px 1fr;
+      align-items: center;
+    }
+
+    .arch-node {
+      min-height: 102px;
+      padding: 17px 18px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--soft);
+    }
+
+    .arch-node strong {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 21px;
+    }
+
+    .arch-node span {
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .arch-node.teal-node { border-top: 6px solid var(--teal); }
+    .arch-node.gold-node { border-top: 6px solid var(--gold); }
+    .arch-node.red-node { border-top: 6px solid var(--red); }
+    .arch-node.green-node { border-top: 6px solid var(--green); }
+    .arch-node.blue-node { border-top: 6px solid var(--blue); }
+
+    .arch-arrow {
+      color: #98a5ab;
+      font-size: 32px;
+      text-align: center;
+      font-weight: 800;
+    }
+
+    .arch-principle {
+      margin: 24px 0 0 184px;
+      padding: 18px 22px;
+      border-left: 6px solid var(--teal);
+      background: #edf7f8;
+      font-size: 23px;
+      line-height: 1.4;
+    }
+
+    .status-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 34px;
+      margin-top: 18px;
+    }
+
+    .status-column {
+      min-height: 470px;
+      padding: 0 24px;
+      border-left: 5px solid var(--line);
+    }
+
+    .status-column.done { border-color: var(--green); }
+    .status-column.measured { border-color: var(--teal); }
+    .status-column.next { border-color: var(--gold); }
+
+    .status-column h3 {
+      font-size: 29px;
+    }
+
+    .status-list {
+      list-style: none;
+      padding: 0;
+      margin: 24px 0 0;
+      display: grid;
+      gap: 20px;
+    }
+
+    .status-list li {
+      position: relative;
+      padding-left: 31px;
+      font-size: 21px;
+      line-height: 1.4;
+    }
+
+    .status-list li::before {
+      content: "•";
+      position: absolute;
+      left: 2px;
+      top: -1px;
+      color: var(--teal);
+      font-size: 29px;
+      line-height: 1;
+    }
+
+    .video-slide {
+      background: #101a1e;
+      color: white;
+    }
+
+    .video-slide::before {
+      background: var(--red);
+    }
+
+    .video-slide .eyebrow,
+    .video-slide .lead {
+      color: #b8c5ca;
+    }
+
+    .video-frame {
+      position: relative;
+      width: 100%;
+      height: 650px;
+      margin-top: 18px;
+      border: 1px solid #415158;
+      background: #05090b;
+      overflow: hidden;
+    }
+
+    .video-frame video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #05090b;
+      z-index: 2;
+    }
+
+    .video-placeholder {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      pointer-events: none;
+      background: #111b1f;
+    }
+
+    .video-placeholder[hidden] {
+      display: none;
+    }
+
+    .play-symbol {
+      width: 104px;
+      height: 104px;
+      margin: 0 auto 25px;
+      display: grid;
+      place-items: center;
+      border: 2px solid #73848b;
+      border-radius: 50%;
+      color: white;
+      font-size: 46px;
+      padding-left: 7px;
+    }
+
+    .video-placeholder strong {
+      display: block;
+      font-size: 34px;
+      margin-bottom: 10px;
+    }
+
+    .video-placeholder span {
+      color: #aab8be;
+      font-size: 21px;
+    }
+
+    .experiment-layout {
+      display: grid;
+      grid-template-columns: 0.83fr 1.17fr;
+      gap: 58px;
+      align-items: start;
+    }
+
+    .sample-number {
+      margin: 20px 0 0;
+      font-size: 118px;
+      line-height: 0.9;
+      color: var(--teal);
+      font-weight: 850;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .sample-caption {
+      margin-top: 18px;
+      font-size: 25px;
+      line-height: 1.45;
+    }
+
+    .experiment-facts {
+      margin-top: 32px;
+      padding-top: 24px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1.7;
+    }
+
+    .timing-stack {
+      display: grid;
+      gap: 18px;
+      margin-top: 16px;
+    }
+
+    .timing-line {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .timing-name {
+      font-size: 19px;
+      font-weight: 800;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    .timing-track {
+      min-height: 78px;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      border: 1px solid var(--line);
+      background: var(--soft);
+    }
+
+    .timing-track span {
+      display: grid;
+      place-items: center;
+      padding: 10px;
+      border-right: 1px solid var(--line);
+      text-align: center;
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 720;
+      line-height: 1.25;
+    }
+
+    .timing-track span:last-child { border-right: 0; }
+
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 25px;
+      margin-top: 28px;
+    }
+
+    .metric {
+      min-height: 195px;
+      padding: 22px 24px;
+      border-top: 7px solid var(--teal);
+      border-bottom: 1px solid var(--line);
+      background: var(--soft);
+    }
+
+    .metric.red-metric { border-top-color: var(--red); }
+    .metric.gold-metric { border-top-color: var(--gold); }
+    .metric.green-metric { border-top-color: var(--green); }
+
+    .metric-value {
+      display: block;
+      margin: 8px 0 13px;
+      font-size: 66px;
+      line-height: 1;
+      font-weight: 840;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric-label {
+      display: block;
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    .result-takeaway {
+      margin-top: 42px;
+      padding: 23px 27px;
+      border-left: 7px solid var(--red);
+      background: #fff2f2;
+      font-size: 27px;
+      line-height: 1.4;
+    }
+
+    .breakdown-topline {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin: 10px 0 30px;
+    }
+
+    .top-stat {
+      padding-bottom: 18px;
+      border-bottom: 5px solid var(--line);
+    }
+
+    .top-stat strong {
+      display: block;
+      font-size: 53px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .top-stat span {
+      display: block;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .stacked-bar {
+      display: flex;
+      width: 100%;
+      height: 118px;
+      border: 1px solid var(--line);
+      overflow: hidden;
+      background: var(--soft);
+    }
+
+    .bar-segment {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-width: 4px;
+      color: white;
+      text-align: center;
+      font-size: 17px;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .bar-segment.wait { width: 4.84%; background: var(--blue); }
+    .bar-segment.voiced { width: 84.73%; background: var(--red); font-size: 26px; }
+    .bar-segment.endpoint { width: 4.91%; background: var(--gold); }
+    .bar-segment.close { width: 2.27%; background: var(--violet); }
+    .bar-segment.asr { width: 3.23%; background: var(--teal); }
+
+    .bar-segment.compact span {
+      display: none;
+    }
+
+    .legend-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .legend-item {
+      padding-top: 13px;
+      border-top: 5px solid var(--line);
+    }
+
+    .legend-item.blue-line { border-color: var(--blue); }
+    .legend-item.red-line { border-color: var(--red); }
+    .legend-item.gold-line { border-color: var(--gold); }
+    .legend-item.violet-line { border-color: var(--violet); }
+    .legend-item.teal-line { border-color: var(--teal); }
+
+    .legend-item strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 24px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .legend-item span {
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .vad-layout {
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      gap: 54px;
+      align-items: start;
+    }
+
+    .vad-timeline {
+      position: relative;
+      height: 335px;
+      margin-top: 45px;
+      padding: 0 40px;
+    }
+
+    .vad-axis {
+      position: absolute;
+      left: 40px;
+      right: 40px;
+      top: 170px;
+      height: 6px;
+      background: #cfd8dc;
+    }
+
+    .vad-active {
+      position: absolute;
+      left: 9%;
+      width: 82%;
+      top: 170px;
+      height: 6px;
+      background: var(--red);
+    }
+
+    .vad-point {
+      position: absolute;
+      top: 154px;
+      width: 36px;
+      height: 36px;
+      border: 6px solid white;
+      border-radius: 50%;
+      box-shadow: 0 0 0 2px currentColor;
+      background: currentColor;
+      transform: translateX(-50%);
+    }
+
+    .vad-point.p1 { left: 9%; color: var(--teal); }
+    .vad-point.p2 { left: 17%; color: var(--green); }
+    .vad-point.p3 { left: 91%; color: var(--red); }
+    .vad-point.p4 { left: 96%; color: var(--gold); }
+
+    .vad-label {
+      position: absolute;
+      width: 220px;
+      transform: translateX(-50%);
+      text-align: center;
+      font-size: 18px;
+      line-height: 1.28;
+    }
+
+    .vad-label strong {
+      display: block;
+      font-size: 22px;
+      margin-bottom: 5px;
+    }
+
+    .vad-label.l1 { left: 9%; top: 48px; }
+    .vad-label.l2 { left: 20%; top: 218px; }
+    .vad-label.l3 { left: 82%; top: 48px; }
+    .vad-label.l4 { left: 96%; top: 218px; }
+
+    .vad-definition {
+      margin-top: 30px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--soft);
+    }
+
+    .formula {
+      margin: 20px 0;
+      padding: 17px 18px;
+      background: var(--dark);
+      color: white;
+      font-size: 20px;
+      line-height: 1.35;
+    }
+
+    .vad-definition p {
+      font-size: 20px;
+      line-height: 1.48;
+      margin-bottom: 0;
+    }
+
+    .recognition-layout {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 52px;
+      align-items: start;
+    }
+
+    .token-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 20px;
+    }
+
+    .token-table th,
+    .token-table td {
+      padding: 15px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+
+    .token-table th {
+      color: var(--muted);
+      background: var(--soft);
+      font-size: 16px;
+      text-transform: uppercase;
+    }
+
+    .token-table td:last-child,
+    .token-table th:last-child {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .token-table tr.bad td {
+      color: var(--red);
+      font-weight: 780;
+      background: #fff4f4;
+    }
+
+    .asr-panel {
+      padding-left: 34px;
+      border-left: 1px solid var(--line);
+    }
+
+    .asr-big {
+      font-size: 92px;
+      line-height: 1;
+      color: var(--teal);
+      font-weight: 850;
+    }
+
+    .asr-sub {
+      margin: 8px 0 28px;
+      color: var(--muted);
+      font-size: 23px;
+    }
+
+    .outlier-box {
+      padding: 22px 24px;
+      border-left: 7px solid var(--red);
+      background: #fff2f2;
+      font-size: 20px;
+      line-height: 1.45;
+    }
+
+    .latency-flow {
+      display: grid;
+      grid-template-columns: 1.25fr 0.42fr 1.5fr 0.46fr;
+      height: 180px;
+      margin-top: 35px;
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+
+    .latency-block {
+      display: grid;
+      place-items: center;
+      padding: 15px;
+      color: white;
+      text-align: center;
+      border-right: 2px solid white;
+    }
+
+    .latency-block strong {
+      display: block;
+      font-size: 41px;
+      line-height: 1;
+      margin-bottom: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .latency-block span {
+      font-size: 18px;
+      line-height: 1.25;
+      font-weight: 720;
+    }
+
+    .latency-block.llm { background: var(--teal); }
+    .latency-block.startup { background: var(--gold); }
+    .latency-block.audio { background: var(--green); }
+    .latency-block.cleanup { background: var(--violet); border-right: 0; }
+
+    .latency-facts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+      margin-top: 35px;
+    }
+
+    .latency-fact {
+      padding: 21px 24px;
+      border-top: 5px solid var(--line);
+      background: var(--soft);
+      font-size: 21px;
+      line-height: 1.45;
+    }
+
+    .latency-fact strong {
+      font-size: 29px;
+      color: var(--teal);
+    }
+
+    .e2e-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 62px;
+      align-items: start;
+    }
+
+    .milestone-list {
+      position: relative;
+      margin: 22px 0 0 15px;
+      padding-left: 70px;
+      display: grid;
+      gap: 28px;
+    }
+
+    .milestone-list::before {
+      content: "";
+      position: absolute;
+      left: 18px;
+      top: 20px;
+      bottom: 20px;
+      width: 5px;
+      background: var(--line);
+    }
+
+    .milestone {
+      position: relative;
+      min-height: 85px;
+    }
+
+    .milestone::before {
+      content: "";
+      position: absolute;
+      left: -68px;
+      top: 7px;
+      width: 36px;
+      height: 36px;
+      border: 6px solid white;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 0 2px var(--teal);
+    }
+
+    .milestone.red-dot::before { background: var(--red); box-shadow: 0 0 0 2px var(--red); }
+    .milestone.gold-dot::before { background: var(--gold); box-shadow: 0 0 0 2px var(--gold); }
+
+    .milestone strong {
+      display: block;
+      font-size: 38px;
+      line-height: 1;
+      margin-bottom: 8px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .milestone span {
+      color: var(--muted);
+      font-size: 20px;
+    }
+
+    .boundary-box {
+      padding: 28px 30px;
+      background: var(--dark);
+      color: white;
+    }
+
+    .boundary-total {
+      font-size: 75px;
+      line-height: 1;
+      font-weight: 850;
+      color: #8ed5dc;
+    }
+
+    .boundary-label {
+      margin: 10px 0 28px;
+      color: #c7d4d8;
+      font-size: 21px;
+    }
+
+    .boundary-row {
+      display: grid;
+      grid-template-columns: 108px 1fr;
+      gap: 18px;
+      align-items: center;
+      min-height: 72px;
+      border-top: 1px solid #3a4a50;
+    }
+
+    .boundary-row strong {
+      color: white;
+      font-size: 25px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .boundary-row span {
+      color: #bac8cc;
+      font-size: 18px;
+    }
+
+    .startup-layout {
+      display: grid;
+      grid-template-columns: 1fr 440px;
+      gap: 54px;
+      align-items: start;
+    }
+
+    .startup-bars {
+      display: grid;
+      gap: 27px;
+      margin-top: 28px;
+    }
+
+    .startup-row {
+      display: grid;
+      grid-template-columns: 240px 1fr 130px;
+      gap: 18px;
+      align-items: center;
+      min-height: 52px;
+    }
+
+    .startup-name {
+      font-size: 20px;
+      font-weight: 750;
+      text-align: right;
+    }
+
+    .startup-track {
+      height: 34px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      overflow: hidden;
+    }
+
+    .startup-bar {
+      height: 100%;
+      width: var(--w);
+      background: var(--teal);
+    }
+
+    .startup-bar.gold-bar { background: var(--gold); }
+    .startup-bar.green-bar { background: var(--green); }
+    .startup-bar.blue-bar { background: var(--blue); }
+
+    .startup-value {
+      font-size: 22px;
+      font-weight: 820;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .startup-total {
+      margin-top: 24px;
+      padding: 30px;
+      border-top: 8px solid var(--gold);
+      background: #fff8e9;
+    }
+
+    .startup-total strong {
+      display: block;
+      color: var(--gold);
+      font-size: 78px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .startup-total span {
+      display: block;
+      margin-top: 13px;
+      font-size: 21px;
+      line-height: 1.4;
+    }
+
+    .next-layout {
+      display: grid;
+      grid-template-columns: 0.92fr 1.08fr;
+      gap: 64px;
+      align-items: start;
+    }
+
+    .decision {
+      padding: 30px 32px;
+      border-left: 8px solid var(--teal);
+      background: #edf7f8;
+    }
+
+    .decision-label {
+      color: var(--teal);
+      font-size: 18px;
+      font-weight: 820;
+      text-transform: uppercase;
+    }
+
+    .decision strong {
+      display: block;
+      margin: 14px 0 18px;
+      font-size: 45px;
+      line-height: 1.16;
+    }
+
+    .decision code {
+      display: block;
+      margin-top: 22px;
+      padding: 17px 19px;
+      background: var(--dark);
+      color: white;
+      font-size: 20px;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+
+    .next-steps {
+      display: grid;
+      gap: 22px;
+    }
+
+    .next-step {
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 18px;
+      align-items: start;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .next-step .step-index {
+      width: 52px;
+      height: 52px;
+      font-size: 19px;
+      background: var(--teal);
+    }
+
+    .next-step strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 24px;
+    }
+
+    .next-step span {
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.4;
+    }
+
+    .closing-line {
+      margin-top: 42px;
+      font-size: 28px;
+      line-height: 1.45;
+      font-weight: 760;
+    }
+
+    .notes {
+      display: none;
+    }
+
+    @media print {
+      html,
+      body {
+        overflow: visible;
+        background: white;
+      }
+
+      #deck {
+        position: static;
+        width: auto;
+        height: auto;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .slide,
+      .slide.active {
+        display: block;
+        position: relative;
+        page-break-after: always;
+      }
+
+      .controls,
+      .progress {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+
+  <main id="deck" aria-live="polite">
+    <section class="slide active" data-title="Title" data-accent="green">
+      <div class="cover">
+        <div>
+          <p class="eyebrow">StreamMUSE · 组会 · 2026-07-31</p>
+          <h1>语音交互<br>现在可以量化</h1>
+          <p class="lead">从一个可玩的 Zip Zap Zop 游戏，到可分解 STT、LLM、TTS 与 PortAudio 的双向语音实验平台。</p>
+          <div class="cover-note">当前结论：模型推理不是主要瓶颈，人类回合的长尾主要来自 VAD 持续判定有声。</div>
+          <div class="cover-meta">feature/voice · faster-whisper tiny.en int8 · Qwen 27B 服务 · macOS 系统 TTS</div>
+        </div>
+          <div class="cover-visual" aria-label="人声、模型与播放信号">
+          <div class="signal-row">
+            <div class="signal-label">人类</div>
+            <div class="signal-line red-bars">
+              <span style="--h:9px"></span><span style="--h:18px"></span><span style="--h:52px"></span><span style="--h:30px"></span><span style="--h:60px"></span><span style="--h:21px"></span><span style="--h:8px"></span><span style="--h:5px"></span><span style="--h:12px"></span><span style="--h:7px"></span><span style="--h:5px"></span><span style="--h:8px"></span><span style="--h:4px"></span><span style="--h:13px"></span><span style="--h:5px"></span><span style="--h:4px"></span><span style="--h:11px"></span><span style="--h:4px"></span>
+            </div>
+          </div>
+          <div class="signal-row">
+            <div class="signal-label">LLM</div>
+            <div class="signal-line">
+              <span style="--h:5px"></span><span style="--h:6px"></span><span style="--h:7px"></span><span style="--h:9px"></span><span style="--h:14px"></span><span style="--h:22px"></span><span style="--h:36px"></span><span style="--h:54px"></span><span style="--h:42px"></span><span style="--h:28px"></span><span style="--h:18px"></span><span style="--h:12px"></span><span style="--h:8px"></span><span style="--h:6px"></span><span style="--h:5px"></span><span style="--h:4px"></span><span style="--h:4px"></span><span style="--h:4px"></span>
+            </div>
+          </div>
+          <div class="signal-row">
+            <div class="signal-label">TTS</div>
+            <div class="signal-line gold-bars">
+              <span style="--h:6px"></span><span style="--h:20px"></span><span style="--h:45px"></span><span style="--h:28px"></span><span style="--h:58px"></span><span style="--h:31px"></span><span style="--h:42px"></span><span style="--h:19px"></span><span style="--h:53px"></span><span style="--h:26px"></span><span style="--h:38px"></span><span style="--h:16px"></span><span style="--h:8px"></span><span style="--h:5px"></span><span style="--h:4px"></span><span style="--h:4px"></span><span style="--h:4px"></span><span style="--h:4px"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">StreamMUSE-v1 · feature/voice</span><span class="counter"></span></div>
+      <aside class="notes">[资料来源] StreamMUSE 本地实现，以及 2026-07-30 采集的五组交互追踪记录。</aside>
+    </section>
+
+    <section class="slide" data-title="游戏框架">
+      <p class="eyebrow">01 · 游戏</p>
+      <h2>Zip Zap Zop：把计数规则变成实时对话</h2>
+      <div class="rule-layout">
+        <div>
+          <p class="lead">玩家交替回应。每一轮的正确答案由当前数字决定，判定过程与输入渠道相互独立。</p>
+          <div class="number-sequence" aria-label="Zip Zap Zop 序列">
+            <div class="number-cell">1</div><div class="number-cell">2</div><div class="number-cell zip">Zip</div><div class="number-cell zap">Zap</div><div class="number-cell zop">Zop</div>
+            <div class="number-cell zip">Zip</div><div class="number-cell">7</div><div class="number-cell zap">Zap</div><div class="number-cell zip">Zip</div><div class="number-cell zop">Zop</div>
+          </div>
+          <div class="rule-lines">
+            <div class="rule-line"><span class="rule-word accent">Zip</span><span>3 的倍数</span></div>
+            <div class="rule-line"><span class="rule-word gold">Zap</span><span>4 的倍数</span></div>
+            <div class="rule-line"><span class="rule-word danger">Zop</span><span>5 的倍数</span></div>
+          </div>
+        </div>
+        <div>
+          <h3>每个回合只有一个确定性判定</h3>
+          <div class="loop-list">
+            <div class="loop-step"><div class="step-index">1</div><div class="step-copy"><strong>构建提示词</strong><span>状态 + 有界历史记录</span></div></div>
+            <div class="loop-step"><div class="step-index">2</div><div class="step-copy"><strong>收集回应</strong><span>人类输入或 LLM 客户端</span></div></div>
+            <div class="loop-step"><div class="step-index">3</div><div class="step-copy"><strong>规范化</strong><span>把语音文本转为游戏标记</span></div></div>
+            <div class="loop-step"><div class="step-index">4</div><div class="step-copy"><strong>判定并记录</strong><span>期望值、实际值、延迟与元数据</span></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">游戏规则：src/streammuse/domain/tasks/zip_zap_zop.py</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="系统架构" data-accent="blue">
+      <p class="eyebrow">02 · 系统架构</p>
+      <h2>游戏判定层与语音基础设施保持独立</h2>
+      <div class="architecture">
+        <div class="arch-lane">
+          <div class="lane-label">人类回合</div>
+          <div class="arch-flow">
+            <div class="arch-node red-node"><strong>麦克风 + VAD</strong><span>有界话语、端点、设备时钟</span></div><div class="arch-arrow">›</div>
+            <div class="arch-node teal-node"><strong>faster-whisper</strong><span>tiny.en、CPU、int8、质量门控</span></div><div class="arch-arrow">›</div>
+            <div class="arch-node gold-node"><strong>语音解析器</strong><span>原始转写文本转为规范游戏标记</span></div><div class="arch-arrow">›</div>
+            <div class="arch-node green-node"><strong>任务判定器</strong><span>确定性比较期望值与实际值</span></div>
+          </div>
+        </div>
+        <div class="arch-lane">
+          <div class="lane-label">LLM 回合</div>
+          <div class="arch-flow">
+            <div class="arch-node teal-node"><strong>提示词构建器</strong><span>状态与近期转写文本</span></div><div class="arch-arrow">›</div>
+            <div class="arch-node blue-node"><strong>OpenAI 兼容 API</strong><span>通过 SSH 端口转发访问远程服务</span></div><div class="arch-arrow">›</div>
+            <div class="arch-node gold-node"><strong>TTS 缓存</strong><span>有界词表预热</span></div><div class="arch-arrow">›</div>
+            <div class="arch-node green-node"><strong>PortAudio 播放器</strong><span>首个 DAC、排空、清理</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="arch-principle"><strong>接口边界：</strong>语音层只返回文本和诊断信息；只有任务层拥有规则与计分权。</div>
+      <div class="footer"><span class="source">InteractiveTaskRuntime + 独立的 HumanResponseSource / SpeechOutput 接口</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="当前进展" data-accent="green">
+      <p class="eyebrow">03 · 当前状态</p>
+      <h2>完整双向链路已经可用，下一阶段是质量加固</h2>
+      <div class="status-layout">
+        <div class="status-column done">
+          <h3>可玩</h3>
+          <ul class="status-list">
+            <li>仅在人类回合开启语音输入</li>
+            <li>本地 faster-whisper 在整局游戏中常驻</li>
+            <li>通过 SSH 端口转发获取远程 LLM 回应</li>
+            <li>系统 TTS 播放每个 LLM 答案</li>
+            <li>保护间隔防止麦克风立即重新打开</li>
+          </ul>
+        </div>
+        <div class="status-column measured">
+          <h3>可测</h3>
+          <ul class="status-list">
+            <li>每一层都记录单调时钟锚点</li>
+            <li>跨回合指标按会话对齐</li>
+            <li>分析器输出 CSV、JSON 与 Markdown</li>
+            <li>区分冷启动与稳态回合</li>
+            <li>最近 50/50 个回合都有有效分解数据</li>
+          </ul>
+        </div>
+        <div class="status-column next">
+          <h3>待加固</h3>
+          <ul class="status-list">
+            <li>把短词话语限制在 1 秒</li>
+            <li>保存 WAV，审查 VAD 假阳性</li>
+            <li>改善 Zop 与 Zap 的识别</li>
+            <li>预热第一次 LLM 请求</li>
+            <li>降低重复 TTS 启动成本</li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer"><span class="source">截至 2026-07-31 的实现状态</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide video-slide" data-title="演示视频" data-accent="red">
+      <p class="eyebrow">04 · 演示</p>
+      <h2>双向语音交互</h2>
+      <!-- Place streammuse-voice-demo.mp4 next to this HTML file. The placeholder hides automatically after the video loads. -->
+      <div class="video-frame">
+        <video id="demoVideo" controls preload="metadata" aria-label="StreamMUSE 语音交互演示">
+          <source src="streammuse-voice-demo.mp4" type="video/mp4">
+        </video>
+        <div class="video-placeholder" id="videoPlaceholder">
+          <div>
+            <div class="play-symbol">▶</div>
+            <strong>语音游戏演示</strong>
+            <span>人类 STT · LLM 回应 · TTS 语音输出</span>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">视频位置：streammuse-voice-demo.mp4</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="测量设计" data-accent="blue">
+      <p class="eyebrow">05 · 测量设计</p>
+      <h2>测量覆盖完整回合，而不只是模型延迟</h2>
+      <div class="experiment-layout">
+        <div>
+          <div class="sample-number">5×10</div>
+          <p class="sample-caption">五局完整游戏<br>25 个人类回合 + 25 个 LLM 回合</p>
+          <div class="experiment-facts">
+            软截止时间：3000 ms<br>
+            tiny.en · CPU · int8<br>
+            系统 TTS · 250 ms 保护间隔<br>
+            计时结构定义：版本 1
+          </div>
+        </div>
+        <div class="timing-stack">
+          <div class="timing-line"><div class="timing-name">人类</div><div class="timing-track"><span>打开麦克风</span><span>VAD 语音</span><span>端点</span><span>ASR</span><span>判定</span></div></div>
+          <div class="timing-line"><div class="timing-name">LLM</div><div class="timing-track"><span>提示词</span><span>HTTP</span><span>解析 JSON</span><span>文本就绪</span><span>判定</span></div></div>
+          <div class="timing-line"><div class="timing-name">语音输出</div><div class="timing-track"><span>缓存</span><span>打开流</span><span>首个 DAC</span><span>排空</span><span>清理</span></div></div>
+          <div class="timing-line"><div class="timing-name">跨回合</div><div class="timing-track"><span>最后语音</span><span>LLM 文本</span><span>首个 DAC</span><span>音频排空</span><span>下次麦克风</span></div></div>
+        </div>
+      </div>
+      <div class="result-takeaway" style="border-color:var(--blue);background:#f0f5fb">全部 50 个回合都通过计时结构验证，分析器没有跳过任何回合。</div>
+      <div class="footer"><span class="source">五组追踪记录：20260730-222732 至 20260730-223049</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="结果概览" data-accent="red">
+      <p class="eyebrow">06 · 结果</p>
+      <h2>游戏已经可用，但人类输入没有达到 3 秒目标</h2>
+      <div class="metric-strip">
+        <div class="metric green-metric"><span class="metric-value">44/50</span><span class="metric-label">总体有效回应<br>总准确率 88%</span></div>
+        <div class="metric red-metric"><span class="metric-value">19/25</span><span class="metric-label">人类有效回应<br>语音侧准确率 76%</span></div>
+        <div class="metric green-metric"><span class="metric-value">25/25</span><span class="metric-label">LLM 有效回应<br>没有超时</span></div>
+        <div class="metric red-metric"><span class="metric-value">24/25</span><span class="metric-label">人类回合超时<br>96% 超过 3000 ms</span></div>
+      </div>
+      <div class="result-takeaway"><strong>延迟信号：</strong>人类回应来源平均耗时 4.71 s，LLM 从请求到文本平均只需 0.39 s。</div>
+      <div class="footer"><span class="source">来源：breakdown_summary.json · 50 个计时回合</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="人类输入分解" data-accent="red">
+      <p class="eyebrow">07 · 人类输入链路</p>
+      <h2>人类输入时间的 85% 位于 VAD 有声时间段内</h2>
+      <div class="breakdown-topline">
+        <div class="top-stat"><strong>4.71 s</strong><span>完整语音回应平均耗时</span></div>
+        <div class="top-stat"><strong>4.88 s</strong><span>完整语音回应 p50</span></div>
+        <div class="top-stat"><strong>5.54 s</strong><span>完整语音回应 p95</span></div>
+      </div>
+      <div class="stacked-bar" aria-label="人类输入平均延迟分解">
+        <div class="bar-segment wait compact"><span>等待</span></div>
+        <div class="bar-segment voiced"><span>VAD 有声时间段<br>3989 ms</span></div>
+        <div class="bar-segment endpoint compact"><span>端点</span></div>
+        <div class="bar-segment close compact"><span>关闭</span></div>
+        <div class="bar-segment asr compact"><span>ASR</span></div>
+      </div>
+      <div class="legend-grid">
+        <div class="legend-item blue-line"><strong>228 ms</strong><span>输入开始至首次语音</span></div>
+        <div class="legend-item red-line"><strong>3989 ms</strong><span>首次至最后一次 VAD 语音</span></div>
+        <div class="legend-item gold-line"><strong>231 ms</strong><span>最后语音至端点</span></div>
+        <div class="legend-item violet-line"><strong>107 ms</strong><span>关闭输入流</span></div>
+        <div class="legend-item teal-line"><strong>152 ms</strong><span>ASR 链路平均耗时</span></div>
+      </div>
+      <div class="result-takeaway"><strong>端点证据：</strong>25 个回合中有 8 个触发 5000 ms 上限；其余 17 个通常等待 3-4.7 s，才找到连续 300 ms 静音。</div>
+      <div class="footer"><span class="source">平均分解合计为 4707 ms；不计产物写盘时间</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="理解 VAD 指标" data-accent="red">
+      <p class="eyebrow">08 · 指标解释</p>
+      <h2>“有声话语”是时间跨度，不等于人的实际说话时长</h2>
+      <div class="vad-layout">
+        <div class="vad-timeline" aria-label="VAD 假阳性时间线">
+          <div class="vad-axis"></div>
+          <div class="vad-active"></div>
+          <div class="vad-point p1"></div><div class="vad-point p2"></div><div class="vad-point p3"></div><div class="vad-point p4"></div>
+          <div class="vad-label l1"><strong>0.3 s</strong>第一个有声帧</div>
+          <div class="vad-label l2"><strong>≈0.7 s</strong>说话可能已经结束</div>
+          <div class="vad-label l3"><strong>4.9 s</strong>较晚出现的假阳性语音</div>
+          <div class="vad-label l4"><strong>5.0 s</strong>话语上限</div>
+        </div>
+        <div class="vad-definition">
+          <h3>当前指标</h3>
+          <div class="formula mono">last_voiced − first_voiced</div>
+          <p>只要一个较晚的帧被判为语音，<code>last_voiced</code> 就会后移，让整个区间看起来都有声音。</p>
+          <p style="margin-top:18px"><strong>结果：</strong>从最后语音到 ASR 的耗时看起来很短，但用户实际上仍可能等待了接近五秒。</p>
+        </div>
+      </div>
+      <div class="result-takeaway">因此下一次实验需要保存 WAV：追踪记录能证明 VAD 做出了什么判定，却不能证明人实际在何时结束说话。</div>
+      <div class="footer"><span class="source">示例回合：首次语音 270 ms，最后语音 5212 ms，总耗时 5527 ms</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="STT 质量" data-accent="gold">
+      <p class="eyebrow">09 · STT</p>
+      <h2>Whisper 速度很快，识别错误集中在 Zop</h2>
+      <div class="recognition-layout">
+        <div>
+          <table class="token-table" aria-label="不同数字对应的人类回应准确率">
+            <thead><tr><th>数字</th><th>期望</th><th>观察到的错误</th><th>正确</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>1</td><td>无</td><td>5/5</td></tr>
+              <tr><td>3</td><td>Zip</td><td>Deep</td><td>4/5</td></tr>
+              <tr class="bad"><td>5</td><td>Zop</td><td>Zap ×3、重复、“It's up”</td><td>0/5</td></tr>
+              <tr><td>7</td><td>7</td><td>无</td><td>5/5</td></tr>
+              <tr><td>9</td><td>Zip</td><td>无</td><td>5/5</td></tr>
+            </tbody>
+          </table>
+          <p class="body-copy muted" style="margin-top:22px">没有保存输入 WAV，因此仅靠追踪记录无法区分发音、环境与模型混淆。</p>
+        </div>
+        <div class="asr-panel">
+          <div class="asr-big">127 ms</div>
+          <div class="asr-sub">ASR 链路 p50 · p95 为 146 ms</div>
+          <div class="outlier-box"><strong>一个 725 ms 的异常值</strong><br>较长的噪声音频产生了重复的“Zap”。转写文本质量门控拒绝了它，没有把它作为有效输入发送给游戏。</div>
+          <p class="body-copy" style="margin-top:27px"><strong>解释：</strong>优化 faster-whisper 计算无法找回缺失的 3-4 秒。</p>
+        </div>
+      </div>
+      <div class="footer"><span class="source">tiny.en · CPU · int8 · 25 个人类回合</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="LLM 与 TTS" data-accent="green">
+      <p class="eyebrow">10 · 机器回应</p>
+      <h2>文本生成开始后，机器能够快速、稳定地发声</h2>
+      <div class="latency-flow" aria-label="LLM 与语音输出平均延迟">
+        <div class="latency-block llm"><div><strong>389 ms</strong><span>LLM HTTP<br>请求至文本</span></div></div>
+        <div class="latency-block startup"><div><strong>41 ms</strong><span>文本至<br>首个 DAC</span></div></div>
+        <div class="latency-block audio"><div><strong>578 ms</strong><span>可听播放<br>首个 DAC 至排空</span></div></div>
+        <div class="latency-block cleanup"><div><strong>106 ms</strong><span>音频流<br>清理</span></div></div>
+      </div>
+      <div class="latency-facts">
+        <div class="latency-fact"><strong>25/25 次缓存命中</strong><br>运行时 TTS 合成没有进入关键路径。文本至首个 DAC 的 p95 为 54 ms。</div>
+        <div class="latency-fact"><strong>首次请求 641 ms</strong><br>每局第一次 LLM 回合较慢；后续回合即使提示词更长，平均也只有 309-350 ms。</div>
+      </div>
+      <div class="result-takeaway" style="border-color:var(--green);background:#eff8f1">LLM 请求至音频排空：平均 1009 ms，p50 为 959 ms，p95 为 1277 ms。</div>
+      <div class="footer"><span class="source">25 个 LLM 回合 · 25 个有效 · 25 次正常完成播放</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="端到端延迟" data-accent="blue">
+      <p class="eyebrow">11 · 端到端</p>
+      <h2>跨层测量链路能够闭合，没有无法解释的时间缺口</h2>
+      <div class="e2e-layout">
+        <div>
+          <h3>从 VAD 最后一个有声帧开始</h3>
+          <div class="milestone-list">
+            <div class="milestone"><strong>491 ms</strong><span>端点 + 关闭音频流 + ASR + 游戏判定</span></div>
+            <div class="milestone gold-dot"><strong>883 ms</strong><span>LLM 文本可用</span></div>
+            <div class="milestone"><strong>924 ms</strong><span>首个 DAC 样本，机器开始发声</span></div>
+            <div class="milestone red-dot"><strong>1502 ms</strong><span>机器音频完全排空</span></div>
+          </div>
+        </div>
+        <div class="boundary-box">
+          <div class="boundary-total">466 ms</div>
+          <div class="boundary-label">音频排空至下一个麦克风回调</div>
+          <div class="boundary-row"><strong>106 ms</strong><span>关闭播放器并清理</span></div>
+          <div class="boundary-row"><strong>255 ms</strong><span>实测语音保护间隔</span></div>
+          <div class="boundary-row"><strong>103 ms</strong><span>打开麦克风至首次回调</span></div>
+          <div class="boundary-row"><strong>≈2 ms</strong><span>其余调度边界</span></div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">跨回合指标使用按会话对齐的单调时钟</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="启动成本" data-accent="gold">
+      <p class="eyebrow">12 · 冷启动</p>
+      <h2>TTS 预热占据了每局游戏开始前的大部分等待时间</h2>
+      <div class="startup-layout">
+        <div class="startup-bars">
+          <div class="startup-row"><div class="startup-name">TTS 预热 · 10 个短语</div><div class="startup-track"><div class="startup-bar gold-bar" style="--w:100%"></div></div><div class="startup-value">8115 ms</div></div>
+          <div class="startup-row"><div class="startup-name">解析 STT 快照</div><div class="startup-track"><div class="startup-bar blue-bar" style="--w:30.7%"></div></div><div class="startup-value">2493 ms</div></div>
+          <div class="startup-row"><div class="startup-name">加载 STT 模型</div><div class="startup-track"><div class="startup-bar" style="--w:2.2%"></div></div><div class="startup-value">178 ms</div></div>
+          <div class="startup-row"><div class="startup-name">STT 预热</div><div class="startup-track"><div class="startup-bar green-bar" style="--w:1.6%"></div></div><div class="startup-value">128 ms</div></div>
+        </div>
+        <div class="startup-total">
+          <strong>10.9 s</strong>
+          <span>每个进程在游戏开始前的实测启动工作</span>
+          <p class="body-copy" style="margin-top:26px">运行时所有 TTS 回合均命中缓存，因此这部分成本换来了稳定的逐回合播放。</p>
+          <p class="body-copy">这些追踪记录中为 <code>local_files_only=false</code>；可进一步收紧缓存 STT 的解析流程。</p>
+        </div>
+      </div>
+      <div class="footer"><span class="source">五个独立游戏进程的平均启动耗时</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="下一步实验" data-accent="green">
+      <p class="eyebrow">13 · 下一步</p>
+      <h2>先限制短词任务，再审查 VAD 持续激活的原因</h2>
+      <div class="next-layout">
+        <div class="decision">
+          <span class="decision-label">已经实现</span>
+          <strong>任务级 1 秒话语上限</strong>
+          <p class="body-copy">通用默认值仍为 5000 ms。Zip Zap Zop 可以选择更短的上限，同时不限制未来基于短语的任务。</p>
+          <code>--voice-max-utterance-ms 1000</code>
+        </div>
+        <div class="next-steps">
+          <div class="next-step"><div class="step-index">1</div><div><strong>重复同样的 5×10 A/B 实验</strong><span>将 1000 ms、1200 ms 与当前 5000 ms 基线对比。</span></div></div>
+          <div class="next-step"><div class="step-index">2</div><div><strong>保存一组受控 WAV</strong><span>在安静房间佩戴耳机，检查 VAD 假阳性帧以及 Zop/Zap 混淆。</span></div></div>
+          <div class="next-step"><div class="step-index">3</div><div><strong>区分冷启动与稳态</strong><span>启用仅本地的 STT 解析，并在计时回合前预热一次 LLM 请求。</span></div></div>
+          <div class="next-step"><div class="step-index">4</div><div><strong>决策门槛</strong><span>目标是人类 p95 低于 1500 ms、没有达到话语上限的端点，且有效语音回合至少达到 95%。</span></div></div>
+        </div>
+      </div>
+      <div class="closing-line">当前测量基础设施已足够完整，下一轮优化可以由测量证据驱动。</div>
+      <div class="footer"><span class="source">下一步实验方案基于 2026-07-30 延迟报告</span><span class="counter"></span></div>
+    </section>
+  </main>
+
+  <nav class="controls" aria-label="幻灯片导航">
+    <button id="prev" type="button" title="上一页" aria-label="上一页">←</button>
+    <button id="next" type="button" title="下一页" aria-label="下一页">→</button>
+    <button id="fullscreen" type="button" title="切换全屏" aria-label="切换全屏">⛶</button>
+  </nav>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const counters = Array.from(document.querySelectorAll('.counter'));
+    const progress = document.querySelector('.progress');
+    const deck = document.getElementById('deck');
+    let current = 0;
+
+    function updateScale() {
+      const scale = Math.min((window.innerWidth - 28) / 1600, (window.innerHeight - 28) / 900);
+      deck.style.setProperty('--deck-scale', String(Math.max(0.1, scale)));
+    }
+
+    function clamp(index) {
+      return Math.max(0, Math.min(slides.length - 1, index));
+    }
+
+    function show(index, updateHash = true) {
+      current = clamp(index);
+      slides.forEach((slide, slideIndex) => {
+        slide.classList.toggle('active', slideIndex === current);
+        slide.setAttribute('aria-hidden', String(slideIndex !== current));
+      });
+      counters.forEach((counter) => {
+        counter.textContent = `${current + 1} / ${slides.length}`;
+      });
+      progress.style.setProperty('--progress', `${((current + 1) / slides.length) * 100}%`);
+      progress.style.width = `${((current + 1) / slides.length) * 100}%`;
+      document.title = `${current + 1}/${slides.length} ${slides[current].dataset.title}`;
+      if (updateHash) history.replaceState(null, '', `#${current + 1}`);
+    }
+
+    function loadFromHash() {
+      const value = Number.parseInt(window.location.hash.slice(1), 10);
+      show(Number.isFinite(value) ? value - 1 : 0, false);
+    }
+
+    document.getElementById('prev').addEventListener('click', () => show(current - 1));
+    document.getElementById('next').addEventListener('click', () => show(current + 1));
+    document.getElementById('fullscreen').addEventListener('click', async () => {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+        event.preventDefault();
+        show(current + 1);
+      } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
+        event.preventDefault();
+        show(current - 1);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        show(0);
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        show(slides.length - 1);
+      }
+    });
+
+    window.addEventListener('hashchange', loadFromHash);
+    window.addEventListener('resize', updateScale);
+    document.addEventListener('fullscreenchange', updateScale);
+
+    const demoVideo = document.getElementById('demoVideo');
+    const videoPlaceholder = document.getElementById('videoPlaceholder');
+    demoVideo.addEventListener('loadeddata', () => {
+      videoPlaceholder.hidden = true;
+    });
+    demoVideo.addEventListener('error', () => {
+      videoPlaceholder.hidden = false;
+    });
+
+    updateScale();
+    loadFromHash();
+  </script>
+</body>
+</html>

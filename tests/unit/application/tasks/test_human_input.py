@@ -53,6 +53,7 @@ def test_voice_input_config_defaults_are_explicit_and_frozen() -> None:
     assert config.compute_type == "int8"
     assert config.local_files_only is False
     assert config.save_audio is False
+    assert config.max_utterance_ms == 5000.0
     assert config.vad_aggressiveness == 2
     with pytest.raises(FrozenInstanceError):
         config.model = "base.en"  # type: ignore[misc]

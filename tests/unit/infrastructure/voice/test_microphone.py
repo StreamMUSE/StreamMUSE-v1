@@ -206,6 +206,51 @@ def test_preflight_prefers_16khz_then_falls_back_to_supported_vad_rate() -> None
     assert sd.streams[0].closed == 1
 
 
+def test_capture_reports_observation_timing_without_using_control_clock() -> None:
+    class TimingClock:
+        def __init__(self) -> None:
+            self.value = 50.0
+
+        def __call__(self) -> float:
+            self.value += 0.001
+            return self.value
+
+    sd = FakeSoundDevice(
+        chunks=[
+            _pcm_frame(2000),
+            _pcm_frame(0),
+            _pcm_frame(0),
+        ]
+    )
+    capture = MicrophoneCapture(
+        VoiceInputConfig(
+            start_timeout_ms=100.0,
+            end_silence_ms=40.0,
+            max_utterance_ms=200.0,
+            pre_roll_ms=0.0,
+        ),
+        sounddevice_module=sd,
+        vad_factory=EnergyVad,
+        timing_now=TimingClock(),
+    )
+    capture.start()
+
+    utterance = capture.capture(timeout_s=None)
+
+    assert utterance.has_speech is True
+    assert utterance.stream_open_started_offset_ms is not None
+    assert utterance.stream_started_offset_ms is not None
+    assert utterance.first_callback_offset_ms is not None
+    assert utterance.first_voiced_offset_ms is not None
+    assert utterance.resample_started_offset_ms is not None
+    assert utterance.resample_ended_offset_ms is not None
+    assert utterance.stream_closed_offset_ms is not None
+    assert (
+        utterance.resample_ended_offset_ms
+        >= utterance.resample_started_offset_ms
+    )
+
+
 def test_default_device_index_is_not_guessed_from_a_duplicate_device_name() -> None:
     sd = FakeSoundDevice()
     sd.devices[0] = {

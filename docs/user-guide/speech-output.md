@@ -128,3 +128,6 @@ uv run --extra tts-kokoro streammuse-task play \
 | 外放触发麦克风 | 戴耳机；必要时增大 `--speech-guard-ms` |
 | `audio_end` 经常回退 | 查看 trace 的 `deadline_basis_fallback_reason` 和播放错误 |
 | 希望听到当前人类回合提示 | 当前设计只显示文字 prompt，不提供音频 cue |
+
+STT、LLM、TTS、首个 DAC 样本和 drain 的分阶段统计见
+[交互式语音延迟分解](voice-latency-breakdown.md)。

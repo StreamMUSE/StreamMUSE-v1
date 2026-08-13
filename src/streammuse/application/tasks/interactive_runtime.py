@@ -141,6 +141,7 @@ class InteractiveTaskRuntime:
         human_response_source: HumanResponseSource | None = None,
         speech_output_sink: SpeechOutputSink | None = None,
         now: Callable[[], float] | None = None,
+        timing_now: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.config = config
@@ -157,11 +158,14 @@ class InteractiveTaskRuntime:
             else SilentSpeechOutput()
         )
         self._now = now or time.perf_counter
+        self._timing_now = timing_now or time.perf_counter
         self._sleep = sleep or time.sleep
         self._pending_speech_guard = False
         self._last_stats_fallback_reasons: dict[str, int] = {}
+        self._timing_session_origin_s: float | None = None
 
     def play(self, task: InteractiveTask, *, max_turns: int) -> InteractiveTaskRunResult:
+        self._timing_session_origin_s = self._timing_now()
         run_dir = Path(self.config.output_dir).expanduser()
         run_id = f"interactive-{uuid.uuid4().hex[:8]}"
         transcript: list[InteractiveTurnRecord] = []
@@ -431,9 +435,14 @@ class InteractiveTaskRuntime:
         run_dir: Path,
         deadline_state: _DeadlineSessionState,
     ) -> TaskState | None:
+        timing = self._new_timing_context("human")
+        self._mark_timing(timing, "guard_started")
         guard_ms = self._apply_pending_speech_guard()
+        self._mark_timing(timing, "guard_completed")
+        self._mark_timing(timing, "prompt_build_started")
         prompt_text = task.build_human_prompt(state, transcript)
         number = self._number_from_state(state)
+        self._mark_timing(timing, "prompt_build_completed")
 
         while True:
             prompt = (
@@ -446,9 +455,11 @@ class InteractiveTaskRuntime:
                 speech_context = speech_task.build_speech_context(state, transcript)
             turn_started_s = self._now()
             prompt_elapsed_ms = 0.0
+            self._mark_timing(timing, "prompt_render_started")
             if self.human_response_source.mode == "voice":
                 self.terminal.write(prompt.rstrip())
                 prompt_elapsed_ms = max(0.0, (self._now() - turn_started_s) * 1000.0)
+            self._mark_timing(timing, "prompt_render_completed")
             timeout_s = self._remaining_human_timeout_s(deadline_state, prompt_elapsed_ms)
             request = HumanResponseRequest(
                 turn_id=len(transcript),
@@ -457,6 +468,7 @@ class InteractiveTaskRuntime:
                 speech_context=speech_context,
             )
             read_started_s = self._now()
+            self._mark_timing(timing, "response_source_started")
             if self.human_response_source.mode == "voice" and timeout_s == 0.0:
                 response = HumanResponse(
                     text="",
@@ -467,6 +479,7 @@ class InteractiveTaskRuntime:
             else:
                 response = self.human_response_source.read_response(request)
             response_ready_s = self._now()
+            self._mark_timing(timing, "response_source_completed")
             wall_origin_s = (
                 read_started_s
                 if self.human_response_source.mode == "voice"
@@ -511,6 +524,7 @@ class InteractiveTaskRuntime:
 
         canonical_response = str(response_text or "").strip()
         human_input_metadata = deepcopy(response.metadata)
+        self._merge_human_input_timing(timing, human_input_metadata)
         if self.human_response_source.mode == "voice" and prompt_elapsed_ms:
             self._shift_voice_stage_offsets(human_input_metadata, prompt_elapsed_ms)
         human_input_metadata.update(
@@ -524,6 +538,7 @@ class InteractiveTaskRuntime:
             human_input_metadata["guard_ms"] = guard_ms
         if self.human_response_source.mode == "voice":
             human_input_metadata["raw_transcript"] = str(response_text or "")
+            self._mark_timing(timing, "spoken_response_parse_started")
             if response.status == "ok":
                 spoken_parse = self._speech_task(task).parse_spoken_response(
                     state,
@@ -546,6 +561,8 @@ class InteractiveTaskRuntime:
                 else:
                     human_input_metadata["parse_reason"] = response.status
             human_input_metadata["canonical_response"] = canonical_response
+            self._mark_timing(timing, "spoken_response_parse_completed")
+            self._mark_timing(timing, "transcript_render_started")
             self.terminal.write(
                 self._voice_transcript_text(
                     raw_transcript=str(response_text or ""),
@@ -553,6 +570,7 @@ class InteractiveTaskRuntime:
                     parse_status=str(human_input_metadata["parse_status"]),
                 )
             )
+            self._mark_timing(timing, "transcript_render_completed")
 
         return self._finish_turn(
             task=task,
@@ -569,6 +587,7 @@ class InteractiveTaskRuntime:
             deadline_state=deadline_state,
             forced_deadline_missed=timed_out,
             human_input_metadata=human_input_metadata,
+            timing_context=timing,
         )
 
     @staticmethod
@@ -620,14 +639,279 @@ class InteractiveTaskRuntime:
     @staticmethod
     def _shift_voice_stage_offsets(metadata: dict[str, Any], offset_ms: float) -> None:
         for key in (
+            "stream_open_started_offset_ms",
+            "stream_started_offset_ms",
+            "first_callback_offset_ms",
+            "first_voiced_offset_ms",
             "last_voiced_offset_ms",
             "endpoint_detected_offset_ms",
+            "resample_started_offset_ms",
+            "resample_ended_offset_ms",
+            "stream_closed_offset_ms",
             "asr_start_offset_ms",
             "asr_end_offset_ms",
         ):
             value = metadata.get(key)
             if value is not None and isinstance(value, (int, float)) and math.isfinite(float(value)):
                 metadata[key] = float(value) + offset_ms
+
+    def _new_timing_context(self, actor: InteractiveActor) -> dict[str, Any]:
+        origin_s = self._timing_now()
+        return {
+            "_origin_s": origin_s,
+            "_origin_session_offset_ms": (
+                None
+                if self._timing_session_origin_s is None
+                else max(
+                    0.0,
+                    (
+                        origin_s - self._timing_session_origin_s
+                    )
+                    * 1000.0,
+                )
+            ),
+            "_anchors_s": {"turn_started": origin_s},
+            "_extra_anchors_ms": {},
+            "actor": actor,
+            "components": {},
+        }
+
+    def _mark_timing(
+        self,
+        context: dict[str, Any],
+        name: str,
+    ) -> None:
+        anchors = context.get("_anchors_s")
+        if isinstance(anchors, dict):
+            anchors[name] = self._timing_now()
+
+    def _complete_timing_span(
+        self,
+        context: dict[str, Any],
+        *,
+        started: str,
+        completed: str,
+    ) -> None:
+        anchors = context.get("_anchors_s")
+        if (
+            isinstance(anchors, dict)
+            and started in anchors
+            and completed not in anchors
+        ):
+            self._mark_timing(context, completed)
+
+    @staticmethod
+    def _timing_anchor_ms(
+        context: dict[str, Any],
+        name: str,
+    ) -> float | None:
+        origin_s = context.get("_origin_s")
+        anchors = context.get("_anchors_s")
+        extra = context.get("_extra_anchors_ms")
+        if isinstance(extra, dict):
+            extra_value = extra.get(name)
+            if isinstance(extra_value, (int, float)):
+                return float(extra_value)
+        if not isinstance(origin_s, (int, float)) or not isinstance(anchors, dict):
+            return None
+        value = anchors.get(name)
+        if not isinstance(value, (int, float)):
+            return None
+        return max(0.0, (float(value) - float(origin_s)) * 1000.0)
+
+    @classmethod
+    def _merge_component_timing(
+        cls,
+        context: dict[str, Any],
+        *,
+        component: str,
+        breakdown: object,
+        base_anchor: str,
+    ) -> None:
+        if not isinstance(breakdown, dict):
+            return
+        components = context.get("components")
+        if isinstance(components, dict):
+            components[component] = deepcopy(breakdown)
+        base_ms = cls._timing_anchor_ms(context, base_anchor)
+        raw_anchors = breakdown.get("anchors_ms")
+        extra = context.get("_extra_anchors_ms")
+        if (
+            base_ms is None
+            or not isinstance(raw_anchors, dict)
+            or not isinstance(extra, dict)
+        ):
+            return
+        for name, value in raw_anchors.items():
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                and float(value) >= 0
+            ):
+                extra[f"{component}.{name}"] = base_ms + float(value)
+
+    @classmethod
+    def _merge_human_input_timing(
+        cls,
+        context: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> None:
+        base_ms = cls._timing_anchor_ms(context, "response_source_started")
+        extra = context.get("_extra_anchors_ms")
+        if base_ms is None or not isinstance(extra, dict):
+            return
+        field_names = {
+            "stream_open_started_offset_ms": "microphone.stream_open_started",
+            "stream_started_offset_ms": "microphone.stream_started",
+            "first_callback_offset_ms": "microphone.first_callback",
+            "first_voiced_offset_ms": "microphone.first_voiced",
+            "last_voiced_offset_ms": "microphone.last_voiced",
+            "endpoint_detected_offset_ms": "microphone.endpoint_detected",
+            "resample_started_offset_ms": "microphone.resample_started",
+            "resample_ended_offset_ms": "microphone.resample_ended",
+            "stream_closed_offset_ms": "microphone.stream_closed",
+            "asr_start_offset_ms": "asr.started",
+            "asr_end_offset_ms": "asr.completed",
+        }
+        for source, target in field_names.items():
+            value = metadata.get(source)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                and float(value) >= 0
+            ):
+                extra[target] = base_ms + float(value)
+        asr = metadata.get("asr")
+        if isinstance(asr, dict):
+            cls._merge_component_timing(
+                context,
+                component="asr_pipeline",
+                breakdown=asr.get("timing_breakdown"),
+                base_anchor="asr.started",
+            )
+
+    @classmethod
+    def _merge_speech_playback_timing(
+        cls,
+        context: dict[str, Any],
+        playback: SpeechPlayback,
+    ) -> None:
+        base_ms = cls._timing_anchor_ms(context, "llm_request_started")
+        extra = context.get("_extra_anchors_ms")
+        if base_ms is None or not isinstance(extra, dict):
+            return
+        fields = {
+            "playback_start_offset_ms": "speech.playback_started",
+            "first_dac_sample_offset_ms": "speech.first_dac_sample",
+            "playback_drained_offset_ms": "speech.playback_drained",
+            "stream_inactive_offset_ms": "speech.stream_inactive",
+        }
+        for field_name, anchor_name in fields.items():
+            value = getattr(playback, field_name)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                and float(value) >= 0
+            ):
+                extra[anchor_name] = base_ms + float(value)
+
+    @staticmethod
+    def _build_timing_breakdown(
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        origin_s = context.get("_origin_s")
+        raw_anchors = context.get("_anchors_s")
+        anchors: dict[str, float | None] = {}
+        if isinstance(origin_s, (int, float)) and isinstance(raw_anchors, dict):
+            for name, value in raw_anchors.items():
+                anchors[str(name)] = (
+                    max(
+                        0.0,
+                        (float(value) - float(origin_s)) * 1000.0,
+                    )
+                    if isinstance(value, (int, float))
+                    else None
+                )
+        extra = context.get("_extra_anchors_ms")
+        if isinstance(extra, dict):
+            anchors.update(deepcopy(extra))
+
+        duration_pairs = {
+            "guard": ("guard_started", "guard_completed"),
+            "prompt_build": (
+                "prompt_build_started",
+                "prompt_build_completed",
+            ),
+            "prompt_render": (
+                "prompt_render_started",
+                "prompt_render_completed",
+            ),
+            "transcript_render": (
+                "transcript_render_started",
+                "transcript_render_completed",
+            ),
+            "llm_prompt_render": (
+                "llm_prompt_render_started",
+                "llm_prompt_render_completed",
+            ),
+            "response_source": (
+                "response_source_started",
+                "response_source_completed",
+            ),
+            "spoken_response_parse": (
+                "spoken_response_parse_started",
+                "spoken_response_parse_completed",
+            ),
+            "llm_request": (
+                "llm_request_started",
+                "llm_response_completed",
+            ),
+            "llm_output_render": (
+                "llm_output_render_started",
+                "llm_output_render_completed",
+            ),
+            "spoken_text_render": (
+                "spoken_text_render_started",
+                "spoken_text_render_completed",
+            ),
+            "speech_output": (
+                "speech_output_started",
+                "speech_output_completed",
+            ),
+            "game_validation": (
+                "game_validation_started",
+                "game_validation_completed",
+            ),
+            "pipeline_to_decision": (
+                "turn_started",
+                "game_validation_completed",
+            ),
+        }
+        durations: dict[str, float | None] = {}
+        for name, (start, end) in duration_pairs.items():
+            start_ms = anchors.get(start)
+            end_ms = anchors.get(end)
+            durations[name] = (
+                max(0.0, float(end_ms) - float(start_ms))
+                if isinstance(start_ms, (int, float))
+                and isinstance(end_ms, (int, float))
+                else None
+            )
+        return {
+            "schema_version": 1,
+            "clock": "monotonic",
+            "origin": "interactive_turn_start",
+            "origin_session_offset_ms": context.get(
+                "_origin_session_offset_ms"
+            ),
+            "actor": context.get("actor"),
+            "anchors_ms": anchors,
+            "durations_ms": durations,
+            "components": deepcopy(context.get("components") or {}),
+        }
 
     def _apply_pending_speech_guard(self) -> float:
         pending = self._pending_speech_guard
@@ -650,13 +934,19 @@ class InteractiveTaskRuntime:
         run_dir: Path,
         deadline_state: _DeadlineSessionState,
     ) -> TaskState:
+        timing = self._new_timing_context("llm")
         number = self._number_from_state(state)
+        self._mark_timing(timing, "llm_prompt_render_started")
         self.terminal.write(
             f"[{number if number is not None else state.turn_index + 1}] "
             f"LLM thinking... {self._deadline_suffix(deadline_state)}"
         )
+        self._mark_timing(timing, "llm_prompt_render_completed")
+        self._mark_timing(timing, "prompt_build_started")
         messages = task.build_llm_messages(state, transcript)
+        self._mark_timing(timing, "prompt_build_completed")
         start_s = self._now()
+        self._mark_timing(timing, "llm_request_started")
         try:
             model_response = self.model_client.generate(
                 messages,
@@ -665,6 +955,7 @@ class InteractiveTaskRuntime:
                 timeout_s=None if deadline_state.mode == "soft" else deadline_state.current_deadline_ms / 1000.0,
             )
         except requests.Timeout as exc:
+            self._mark_timing(timing, "llm_response_completed")
             elapsed_ms = max(0.0, (self._now() - start_s) * 1000.0)
             elapsed_ms = max(elapsed_ms, float(deadline_state.current_deadline_ms))
             self.terminal.write("    LLM > [timeout]")
@@ -693,8 +984,16 @@ class InteractiveTaskRuntime:
                 forced_deadline_missed=True,
                 model_error=str(exc),
                 speech_output_metadata=speech_metadata,
+                timing_context=timing,
             )
         text_ready_s = self._now()
+        self._mark_timing(timing, "llm_response_completed")
+        self._merge_component_timing(
+            timing,
+            component="llm_client",
+            breakdown=model_response.metadata.get("timing_breakdown"),
+            base_anchor="llm_request_started",
+        )
         text_ready_ms = max(
             float(model_response.latency_ms),
             (text_ready_s - start_s) * 1000.0,
@@ -704,18 +1003,23 @@ class InteractiveTaskRuntime:
         speech_metadata: dict[str, Any] | None = None
         elapsed_ms = text_ready_ms
         try:
+            self._mark_timing(timing, "llm_output_render_started")
             self.terminal.write(f"    LLM > {response_text}")
+            self._mark_timing(timing, "llm_output_render_completed")
             if self.speech_output_sink.mode == "audio":
+                self._mark_timing(timing, "spoken_text_render_started")
                 spoken_text = self._renderable_task(task).build_spoken_text(
                     state,
                     transcript,
                     response_text,
                     actor="llm",
                 )
+                self._mark_timing(timing, "spoken_text_render_completed")
                 if not spoken_text:
                     playback = SpeechPlayback(status="empty_text")
                 else:
                     speak_started_s = self._now()
+                    self._mark_timing(timing, "speech_output_started")
                     playback = self.speech_output_sink.speak(
                         SpeechRequest(
                             turn_id=len(transcript),
@@ -724,6 +1028,7 @@ class InteractiveTaskRuntime:
                             source_text=response_text,
                         )
                     )
+                    self._mark_timing(timing, "speech_output_completed")
                     self._validate_speech_playback(
                         playback,
                         speak_wall_ms=max(
@@ -735,6 +1040,13 @@ class InteractiveTaskRuntime:
                         playback,
                         max(0.0, (speak_started_s - start_s) * 1000.0),
                     )
+                    self._merge_component_timing(
+                        timing,
+                        component="speech_output",
+                        breakdown=playback.metadata.get("timing_breakdown"),
+                        base_anchor="speech_output_started",
+                    )
+                    self._merge_speech_playback_timing(timing, playback)
                 elapsed_ms, fallback_reason = self._speech_deadline_latency(
                     playback=playback,
                     text_ready_ms=text_ready_ms,
@@ -750,6 +1062,16 @@ class InteractiveTaskRuntime:
                     deadline_basis_fallback_reason=fallback_reason,
                 )
         except BaseException as exc:
+            for started, completed in (
+                ("llm_output_render_started", "llm_output_render_completed"),
+                ("spoken_text_render_started", "spoken_text_render_completed"),
+                ("speech_output_started", "speech_output_completed"),
+            ):
+                self._complete_timing_span(
+                    timing,
+                    started=started,
+                    completed=completed,
+                )
             if self.speech_output_sink.mode == "audio":
                 status = (
                     "interrupted"
@@ -792,6 +1114,7 @@ class InteractiveTaskRuntime:
                 raw_model_response=model_response,
                 deadline_state=deadline_state,
                 speech_output_metadata=speech_metadata,
+                timing_context=timing,
             )
             raise
 
@@ -810,6 +1133,7 @@ class InteractiveTaskRuntime:
             raw_model_response=model_response,
             deadline_state=deadline_state,
             speech_output_metadata=speech_metadata,
+            timing_context=timing,
         )
         if playback is not None:
             self._pending_speech_guard = (
@@ -975,13 +1299,18 @@ class InteractiveTaskRuntime:
         model_error: str | None = None,
         human_input_metadata: dict[str, Any] | None = None,
         speech_output_metadata: dict[str, Any] | None = None,
+        timing_context: dict[str, Any] | None = None,
     ) -> TaskState:
+        if timing_context is not None:
+            self._mark_timing(timing_context, "game_validation_started")
         referee = task.validate_response(
             state,
             response_text,
             actor=actor,
             transcript=transcript,
         )
+        if timing_context is not None:
+            self._mark_timing(timing_context, "game_validation_completed")
         deadline_missed = forced_deadline_missed or elapsed_ms > float(deadline_state.current_deadline_ms)
         number = self._number_from_state(state)
         metadata: dict[str, Any] = {
@@ -998,6 +1327,10 @@ class InteractiveTaskRuntime:
             metadata["human_input"] = deepcopy(human_input_metadata)
         if speech_output_metadata is not None:
             metadata["speech_output"] = deepcopy(speech_output_metadata)
+        if timing_context is not None:
+            metadata["timing_breakdown"] = self._build_timing_breakdown(
+                timing_context
+            )
         record = InteractiveTurnRecord(
             turn_id=len(transcript),
             actor=actor,

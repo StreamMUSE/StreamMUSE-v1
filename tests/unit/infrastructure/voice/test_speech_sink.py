@@ -31,6 +31,12 @@ class FakeSynthesizer:
         return SynthesizedAudio(
             np.ones(max(1, len(text)), dtype=np.float32),
             16_000,
+            metadata={
+                "timing_breakdown": {
+                    "schema_version": 1,
+                    "durations_ms": {"pipeline_total": 4.0},
+                }
+            },
         )
 
     def close(self) -> None:
@@ -125,6 +131,31 @@ def test_cache_hit_has_zero_synthesis_latency() -> None:
     assert playback.cached is True
     assert playback.synthesis_ms == 0.0
     assert playback.completed_normally is True
+    timing = playback.metadata["timing_breakdown"]
+    assert timing["schema_version"] == 1
+    assert timing["durations_ms"]["cache_lookup"] >= 0.0
+    assert timing["durations_ms"]["speaker_play"] >= 0.0
+    assert timing["speaker"] is None
+    assert timing["synthesizer"] is None
+
+
+def test_cache_miss_includes_current_synthesis_timing() -> None:
+    sink = AudioSpeechOutput(
+        SpeechOutputConfig(
+            mode="audio",
+            backend="null",
+            prewarm=False,
+        ),
+        synthesizer=FakeSynthesizer(),
+        speaker=FakeSpeaker(),  # type: ignore[arg-type]
+    )
+    sink.start()
+
+    playback = sink.speak(_request("Zip"))
+
+    timing = playback.metadata["timing_breakdown"]
+    assert playback.cached is False
+    assert timing["synthesizer"]["durations_ms"]["pipeline_total"] == 4.0
 
 
 def test_cache_miss_skip_does_not_touch_synthesizer_or_speaker() -> None:

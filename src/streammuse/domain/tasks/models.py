@@ -153,6 +153,7 @@ class ChatModelResponse:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

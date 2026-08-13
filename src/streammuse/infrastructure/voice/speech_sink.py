@@ -117,31 +117,55 @@ class AudioSpeechOutput:
     def speak(self, request: SpeechRequest) -> SpeechPlayback:
         speak_started_s = self._now()
         audio = self._cache.get(request.text)
+        cache_lookup_completed_s = self._now()
         cached = audio is not None
         synthesis_ms = 0.0
+        synthesis_started_s: float | None = None
+        synthesis_completed_s: float | None = None
         status = "ok"
         try:
             if audio is None:
                 if self.config.cache_miss == "skip":
+                    completed_s = self._now()
                     return SpeechPlayback(
                         status="cache_miss_skipped",
                         spoken_text=request.text,
+                        metadata={
+                            "timing_breakdown": self._timing_breakdown(
+                                speak_started_s=speak_started_s,
+                                cache_lookup_completed_s=cache_lookup_completed_s,
+                                completed_s=completed_s,
+                            )
+                        },
                     )
                 synthesis_started_s = self._now()
                 try:
                     audio = self._synthesizer.synthesize(request.text)
                 except SpeechSynthesisError as exc:
+                    synthesis_completed_s = self._now()
                     return self._failure(
                         "synthesis_failed",
                         request.text,
                         exc,
                         synthesis_ms=max(
                             0.0,
-                            (self._now() - synthesis_started_s) * 1000.0,
+                            (synthesis_completed_s - synthesis_started_s)
+                            * 1000.0,
                         ),
+                        metadata={
+                            "timing_breakdown": self._timing_breakdown(
+                                speak_started_s=speak_started_s,
+                                cache_lookup_completed_s=cache_lookup_completed_s,
+                                synthesis_started_s=synthesis_started_s,
+                                synthesis_completed_s=synthesis_completed_s,
+                                completed_s=synthesis_completed_s,
+                            )
+                        },
                     )
+                synthesis_completed_s = self._now()
                 synthesis_ms = max(
-                    0.0, (self._now() - synthesis_started_s) * 1000.0
+                    0.0,
+                    (synthesis_completed_s - synthesis_started_s) * 1000.0,
                 )
                 status = "cache_miss_synthesized"
 
@@ -149,13 +173,26 @@ class AudioSpeechOutput:
             try:
                 played = self._speaker.play(audio)
             except SpeakerPlaybackError as exc:
+                speaker_completed_s = self._now()
                 return self._failure(
                     "playback_failed",
                     request.text,
                     exc,
                     synthesis_ms=synthesis_ms,
                     audio=audio,
+                    metadata={
+                        "timing_breakdown": self._timing_breakdown(
+                            speak_started_s=speak_started_s,
+                            cache_lookup_completed_s=cache_lookup_completed_s,
+                            synthesis_started_s=synthesis_started_s,
+                            synthesis_completed_s=synthesis_completed_s,
+                            speaker_started_s=speaker_started_s,
+                            speaker_completed_s=speaker_completed_s,
+                            completed_s=speaker_completed_s,
+                        )
+                    },
                 )
+            speaker_completed_s = self._now()
             shift_ms = max(
                 0.0, (speaker_started_s - speak_started_s) * 1000.0
             )
@@ -184,6 +221,23 @@ class AudioSpeechOutput:
                 metadata={
                     "sample_rate_hz": played.sample_rate_hz,
                     "device": played.device,
+                    "timing_breakdown": self._timing_breakdown(
+                        speak_started_s=speak_started_s,
+                        cache_lookup_completed_s=cache_lookup_completed_s,
+                        synthesis_started_s=synthesis_started_s,
+                        synthesis_completed_s=synthesis_completed_s,
+                        speaker_started_s=speaker_started_s,
+                        speaker_completed_s=speaker_completed_s,
+                        completed_s=speaker_completed_s,
+                        speaker_timing=played.metadata.get(
+                            "timing_breakdown"
+                        ),
+                        synthesizer_timing=(
+                            None
+                            if cached
+                            else audio.metadata.get("timing_breakdown")
+                        ),
+                    ),
                 },
                 error=(
                     None
@@ -265,6 +319,7 @@ class AudioSpeechOutput:
         *,
         synthesis_ms: float = 0.0,
         audio: SynthesizedAudio | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> SpeechPlayback:
         return SpeechPlayback(
             status=status,  # type: ignore[arg-type]
@@ -272,7 +327,73 @@ class AudioSpeechOutput:
             synthesis_ms=synthesis_ms,
             audio_duration_ms=0.0 if audio is None else audio.duration_ms,
             error=_error_dict(error),
+            metadata={} if metadata is None else metadata,
         )
+
+    @staticmethod
+    def _timing_breakdown(
+        *,
+        speak_started_s: float,
+        cache_lookup_completed_s: float,
+        completed_s: float,
+        synthesis_started_s: float | None = None,
+        synthesis_completed_s: float | None = None,
+        speaker_started_s: float | None = None,
+        speaker_completed_s: float | None = None,
+        speaker_timing: object = None,
+        synthesizer_timing: object = None,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "clock": "monotonic",
+            "origin": "speech_speak_start",
+            "anchors_ms": {
+                "cache_lookup_completed": _offset_seconds(
+                    cache_lookup_completed_s,
+                    speak_started_s,
+                ),
+                "synthesis_started": _offset_seconds(
+                    synthesis_started_s,
+                    speak_started_s,
+                ),
+                "synthesis_completed": _offset_seconds(
+                    synthesis_completed_s,
+                    speak_started_s,
+                ),
+                "speaker_started": _offset_seconds(
+                    speaker_started_s,
+                    speak_started_s,
+                ),
+                "speaker_completed": _offset_seconds(
+                    speaker_completed_s,
+                    speak_started_s,
+                ),
+                "pipeline_completed": _offset_seconds(
+                    completed_s,
+                    speak_started_s,
+                ),
+            },
+            "durations_ms": {
+                "cache_lookup": _elapsed_seconds(
+                    speak_started_s,
+                    cache_lookup_completed_s,
+                ),
+                "synthesis": _optional_elapsed_seconds(
+                    synthesis_started_s,
+                    synthesis_completed_s,
+                ),
+                "speaker_play": _optional_elapsed_seconds(
+                    speaker_started_s,
+                    speaker_completed_s,
+                ),
+                "pipeline_total": _elapsed_seconds(
+                    speak_started_s,
+                    completed_s,
+                ),
+            },
+            "speaker": speaker_timing,
+            "synthesizer": synthesizer_timing,
+        }
 
     def drain(self) -> None:
         self._speaker.drain()
@@ -306,3 +427,22 @@ def _error_dict(error: BaseException) -> dict[str, str]:
         {"type": type(error).__name__, "message": str(error)}
     )
     return {"type": str(value["type"]), "message": str(value["message"])}
+
+
+def _offset_seconds(value_s: float | None, origin_s: float) -> float | None:
+    if value_s is None:
+        return None
+    return max(0.0, (float(value_s) - float(origin_s)) * 1000.0)
+
+
+def _elapsed_seconds(start_s: float, end_s: float) -> float:
+    return max(0.0, (float(end_s) - float(start_s)) * 1000.0)
+
+
+def _optional_elapsed_seconds(
+    start_s: float | None,
+    end_s: float | None,
+) -> float | None:
+    if start_s is None or end_s is None:
+        return None
+    return _elapsed_seconds(start_s, end_s)

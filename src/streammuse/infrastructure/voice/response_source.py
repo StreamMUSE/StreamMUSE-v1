@@ -193,8 +193,17 @@ class VoiceHumanResponseSource:
             "wait_for_speech_ms": captured.wait_for_speech_ms,
             "utterance_ms": captured.utterance_ms,
             "endpoint_silence_ms": captured.endpoint_silence_ms,
+            "stream_open_started_offset_ms": (
+                captured.stream_open_started_offset_ms
+            ),
+            "stream_started_offset_ms": captured.stream_started_offset_ms,
+            "first_callback_offset_ms": captured.first_callback_offset_ms,
+            "first_voiced_offset_ms": captured.first_voiced_offset_ms,
             "last_voiced_offset_ms": captured.last_voiced_offset_ms,
             "endpoint_detected_offset_ms": captured.endpoint_detected_offset_ms,
+            "resample_started_offset_ms": captured.resample_started_offset_ms,
+            "resample_ended_offset_ms": captured.resample_ended_offset_ms,
+            "stream_closed_offset_ms": captured.stream_closed_offset_ms,
             "endpoint_reason": captured.endpoint_reason,
             "capture_sample_rate_hz": captured.capture_sample_rate_hz,
             "audio_overflow": captured.audio_overflow,

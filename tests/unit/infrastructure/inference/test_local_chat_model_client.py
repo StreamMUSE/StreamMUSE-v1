@@ -61,6 +61,10 @@ def test_local_chat_client_reads_openai_compatible_response(monkeypatch) -> None
     assert payload["model"] == "gemma"  # type: ignore[index]
     assert "top_p" not in payload  # type: ignore[operator]
     assert session.calls[0]["timeout"] == 30.0
+    timing = response.metadata["timing_breakdown"]
+    assert timing["schema_version"] == 1
+    assert timing["durations_ms"]["http_round_trip"] >= 0.0
+    assert timing["durations_ms"]["pipeline_total"] >= 0.0
 
 
 def test_local_chat_client_allows_per_call_timeout_override(monkeypatch) -> None:

@@ -138,6 +138,11 @@ def test_transcribe_consumes_all_segments_and_preserves_raw_text() -> None:
     assert result.diagnostics["language"] == "en"
     assert result.diagnostics["segments"][1]["id"] == 1
     assert result.diagnostics["quality_gate"]["accepted"] is True
+    timing = result.diagnostics["timing_breakdown"]
+    assert timing["schema_version"] == 1
+    assert timing["durations_ms"]["model_call"] >= 0.0
+    assert timing["durations_ms"]["segment_iteration"] >= 0.0
+    assert timing["durations_ms"]["quality_gate"] >= 0.0
 
 
 def test_provenance_is_a_defensive_snapshot_and_reports_timings() -> None:

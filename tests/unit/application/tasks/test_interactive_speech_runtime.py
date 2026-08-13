@@ -195,6 +195,37 @@ def test_audio_end_uses_unrounded_text_plus_drained_measurement(
     )["speech_output"]["backend"] == "fake"
 
 
+def test_llm_turn_emits_session_aligned_timing_breakdown(
+    tmp_path: Path,
+) -> None:
+    clock = ManualClock()
+    sink = FakeSpeechSink(clock)
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            human_first=False,
+        ),
+        model_client=FakeModel(clock),
+        terminal=FakeTerminal(),
+        speech_output_sink=sink,
+        now=clock.now,
+        timing_now=clock.now,
+    )
+
+    runtime.play(ZipZapZopTask(), max_turns=1)
+
+    breakdown = _trace(tmp_path)[0]["metadata"]["timing_breakdown"]
+    anchors = breakdown["anchors_ms"]
+    durations = breakdown["durations_ms"]
+    assert breakdown["schema_version"] == 1
+    assert breakdown["origin_session_offset_ms"] == pytest.approx(0.0)
+    assert durations["llm_request"] == pytest.approx(100.0)
+    assert anchors["speech.first_dac_sample"] == pytest.approx(120.0)
+    assert anchors["speech.playback_drained"] == pytest.approx(500.0)
+    assert durations["game_validation"] >= 0.0
+
+
 def test_incomplete_playback_falls_back_to_text_and_is_counted(
     tmp_path: Path,
 ) -> None:
@@ -309,6 +340,8 @@ def test_post_generation_exceptions_are_recorded_then_rethrown_unchanged(
     speech = _trace(tmp_path)[0]["metadata"]["speech_output"]
     assert speech["status"] == status
     assert speech["error"]["type"] == type(error).__name__
+    timing = _trace(tmp_path)[0]["metadata"]["timing_breakdown"]
+    assert timing["durations_ms"]["speech_output"] is not None
 
 
 def test_guard_runs_once_after_actual_machine_audio_before_voice_input(

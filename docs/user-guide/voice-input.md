@@ -62,6 +62,16 @@ uv run --extra voice streammuse-task play \
 
 建议先使用 `soft` 和至少 3000 ms 的截止时间。等待开口、发言、端点静音和 ASR 都计入人类回合耗时。`hard`/`challenge` 会在采集阶段达到截止时间时停止录音，但进程内的 CTranslate2 转录不能安全取消，因此最终返回时间可能超过名义截止时间。
 
+对于只接受单个短词的任务，可以限制从首个 VAD 语音帧开始的最大采集时长：
+
+```bash
+--voice-max-utterance-ms 1000
+```
+
+未指定时默认仍为 5000 ms。该上限不是等待用户开口的时间；等待开口由独立的
+start timeout 控制。如果环境噪声先被 VAD 误判为语音，过短的上限可能在用户
+真正说完之前截断音频，因此应根据任务词长和录音审计结果设置。
+
 ## 模型缓存和离线运行
 
 默认情况下，首次启动可能在游戏开始前从 Hugging Face 下载模型。可以显式指定缓存和模型版本：
@@ -104,4 +114,6 @@ uv run --extra voice streammuse-task play \
 | 一秒挑战经常超时 | 先使用 3000 ms `soft` 模式，依据目标设备的 p95 指标再缩短时间 |
 | 采集期间需要退出 | 按 `Ctrl-C`；语音模式采集中不并发处理 `:quit` |
 
-LLM 回答的可选 TTS 播放见[交互式游戏语音输出](speech-output.md)。当前仍不包含声学回声消除。
+LLM 回答的可选 TTS 播放见[交互式游戏语音输出](speech-output.md)。STT、LLM、TTS
+和 PortAudio 的分阶段耗时分析见[交互式语音延迟分解](voice-latency-breakdown.md)。
+当前仍不包含声学回声消除。

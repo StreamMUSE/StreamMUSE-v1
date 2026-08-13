@@ -125,6 +125,11 @@ def test_callback_raises_stop_and_finished_callback_marks_drain() -> None:
         playback.playback_drained_offset_ms
         == playback.stream_inactive_offset_ms
     )
+    timing = playback.metadata["timing_breakdown"]
+    assert timing["schema_version"] == 1
+    assert timing["anchors_ms"]["first_callback"] is not None
+    assert timing["anchors_ms"]["first_dac_sample"] is not None
+    assert timing["durations_ms"]["audio_prepare"] >= 0.0
 
 
 def test_abort_latch_wins_if_final_callback_runs_after_timeout() -> None:

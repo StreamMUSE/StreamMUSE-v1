@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Callable
 
 import requests
 
@@ -24,8 +24,14 @@ class LocalChatModelClientConfig:
 
 
 class LocalChatModelClient:
-    def __init__(self, config: LocalChatModelClientConfig) -> None:
+    def __init__(
+        self,
+        config: LocalChatModelClientConfig,
+        *,
+        now: Callable[[], float] | None = None,
+    ) -> None:
         self.config = config
+        self._now = now or time.perf_counter
         self._session = requests.Session()
 
     def generate(
@@ -36,6 +42,7 @@ class LocalChatModelClient:
         temperature: float = 0.0,
         timeout_s: float | None = None,
     ) -> ChatModelResponse:
+        method_started = self._now()
         payload = {
             "model": self.config.model,
             "messages": messages,
@@ -53,11 +60,12 @@ class LocalChatModelClient:
         headers: dict[str, str] = {}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
+        payload_ready = self._now()
 
         attempts = max(1, int(self.config.max_retries) + 1)
         last_error: BaseException | None = None
         for attempt in range(attempts):
-            start = time.perf_counter()
+            start = self._now()
             try:
                 response = self._session.post(
                     self._chat_url(),
@@ -65,10 +73,82 @@ class LocalChatModelClient:
                     headers=headers,
                     timeout=float(self.config.timeout_s if timeout_s is None else timeout_s),
                 )
+                response_received = self._now()
                 response.raise_for_status()
+                status_checked = self._now()
                 data = response.json()
-                latency_ms = (time.perf_counter() - start) * 1000.0
-                return self._parse_response(data, latency_ms=latency_ms)
+                json_decoded = self._now()
+                latency_ms = (json_decoded - start) * 1000.0
+                parsed = self._parse_response(data, latency_ms=latency_ms)
+                response_parsed = self._now()
+                timing = {
+                    "schema_version": 1,
+                    "clock": "monotonic",
+                    "origin": "generate_start",
+                    "anchors_ms": {
+                        "payload_ready": _elapsed_ms(
+                            method_started,
+                            payload_ready,
+                        ),
+                        "request_started": _elapsed_ms(
+                            method_started,
+                            start,
+                        ),
+                        "response_received": _elapsed_ms(
+                            method_started,
+                            response_received,
+                        ),
+                        "status_checked": _elapsed_ms(
+                            method_started,
+                            status_checked,
+                        ),
+                        "json_decoded": _elapsed_ms(
+                            method_started,
+                            json_decoded,
+                        ),
+                        "response_parsed": _elapsed_ms(
+                            method_started,
+                            response_parsed,
+                        ),
+                    },
+                    "durations_ms": {
+                        "payload_build": _elapsed_ms(
+                            method_started,
+                            payload_ready,
+                        ),
+                        "pre_request": _elapsed_ms(payload_ready, start),
+                        "http_round_trip": _elapsed_ms(
+                            start,
+                            response_received,
+                        ),
+                        "status_check": _elapsed_ms(
+                            response_received,
+                            status_checked,
+                        ),
+                        "json_decode": _elapsed_ms(
+                            status_checked,
+                            json_decoded,
+                        ),
+                        "response_parse": _elapsed_ms(
+                            json_decoded,
+                            response_parsed,
+                        ),
+                        "pipeline_total": _elapsed_ms(
+                            method_started,
+                            response_parsed,
+                        ),
+                    },
+                    "attempt_count": attempt + 1,
+                    "http_status": getattr(response, "status_code", None),
+                    "response_id": data.get("id"),
+                }
+                return replace(
+                    parsed,
+                    metadata={
+                        **parsed.metadata,
+                        "timing_breakdown": timing,
+                    },
+                )
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < attempts - 1:
@@ -119,3 +199,7 @@ def _optional_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _elapsed_ms(start_s: float, end_s: float) -> float:
+    return max(0.0, (float(end_s) - float(start_s)) * 1000.0)

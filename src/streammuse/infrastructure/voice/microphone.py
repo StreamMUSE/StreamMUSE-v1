@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 import numpy as np
@@ -71,6 +71,13 @@ class CapturedUtterance:
     last_voiced_offset_ms: float | None
     endpoint_detected_offset_ms: float
     audio_overflow: bool = False
+    stream_open_started_offset_ms: float | None = None
+    stream_started_offset_ms: float | None = None
+    first_callback_offset_ms: float | None = None
+    first_voiced_offset_ms: float | None = None
+    resample_started_offset_ms: float | None = None
+    resample_ended_offset_ms: float | None = None
+    stream_closed_offset_ms: float | None = None
 
     @property
     def has_speech(self) -> bool:
@@ -152,11 +159,13 @@ class MicrophoneCapture:
         sounddevice_module: Any | None = None,
         vad_factory: Callable[[int], _Vad] | None = None,
         now: Callable[[], float] | None = None,
+        timing_now: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
         self._sounddevice = sounddevice_module
         self._vad_factory = vad_factory
         self._now = now or time.perf_counter
+        self._timing_now = timing_now or time.perf_counter
         self._device: MicrophoneDevice | None = None
         self._sample_rate_hz: int | None = None
         self._vad: _Vad | None = None
@@ -357,11 +366,17 @@ class MicrophoneCapture:
         callback_errors: queue.Queue[BaseException] = queue.Queue(maxsize=1)
         audio_clock = _PortAudioClockMapper()
         capture_start_s = self._now()
+        timing_start_s = self._timing_now()
+        stream_open_started_s: float | None = None
+        stream_started_s: float | None = None
+        first_callback_s: list[float | None] = [None]
         game_deadline_s = None if timeout_s is None else capture_start_s + max(0.0, float(timeout_s))
         start_timeout_s = capture_start_s + float(self.config.start_timeout_ms) / 1000.0
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
             callback_local_s = self._now()
+            if first_callback_s[0] is None:
+                first_callback_s[0] = self._timing_now()
             if status:
                 self._set_callback_error(
                     callback_errors,
@@ -408,6 +423,7 @@ class MicrophoneCapture:
                     raise MicrophoneCaptureError(
                         "The microphone capture was closed before the input stream opened."
                     )
+                stream_open_started_s = self._timing_now()
                 stream = self._sounddevice.RawInputStream(
                     samplerate=sample_rate,
                     blocksize=0,
@@ -421,6 +437,7 @@ class MicrophoneCapture:
                 self._active_stream_closed = False
                 self._calibrate_stream_clock(stream, audio_clock)
                 stream.start()
+                stream_started_s = self._timing_now()
                 self._calibrate_stream_clock(stream, audio_clock)
         except BaseException as exc:
             if stream is not None:
@@ -442,6 +459,7 @@ class MicrophoneCapture:
                 frame_bytes=frame_bytes,
                 sample_rate=sample_rate,
                 capture_start_s=capture_start_s,
+                timing_start_s=timing_start_s,
                 game_deadline_s=game_deadline_s,
                 start_timeout_s=start_timeout_s,
                 callback_errors=callback_errors,
@@ -454,6 +472,26 @@ class MicrophoneCapture:
             raise
         else:
             self._close_stream(stream)
+            stream_closed_s = self._timing_now()
+            result = replace(
+                result,
+                stream_open_started_offset_ms=_offset_ms(
+                    stream_open_started_s,
+                    timing_start_s,
+                ),
+                stream_started_offset_ms=_offset_ms(
+                    stream_started_s,
+                    timing_start_s,
+                ),
+                first_callback_offset_ms=_offset_ms(
+                    first_callback_s[0],
+                    timing_start_s,
+                ),
+                stream_closed_offset_ms=_offset_ms(
+                    stream_closed_s,
+                    timing_start_s,
+                ),
+            )
         finally:
             with self._state_lock:
                 if self._active_stream is stream:
@@ -469,6 +507,7 @@ class MicrophoneCapture:
         frame_bytes: int,
         sample_rate: int,
         capture_start_s: float,
+        timing_start_s: float,
         game_deadline_s: float | None,
         start_timeout_s: float,
         callback_errors: queue.Queue[BaseException],
@@ -626,10 +665,13 @@ class MicrophoneCapture:
                 endpoint_silence_ms=0.0,
                 last_voiced_offset_ms=None,
                 endpoint_detected_offset_ms=endpoint_offset_ms,
+                first_voiced_offset_ms=None,
             )
 
         pcm = b"".join(captured)
+        resample_started_s = self._timing_now()
         audio = self._pcm_to_float32(pcm, sample_rate)
+        resample_ended_s = self._timing_now()
         first_voiced = float(first_voiced_offset_ms or 0.0)
         last_voiced = float(last_voiced_offset_ms or first_voiced)
         return CapturedUtterance(
@@ -643,6 +685,15 @@ class MicrophoneCapture:
             endpoint_silence_ms=max(0.0, audio_cursor_ms - last_voiced),
             last_voiced_offset_ms=last_voiced,
             endpoint_detected_offset_ms=endpoint_offset_ms,
+            first_voiced_offset_ms=first_voiced,
+            resample_started_offset_ms=max(
+                0.0,
+                (resample_started_s - timing_start_s) * 1000.0,
+            ),
+            resample_ended_offset_ms=max(
+                0.0,
+                (resample_ended_s - timing_start_s) * 1000.0,
+            ),
         )
 
     @staticmethod
@@ -703,3 +754,9 @@ class MicrophoneCapture:
             stream = self._active_stream
         if stream is not None:
             self._close_stream(stream)
+
+
+def _offset_ms(value_s: float | None, origin_s: float) -> float | None:
+    if value_s is None:
+        return None
+    return max(0.0, (float(value_s) - float(origin_s)) * 1000.0)

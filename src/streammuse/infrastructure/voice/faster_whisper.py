@@ -325,6 +325,7 @@ class FasterWhisperRecognizer:
 
         if self._model is None:
             raise SpeechRecognitionError("FasterWhisperRecognizer.start() must succeed before transcribe().")
+        pipeline_started = self._now()
         waveform = np.asarray(audio)
         if waveform.ndim != 1:
             raise SpeechRecognitionError("Speech audio must be a one-dimensional mono waveform.")
@@ -339,16 +340,66 @@ class FasterWhisperRecognizer:
             context_hotwords = speech_context.hotwords
         rendered_hotwords = self._render_hotwords(context_hotwords)
         kwargs = self._decode_kwargs(initial_prompt=initial_prompt, hotwords=rendered_hotwords)
+        input_ready = self._now()
 
         started = self._now()
         try:
             segments_iter, info = self._model.transcribe(waveform, **kwargs)
+            model_call_returned = self._now()
             segments = list(segments_iter)
+            segments_consumed = self._now()
         except Exception as exc:
             raise SpeechRecognitionError(f"faster-whisper transcription failed: {exc}") from exc
-        latency_ms = max(0.0, (self._now() - started) * 1000.0)
+        latency_ms = max(0.0, (segments_consumed - started) * 1000.0)
         raw_text = "".join(str(getattr(segment, "text", "")) for segment in segments).strip()
+        text_assembled = self._now()
         quality = self._transcript_quality(raw_text, segments)
+        quality_completed = self._now()
+        timing = {
+            "schema_version": 1,
+            "clock": "monotonic",
+            "origin": "asr_pipeline_start",
+            "anchors_ms": {
+                "input_ready": _elapsed_ms(pipeline_started, input_ready),
+                "model_call_started": _elapsed_ms(pipeline_started, started),
+                "model_call_returned": _elapsed_ms(
+                    pipeline_started,
+                    model_call_returned,
+                ),
+                "segments_consumed": _elapsed_ms(
+                    pipeline_started,
+                    segments_consumed,
+                ),
+                "text_assembled": _elapsed_ms(
+                    pipeline_started,
+                    text_assembled,
+                ),
+                "quality_gate_completed": _elapsed_ms(
+                    pipeline_started,
+                    quality_completed,
+                ),
+            },
+            "durations_ms": {
+                "input_prepare": _elapsed_ms(pipeline_started, input_ready),
+                "model_call": _elapsed_ms(started, model_call_returned),
+                "segment_iteration": _elapsed_ms(
+                    model_call_returned,
+                    segments_consumed,
+                ),
+                "text_assembly": _elapsed_ms(
+                    segments_consumed,
+                    text_assembled,
+                ),
+                "quality_gate": _elapsed_ms(
+                    text_assembled,
+                    quality_completed,
+                ),
+                "pipeline_total": _elapsed_ms(
+                    pipeline_started,
+                    quality_completed,
+                ),
+            },
+        }
         diagnostics = _json_safe(
             {
                 "language": getattr(info, "language", None),
@@ -360,6 +411,7 @@ class FasterWhisperRecognizer:
                 "hotwords": rendered_hotwords,
                 "segments": [self._segment_diagnostics(segment) for segment in segments],
                 "quality_gate": quality,
+                "timing_breakdown": timing,
             }
         )
         return TranscriptionResult(
@@ -454,3 +506,7 @@ class FasterWhisperRecognizer:
             raise SpeechRecognitionError(
                 f"Could not close faster-whisper model: {exc}"
             ) from exc
+
+
+def _elapsed_ms(start_s: float, end_s: float) -> float:
+    return max(0.0, (float(end_s) - float(start_s)) * 1000.0)
