@@ -77,6 +77,7 @@ model condition bpm = 120
 StreamMUSE playback tempo = 15 bpm
 evaluation window = 32 beats total (8-beat Prompt + 24 beats continuation)
 final catch-up grace = 3 ticks (below the 4-tick generation interval)
+Melody leading-rest trimming = on (first retained note moves to tick 0)
 ticks_per_beat = 4
 generation_interval_ticks = 4
 generation_length_frames = 4
@@ -124,3 +125,8 @@ catch-up before the 32-beat listening window ends. Offline output stops at tick
 128. StreamMUSE stops at tick 131, giving the final tick-128 append request
 three seconds to finish without crossing another generation boundary or
 submitting another Melody beat.
+
+Leading-rest trimming uses the existing offline and MIDI-file input options in
+both paths. The evaluation end tick is computed after subtracting the same
+quantized first-note offset. Use `--no-trim-leading-rest` only for an explicit
+ablation; formal listening runs keep trimming enabled.

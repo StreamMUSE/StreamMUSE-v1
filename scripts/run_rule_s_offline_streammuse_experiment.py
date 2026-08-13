@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-eval-beats", type=int, default=32)
     parser.add_argument("--final-catchup-grace-ticks", type=int, default=3)
     parser.add_argument("--tail-beats", type=int, default=0)
+    parser.add_argument(
+        "--trim-leading-rest",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Shift the first retained Melody note to tick 0 in both paths",
+    )
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--prompt-temperature", type=float, default=0.8)
     parser.add_argument("--prompt-top-k", type=int, default=50)
@@ -133,8 +139,9 @@ def midi_max_tick(
     ticks_per_beat: int,
     tail_beats: int,
     max_eval_beats: int,
+    trim_leading_rest: bool,
 ) -> int:
-    _notes, _resolution, actual_max_tick = MidiFileInput._midi_to_notes(
+    notes, _resolution, actual_max_tick = MidiFileInput._midi_to_notes(
         str(path),
         beat_div=int(ticks_per_beat),
         min_pitch=0,
@@ -142,9 +149,11 @@ def midi_max_tick(
         program=None,
         max_tick=None,
     )
-    requested_max_tick = (
-        int(actual_max_tick) + int(tail_beats) * int(ticks_per_beat)
-    )
+    first_note_tick = min((int(note["tick"]) for note in notes), default=0)
+    retained_max_tick = int(actual_max_tick)
+    if trim_leading_rest:
+        retained_max_tick = max(0, retained_max_tick - first_note_tick)
+    requested_max_tick = retained_max_tick + int(tail_beats) * int(ticks_per_beat)
     eval_max_tick = int(max_eval_beats) * int(ticks_per_beat)
     return min(requested_max_tick, eval_max_tick)
 
@@ -326,6 +335,7 @@ def run_case(
         args.ticks_per_beat,
         args.tail_beats,
         args.max_eval_beats,
+        args.trim_leading_rest,
     )
     streammuse_run_stop_tick = (
         evaluation_max_tick + args.final_catchup_grace_ticks
@@ -367,6 +377,8 @@ def run_case(
         "--rt-top-p", str(args.rt_top_p),
         "--rt-repetition-penalty", str(args.rt_repetition_penalty),
     ]
+    if args.trim_leading_rest:
+        offline_cmd.append("--trim-leading-rest")
     cli_cmd = [
         sys.executable,
         "-m", "streammuse.presentation.cli.cli",
@@ -384,6 +396,8 @@ def run_case(
         "--output-type", "session",
         "--log-dir", str(streammuse_dir),
     ]
+    if args.trim_leading_rest:
+        cli_cmd.append("--midi-file-trim-leading-rest")
 
     if args.dry_run:
         status = {
@@ -566,6 +580,7 @@ def main() -> None:
         "max_eval_beats": args.max_eval_beats,
         "final_catchup_grace_ticks": args.final_catchup_grace_ticks,
         "tail_beats": args.tail_beats,
+        "trim_leading_rest": args.trim_leading_rest,
         "dry_run": args.dry_run,
     }
     write_json(run_root / "run_config.json", config)
