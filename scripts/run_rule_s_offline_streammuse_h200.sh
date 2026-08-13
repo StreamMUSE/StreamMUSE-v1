@@ -12,6 +12,7 @@ MIDI_DIR="${MIDI_DIR:-${REPO_ROOT}/prompts/old_input/mel}"
 OUT_ROOT="${OUT_ROOT:-/data/home/yuanxin/runs/rule_s_offline_streammuse_${STAMP}}"
 
 export CUDA_VISIBLE_DEVICES="${GPU}"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 exec "${PYTHON_BIN}" "${REPO_ROOT}/scripts/run_rule_s_offline_streammuse_experiment.py" \
   --midi-dir "${MIDI_DIR}" \
