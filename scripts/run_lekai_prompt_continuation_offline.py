@@ -189,16 +189,24 @@ def load_midi_events(
     trim_leading_rest: bool,
     velocity: int = 80,
 ) -> tuple[list[EventPayload], dict[str, Any]]:
-    notes, resolution, actual_max_tick = MidiFileInput._midi_to_notes(
+    notes, resolution, original_max_tick = MidiFileInput._midi_to_notes(
         str(midi_path),
         beat_div=int(ticks_per_beat),
         min_pitch=0,
         max_pitch=127,
         program=None,
-        max_tick=max_tick,
+        max_tick=None,
     )
     first_tick = min((int(note["tick"]) for note in notes), default=0)
     offset = first_tick if trim_leading_rest else 0
+    relative_max_tick = max(0, int(original_max_tick) - offset)
+    if max_tick is not None:
+        notes = [
+            note
+            for note in notes
+            if int(note["tick"]) - offset < int(max_tick)
+        ]
+        relative_max_tick = min(relative_max_tick, int(max_tick))
     events: list[EventPayload] = []
     for note in notes:
         tick = int(note["tick"]) - offset
@@ -214,7 +222,8 @@ def load_midi_events(
         "note_count": len(notes),
         "event_count": len(events),
         "resolution": int(resolution),
-        "actual_max_tick": int(actual_max_tick),
+        "original_max_tick": int(original_max_tick),
+        "actual_max_tick": int(relative_max_tick),
         "first_note_tick_original": int(first_tick),
         "trim_leading_rest": bool(trim_leading_rest),
         "offset_ticks": int(offset),
