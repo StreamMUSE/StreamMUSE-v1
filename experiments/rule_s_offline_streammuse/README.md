@@ -76,6 +76,7 @@ Shared system settings:
 model condition bpm = 120
 StreamMUSE playback tempo = 15 bpm
 evaluation window = 32 beats total (8-beat Prompt + 24 beats continuation)
+final catch-up grace = 3 ticks (below the 4-tick generation interval)
 ticks_per_beat = 4
 generation_interval_ticks = 4
 generation_length_frames = 4
@@ -119,4 +120,7 @@ Before listening analysis:
 The slower playback tempo is a simulation control, not a model-conditioning
 change. Both offline and StreamMUSE model calls remain conditioned on 120 BPM;
 the StreamMUSE MIDI clock runs at 15 BPM so the H200 implementation can finish
-catch-up before the 32-beat listening window ends.
+catch-up before the 32-beat listening window ends. Offline output stops at tick
+128. StreamMUSE stops at tick 131, giving the final tick-128 append request
+three seconds to finish without crossing another generation boundary or
+submitting another Melody beat.
