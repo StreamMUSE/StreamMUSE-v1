@@ -10,12 +10,40 @@ import torch
 
 
 RULE_S_ID = "empty_filter_discovery_spearman_weighted_rank_v1"
+RULE_S_V2_ID = "rule_s_v1_plus_median_duration_mismatch_v2"
 RULE_S_WEIGHTS = {
     "prompt_ppl": -0.45,
     "acc_pitch_range": 0.47699162299076214,
     "acc_pitch_class_entropy": 0.4666666666666666,
     "acc_average_voice_number": 0.4958158260214505,
 }
+RULE_S_V2_DURATION_WEIGHT = 0.49
+RULE_S_V2_EXPECTED_LOG_DURATION_RATIO = 0.0
+
+
+def median_note_duration_from_pianoroll(
+    pianoroll: np.ndarray,
+    *,
+    length_ticks: int,
+) -> float:
+    """Return the median note duration on a sustain/onset pianoroll grid."""
+
+    if pianoroll.ndim != 3 or pianoroll.shape[0] < 2:
+        raise ValueError("expected pianoroll with shape (2, pitch, time)")
+    length_ticks = int(length_ticks)
+    if length_ticks <= 0:
+        raise ValueError("length_ticks must be positive")
+
+    sustain = np.asarray(pianoroll[0, :, :length_ticks] > 0, dtype=np.bool_)
+    onset = np.asarray(pianoroll[1, :, :length_ticks] > 0, dtype=np.bool_)
+    durations: list[float] = []
+    for pitch_index in np.flatnonzero(onset.any(axis=1)):
+        for start in np.flatnonzero(onset[pitch_index]):
+            end = int(start) + 1
+            while end < sustain.shape[1] and sustain[pitch_index, end]:
+                end += 1
+            durations.append(float(end - int(start)))
+    return float(np.median(durations)) if durations else 0.0
 
 
 def accompaniment_features_from_pianoroll(
@@ -41,6 +69,7 @@ def accompaniment_features_from_pianoroll(
             "acc_pitch_range": 0.0,
             "acc_pitch_class_entropy": 0.0,
             "acc_average_voice_number": 0.0,
+            "acc_median_note_duration_ticks": 0.0,
         }
 
     pitch_weights = np.zeros(onset.shape[0], dtype=np.float64)
@@ -69,6 +98,10 @@ def accompaniment_features_from_pianoroll(
         ),
         "acc_pitch_class_entropy": float(-np.sum(nonzero * np.log2(nonzero))),
         "acc_average_voice_number": float(total_note_duration / length_ticks),
+        "acc_median_note_duration_ticks": median_note_duration_from_pianoroll(
+            pianoroll,
+            length_ticks=length_ticks,
+        ),
     }
 
 
@@ -136,6 +169,101 @@ def select_rule_s_candidate(
         "selected_candidate_number": int(selected["candidate_number"]),
         "eligible_count": len(eligible),
         "fallback_reason": None,
+        "candidates": scored,
+    }
+
+
+def select_rule_s_v2_candidate(
+    candidates: list[dict[str, Any]],
+    *,
+    duration_weight: float = RULE_S_V2_DURATION_WEIGHT,
+    expected_log_duration_ratio: float = RULE_S_V2_EXPECTED_LOG_DURATION_RATIO,
+    epsilon: float = 1e-6,
+) -> dict[str, Any]:
+    """Add a Melody-relative median-duration penalty to frozen Rule-S v1."""
+
+    if not candidates:
+        raise ValueError("at least one Prompt candidate is required")
+    if duration_weight < 0 or not math.isfinite(duration_weight):
+        raise ValueError("duration_weight must be finite and non-negative")
+    if not math.isfinite(expected_log_duration_ratio):
+        raise ValueError("expected_log_duration_ratio must be finite")
+    if epsilon <= 0 or not math.isfinite(epsilon):
+        raise ValueError("epsilon must be finite and positive")
+
+    if all("rule_s_score" in candidate for candidate in candidates):
+        scored = [dict(candidate) for candidate in candidates]
+    else:
+        scored = select_rule_s_candidate(candidates)["candidates"]
+
+    eligible = []
+    for candidate in scored:
+        melody_duration = float(candidate.get("mel_median_note_duration_ticks", 0.0))
+        accompaniment_duration = float(
+            candidate.get("acc_median_note_duration_ticks", 0.0)
+        )
+        duration_available = (
+            bool(candidate.get("eligible"))
+            and melody_duration > 0
+            and accompaniment_duration > 0
+            and math.isfinite(melody_duration)
+            and math.isfinite(accompaniment_duration)
+        )
+        candidate["duration_metric_available"] = duration_available
+        candidate["duration_ratio"] = None
+        candidate["duration_log_ratio"] = None
+        candidate["duration_mismatch"] = None
+        candidate["rule_s_v2_eligible"] = duration_available
+        candidate["rule_s_v2_score"] = None
+        if duration_available:
+            ratio = (accompaniment_duration + epsilon) / (melody_duration + epsilon)
+            log_ratio = math.log(ratio)
+            candidate["duration_ratio"] = ratio
+            candidate["duration_log_ratio"] = log_ratio
+            candidate["duration_mismatch"] = abs(
+                log_ratio - expected_log_duration_ratio
+            )
+            eligible.append(candidate)
+
+    if not eligible:
+        fallback = select_rule_s_candidate(scored)
+        return {
+            "rule_id": RULE_S_V2_ID,
+            "selected_index": int(fallback["selected_index"]),
+            "selected_candidate_number": int(fallback["selected_candidate_number"]),
+            "eligible_count": 0,
+            "fallback_reason": "duration_metric_unavailable_use_rule_s_v1",
+            "duration_weight": duration_weight,
+            "expected_log_duration_ratio": expected_log_duration_ratio,
+            "candidates": scored,
+        }
+
+    for candidate in eligible:
+        candidate["rule_s_v2_score"] = float(candidate["rule_s_score"]) - (
+            duration_weight
+            * normalized_average_rank(
+                eligible,
+                candidate,
+                "duration_mismatch",
+            )
+        )
+
+    selected = max(
+        eligible,
+        key=lambda candidate: (
+            float(candidate["rule_s_v2_score"]),
+            -float(candidate["prompt_ppl"]),
+            -int(candidate["candidate_number"]),
+        ),
+    )
+    return {
+        "rule_id": RULE_S_V2_ID,
+        "selected_index": int(selected["candidate_number"]) - 1,
+        "selected_candidate_number": int(selected["candidate_number"]),
+        "eligible_count": len(eligible),
+        "fallback_reason": None,
+        "duration_weight": duration_weight,
+        "expected_log_duration_ratio": expected_log_duration_ratio,
         "candidates": scored,
     }
 

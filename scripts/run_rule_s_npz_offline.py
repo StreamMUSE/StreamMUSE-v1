@@ -26,8 +26,10 @@ from streammuse.infrastructure.inference.lekai_continuation_model.Token2Midi imp
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_batch_selector import (
     accompaniment_features_from_pianoroll,
+    median_note_duration_from_pianoroll,
     score_prompt_batch_ppl,
     select_rule_s_candidate,
+    select_rule_s_v2_candidate,
     trim_at_eos,
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_model.config import (
@@ -72,6 +74,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-top-k", type=int, default=50)
     parser.add_argument("--prompt-top-p", type=float, default=0.95)
     parser.add_argument("--prompt-repetition-penalty", type=float, default=1.0)
+    parser.add_argument("--duration-weight", type=float, default=0.49)
+    parser.add_argument("--duration-expected-log-ratio", type=float, default=0.0)
     parser.add_argument("--continuation-temperature", type=float, default=1.1)
     parser.add_argument("--continuation-top-k", type=int, default=0)
     parser.add_argument("--continuation-top-p", type=float, default=0.95)
@@ -283,6 +287,15 @@ def main() -> None:
 
     candidates = []
     prompt_prefixes = []
+    prefix_ticks = args.prompt_prefix_beats * TIMESTEPS_PER_BEAT
+    melody_pianoroll = np.concatenate(
+        [measure[:2] for measure in measures[: args.prompt_num_bars]],
+        axis=2,
+    )
+    melody_median_duration = median_note_duration_from_pianoroll(
+        melody_pianoroll,
+        length_ticks=prefix_ticks,
+    )
     for index in range(args.candidate_count):
         row, prefix = candidate_from_sequence(
             generated[index],
@@ -291,9 +304,15 @@ def main() -> None:
             prefix_beats=args.prompt_prefix_beats,
             ppl=ppl_scores[index],
         )
+        row["mel_median_note_duration_ticks"] = melody_median_duration
         candidates.append(row)
         prompt_prefixes.append(prefix)
-    rule_s = select_rule_s_candidate(candidates)
+    rule_s_v1 = select_rule_s_candidate(candidates)
+    rule_s_v2 = select_rule_s_v2_candidate(
+        rule_s_v1["candidates"],
+        duration_weight=args.duration_weight,
+        expected_log_duration_ratio=args.duration_expected_log_ratio,
+    )
 
     del prompt_model
     if torch.cuda.is_available():
@@ -319,9 +338,14 @@ def main() -> None:
     conditions: list[tuple[str, int | None, list[Any]]] = [
         ("batch_first", 0, prompt_prefixes[0]),
         (
-            "rule_s",
-            int(rule_s["selected_index"]),
-            prompt_prefixes[int(rule_s["selected_index"])],
+            "rule_s_v1",
+            int(rule_s_v1["selected_index"]),
+            prompt_prefixes[int(rule_s_v1["selected_index"])],
+        ),
+        (
+            "rule_s_v2",
+            int(rule_s_v2["selected_index"]),
+            prompt_prefixes[int(rule_s_v2["selected_index"])],
         ),
     ]
     if args.include_gt_accompaniment:
@@ -421,9 +445,12 @@ def main() -> None:
                 "top_p": args.continuation_top_p,
                 "repetition_penalty": args.continuation_repetition_penalty,
             },
-            "candidates": rule_s["candidates"],
-            "rule_s_decision": {
-                key: value for key, value in rule_s.items() if key != "candidates"
+            "candidates": rule_s_v2["candidates"],
+            "rule_s_v1_decision": {
+                key: value for key, value in rule_s_v1.items() if key != "candidates"
+            },
+            "rule_s_v2_decision": {
+                key: value for key, value in rule_s_v2.items() if key != "candidates"
             },
             "outputs": outputs,
         },
