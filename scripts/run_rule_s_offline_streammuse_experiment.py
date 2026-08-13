@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-length-ticks", type=int, default=32)
     parser.add_argument("--generation-interval-ticks", type=int, default=4)
     parser.add_argument("--generation-length-frames", type=int, default=4)
+    parser.add_argument("--prompt-context-beats", type=int, default=32)
+    parser.add_argument("--history-max-ticks", type=int, default=128)
     parser.add_argument("--tail-beats", type=int, default=24)
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--prompt-temperature", type=float, default=0.8)
@@ -176,6 +178,8 @@ def experiment_env(
             "LEKAI_RT_TOP_P": str(args.rt_top_p),
             "LEKAI_RT_REPETITION_PENALTY": str(args.rt_repetition_penalty),
             "LEKAI_RT_SEED": str(continuation_seed),
+            "LEKAI_PROMPT_CONTEXT_BEATS": str(args.prompt_context_beats),
+            "LEKAI_HISTORY_MAX_TICKS": str(args.history_max_ticks),
             "LEKAI_SERVER_HOST": "127.0.0.1",
             "LEKAI_SERVER_PORT": str(port),
         }
@@ -399,6 +403,8 @@ def main() -> None:
     args = parse_args()
     if args.candidate_count < 2:
         raise ValueError("--candidate-count must be at least 2")
+    if args.prompt_context_beats < 1 or args.history_max_ticks < 1:
+        raise ValueError("context and history limits must be positive")
     args.prompt_checkpoint = require_file(args.prompt_checkpoint, "prompt checkpoint")
     args.continuation_checkpoint = require_file(
         args.continuation_checkpoint, "continuation checkpoint"
@@ -438,6 +444,8 @@ def main() -> None:
         "prompt_length_ticks": args.prompt_length_ticks,
         "generation_interval_ticks": args.generation_interval_ticks,
         "generation_length_frames": args.generation_length_frames,
+        "prompt_context_beats": args.prompt_context_beats,
+        "history_max_ticks": args.history_max_ticks,
         "tail_beats": args.tail_beats,
         "dry_run": args.dry_run,
     }
