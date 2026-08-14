@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from threading import Event, RLock, Thread, current_thread
+from threading import Event, Lock, RLock, Thread, current_thread
 import time
 from typing import Callable
 
@@ -47,10 +47,13 @@ class RapPlaybackService:
         self._on_tick = on_tick
         self._monotonic = monotonic
         self._lock = RLock()
+        self._poll_lock = Lock()
         self._state = PlaybackState.STOPPED
         self._prepared: dict[int, PreparedRapBar] = {}
         self._current_tick: int | None = None
         self._emitted_syllables: set[tuple[int, int]] = set()
+        self._next_start_bar = 0
+        self._sample_origin_frame = 0
         self._epoch = 0
         self._observer_stop = Event()
         self._observer: Thread | None = None
@@ -66,12 +69,9 @@ class RapPlaybackService:
             return self._current_tick
 
     def prime(self, bar: PreparedRapBar) -> None:
-        if bar.bar != 0:
-            raise ValueError("prime requires prepared bar 0")
         with self._lock:
             self._require_state(PlaybackState.STOPPED)
-            self._enqueue_locked(bar)
-            self._state = PlaybackState.PRIMING
+            self._prime_locked(bar)
 
     def start(self) -> None:
         with self._lock:
@@ -103,10 +103,7 @@ class RapPlaybackService:
     def enqueue(self, bar: PreparedRapBar) -> None:
         with self._lock:
             if self._state == PlaybackState.STOPPED:
-                if bar.bar != 0:
-                    raise ValueError("the first prepared bar must be bar 0")
-                self._enqueue_locked(bar)
-                self._state = PlaybackState.PRIMING
+                self._prime_locked(bar)
                 return
             if self._state not in (PlaybackState.PRIMING, PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
                 raise RuntimeError(f"cannot enqueue while playback is {self._state.value}")
@@ -135,6 +132,8 @@ class RapPlaybackService:
             self._prepared.clear()
             self._current_tick = None
             self._emitted_syllables.clear()
+            self._next_start_bar = 0
+            self._sample_origin_frame = 0
         self._join(observer)
         self._sink.reset()
         self._emit(RapEventType.SESSION_RESET, payload={"playback_state": PlaybackState.STOPPED.value})
@@ -158,25 +157,26 @@ class RapPlaybackService:
 
     def poll(self) -> None:
         """Observe current sink state explicitly for deterministic callers and tests."""
-        with self._lock:
-            if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.PRIMING):
-                return
-            epoch = self._epoch
+        with self._poll_lock:
+            with self._lock:
+                if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.PRIMING):
+                    return
+                epoch = self._epoch
 
-        snapshot = self._sink.snapshot()
-        notices = self._sink.drain_notices()
-        observed_at = self._monotonic()
+            snapshot = self._sink.snapshot()
+            notices = self._sink.drain_notices()
+            observed_at = self._monotonic()
 
-        with self._lock:
-            if epoch != self._epoch or self._state == PlaybackState.CLOSED:
-                return
-            effects = self._effects_locked(snapshot, notices, observed_at)
-
-        for effect in effects:
             with self._lock:
                 if epoch != self._epoch or self._state == PlaybackState.CLOSED:
                     return
-            effect()
+                effects = self._effects_locked(snapshot, notices, observed_at)
+
+            for effect in effects:
+                with self._lock:
+                    if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                        return
+                effect()
 
     def _observe(self, epoch: int, stop: Event) -> None:
         while not stop.is_set():
@@ -195,37 +195,55 @@ class RapPlaybackService:
     ) -> list[Callable[[], None]]:
         effects: list[Callable[[], None]] = []
         completed_bars: list[int] = []
+        observed_frame = self._sample_origin_frame + snapshot.absolute_frame
         for notice in notices:
             if notice.kind == AudioPlaybackNoticeKind.BAR_COMPLETED and notice.bar is not None:
                 completed_bars.append(notice.bar)
+                prepared = self._prepared.get(notice.bar)
+                if prepared is not None:
+                    bar_end = bar_start_frame(prepared.bar, self._tempo, prepared.audio.format) + prepared.audio.frame_count
+                    observed_frame = max(observed_frame, bar_end)
+            observed_frame = max(observed_frame, self._sample_origin_frame + notice.absolute_frame)
             event_type = _NOTICE_EVENTS.get(notice.kind)
             if event_type is not None:
                 effects.append(lambda notice=notice, event_type=event_type: self._emit_notice(event_type, notice))
-            if notice.kind == AudioPlaybackNoticeKind.STOPPED:
-                self._transition_to_stopped_locked(effects)
 
-        effects.extend(self._sample_effects_locked(snapshot, observed_at))
+        stopping = snapshot.state == PlaybackState.STOPPED or any(
+            notice.kind == AudioPlaybackNoticeKind.STOPPED for notice in notices
+        )
+        final_bar = max(completed_bars) if stopping and completed_bars else None
+        effects.extend(self._sample_effects_locked(observed_frame, observed_at, final_bar=final_bar))
         for bar in completed_bars:
             self._prepared.pop(bar, None)
-        if snapshot.state == PlaybackState.STOPPED:
+            self._next_start_bar = max(self._next_start_bar, bar + 1)
+        if stopping:
             self._transition_to_stopped_locked(effects)
         return effects
 
-    def _sample_effects_locked(self, snapshot: AudioPlaybackSnapshot, observed_at: float) -> list[Callable[[], None]]:
+    def _sample_effects_locked(
+        self,
+        observed_frame: int,
+        observed_at: float,
+        *,
+        final_bar: int | None,
+    ) -> list[Callable[[], None]]:
         effects: list[Callable[[], None]] = []
         sample_rate = self._sample_rate()
         next_tick = 0 if self._current_tick is None else self._current_tick + 1
-        while self._tick_sample(next_tick) <= snapshot.absolute_frame:
+        final_tick = (final_bar + 1) * self._tempo.ticks_per_bar - 1 if final_bar is not None else None
+        while self._tick_sample(next_tick) <= observed_frame and (final_tick is None or next_tick <= final_tick):
             tick = next_tick
             self._current_tick = tick
             effects.append(lambda tick=tick: self._on_tick(tick))
             next_tick += 1
 
         for bar in tuple(self._prepared.values()):
+            if final_bar is not None and bar.bar > final_bar:
+                continue
             for diagnostic in bar.diagnostics:
                 key = (bar.bar, diagnostic.slot_index)
                 scheduled_sample = bar_start_frame(bar.bar, self._tempo, bar.audio.format) + diagnostic.target_sample
-                if key in self._emitted_syllables or scheduled_sample > snapshot.absolute_frame:
+                if key in self._emitted_syllables or scheduled_sample > observed_frame:
                     continue
                 scheduled = next((item for item in bar.scheduled if item.slot.slot_index == diagnostic.slot_index), None)
                 if scheduled is None:
@@ -234,7 +252,7 @@ class RapPlaybackService:
                 payload = {
                     "scheduled_sample": scheduled_sample,
                     "software_error_samples": 0,
-                    "observation_delay_ms": (snapshot.absolute_frame - scheduled_sample) / sample_rate * 1000.0,
+                    "observation_delay_ms": (observed_frame - scheduled_sample) / sample_rate * 1000.0,
                     "word": scheduled.syllable.word,
                     "label": scheduled.syllable.label,
                     "stress": scheduled.syllable.stress,
@@ -261,6 +279,19 @@ class RapPlaybackService:
     def _enqueue_locked(self, bar: PreparedRapBar) -> None:
         self._sink.enqueue(bar)
         self._prepared[bar.bar] = bar
+
+    def _prime_locked(self, bar: PreparedRapBar) -> None:
+        if bar.bar != self._next_start_bar:
+            raise ValueError(f"prime requires prepared bar {self._next_start_bar}")
+        if bar.bar > 0:
+            # Task 5 intentionally retains bars queued after a bar-quantized
+            # stop. A continuation must start from one known complete bar.
+            self._sink.reset()
+            self._prepared.clear()
+            self._sample_origin_frame = bar_start_frame(bar.bar, self._tempo, bar.audio.format)
+            self._current_tick = bar.bar * self._tempo.ticks_per_bar - 1
+        self._enqueue_locked(bar)
+        self._state = PlaybackState.PRIMING
 
     def _emit_notice(self, event_type: RapEventType, notice: AudioPlaybackNotice) -> None:
         self._emit(
