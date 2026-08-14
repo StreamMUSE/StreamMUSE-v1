@@ -132,11 +132,13 @@ def test_summary_uses_explicit_ratio_denominators_and_null_empty_observations() 
         "pronunciation_fallback": {"numerator": 2, "denominator": 3, "rate": 2 / 3},
         "repetition": {"numerator": 1, "denominator": 4, "rate": 0.25},
     }
-    assert summary["latencies"] == {
+    assert {key: summary["latencies"][key] for key in ("generation_latency_ms", "deadline_slack_ms", "emission_jitter_ms")} == {
         "generation_latency_ms": {"count": 2, "p50": 15.0, "p95": 19.5, "max": 20.0},
         "deadline_slack_ms": {"count": 2, "p50": 30.0, "p95": 48.0, "max": 50.0},
         "emission_jitter_ms": {"count": 2, "p50": -0.5, "p95": 0.8499999999999996, "max": 1.0},
     }
+    for key in ("synthesis_latency_ms", "bar_render_latency_ms", "audio_commit_slack_ms"):
+        assert summary["latencies"][key] == {"count": 0, "p50": None, "p95": None, "max": None}
     assert summary["generation_diagnostics"] == {
         "prompt_tokens": {"count": 2, "total": 30},
         "completion_tokens": {"count": 1, "total": 13},

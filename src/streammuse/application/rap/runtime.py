@@ -53,6 +53,8 @@ class RapTickLoop:
 class RapDemoDependencies:
     """Own the standalone demo lifecycle exactly once."""
 
+    autostart: ClassVar[bool] = True
+
     tempo: Tempo
     controller: RollingRapController
     publisher: RapEventPublisher

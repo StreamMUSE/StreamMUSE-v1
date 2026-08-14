@@ -133,6 +133,44 @@ class StructuredStreamRenderer:
                 f"{prefix('PLAY')} syllable label={_quoted(payload.get('label'))} stressed={_value(payload.get('stressed'))} "
                 f"jitter_ms={_number(payload.get('jitter_ms'), digits=3)}"
             )
+        elif kind == RapEventType.AUDIO_RENDER_COMPLETED:
+            self._write(
+                f"{prefix('AUDIO')} rendered source={_value(payload.get('source'))} frames={_value(payload.get('frame_count'))} "
+                f"render_ms={_number(payload.get('render_latency_ms'))} synthesis_ms={_number(payload.get('synthesis_latency_ms'))}"
+            )
+        elif kind == RapEventType.BAR_AUDIO_READY:
+            warnings = payload.get("warnings")
+            self._write(
+                f"{prefix('AUDIO')} ready source={_value(payload.get('source'))} frames={_value(payload.get('frame_count'))} "
+                f"render_ms={_number(payload.get('render_latency_ms'))} warnings={len(warnings) if isinstance(warnings, (list, tuple)) else 0}"
+            )
+        elif kind == RapEventType.BAR_AUDIO_COMMITTED:
+            self._write(
+                f"{prefix('AUDIO')} committed queue={_value(payload.get('queue_depth'))} buffered_s={_number(payload.get('buffered_seconds'))} "
+                f"render_ms={_number(payload.get('render_latency_ms'))} commit_slack_ms={_number(payload.get('deadline_slack_ms'))}"
+            )
+        elif kind == RapEventType.PRONUNCIATION_FALLBACK:
+            self._write(
+                f"{prefix('WARN')} pronunciation word={_quoted(payload.get('word'))} source={_value(payload.get('source'))} "
+                f"action={_value(payload.get('action'))}"
+            )
+        elif kind == RapEventType.TIMING_PRESSURE:
+            self._write(
+                f"{prefix('WARN')} timing slot={_value(payload.get('slot_index'))} word={_quoted(payload.get('word'))} "
+                f"available_ms={_number(payload.get('available_ms'))} rendered_ms={_number(payload.get('rendered_ms'))} "
+                f"compression={_number(payload.get('compression_ratio'))} overlap_ms={_number(payload.get('overlap_ms'))}"
+            )
+        elif kind == RapEventType.AUDIO_UNDERRUN:
+            self._write(f"{prefix('WARN')} underrun queue={_value(payload.get('queue_depth'))} message={_quoted(payload.get('message'))}")
+        elif kind == RapEventType.AUDIO_DEVICE_FAILED:
+            self._write(f"{prefix('WARN')} device message={_quoted(payload.get('message'))}")
+        elif kind == RapEventType.BAR_PLAYBACK_STARTED:
+            self._write(
+                f"{prefix('PLAY')} started queue={_value(payload.get('queue_depth'))} buffered_s={_number(payload.get('buffered_seconds'))} "
+                f"absolute_frame={_value(payload.get('absolute_frame'))}"
+            )
+        elif kind == RapEventType.BAR_PLAYBACK_COMPLETED:
+            self._write(f"{prefix('PLAY')} completed absolute_frame={_value(payload.get('absolute_frame'))}")
 
     @staticmethod
     def _prefix(event: RapEvent) -> Callable[[str], str]:

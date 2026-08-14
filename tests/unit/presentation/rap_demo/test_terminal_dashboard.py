@@ -299,6 +299,25 @@ def test_full_dashboard_preserves_exact_prompt_and_raw_response(
     assert "…" not in output
 
 
+def test_dashboard_shows_audio_lifecycle_and_warning_evidence() -> None:
+    projector = TerminalRapStateProjector()
+    for event in (
+        _event(1, RapEventType.BAR_AUDIO_COMMITTED, {"queue_depth": 3, "buffered_seconds": 12, "device": "Mac speakers", "recording_path": "session.wav", "render_latency_ms": 48, "deadline_slack_ms": 250}),
+        _event(2, RapEventType.PRONUNCIATION_FALLBACK, {"word": "StreamMUSE", "action": "espeak_g2p"}),
+        _event(3, RapEventType.BAR_PLAYBACK_STARTED, {"absolute_frame": 384000, "queue_depth": 3}),
+    ):
+        projector.apply(event)
+
+    output = _text(projector.state, detail="full")
+
+    assert "AUDIO PLAYBACK" in output
+    assert "running" in output
+    assert "Mac speakers" in output
+    assert "session.wav" in output
+    assert "AUDIO WARNINGS" in output
+    assert "StreamMUSE" in output
+
+
 def test_dashboard_escapes_terminal_controls_from_model_content() -> None:
     projector = TerminalRapStateProjector()
     events = (

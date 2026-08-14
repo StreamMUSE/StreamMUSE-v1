@@ -324,6 +324,9 @@ def derive_summary(
             "emission_jitter_ms": _distribution(
                 _payload_numbers((event for event in event_list if event.event_type == RapEventType.SYLLABLE_EMITTED), "jitter_ms")
             ),
+            "synthesis_latency_ms": _distribution(_payload_numbers(audio_events, "synthesis_latency_ms")),
+            "bar_render_latency_ms": _distribution(_payload_numbers(audio_events, "render_latency_ms")),
+            "audio_commit_slack_ms": _distribution(_payload_numbers(committed_audio, "deadline_slack_ms")),
         },
         "generation_diagnostics": {
             "prompt_tokens": _token_usage(batches.values(), "prompt_tokens"),

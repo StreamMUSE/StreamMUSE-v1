@@ -80,6 +80,8 @@ def _performance_sections(state: TerminalRapViewState, detail: str) -> tuple[Ren
         _flow_strip(state, bar, flow, detail),
         _queue(state),
         _clock_and_health(state),
+        _audio_playback(state),
+        _audio_warnings(state, detail),
         _recent_commits(state),
     )
 
@@ -211,6 +213,33 @@ def _clock_and_health(state: TerminalRapViewState) -> RenderableType:
         ("Health", Text(health, style=health_style)),
     )
     return _section("CLOCK + HEALTH", rows)
+
+
+def _audio_playback(state: TerminalRapViewState) -> RenderableType:
+    audio = state.audio
+    rows = (
+        ("State", Text(_safe(audio.get("state", "disabled")), style="green" if audio.get("state") == "running" else "yellow")),
+        ("Queue", Text(f"{audio.get('queue_depth', 0)} bars  {audio.get('buffered_seconds', 0.0)} s")),
+        ("Position", Text(f"bar={_display_bar(audio.get('current_bar'))} frame={audio.get('absolute_frame', '-') }")),
+        ("Device", Text(_safe(audio.get("device") or "-"))),
+        ("Recording", Text(_safe(audio.get("recording_path") or "-"))),
+        ("Underruns", Text(str(audio.get("underruns", 0)), style="red" if audio.get("underruns", 0) else "dim")),
+    )
+    return _section("AUDIO PLAYBACK", rows)
+
+
+def _audio_warnings(state: TerminalRapViewState, detail: str) -> RenderableType:
+    warnings = state.audio_warnings[-6:]
+    rows: list[tuple[str, RenderableType]] = []
+    for warning in warnings:
+        label = _safe(warning.get("type", "warning"))
+        summary = f"bar={_display_bar(warning.get('bar'))} slot={warning.get('slot_index', '-')} word={_safe(warning.get('word', '-'))} action={_safe(warning.get('action', '-'))}"
+        if detail == "full":
+            summary += f" source={_safe(warning.get('source', '-'))} target_sample={warning.get('target_sample', '-')} phonemes={_safe(warning.get('renderer_phonemes', '-'))}"
+        rows.append((label, Text(summary, style="yellow")))
+    if not rows:
+        rows.append(("Warnings", Text("None", style="dim")))
+    return _section("AUDIO WARNINGS", rows)
 
 
 def _recent_commits(state: TerminalRapViewState) -> RenderableType:

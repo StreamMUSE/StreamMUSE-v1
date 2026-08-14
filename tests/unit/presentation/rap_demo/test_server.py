@@ -8,7 +8,7 @@ import time
 from enum import Enum
 from pathlib import Path
 from queue import Queue
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from types import MappingProxyType
 from typing import Any
 
@@ -61,6 +61,8 @@ class FakeProjector:
 
 
 class FakeRuntime:
+    autostart = True
+
     def __init__(self, session_dir: Path) -> None:
         self.session_dir = session_dir
         self.session_metadata = MappingProxyType(
@@ -79,6 +81,39 @@ class FakeRuntime:
     def close(self) -> None:
         with self._lock:
             self.close_calls += 1
+
+
+class ControllableFakeRuntime(FakeRuntime):
+    autostart = False
+
+    def __init__(self, session_dir: Path) -> None:
+        super().__init__(session_dir)
+        self.control_state = "stopped"
+        self.stop_calls = 0
+        self.reset_calls = 0
+        self.finished = Event()
+
+    def start(self) -> None:
+        with self._lock:
+            self.start_calls += 1
+            self.control_state = "running"
+        self.started.set()
+        self.finished.wait(timeout=1)
+
+    def request_stop(self) -> None:
+        with self._lock:
+            self.stop_calls += 1
+            self.control_state = "stop_requested"
+
+    def finish_bar(self) -> None:
+        with self._lock:
+            self.control_state = "stopped"
+        self.finished.set()
+
+    def reset(self) -> None:
+        with self._lock:
+            self.reset_calls += 1
+            self.control_state = "stopped"
 
 
 def _app(tmp_path: Path, queue: Queue[Any] | None = None) -> tuple[Any, FakeRuntime, Queue[Any]]:
@@ -146,6 +181,11 @@ def test_static_monitor_routes_are_served_and_model_text_uses_text_content(tmp_p
         "history-rows",
         "event-console",
         "event-announcer",
+        "start-runtime",
+        "stop-runtime",
+        "reset-runtime",
+        "audio-state",
+        "audio-warning-rows",
     ):
         assert f'id="{element_id}"' in index.text
 
@@ -176,6 +216,8 @@ def test_static_monitor_routes_are_served_and_model_text_uses_text_content(tmp_p
         "raw_response",
         "context_lines",
         "research_metrics",
+        "sendControl",
+        "renderAudio",
     ):
         assert renderer_contract in script.text
     assert "textContent" in script.text
@@ -317,6 +359,72 @@ def test_lifespan_starts_runtime_and_closes_it_exactly_once(tmp_path: Path) -> N
 
     assert runtime.start_calls == 1
     assert runtime.close_calls == 1
+
+
+def test_audio_runtime_waits_for_start_and_controls_are_restart_safe(tmp_path: Path) -> None:
+    runtime = ControllableFakeRuntime(tmp_path / "rap-test")
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    with TestClient(app) as client:
+        assert runtime.start_calls == 0
+        assert client.post("/api/control/stop").status_code == 409
+        assert client.post("/api/control/start").json() == {"state": "priming"}
+        assert client.post("/api/control/start").status_code == 409
+        assert runtime.started.wait(timeout=1)
+        assert client.post("/api/control/stop").json() == {"state": "stop_requested"}
+        assert runtime.stop_calls == 1
+        runtime.finish_bar()
+        assert client.post("/api/control/reset").json() == {"state": "stopped"}
+        assert runtime.reset_calls == 1
+        runtime.finished = Event()
+        assert client.post("/api/control/start").status_code == 202
+        deadline = time.monotonic() + 1.0
+        while runtime.start_calls != 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert runtime.start_calls == 2
+        runtime.finish_bar()
+
+
+def test_control_endpoints_reject_unsupported_text_runtime(tmp_path: Path) -> None:
+    app, _, _ = _app(tmp_path)
+
+    with TestClient(app) as client:
+        assert client.post("/api/control/start").status_code == 404
+        assert client.post("/api/control/stop").status_code == 404
+        assert client.post("/api/control/reset").status_code == 404
+
+
+def test_reset_serializes_a_concurrent_start_request(tmp_path: Path) -> None:
+    class ResetBlockingRuntime(ControllableFakeRuntime):
+        def __init__(self, session_dir: Path) -> None:
+            super().__init__(session_dir)
+            self.reset_entered = Event()
+            self.release_reset = Event()
+
+        def reset(self) -> None:
+            self.reset_entered.set()
+            assert self.release_reset.wait(timeout=1)
+            super().reset()
+
+    runtime = ResetBlockingRuntime(tmp_path / "rap-test")
+    lifecycle = _MonitorLifecycle(runtime, FakeProjector(), Queue())
+    reset_done = Event()
+    start_result: list[dict[str, str]] = []
+    reset_thread = Thread(target=lambda: (lifecycle.reset_control(), reset_done.set()))
+    start_thread = Thread(target=lambda: start_result.append(lifecycle.start_control()))
+
+    reset_thread.start()
+    assert runtime.reset_entered.wait(timeout=1)
+    start_thread.start()
+    time.sleep(0.02)
+    assert start_thread.is_alive()
+    runtime.release_reset.set()
+    reset_thread.join(timeout=1)
+    start_thread.join(timeout=1)
+    runtime.finish_bar()
+
+    assert reset_done.is_set()
+    assert start_result == [{"state": "priming"}]
 
 
 def test_slow_websocket_is_dropped_without_blocking_a_healthy_client() -> None:

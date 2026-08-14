@@ -406,3 +406,67 @@ def test_rap_package_exports_preserve_existing_and_monitoring_public_apis() -> N
     assert ExportedDispatcher is RapEventDispatcher
     assert PhraseBankGenerator is not None
     assert RapSessionRecorder is not None
+
+
+def test_state_projector_tracks_audio_state_warnings_and_latency_aggregates() -> None:
+    projector = RapStateProjector()
+    events = (
+        _event(1, RapEventType.AUDIO_RENDER_COMPLETED, bar=2, payload={"synthesis_latency_ms": 11.0, "render_latency_ms": 48.0}),
+        _event(
+            2,
+            RapEventType.BAR_AUDIO_COMMITTED,
+            bar=2,
+            payload={"queue_depth": 3, "buffered_seconds": 12.0, "deadline_slack_ms": 250.0, "device": "Mac speakers"},
+        ),
+        _event(
+            3,
+            RapEventType.PRONUNCIATION_FALLBACK,
+            bar=2,
+            payload={"word": "StreamMUSE", "action": "espeak_g2p", "source": "espeak_g2p"},
+        ),
+        _event(4, RapEventType.TIMING_PRESSURE, bar=2, payload={"slot_index": 7, "word": "trans", "compression_ratio": 1.45}),
+        _event(5, RapEventType.AUDIO_UNDERRUN, payload={"queue_depth": 0}),
+        _event(6, RapEventType.BAR_PLAYBACK_STARTED, bar=2, payload={"absolute_frame": 384_000, "queue_depth": 3, "buffered_seconds": 12.0}),
+    )
+    for event in events:
+        projector.apply(event)
+
+    state = projector.snapshot()
+
+    assert state["audio"] == {
+        "state": "running",
+        "current_bar": 2,
+        "queue_depth": 3,
+        "buffered_seconds": 12.0,
+        "underruns": 1,
+        "device": "Mac speakers",
+        "recording_path": None,
+        "absolute_frame": 384_000,
+    }
+    assert [warning["word"] for warning in state["audio_warnings"][:2]] == ["StreamMUSE", "trans"]
+    assert state["latencies"]["synthesis_latency_ms"]["count"] == 1
+    assert state["latencies"]["bar_render_latency_ms"]["max"] == 48.0
+    assert state["latencies"]["audio_commit_slack_ms"]["total"] == 250.0
+
+
+def test_state_projector_bounds_audio_warnings_and_resets_audio_state() -> None:
+    projector = RapStateProjector()
+    for sequence in range(1, 131):
+        projector.apply(
+            _event(
+                sequence,
+                RapEventType.PRONUNCIATION_FALLBACK,
+                bar=0,
+                payload={"word": f"word-{sequence}"},
+            )
+        )
+    state = projector.snapshot()
+
+    assert len(state["audio_warnings"]) == 128
+    assert state["audio_warnings"][0]["word"] == "word-3"
+    projector.apply(_event(131, RapEventType.SESSION_RESET, payload={"playback_state": "stopped"}))
+    state = projector.snapshot()
+
+    assert state["audio_warnings"] == []
+    assert state["audio"]["state"] == "stopped"
+    assert state["audio"]["current_bar"] is None

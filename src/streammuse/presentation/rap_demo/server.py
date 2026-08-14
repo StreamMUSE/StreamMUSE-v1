@@ -93,14 +93,23 @@ class _MonitorLifecycle:
         self._closed = False
         self._runtime_error: BaseException | None = None
         self._handoff_lock = asyncio.Lock()
+        self._control_lock = Lock()
+        self._control_starting = False
 
     def snapshot(self) -> object:
         snapshot = getattr(self.projector, "snapshot", None)
         if callable(snapshot):
-            return _json_safe(snapshot())
-        if hasattr(self.projector, "state"):
-            return _json_safe(getattr(self.projector, "state"))
-        raise TypeError("projector must expose snapshot() or state")
+            state = _json_safe(snapshot())
+        elif hasattr(self.projector, "state"):
+            state = _json_safe(getattr(self.projector, "state"))
+        else:
+            raise TypeError("projector must expose snapshot() or state")
+        runtime_state = self._runtime_state()
+        if isinstance(state, dict) and runtime_state is not None:
+            audio = state.get("audio")
+            if isinstance(audio, dict) and audio.get("state") == "disabled":
+                audio["state"] = runtime_state
+        return state
 
     def session(self) -> dict[str, object]:
         snapshot = self.snapshot()
@@ -116,8 +125,38 @@ class _MonitorLifecycle:
     async def start(self) -> None:
         self._broadcaster_stop = asyncio.Event()
         self._broadcaster_task = asyncio.create_task(self._broadcast_loop(), name="rap-websocket-broadcaster")
-        self._runtime_thread = Thread(target=self._start_runtime, name="streammuse-rap-runtime", daemon=True)
-        self._runtime_thread.start()
+        if getattr(self.runtime, "autostart", False) is True:
+            self._start_runtime_thread()
+
+    def start_control(self) -> dict[str, str]:
+        self._require_control("start")
+        with self._control_lock:
+            if self._control_starting or self._runtime_state() != "stopped":
+                raise HTTPException(status_code=409, detail="runtime cannot start from its current state")
+            if not self._start_runtime_thread_locked():
+                raise HTTPException(status_code=409, detail="runtime start is already active")
+        return {"state": "priming"}
+
+    def stop_control(self) -> dict[str, str]:
+        stop = self._require_control("stop")
+        with self._control_lock:
+            if self._control_starting or self._runtime_state() not in {"priming", "running"}:
+                raise HTTPException(status_code=409, detail="runtime cannot stop from its current state")
+            stop()
+        return {"state": "stop_requested"}
+
+    def reset_control(self) -> dict[str, str]:
+        reset = self._require_control("reset")
+        with self._control_lock:
+            if self._control_starting or self._runtime_state() != "stopped":
+                raise HTTPException(status_code=409, detail="runtime can reset only while stopped")
+            thread = self._runtime_thread
+            if thread is not None and thread.is_alive():
+                thread.join(_POLL_INTERVAL_S * 5)
+                if thread.is_alive():
+                    raise HTTPException(status_code=409, detail="runtime stop is still completing")
+            reset()
+        return {"state": "stopped"}
 
     async def connect(self, websocket: WebSocket) -> None:
         """Send an authoritative snapshot plus its ordered live-event catch-up."""
@@ -175,6 +214,8 @@ class _MonitorLifecycle:
             raise failures[0]
 
     def _start_runtime(self) -> None:
+        with self._control_lock:
+            self._control_starting = False
         try:
             start = getattr(self.runtime, "start", None)
             if callable(start):
@@ -190,6 +231,33 @@ class _MonitorLifecycle:
                 run()
         except BaseException as error:
             self._runtime_error = error
+
+    def _start_runtime_thread(self) -> bool:
+        with self._control_lock:
+            return self._start_runtime_thread_locked()
+
+    def _start_runtime_thread_locked(self) -> bool:
+        if self._runtime_thread is not None and self._runtime_thread.is_alive():
+            return False
+        self._runtime_error = None
+        self._control_starting = True
+        self._runtime_thread = Thread(target=self._start_runtime, name="streammuse-rap-runtime", daemon=True)
+        self._runtime_thread.start()
+        return True
+
+    def _require_control(self, action: str) -> Any:
+        method_name = {"start": "start", "stop": "request_stop", "reset": "reset"}[action]
+        method = getattr(self.runtime, method_name, None)
+        if not callable(method) or self._runtime_state() is None:
+            raise HTTPException(status_code=404, detail=f"runtime does not support {action}")
+        return method
+
+    def _runtime_state(self) -> str | None:
+        value = getattr(self.runtime, "control_state", None)
+        if value is None:
+            return None
+        state = getattr(value, "value", value)
+        return state if isinstance(state, str) else None
 
     async def _broadcast_loop(self) -> None:
         assert self._broadcaster_stop is not None
@@ -248,6 +316,18 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
     @app.get("/api/session")
     async def session() -> object:
         return lifecycle.session()
+
+    @app.post("/api/control/start", status_code=202)
+    async def start_runtime() -> object:
+        return lifecycle.start_control()
+
+    @app.post("/api/control/stop", status_code=202)
+    async def stop_runtime() -> object:
+        return lifecycle.stop_control()
+
+    @app.post("/api/control/reset")
+    async def reset_runtime() -> object:
+        return lifecycle.reset_control()
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

@@ -553,6 +553,54 @@ function renderMetrics(snapshot) {
   setText("jitter-p95", number(jitter.p95) === null ? null : milliseconds(jitter.p95, 2));
 }
 
+function renderAudio(snapshot) {
+  const audio = snapshot.audio && typeof snapshot.audio === "object" ? snapshot.audio : {};
+  const latencies = snapshot.latencies || {};
+  const renderLatency = latencies.bar_render_latency_ms || {};
+  const commitSlack = latencies.audio_commit_slack_ms || {};
+  const state = audio.state || "disabled";
+  setText("audio-state", state);
+  setText("audio-queue-depth", audio.queue_depth ?? 0);
+  setText("audio-buffered-seconds", number(audio.buffered_seconds) === null ? null : `${number(audio.buffered_seconds).toFixed(1)} s`, "0.0 s");
+  setText("audio-device", audio.device);
+  setText("audio-recording", audio.recording_path);
+  setText("audio-render-latency", number(renderLatency.p95) === null ? null : milliseconds(renderLatency.p95));
+  setText("audio-commit-slack", number(commitSlack.p50) === null ? null : milliseconds(commitSlack.p50));
+  setText("audio-underruns", audio.underruns ?? 0);
+
+  const body = element("audio-warning-rows");
+  body.replaceChildren();
+  const warnings = objectValues(snapshot.audio_warnings).slice(-128).reverse();
+  if (warnings.length === 0) {
+    const row = createNode("tr");
+    const cell = createNode("td", "empty-row", "No audio warnings.");
+    cell.colSpan = 6;
+    row.append(cell);
+    body.append(row);
+  }
+  for (const warning of warnings) {
+    const row = createNode("tr");
+    const pressure = [warning.available_ms, warning.rendered_ms, warning.compression_ratio]
+      .some((value) => number(value) !== null)
+      ? `${milliseconds(warning.available_ms)} / ${milliseconds(warning.rendered_ms)} @ ${fixed(warning.compression_ratio, 2)}`
+      : "--";
+    appendCell(row, `B${displayBar(warning.bar)} / ${warning.slot_index ?? "--"}`, "Bar / slot");
+    appendCell(row, warning.type || warning.code || "warning", "Type");
+    appendCell(row, warning.word || "--", "Word");
+    appendCell(row, warning.source || "--", "Source");
+    appendCell(row, pressure, "Duration pressure");
+    appendCell(row, warning.action || warning.message || "--", "Action");
+    body.append(row);
+  }
+
+  const start = element("start-runtime");
+  const stop = element("stop-runtime");
+  const reset = element("reset-runtime");
+  start.disabled = state !== "stopped";
+  stop.disabled = !["priming", "running"].includes(state);
+  reset.disabled = state !== "stopped";
+}
+
 function renderQueueAndHealth(snapshot, current, decision) {
   const bars = barViews(snapshot);
   const next = bars.find((bar) => integer(bar.bar) !== null && (current.bar === null || bar.bar > current.bar) && bar.frozen !== true);
@@ -715,6 +763,7 @@ function render() {
   renderCandidates(snapshot);
   renderSelectedScore(snapshot, decision);
   renderMetrics(snapshot);
+  renderAudio(snapshot);
   renderHistory(snapshot);
   renderEvents();
 }
@@ -804,6 +853,23 @@ async function loadSession() {
   render();
 }
 
+async function sendControl(action) {
+  try {
+    const response = await fetch(`/api/control/${action}`, { method: "POST" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || `Control request failed (${response.status})`);
+    if (monitor.snapshot && monitor.snapshot.audio && body.state) monitor.snapshot.audio.state = body.state;
+    setText("last-error", "none");
+    element("last-error").classList.remove("has-error");
+    render();
+    scheduleSnapshotRefresh();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setText("last-error", message);
+    element("last-error").classList.add("has-error");
+  }
+}
+
 for (const button of document.querySelectorAll("[data-sort]")) {
   button.addEventListener("click", () => {
     const nextKey = button.dataset.sort;
@@ -827,6 +893,10 @@ element("follow-live").addEventListener("change", (event) => {
   monitor.followLive = event.currentTarget.checked;
   if (monitor.followLive) renderEvents();
 });
+
+element("start-runtime").addEventListener("click", () => sendControl("start"));
+element("stop-runtime").addEventListener("click", () => sendControl("stop"));
+element("reset-runtime").addEventListener("click", () => sendControl("reset"));
 
 window.addEventListener("beforeunload", () => {
   monitor.closing = true;

@@ -83,6 +83,8 @@ class TerminalRapViewState:
     current_syllable: Mapping[str, Any] | None
     last_error: TerminalRapEventView | None
     stopped: bool
+    audio: Mapping[str, Any]
+    audio_warnings: tuple[Mapping[str, Any], ...]
     recent_events: tuple[TerminalRapEventView, ...]
 
 
@@ -107,6 +109,17 @@ class TerminalRapStateProjector:
         self._current_syllable: Mapping[str, Any] | None = None
         self._last_error: TerminalRapEventView | None = None
         self._stopped = False
+        self._audio: dict[str, Any] = {
+            "state": "disabled",
+            "current_bar": None,
+            "queue_depth": 0,
+            "buffered_seconds": 0.0,
+            "underruns": 0,
+            "device": None,
+            "recording_path": None,
+            "absolute_frame": None,
+        }
+        self._audio_warnings: deque[Mapping[str, Any]] = deque(maxlen=128)
         self._recent_events: deque[TerminalRapEventView] = deque(maxlen=history_limit)
 
     def __call__(self, event: RapEvent) -> TerminalRapViewState:
@@ -156,6 +169,30 @@ class TerminalRapStateProjector:
                 self._current_tick = event.tick
             elif kind == RapEventType.SYLLABLE_EMITTED:
                 self._current_syllable = _freeze({"bar": event.bar, "tick": event.tick, **event.payload})
+            elif kind == RapEventType.AUDIO_RENDER_COMPLETED:
+                self._update_audio(event, state="rendering")
+            elif kind == RapEventType.BAR_AUDIO_READY:
+                self._update_audio(event, state="ready")
+            elif kind == RapEventType.BAR_AUDIO_COMMITTED:
+                self._update_audio(event, state="priming")
+            elif kind in (RapEventType.BAR_PLAYBACK_STARTED, RapEventType.BAR_PLAYBACK_COMPLETED):
+                self._update_audio(event, state="running")
+            elif kind == RapEventType.STOP_REQUESTED:
+                self._update_audio(event, state="stop_requested")
+            elif kind == RapEventType.SESSION_RESET:
+                self._audio.update(
+                    {"state": "stopped", "current_bar": None, "queue_depth": 0, "buffered_seconds": 0.0, "underruns": 0, "absolute_frame": None}
+                )
+                self._audio_warnings.clear()
+            elif kind in (RapEventType.PRONUNCIATION_FALLBACK, RapEventType.TIMING_PRESSURE):
+                self._remember_audio_warning(event)
+            elif kind == RapEventType.AUDIO_UNDERRUN:
+                self._update_audio(event)
+                self._audio["underruns"] += 1
+                self._remember_audio_warning(event)
+            elif kind == RapEventType.AUDIO_DEVICE_FAILED:
+                self._update_audio(event, state="failed")
+                self._remember_audio_warning(event)
             elif kind in (RapEventType.GENERATION_FAILED, RapEventType.PRESENTATION_ERROR):
                 self._last_error = event_view
             return self._snapshot()
@@ -218,8 +255,27 @@ class TerminalRapStateProjector:
             current_syllable=self._current_syllable,
             last_error=self._last_error,
             stopped=self._stopped,
+            audio=_freeze(self._audio),
+            audio_warnings=tuple(self._audio_warnings),
             recent_events=tuple(self._recent_events),
         )
+
+    def _update_audio(self, event: RapEvent, *, state: str | None = None) -> None:
+        if state is not None:
+            self._audio["state"] = state
+        if event.bar is not None:
+            self._audio["current_bar"] = event.bar
+        for key in ("queue_depth", "buffered_seconds", "absolute_frame"):
+            value = event.payload.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                self._audio[key] = value
+        for source_key, target_key in (("device", "device"), ("output_device", "device"), ("recording_path", "recording_path")):
+            value = event.payload.get(source_key)
+            if isinstance(value, str):
+                self._audio[target_key] = value
+
+    def _remember_audio_warning(self, event: RapEvent) -> None:
+        self._audio_warnings.append(_freeze({"bar": event.bar, "tick": event.tick, "type": event.event_type.value, **event.payload}))
 
 
 def _request_view(event: RapEvent) -> TerminalRapRequestView:

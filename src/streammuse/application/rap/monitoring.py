@@ -226,6 +226,9 @@ class _CumulativeResearchMetrics:
             "generation_latency_ms": [],
             "deadline_slack_ms": [],
             "emission_jitter_ms": [],
+            "synthesis_latency_ms": [],
+            "bar_render_latency_ms": [],
+            "audio_commit_slack_ms": [],
         }
 
     def apply(self, event: RapEvent) -> dict[str, Any]:
@@ -273,6 +276,11 @@ class _CumulativeResearchMetrics:
             self._remember_repetition(payload.get("text"))
         elif event.event_type == RapEventType.SYLLABLE_EMITTED:
             self._remember_number(payload.get("jitter_ms"), "emission_jitter_ms")
+        elif event.event_type == RapEventType.AUDIO_RENDER_COMPLETED:
+            self._remember_number(payload.get("synthesis_latency_ms"), "synthesis_latency_ms")
+            self._remember_number(payload.get("render_latency_ms"), "bar_render_latency_ms")
+        elif event.event_type == RapEventType.BAR_AUDIO_COMMITTED:
+            self._remember_number(payload.get("deadline_slack_ms"), "audio_commit_slack_ms")
         return self.snapshot()
 
     def snapshot(self) -> dict[str, Any]:
@@ -390,7 +398,21 @@ class RapStateProjector:
                 "generation_latency_ms": self._aggregate(),
                 "deadline_slack_ms": self._aggregate(),
                 "emission_jitter_ms": self._aggregate(),
+                "synthesis_latency_ms": self._aggregate(),
+                "bar_render_latency_ms": self._aggregate(),
+                "audio_commit_slack_ms": self._aggregate(),
             },
+            "audio": {
+                "state": "disabled",
+                "current_bar": None,
+                "queue_depth": 0,
+                "buffered_seconds": 0.0,
+                "underruns": 0,
+                "device": None,
+                "recording_path": None,
+                "absolute_frame": None,
+            },
+            "audio_warnings": [],
             "fallbacks": {"count": 0, "by_reason": {}},
             "research_metrics": self._research_metrics.snapshot(),
         }
@@ -410,8 +432,12 @@ class RapStateProjector:
                 self._state["session_metadata"] = deepcopy(event.payload)
                 self._state["stopped"] = False
                 self._state["last_error"] = None
+                if event.payload.get("playback_state") in {"priming", "running"}:
+                    self._state["audio"]["state"] = event.payload["playback_state"]
             elif event.event_type == RapEventType.SESSION_STOPPED:
                 self._state["stopped"] = True
+                if self._state["audio"]["state"] != "disabled":
+                    self._state["audio"]["state"] = "stopped"
             elif event.event_type == RapEventType.BAR_RESERVED:
                 self._merge_bar(event, frozen=False, ignore_if_frozen=True)
             elif event.event_type == RapEventType.TICK:
@@ -472,6 +498,36 @@ class RapStateProjector:
                 self._state["emitted_syllables"].append(syllable)
                 del self._state["emitted_syllables"][:-self._max_emitted_syllables]
                 self._add_payload_number(event.payload, "jitter_ms", "emission_jitter_ms")
+            elif event.event_type == RapEventType.AUDIO_RENDER_COMPLETED:
+                self._update_audio(event, state="rendering")
+                self._add_payload_number(event.payload, "synthesis_latency_ms", "synthesis_latency_ms")
+                self._add_payload_number(event.payload, "render_latency_ms", "bar_render_latency_ms")
+            elif event.event_type == RapEventType.BAR_AUDIO_READY:
+                self._update_audio(event, state="ready")
+            elif event.event_type == RapEventType.BAR_AUDIO_COMMITTED:
+                self._update_audio(event, state="priming")
+                self._add_payload_number(event.payload, "render_latency_ms", "bar_render_latency_ms")
+                self._add_payload_number(event.payload, "deadline_slack_ms", "audio_commit_slack_ms")
+            elif event.event_type == RapEventType.BAR_PLAYBACK_STARTED:
+                self._update_audio(event, state="running")
+            elif event.event_type == RapEventType.BAR_PLAYBACK_COMPLETED:
+                self._update_audio(event, state="running")
+            elif event.event_type == RapEventType.STOP_REQUESTED:
+                self._update_audio(event, state="stop_requested")
+            elif event.event_type == RapEventType.SESSION_RESET:
+                self._state["audio"].update(
+                    {"state": "stopped", "current_bar": None, "queue_depth": 0, "buffered_seconds": 0.0, "underruns": 0, "absolute_frame": None}
+                )
+                self._state["audio_warnings"].clear()
+            elif event.event_type in (RapEventType.PRONUNCIATION_FALLBACK, RapEventType.TIMING_PRESSURE):
+                self._remember_audio_warning(event)
+            elif event.event_type == RapEventType.AUDIO_UNDERRUN:
+                self._update_audio(event)
+                self._state["audio"]["underruns"] += 1
+                self._remember_audio_warning(event)
+            elif event.event_type == RapEventType.AUDIO_DEVICE_FAILED:
+                self._update_audio(event, state="failed")
+                self._remember_audio_warning(event)
             elif event.event_type == RapEventType.PRESENTATION_ERROR:
                 self._state["last_error"] = self._canonical_event_state(event)
             self._state["research_metrics"] = self._research_metrics.apply(event)
@@ -566,3 +622,24 @@ class RapStateProjector:
         aggregate["total"] += value
         aggregate["min"] = value if aggregate["min"] is None else min(aggregate["min"], value)
         aggregate["max"] = value if aggregate["max"] is None else max(aggregate["max"], value)
+
+    def _update_audio(self, event: RapEvent, *, state: str | None = None) -> None:
+        audio = self._state["audio"]
+        payload = event.payload
+        if state is not None:
+            audio["state"] = state
+        if event.bar is not None:
+            audio["current_bar"] = event.bar
+        for key in ("queue_depth", "buffered_seconds", "absolute_frame"):
+            value = payload.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                audio[key] = value
+        for source_key, target_key in (("device", "device"), ("output_device", "device"), ("recording_path", "recording_path")):
+            value = payload.get(source_key)
+            if isinstance(value, str):
+                audio[target_key] = value
+
+    def _remember_audio_warning(self, event: RapEvent) -> None:
+        warning = {"bar": event.bar, "tick": event.tick, "type": event.event_type.value, **deepcopy(event.payload)}
+        self._state["audio_warnings"].append(warning)
+        del self._state["audio_warnings"][:-128]

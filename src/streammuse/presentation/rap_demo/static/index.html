@@ -22,6 +22,11 @@
         <span id="model">--</span>
       </div>
       <div class="header-actions">
+        <div class="runtime-controls" aria-label="Runtime controls">
+          <button id="start-runtime" type="button">Start</button>
+          <button id="stop-runtime" type="button">Stop</button>
+          <button id="reset-runtime" type="button">Reset</button>
+        </div>
         <label class="follow-control" for="follow-live">
           <input id="follow-live" type="checkbox" checked>
           <span>Follow live</span>
@@ -159,6 +164,29 @@
         <div><span>Next reserved bar</span><strong id="next-bar">--</strong></div>
         <div><span>Model health</span><strong id="model-health">waiting</strong></div>
         <div class="status-error"><span>Last error</span><strong id="last-error">none</strong></div>
+      </section>
+
+      <section class="audio-band" aria-label="Audio playback evidence">
+        <div><span>Audio state</span><strong id="audio-state">disabled</strong></div>
+        <div><span>Queue</span><strong id="audio-queue-depth">0</strong></div>
+        <div><span>Buffered</span><strong id="audio-buffered-seconds">0.0 s</strong></div>
+        <div><span>Device</span><strong id="audio-device">--</strong></div>
+        <div><span>Recording</span><strong id="audio-recording">--</strong></div>
+        <div><span>Render latency</span><strong id="audio-render-latency">--</strong></div>
+        <div><span>Commit slack</span><strong id="audio-commit-slack">--</strong></div>
+        <div><span>Underruns</span><strong id="audio-underruns">0</strong></div>
+      </section>
+
+      <section class="data-panel warning-panel" aria-labelledby="audio-warnings-title">
+        <div class="panel-heading table-heading">
+          <div><span class="eyebrow">Audio evidence</span><h2 id="audio-warnings-title">Warnings</h2></div>
+        </div>
+        <div class="table-scroll compact-warning-scroll">
+          <table>
+            <thead><tr><th>Bar / slot</th><th>Type</th><th>Word</th><th>Source</th><th>Duration pressure</th><th>Action</th></tr></thead>
+            <tbody id="audio-warning-rows"></tbody>
+          </table>
+        </div>
       </section>
 
       <section class="data-panel candidates-panel" aria-labelledby="candidates-title">
