@@ -162,7 +162,12 @@ def test_summary_derives_additive_audio_metrics_from_canonical_events() -> None:
     assert summary["audio"] == {
         "render_latency_ms": {"count": 1, "p50": 12.0, "p95": 12.0, "max": 12.0},
         "commit_slack_ms": {"count": 1, "p50": 250.0, "p95": 250.0, "max": 250.0},
-        "warning_counts": {"pronunciation_fallback": 1, "timing_pressure": 0},
+            "warning_counts": {
+                "pronunciation_fallback": 1,
+                "timing_pressure": 0,
+                "forced_bar_fit": 0,
+                "synthesis_failed": 0,
+            },
         "underruns": 1,
         "completed_bars": 1,
         "completed_frames": 0,

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from io import StringIO
 from threading import Event, Thread
 from time import monotonic, sleep
 
 import pytest
 
 from streammuse.application.rap.audio_coordination import BarAudioCoordinator
+from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.domain.rap import (
     AudioFormat,
@@ -17,7 +19,11 @@ from streammuse.domain.rap import (
     PcmAudio,
     PreparedRapBar,
     RapEventType,
+    SyllablePlacementDiagnostic,
 )
+from streammuse.presentation.rap_demo.terminal_dashboard import build_dashboard
+from streammuse.presentation.rap_demo.terminal_state import TerminalRapStateProjector
+from rich.console import Console
 
 
 class RecordingPublisher:
@@ -62,7 +68,12 @@ def planned_bar(*, bar: int, source: str) -> PlannedRapBar:
     )
 
 
-def prepared(plan: PlannedRapBar, *, warnings: tuple[AudioWarning, ...] = ()) -> PreparedRapBar:
+def prepared(
+    plan: PlannedRapBar,
+    *,
+    warnings: tuple[AudioWarning, ...] = (),
+    diagnostics: tuple[SyllablePlacementDiagnostic, ...] = (),
+) -> PreparedRapBar:
     audio_format = AudioFormat()
     return PreparedRapBar(
         bar=plan.bar,
@@ -71,7 +82,7 @@ def prepared(plan: PlannedRapBar, *, warnings: tuple[AudioWarning, ...] = ()) ->
         fallback_reason=plan.fallback_reason,
         scheduled=plan.scheduled,
         audio=PcmAudio(audio_format, 1, bytes(8)),
-        diagnostics=(),
+        diagnostics=diagnostics,
         warnings=warnings,
         render_latency_ms=12.5,
     )
@@ -274,6 +285,70 @@ def test_stale_render_completion_retains_its_original_coordinator_epoch() -> Non
         assert current_events[1][2]["coordinator_epoch"] == 1
     finally:
         coordinator.close()
+
+
+def test_coordinator_produces_complete_warning_and_latency_evidence_for_terminal_and_monitor() -> None:
+    class Renderer:
+        def render(self, plan: PlannedRapBar) -> PreparedRapBar:
+            return prepared(
+                plan,
+                diagnostics=(
+                    SyllablePlacementDiagnostic(
+                        bar=plan.bar,
+                        slot_index=3,
+                        word="StreamMUSE",
+                        target_sample=12_345,
+                        source_frames=5_000,
+                        fitted_frames=4_000,
+                        available_frames=4_000,
+                        compression_ratio=1.25,
+                        overlap_frames=48,
+                        pronunciation_source="espeak_g2p",
+                        renderer_phonemes=("str", "i:", "mju:z"),
+                        synthesis_latency_ms=7.5,
+                    ),
+                ),
+                warnings=(
+                    AudioWarning(AudioWarningCode.PRONUNCIATION_FALLBACK, AudioWarningSeverity.WARNING, "fallback", slot_index=3, word="StreamMUSE", action="fallback"),
+                    AudioWarning(AudioWarningCode.TIMING_PRESSURE, AudioWarningSeverity.WARNING, "pressure", slot_index=3, word="StreamMUSE", available_ms=80.0, rendered_ms=100.0, compression_ratio=1.25, overlap_ms=1.0, action="compress"),
+                    AudioWarning(AudioWarningCode.FORCED_BAR_FIT, AudioWarningSeverity.WARNING, "fit", slot_index=3, word="StreamMUSE", action="resample_to_bar"),
+                    AudioWarning(AudioWarningCode.SYNTHESIS_FAILED, AudioWarningSeverity.ERROR, "failed", slot_index=3, word="StreamMUSE", action="empty_pcm"),
+                ),
+            )
+
+    monitor = RapStateProjector()
+    terminal = TerminalRapStateProjector()
+    publisher = RapEventPublisher("producer-path")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(monitor, terminal))
+    dispatcher.start()
+    coordinator = BarAudioCoordinator(Renderer(), publisher=publisher)
+    plan = planned_bar(bar=0, source="local_chat")
+    try:
+        coordinator.reserve_fallback(plan)
+        assert coordinator.commit(0).bar == 0
+    finally:
+        coordinator.close()
+        dispatcher.flush_and_close()
+
+    monitor_state = monitor.snapshot()
+    terminal_state = terminal.state
+    warnings = terminal_state.audio_warnings
+    assert {warning["type"] for warning in warnings} == {
+        "pronunciation_fallback",
+        "timing_pressure",
+        "forced_bar_fit",
+        "synthesis_failed",
+    }
+    assert all(warning["target_sample"] == 12_345 for warning in warnings)
+    assert all(warning["renderer_phonemes"] == ("str", "i:", "mju:z") for warning in warnings)
+    assert all(warning["source"] == "espeak_g2p" for warning in warnings)
+    assert monitor_state["latencies"]["synthesis_latency_ms"]["total"] == 7.5
+    assert monitor_state["latencies"]["bar_render_latency_ms"]["count"] == 1
+
+    stream = StringIO()
+    Console(file=stream, force_terminal=False, width=120).print(build_dashboard(terminal_state, detail="full", width=120))
+    assert "target_sample=12345" in stream.getvalue()
+    assert "source=espeak_g2p" in stream.getvalue()
 
 
 def test_concurrent_duplicate_fallback_reservations_render_once() -> None:

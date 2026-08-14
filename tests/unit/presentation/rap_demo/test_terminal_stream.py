@@ -257,7 +257,7 @@ def test_stream_renders_dense_audio_warning_and_playback_evidence() -> None:
     projector = TerminalRapStateProjector()
     events = (
         _event(1, RapEventType.BAR_AUDIO_READY, {"source": "local_chat", "frame_count": 192000, "render_latency_ms": 48, "warnings": ["pronunciation_fallback"]}, bar=2),
-        _event(2, RapEventType.PRONUNCIATION_FALLBACK, {"word": "StreamMUSE", "source": "espeak_g2p", "action": "best_effort_rendered"}, bar=2),
+        _event(2, RapEventType.PRONUNCIATION_FALLBACK, {"word": "StreamMUSE", "source": "espeak_g2p", "action": "best_effort_rendered", "target_sample": 12345, "renderer_phonemes": ["str", "i:"]}, bar=2),
         _event(3, RapEventType.TIMING_PRESSURE, {"slot_index": 7, "word": "trans", "available_ms": 163, "rendered_ms": 241, "compression_ratio": 1.45, "overlap_ms": 12}, bar=2),
         _event(4, RapEventType.BAR_PLAYBACK_STARTED, {"queue_depth": 3, "buffered_seconds": 12, "absolute_frame": 384000}, bar=2),
     )
@@ -268,5 +268,6 @@ def test_stream_renders_dense_audio_warning_and_playback_evidence() -> None:
     output = "\n".join(lines)
     assert "[BAR 03][AUDIO] ready source=local_chat frames=192000 render_ms=48" in output
     assert "[BAR 03][WARN] pronunciation word='StreamMUSE' source=espeak_g2p action=best_effort_rendered" in output
+    assert "target_sample=12345 renderer_phonemes=['str', 'i:']" in output
     assert "[BAR 03][WARN] timing slot=7 word='trans' available_ms=163 rendered_ms=241 compression=1.45 overlap_ms=12" in output
     assert "[BAR 03][PLAY] started queue=3 buffered_s=12 absolute_frame=384000" in output

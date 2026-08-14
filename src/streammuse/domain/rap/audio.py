@@ -108,6 +108,8 @@ class SyllablePlacementDiagnostic:
     overlap_frames: int
     pronunciation_source: str
     software_error_samples: int = 0
+    renderer_phonemes: tuple[str, ...] = ()
+    synthesis_latency_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,7 @@ class AudioPlaybackNotice:
     absolute_frame: int
     queue_depth: int
     message: str
+    buffered_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -149,3 +152,4 @@ class AudioPlaybackSnapshot:
     absolute_frame: int
     queue_depth: int
     underrun_count: int
+    buffered_seconds: float = 0.0

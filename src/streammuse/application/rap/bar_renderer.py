@@ -119,6 +119,8 @@ class DeterministicRapBarRenderer:
                     overlap_frames=fitted.overlap_frames,
                     pronunciation_source=rendered.pronunciation_source,
                     software_error_samples=0,
+                    renderer_phonemes=rendered.renderer_phonemes,
+                    synthesis_latency_ms=rendered.synthesis_latency_ms,
                 )
             )
             warnings.extend(rendered.warnings)

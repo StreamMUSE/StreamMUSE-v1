@@ -152,13 +152,26 @@ class StructuredStreamRenderer:
         elif kind == RapEventType.PRONUNCIATION_FALLBACK:
             self._write(
                 f"{prefix('WARN')} pronunciation word={_quoted(payload.get('word'))} source={_value(payload.get('source'))} "
-                f"action={_value(payload.get('action'))}"
+                f"action={_value(payload.get('action'))}{self._warning_evidence(payload)}"
             )
         elif kind == RapEventType.TIMING_PRESSURE:
             self._write(
                 f"{prefix('WARN')} timing slot={_value(payload.get('slot_index'))} word={_quoted(payload.get('word'))} "
                 f"available_ms={_number(payload.get('available_ms'))} rendered_ms={_number(payload.get('rendered_ms'))} "
                 f"compression={_number(payload.get('compression_ratio'))} overlap_ms={_number(payload.get('overlap_ms'))}"
+                f"{self._warning_evidence(payload)}"
+            )
+        elif kind == RapEventType.FORCED_BAR_FIT:
+            self._write(
+                f"{prefix('WARN')} forced_bar_fit slot={_value(payload.get('slot_index'))} word={_quoted(payload.get('word'))} "
+                f"target_sample={_value(payload.get('target_sample'))} action={_value(payload.get('action'))}"
+                f"{self._warning_evidence(payload)}"
+            )
+        elif kind == RapEventType.SYNTHESIS_FAILED:
+            self._write(
+                f"{prefix('WARN')} synthesis_failed slot={_value(payload.get('slot_index'))} word={_quoted(payload.get('word'))} "
+                f"target_sample={_value(payload.get('target_sample'))} action={_value(payload.get('action'))}"
+                f"{self._warning_evidence(payload)}"
             )
         elif kind == RapEventType.AUDIO_UNDERRUN:
             self._write(f"{prefix('WARN')} underrun queue={_value(payload.get('queue_depth'))} message={_quoted(payload.get('message'))}")
@@ -176,6 +189,11 @@ class StructuredStreamRenderer:
     def _prefix(event: RapEvent) -> Callable[[str], str]:
         bar = "--" if event.bar is None else f"{event.bar + 1:02d}"
         return lambda phase: f"[BAR {bar}][{phase}]"
+
+    def _warning_evidence(self, payload: Mapping[str, Any]) -> str:
+        if self._detail != "full":
+            return ""
+        return f" target_sample={_value(payload.get('target_sample'))} renderer_phonemes={_value(payload.get('renderer_phonemes'))}"
 
 
 def _continuation() -> str:

@@ -383,6 +383,7 @@ class RapPlaybackService:
             payload={
                 "absolute_frame": absolute_frame,
                 "queue_depth": notice.queue_depth,
+                "buffered_seconds": notice.buffered_seconds,
                 "message": notice.message,
             },
         )

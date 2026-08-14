@@ -134,6 +134,7 @@ class FakeRapAudioSink:
             absolute_frame=self.absolute_frame,
             queue_depth=len(self.queued),
             underrun_count=0,
+            buffered_seconds=sum(bar.audio.duration_seconds for bar in self.queued),
         )
 
     def drain_notices(self) -> tuple[AudioPlaybackNotice, ...]:
@@ -157,6 +158,7 @@ class FakeRapAudioSink:
                 absolute_frame=self.absolute_frame,
                 queue_depth=len(self.queued),
                 message=message,
+                buffered_seconds=sum(item.audio.duration_seconds for item in self.queued),
             )
         )
 
@@ -405,6 +407,20 @@ def test_playback_moves_through_priming_running_and_bar_quantized_stop() -> None
     ]
 
 
+def test_playback_notice_exports_authoritative_sink_queue_and_buffer_duration() -> None:
+    service, sink, publisher = running_service(prepared=prepared_bar(bar=0))
+    sink.publish(AudioPlaybackNoticeKind.BAR_STARTED, bar=0)
+
+    service.poll()
+
+    assert publisher.only(RapEventType.BAR_PLAYBACK_STARTED).payload == {
+        "absolute_frame": 0,
+        "queue_depth": 1,
+        "buffered_seconds": 4.0,
+        "message": "test",
+    }
+
+
 def test_enqueue_primes_first_bar_and_rejects_later_first_bar() -> None:
     service = RapPlaybackService(tempo=tempo(), sink=FakeRapAudioSink(), publisher=None, on_tick=lambda _: None)
 
@@ -638,6 +654,7 @@ def test_notice_kinds_map_to_canonical_events() -> None:
     assert publisher.events[-1].payload == {
         "absolute_frame": 0,
         "queue_depth": 1,
+        "buffered_seconds": 4.0,
         "message": "device unavailable",
     }
 

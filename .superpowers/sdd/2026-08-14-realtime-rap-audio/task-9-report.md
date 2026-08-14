@@ -57,3 +57,57 @@ no output
 - No physical audio device, browser audio, H200, or SSH workflow was used.
 - Static visual verification intentionally had no API backend; live endpoint
   behavior is covered by the focused server tests.
+
+## Review Fix Round 1
+
+- `SESSION_RESET` now clears the projected runtime/research epoch, including
+  bars, candidates, ticks, syllables, errors, fallbacks, warnings, latency
+  aggregates, and cumulative metrics. Static session configuration and audio
+  device/recording configuration are retained.
+- Bar render latency is sampled only from `AUDIO_RENDER_COMPLETED`; commit
+  slack remains sampled only from `BAR_AUDIO_COMMITTED`.
+- The renderer records per-syllable synthesis latency, renderer phonemes, and
+  target samples in prepared diagnostics. The coordinator publishes those
+  values in completed-render and warning payloads, including pronunciation,
+  timing-pressure, forced-bar-fit, and synthesis-failed warnings.
+- Playback notices now publish sink-derived `queue_depth` and
+  `buffered_seconds`; the audio runtime publishes configured device and
+  recording fields before playback starts. The monitor, terminal state, and
+  dashboard tests cover non-placeholder producer-path values.
+- Added concurrent HTTP duplicate Start/Stop coverage and a FastAPI lifecycle
+  test against `RapAudioDemoDependencies`; it asserts one accepted transition,
+  one `409`, no double start, restart, reset, and lifespan close behavior.
+- The website files were not changed in this round. It still has exactly the
+  existing compact Start, Stop, and Reset controls and the previous responsive
+  layout verification remains applicable.
+
+### Review Verification
+
+```text
+uv run pytest tests/unit/application/rap/test_monitoring.py \
+  tests/unit/application/rap/test_playback.py \
+  tests/unit/application/rap/test_audio_coordination.py \
+  tests/unit/presentation/rap_demo/test_server.py \
+  tests/unit/presentation/rap_demo/test_terminal_state.py \
+  tests/unit/presentation/rap_demo/test_terminal_stream.py \
+  tests/unit/presentation/rap_demo/test_terminal_dashboard.py -q
+176 passed in 2.81s
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap_demo \
+  tests/integration/test_realtime_rap_audio.py -q
+499 passed in 3.86s
+
+uv run pytest tests/ -q --tb=no
+Completed without failures (4 environment skips)
+
+uv run ruff check [review-fix source and test paths]
+All checks passed
+
+git diff --check
+no output
+```
+
+### Review Commit
+
+`fix: complete realtime rap audio telemetry`

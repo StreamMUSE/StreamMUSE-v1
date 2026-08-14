@@ -137,8 +137,9 @@ class TerminalRapStateProjector:
             self._recent_events.append(event_view)
             kind = event.event_type
             if kind == RapEventType.SESSION_STARTED:
-                self._session_metadata = _freeze(event.payload)
+                self._session_metadata = _freeze({**self._session_metadata, **event.payload})
                 self._stopped = False
+                self._update_audio(event)
             elif kind == RapEventType.SESSION_STOPPED:
                 self._stopped = True
             elif kind == RapEventType.BAR_RESERVED:
@@ -180,11 +181,13 @@ class TerminalRapStateProjector:
             elif kind == RapEventType.STOP_REQUESTED:
                 self._update_audio(event, state="stop_requested")
             elif kind == RapEventType.SESSION_RESET:
-                self._audio.update(
-                    {"state": "stopped", "current_bar": None, "queue_depth": 0, "buffered_seconds": 0.0, "underruns": 0, "absolute_frame": None}
-                )
-                self._audio_warnings.clear()
-            elif kind in (RapEventType.PRONUNCIATION_FALLBACK, RapEventType.TIMING_PRESSURE):
+                self._reset_epoch(event, event_view)
+            elif kind in (
+                RapEventType.PRONUNCIATION_FALLBACK,
+                RapEventType.TIMING_PRESSURE,
+                RapEventType.FORCED_BAR_FIT,
+                RapEventType.SYNTHESIS_FAILED,
+            ):
                 self._remember_audio_warning(event)
             elif kind == RapEventType.AUDIO_UNDERRUN:
                 self._update_audio(event)
@@ -269,13 +272,53 @@ class TerminalRapStateProjector:
             value = event.payload.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 self._audio[key] = value
-        for source_key, target_key in (("device", "device"), ("output_device", "device"), ("recording_path", "recording_path")):
+        for source_key, target_key in (
+            ("device", "device"),
+            ("output_device", "device"),
+            ("audio_device", "device"),
+            ("recording_path", "recording_path"),
+        ):
             value = event.payload.get(source_key)
             if isinstance(value, str):
                 self._audio[target_key] = value
+        configuration = event.payload.get("audio")
+        if isinstance(configuration, Mapping):
+            device = configuration.get("audio_device")
+            if isinstance(device, str):
+                self._audio["device"] = device
+            artifacts = configuration.get("artifact_paths")
+            if isinstance(artifacts, Mapping) and isinstance(artifacts.get("wav"), str):
+                self._audio["recording_path"] = artifacts["wav"]
 
     def _remember_audio_warning(self, event: RapEvent) -> None:
         self._audio_warnings.append(_freeze({"bar": event.bar, "tick": event.tick, "type": event.event_type.value, **event.payload}))
+
+    def _reset_epoch(self, event: RapEvent, event_view: TerminalRapEventView) -> None:
+        device = self._audio["device"]
+        recording_path = self._audio["recording_path"]
+        self._current_bar = None
+        self._current_tick = None
+        self._bars.clear()
+        self._latest_request = None
+        self._active_request_id = None
+        self._latest_batch = None
+        self._candidates.clear()
+        self._current_syllable = None
+        self._last_error = None
+        self._stopped = True
+        self._audio = {
+            "state": "stopped",
+            "current_bar": None,
+            "queue_depth": 0,
+            "buffered_seconds": 0.0,
+            "underruns": 0,
+            "device": device,
+            "recording_path": recording_path,
+            "absolute_frame": None,
+        }
+        self._audio_warnings.clear()
+        self._recent_events.clear()
+        self._recent_events.append(event_view)
 
 
 def _request_view(event: RapEvent) -> TerminalRapRequestView:

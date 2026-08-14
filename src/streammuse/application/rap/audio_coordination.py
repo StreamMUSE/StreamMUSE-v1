@@ -212,7 +212,7 @@ class BarAudioCoordinator:
         if accepted:
             self._event(RapEventType.BAR_AUDIO_READY, bar=prepared.bar, payload=payload)
             for warning in prepared.warnings:
-                self._publish_warning(prepared.bar, warning, coordinator_epoch=work.epoch)
+                self._publish_warning(prepared, warning, coordinator_epoch=work.epoch)
         return prepared
 
     def _accept_result_locked(self, work: _RenderWork, prepared: PreparedRapBar) -> bool:
@@ -249,16 +249,22 @@ class BarAudioCoordinator:
         self._primary_polled.clear()
         self._committed.clear()
 
-    def _publish_warning(self, bar: int, warning: AudioWarning, *, coordinator_epoch: int) -> None:
+    def _publish_warning(self, prepared: PreparedRapBar, warning: AudioWarning, *, coordinator_epoch: int) -> None:
         event_type = {
             AudioWarningCode.PRONUNCIATION_FALLBACK: RapEventType.PRONUNCIATION_FALLBACK,
             AudioWarningCode.TIMING_PRESSURE: RapEventType.TIMING_PRESSURE,
+            AudioWarningCode.FORCED_BAR_FIT: RapEventType.FORCED_BAR_FIT,
+            AudioWarningCode.SYNTHESIS_FAILED: RapEventType.SYNTHESIS_FAILED,
         }.get(warning.code)
         if event_type is None:
             return
+        diagnostic = next(
+            (item for item in prepared.diagnostics if item.slot_index == warning.slot_index),
+            None,
+        )
         self._event(
             event_type,
-            bar=bar,
+            bar=prepared.bar,
             payload={
                 "code": warning.code.value,
                 "severity": warning.severity.value,
@@ -270,6 +276,9 @@ class BarAudioCoordinator:
                 "compression_ratio": warning.compression_ratio,
                 "overlap_ms": warning.overlap_ms,
                 "action": warning.action,
+                "source": diagnostic.pronunciation_source if diagnostic is not None else None,
+                "target_sample": diagnostic.target_sample if diagnostic is not None else None,
+                "renderer_phonemes": list(diagnostic.renderer_phonemes) if diagnostic is not None else [],
                 "coordinator_epoch": coordinator_epoch,
             },
         )
@@ -287,6 +296,7 @@ class BarAudioCoordinator:
             "role": role,
             "text": prepared.text,
             "render_latency_ms": prepared.render_latency_ms,
+            "synthesis_latency_ms": sum(item.synthesis_latency_ms for item in prepared.diagnostics),
             "frame_count": prepared.audio.frame_count,
             "warnings": [warning.code.value for warning in prepared.warnings],
             "accepted": accepted,

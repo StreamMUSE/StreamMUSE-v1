@@ -470,3 +470,60 @@ def test_state_projector_bounds_audio_warnings_and_resets_audio_state() -> None:
     assert state["audio_warnings"] == []
     assert state["audio"]["state"] == "stopped"
     assert state["audio"]["current_bar"] is None
+
+
+def test_session_reset_clears_the_entire_projected_research_epoch() -> None:
+    projector = RapStateProjector()
+    events = (
+        _event(1, RapEventType.SESSION_STARTED, payload={"tempo_bpm": 92.0, "audio_device": "Studio output"}),
+        _event(2, RapEventType.BAR_RESERVED, bar=0, payload={"topic": "orbit"}),
+        _event(3, RapEventType.BAR_PLANNING_STARTED, bar=0, request_id="r0", payload={"topic": "orbit"}),
+        _event(4, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 1, "latency_ms": 10.0}),
+        _event(5, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c0", "valid": True}),
+        _event(6, RapEventType.FALLBACK_ACTIVATED, bar=0, payload={"fallback_reason": "deadline_miss"}),
+        _event(7, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"label": "orbit", "jitter_ms": 1.0}),
+        _event(8, RapEventType.AUDIO_RENDER_COMPLETED, bar=0, payload={"synthesis_latency_ms": 4.0, "render_latency_ms": 8.0}),
+        _event(9, RapEventType.PRONUNCIATION_FALLBACK, bar=0, payload={"word": "orbit"}),
+        _event(10, RapEventType.GENERATION_FAILED, bar=0, request_id="r0", payload={"error_message": "late"}),
+        _event(11, RapEventType.SESSION_RESET, payload={"playback_state": "stopped"}),
+    )
+    for event in events:
+        projector.apply(event)
+
+    state = projector.snapshot()
+
+    assert state["session_metadata"] == {"tempo_bpm": 92.0, "audio_device": "Studio output"}
+    assert state["bars"] == {}
+    assert state["frozen_bars"] == {}
+    assert state["candidates"] == {}
+    assert state["current_tick"] is None
+    assert state["current_playback"] is None
+    assert state["current_syllable"] is None
+    assert state["current_segment"] is None
+    assert state["pending_request"] is None
+    assert state["latest_request"] is None
+    assert state["latest_batch"] is None
+    assert state["last_error"] is None
+    assert state["emitted_syllables"] == []
+    assert state["fallbacks"] == {"count": 0, "by_reason": {}}
+    assert state["audio_warnings"] == []
+    assert state["audio"]["state"] == "stopped"
+    assert state["research_metrics"]["metrics"]["candidate_validity"]["denominator"] == 0
+    assert all(value["count"] == 0 for value in state["latencies"].values())
+
+
+def test_render_latency_uses_only_render_completed_for_one_real_bar_sequence() -> None:
+    projector = RapStateProjector()
+    for event in (
+        _event(1, RapEventType.AUDIO_RENDER_COMPLETED, bar=0, payload={"synthesis_latency_ms": 12.0, "render_latency_ms": 48.0}),
+        _event(2, RapEventType.BAR_AUDIO_READY, bar=0, payload={"render_latency_ms": 48.0}),
+        _event(3, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"render_latency_ms": 48.0, "deadline_slack_ms": 250.0}),
+    ):
+        projector.apply(event)
+
+    assert projector.snapshot()["latencies"]["bar_render_latency_ms"] == {
+        "count": 1,
+        "total": 48.0,
+        "min": 48.0,
+        "max": 48.0,
+    }

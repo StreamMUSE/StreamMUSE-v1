@@ -25,6 +25,8 @@ class RapEventType(str, Enum):
     AUDIO_RENDER_COMPLETED = "audio_render_completed"
     PRONUNCIATION_FALLBACK = "pronunciation_fallback"
     TIMING_PRESSURE = "timing_pressure"
+    FORCED_BAR_FIT = "forced_bar_fit"
+    SYNTHESIS_FAILED = "synthesis_failed"
     BAR_AUDIO_READY = "bar_audio_ready"
     BAR_AUDIO_COMMITTED = "bar_audio_committed"
     BAR_PLAYBACK_STARTED = "bar_playback_started"

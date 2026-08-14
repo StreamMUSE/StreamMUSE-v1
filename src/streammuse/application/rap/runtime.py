@@ -189,6 +189,17 @@ class RapAudioDemoDependencies:
                 raise RuntimeError("rap audio runtime is closed")
             if self.playback.state not in (PlaybackState.STOPPED, PlaybackState.PRIMING):
                 return
+            payload = _thaw_metadata(self.session_metadata)
+            payload.update(
+                {
+                    "tempo_bpm": self.tempo.bpm,
+                    "ticks_per_beat": self.tempo.ticks_per_beat,
+                    "beats_per_bar": self.tempo.beats_per_bar,
+                    "max_bars": self.configured_max_bars,
+                    "playback_state": PlaybackState.PRIMING.value,
+                }
+            )
+            self.publisher.emit(RapEventType.SESSION_STARTED, payload=payload)
             self.controller.start()
             if self.playback.state == PlaybackState.STOPPED:
                 # A prior bar-quantized stop retains an immutable reserved

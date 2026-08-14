@@ -8,7 +8,7 @@ from queue import Empty, SimpleQueue
 import struct
 from threading import Event, Lock, RLock, Thread, current_thread
 import time
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 import numpy as np
 
@@ -37,6 +37,18 @@ CallbackStopFactory = Callable[[], BaseException]
 def _require_float32(audio_format: AudioFormat) -> None:
     if audio_format.sample_width_bytes != 4:
         raise ValueError("audio output requires 32-bit float PCM")
+
+
+def _buffered_seconds(
+    active: PreparedRapBar | None,
+    frame_in_bar: int,
+    queued: Iterable[PreparedRapBar],
+) -> float:
+    seconds = 0.0
+    if active is not None:
+        seconds += max(0, active.audio.frame_count - frame_in_bar) / active.audio.format.sample_rate_hz
+    seconds += sum(bar.audio.duration_seconds for bar in queued)
+    return seconds
 
 
 def _default_output_stream_factory(
@@ -199,15 +211,16 @@ class SoundDeviceAudioSink:
 
     def _snapshot_locked(self) -> AudioPlaybackSnapshot:
         with self._queue_lock:
-            queue_depth = len(self._queued)
+            queued = tuple(self._queued)
         return AudioPlaybackSnapshot(
             state=self._state,
             current_bar=self._active.bar if self._active is not None else None,
             last_completed_bar=self._last_completed_bar,
             frame_in_bar=self._frame_in_bar,
             absolute_frame=self._absolute_frame,
-            queue_depth=queue_depth,
+            queue_depth=len(queued),
             underrun_count=self._underrun_count,
+            buffered_seconds=_buffered_seconds(self._active, self._frame_in_bar, queued),
         )
 
     def drain_notices(self) -> tuple[AudioPlaybackNotice, ...]:
@@ -366,14 +379,15 @@ class SoundDeviceAudioSink:
                 return
             absolute_frame = self._absolute_frame
             with self._queue_lock:
-                queue_depth = len(self._queued)
+                queued = tuple(self._queued)
             self._notices.put(
                 AudioPlaybackNotice(
                     kind=kind,
                     bar=bar,
                     absolute_frame=absolute_frame,
-                    queue_depth=queue_depth,
+                    queue_depth=len(queued),
                     message=message,
+                    buffered_seconds=_buffered_seconds(self._active, self._frame_in_bar, queued),
                 )
             )
 
@@ -597,6 +611,7 @@ class NullAudioSink:
             absolute_frame=self._absolute_frame,
             queue_depth=len(self._queued),
             underrun_count=0,
+            buffered_seconds=_buffered_seconds(None, 0, self._queued),
         )
 
     def drain_notices(self) -> tuple[AudioPlaybackNotice, ...]:
@@ -619,6 +634,7 @@ class NullAudioSink:
                 absolute_frame=self._absolute_frame,
                 queue_depth=len(self._queued),
                 message=message,
+                buffered_seconds=_buffered_seconds(None, 0, self._queued),
             )
         )
 
@@ -719,6 +735,7 @@ class TimedAudioSink:
             absolute_frame=self._absolute_frame,
             queue_depth=len(self._queued),
             underrun_count=0,
+            buffered_seconds=_buffered_seconds(self._active, self._frame_in_bar, self._queued),
         )
 
     def drain_notices(self) -> tuple[AudioPlaybackNotice, ...]:
@@ -802,6 +819,7 @@ class TimedAudioSink:
                 absolute_frame=self._absolute_frame,
                 queue_depth=len(self._queued),
                 message=message,
+                buffered_seconds=_buffered_seconds(self._active, self._frame_in_bar, self._queued),
             )
         )
 

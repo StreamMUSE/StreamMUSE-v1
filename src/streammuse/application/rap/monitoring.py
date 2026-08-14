@@ -429,9 +429,10 @@ class RapStateProjector:
             self._remember_segment(event)
 
             if event.event_type == RapEventType.SESSION_STARTED:
-                self._state["session_metadata"] = deepcopy(event.payload)
+                self._state["session_metadata"].update(deepcopy(event.payload))
                 self._state["stopped"] = False
                 self._state["last_error"] = None
+                self._update_audio(event)
                 if event.payload.get("playback_state") in {"priming", "running"}:
                     self._state["audio"]["state"] = event.payload["playback_state"]
             elif event.event_type == RapEventType.SESSION_STOPPED:
@@ -506,7 +507,6 @@ class RapStateProjector:
                 self._update_audio(event, state="ready")
             elif event.event_type == RapEventType.BAR_AUDIO_COMMITTED:
                 self._update_audio(event, state="priming")
-                self._add_payload_number(event.payload, "render_latency_ms", "bar_render_latency_ms")
                 self._add_payload_number(event.payload, "deadline_slack_ms", "audio_commit_slack_ms")
             elif event.event_type == RapEventType.BAR_PLAYBACK_STARTED:
                 self._update_audio(event, state="running")
@@ -515,11 +515,13 @@ class RapStateProjector:
             elif event.event_type == RapEventType.STOP_REQUESTED:
                 self._update_audio(event, state="stop_requested")
             elif event.event_type == RapEventType.SESSION_RESET:
-                self._state["audio"].update(
-                    {"state": "stopped", "current_bar": None, "queue_depth": 0, "buffered_seconds": 0.0, "underruns": 0, "absolute_frame": None}
-                )
-                self._state["audio_warnings"].clear()
-            elif event.event_type in (RapEventType.PRONUNCIATION_FALLBACK, RapEventType.TIMING_PRESSURE):
+                self._reset_epoch(event)
+            elif event.event_type in (
+                RapEventType.PRONUNCIATION_FALLBACK,
+                RapEventType.TIMING_PRESSURE,
+                RapEventType.FORCED_BAR_FIT,
+                RapEventType.SYNTHESIS_FAILED,
+            ):
                 self._remember_audio_warning(event)
             elif event.event_type == RapEventType.AUDIO_UNDERRUN:
                 self._update_audio(event)
@@ -634,12 +636,77 @@ class RapStateProjector:
             value = payload.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 audio[key] = value
-        for source_key, target_key in (("device", "device"), ("output_device", "device"), ("recording_path", "recording_path")):
+        for source_key, target_key in (
+            ("device", "device"),
+            ("output_device", "device"),
+            ("audio_device", "device"),
+            ("recording_path", "recording_path"),
+        ):
             value = payload.get(source_key)
             if isinstance(value, str):
                 audio[target_key] = value
+        configuration = payload.get("audio")
+        if isinstance(configuration, dict):
+            device = configuration.get("audio_device")
+            if isinstance(device, str):
+                audio["device"] = device
+            artifacts = configuration.get("artifact_paths")
+            if isinstance(artifacts, dict) and isinstance(artifacts.get("wav"), str):
+                audio["recording_path"] = artifacts["wav"]
 
     def _remember_audio_warning(self, event: RapEvent) -> None:
         warning = {"bar": event.bar, "tick": event.tick, "type": event.event_type.value, **deepcopy(event.payload)}
         self._state["audio_warnings"].append(warning)
         del self._state["audio_warnings"][:-128]
+
+    def _reset_epoch(self, event: RapEvent) -> None:
+        """Clear all dynamic monitor state while retaining static session configuration."""
+
+        session_metadata = deepcopy(self._state["session_metadata"])
+        device = self._state["audio"]["device"]
+        recording_path = self._state["audio"]["recording_path"]
+        self._segments.clear()
+        self._latest_request_id = None
+        self._research_metrics = _CumulativeResearchMetrics()
+        self._state.update(
+            {
+                "session_id": event.session_id,
+                "last_sequence": event.sequence,
+                "current_tick": None,
+                "current_playback": None,
+                "current_syllable": None,
+                "current_segment": None,
+                "pending_request": None,
+                "latest_request": None,
+                "latest_batch": None,
+                "last_error": None,
+                "session_metadata": session_metadata,
+                "stopped": True,
+                "recent_events": [self._canonical_event_state(event)],
+                "candidates": OrderedDict(),
+                "bars": OrderedDict(),
+                "frozen_bars": OrderedDict(),
+                "emitted_syllables": [],
+                "latencies": {
+                    "generation_latency_ms": self._aggregate(),
+                    "deadline_slack_ms": self._aggregate(),
+                    "emission_jitter_ms": self._aggregate(),
+                    "synthesis_latency_ms": self._aggregate(),
+                    "bar_render_latency_ms": self._aggregate(),
+                    "audio_commit_slack_ms": self._aggregate(),
+                },
+                "audio": {
+                    "state": "stopped",
+                    "current_bar": None,
+                    "queue_depth": 0,
+                    "buffered_seconds": 0.0,
+                    "underruns": 0,
+                    "device": device,
+                    "recording_path": recording_path,
+                    "absolute_frame": None,
+                },
+                "audio_warnings": [],
+                "fallbacks": {"count": 0, "by_reason": {}},
+                "research_metrics": self._research_metrics.snapshot(),
+            }
+        )

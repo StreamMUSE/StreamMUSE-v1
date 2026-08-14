@@ -15,6 +15,10 @@ from typing import Any
 from fastapi.testclient import TestClient
 import pytest
 
+from streammuse.application.rap.runtime import RapAudioDemoDependencies
+from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
+from streammuse.domain.rap import PlaybackState
+from streammuse.domain.timing import Tempo
 from streammuse.presentation.rap_demo.server import _ConnectionPool, _MonitorLifecycle, create_app
 
 
@@ -383,6 +387,140 @@ def test_audio_runtime_waits_for_start_and_controls_are_restart_safe(tmp_path: P
             time.sleep(0.01)
         assert runtime.start_calls == 2
         runtime.finish_bar()
+
+
+def test_concurrent_http_start_and_stop_requests_return_one_transition_and_one_conflict(tmp_path: Path) -> None:
+    runtime = ControllableFakeRuntime(tmp_path / "rap-test")
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    with TestClient(app) as client:
+        start_results: list[int] = []
+        starters = [Thread(target=lambda: start_results.append(client.post("/api/control/start").status_code)) for _ in range(2)]
+        for starter in starters:
+            starter.start()
+        for starter in starters:
+            starter.join(timeout=1)
+        assert sorted(start_results) == [202, 409]
+        assert runtime.started.wait(timeout=1)
+        stop_results: list[int] = []
+        stoppers = [Thread(target=lambda: stop_results.append(client.post("/api/control/stop").status_code)) for _ in range(2)]
+        for stopper in stoppers:
+            stopper.start()
+        for stopper in stoppers:
+            stopper.join(timeout=1)
+        assert sorted(stop_results) == [202, 409]
+        assert runtime.start_calls == 1
+        assert runtime.stop_calls == 1
+        runtime.finish_bar()
+
+
+def test_control_endpoints_drive_the_concrete_restartable_audio_runtime(tmp_path: Path) -> None:
+    class Controller:
+        def __init__(self, playback: object) -> None:
+            self.playback = playback
+            self.starts = 0
+            self.stops = 0
+            self.resets = 0
+            self.closed = 0
+
+        def start(self) -> None:
+            self.starts += 1
+            self.playback.state = PlaybackState.PRIMING
+
+        def resume_audio(self, _bar: int) -> None:
+            self.playback.state = PlaybackState.PRIMING
+
+        def resume_after_stop(self) -> None:
+            return None
+
+        def request_stop(self, *, successor_bar: int) -> None:
+            assert successor_bar == 1
+            self.stops += 1
+
+        def reset(self) -> None:
+            self.resets += 1
+
+        def close(self) -> None:
+            self.closed += 1
+
+    class Playback:
+        def __init__(self) -> None:
+            self.state = PlaybackState.STOPPED
+            self.current_tick: int | None = None
+            self.next_start_bar = 0
+            self.stop_successor_bar = 1
+            self.started = Event()
+            self.starts = 0
+            self.stops = 0
+            self.resets = 0
+            self.closed = 0
+
+        def start(self) -> None:
+            self.starts += 1
+            self.state = PlaybackState.RUNNING
+            self.started.set()
+
+        def request_stop(self) -> int:
+            self.stops += 1
+            self.state = PlaybackState.STOPPED
+            return 1
+
+        def wait(self, timeout: float | None = None) -> None:
+            return None
+
+        def reset(self) -> None:
+            assert self.state == PlaybackState.STOPPED
+            self.resets += 1
+
+        def close(self) -> None:
+            self.closed += 1
+            self.state = PlaybackState.CLOSED
+
+    class Coordinator:
+        def close(self) -> None:
+            return None
+
+    playback = Playback()
+    controller = Controller(playback)
+    monitor = RapStateProjector()
+    publisher = RapEventPublisher("audio-control")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(monitor,))
+    dispatcher.start()
+    runtime = RapAudioDemoDependencies(
+        tempo=Tempo(60.0, 4, 4),
+        controller=controller,
+        coordinator=Coordinator(),
+        playback=playback,
+        publisher=publisher,
+        dispatcher=dispatcher,
+        session_dir=tmp_path / "rap-test",
+        session_metadata={"audio": {"audio_device": "Test output", "artifact_paths": {"wav": "test.wav"}}},
+    )
+    app = create_app(runtime=runtime, projector=monitor, websocket_queue=Queue())
+
+    with TestClient(app) as client:
+        assert client.post("/api/control/start").status_code == 202
+        assert playback.started.wait(timeout=1)
+        audio = client.get("/api/state").json()["audio"]
+        assert audio["device"] == "Test output"
+        assert audio["recording_path"] == "test.wav"
+        assert client.post("/api/control/start").status_code == 409
+        assert client.post("/api/control/stop").status_code == 202
+        deadline = time.monotonic() + 1.0
+        while playback.state != PlaybackState.STOPPED and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.post("/api/control/reset").status_code == 200
+        playback.started = Event()
+        assert client.post("/api/control/start").status_code == 202
+        assert playback.started.wait(timeout=1)
+        assert client.post("/api/control/stop").status_code == 202
+
+    assert controller.starts == 2
+    assert controller.stops == 2
+    assert controller.resets == 1
+    assert playback.starts == 2
+    assert playback.resets == 1
+    assert playback.closed == 1
 
 
 def test_control_endpoints_reject_unsupported_text_runtime(tmp_path: Path) -> None:

@@ -343,6 +343,8 @@ def derive_summary(
                     event.event_type == RapEventType.PRONUNCIATION_FALLBACK for event in event_list
                 ),
                 "timing_pressure": sum(event.event_type == RapEventType.TIMING_PRESSURE for event in event_list),
+                "forced_bar_fit": sum(event.event_type == RapEventType.FORCED_BAR_FIT for event in event_list),
+                "synthesis_failed": sum(event.event_type == RapEventType.SYNTHESIS_FAILED for event in event_list),
             },
             "underruns": sum(event.event_type == RapEventType.AUDIO_UNDERRUN for event in event_list),
             "completed_bars": len(completed_audio_bars),
