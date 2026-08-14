@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from threading import Event, Lock, RLock, Thread, current_thread
+from threading import Event, Lock, RLock, Thread, current_thread, get_ident
 import time
 from typing import Callable
 
@@ -48,6 +48,9 @@ class RapPlaybackService:
         self._monotonic = monotonic
         self._lock = RLock()
         self._poll_lock = Lock()
+        self._dispatch_owner: int | None = None
+        self._deferred_joins: list[Thread] = []
+        self._sink_closed = False
         self._state = PlaybackState.STOPPED
         self._prepared: dict[int, PreparedRapBar] = {}
         self._current_tick: int | None = None
@@ -110,17 +113,27 @@ class RapPlaybackService:
             self._enqueue_locked(bar)
 
     def request_stop(self) -> None:
+        reset_sink = False
         with self._lock:
             if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.STOP_REQUESTED):
                 return
             if self._state == PlaybackState.PRIMING:
                 self._state = PlaybackState.STOPPED
                 self._stop_observer_locked()
+                self._epoch += 1
+                self._prepared.clear()
+                self._current_tick = None
+                self._emitted_syllables.clear()
+                self._next_start_bar = 0
+                self._sample_origin_frame = 0
+                reset_sink = True
                 emit = True
             else:
                 self._state = PlaybackState.STOP_REQUESTED
                 self._sink.request_stop_after_bar()
                 emit = True
+        if reset_sink:
+            self._sink.reset()
         if emit:
             self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
 
@@ -145,38 +158,43 @@ class RapPlaybackService:
 
     def close(self) -> None:
         with self._lock:
-            if self._state == PlaybackState.CLOSED:
-                return
-            self._epoch += 1
-            self._state = PlaybackState.CLOSED
+            if self._state != PlaybackState.CLOSED:
+                self._epoch += 1
+                self._state = PlaybackState.CLOSED
+                self._prepared.clear()
+                self._emitted_syllables.clear()
             observer = self._stop_observer_locked()
-            self._prepared.clear()
-            self._emitted_syllables.clear()
-        self._join(observer)
-        self._sink.close()
+            defer_join = self._dispatch_owner == get_ident()
+            if defer_join and observer is not None:
+                self._deferred_joins.append(observer)
+            close_sink = not self._sink_closed
+            self._sink_closed = True
+        if not defer_join:
+            self._join(observer)
+        if close_sink:
+            self._sink.close()
 
     def poll(self) -> None:
         """Observe current sink state explicitly for deterministic callers and tests."""
-        with self._poll_lock:
-            with self._lock:
-                if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.PRIMING):
-                    return
-                epoch = self._epoch
+        try:
+            with self._poll_lock:
+                with self._lock:
+                    if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.PRIMING):
+                        return
+                    epoch = self._epoch
 
-            snapshot = self._sink.snapshot()
-            notices = self._sink.drain_notices()
-            observed_at = self._monotonic()
+                snapshot = self._sink.snapshot()
+                notices = self._sink.drain_notices()
+                observed_at = self._monotonic()
 
-            with self._lock:
-                if epoch != self._epoch or self._state == PlaybackState.CLOSED:
-                    return
-                effects = self._effects_locked(snapshot, notices, observed_at)
-
-            for effect in effects:
                 with self._lock:
                     if epoch != self._epoch or self._state == PlaybackState.CLOSED:
                         return
-                effect()
+                    effects = self._effects_locked(snapshot, notices, observed_at)
+
+                self._dispatch_effects(epoch, effects)
+        finally:
+            self._join_deferred_observers()
 
     def _observe(self, epoch: int, stop: Event) -> None:
         while not stop.is_set():
@@ -206,7 +224,12 @@ class RapPlaybackService:
             observed_frame = max(observed_frame, self._sample_origin_frame + notice.absolute_frame)
             event_type = _NOTICE_EVENTS.get(notice.kind)
             if event_type is not None:
-                effects.append(lambda notice=notice, event_type=event_type: self._emit_notice(event_type, notice))
+                absolute_frame = self._sample_origin_frame + notice.absolute_frame
+                effects.append(
+                    lambda notice=notice, event_type=event_type, absolute_frame=absolute_frame: self._emit_notice(
+                        event_type, notice, absolute_frame
+                    )
+                )
 
         stopping = snapshot.state == PlaybackState.STOPPED or any(
             notice.kind == AudioPlaybackNoticeKind.STOPPED for notice in notices
@@ -293,13 +316,35 @@ class RapPlaybackService:
         self._enqueue_locked(bar)
         self._state = PlaybackState.PRIMING
 
-    def _emit_notice(self, event_type: RapEventType, notice: AudioPlaybackNotice) -> None:
+    def _dispatch_effects(self, epoch: int, effects: list[Callable[[], None]]) -> None:
+        owner = get_ident()
+        with self._lock:
+            self._dispatch_owner = owner
+        try:
+            for effect in effects:
+                with self._lock:
+                    if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                        break
+                effect()
+        finally:
+            with self._lock:
+                if self._dispatch_owner == owner:
+                    self._dispatch_owner = None
+
+    def _join_deferred_observers(self) -> None:
+        with self._lock:
+            observers = tuple(self._deferred_joins)
+            self._deferred_joins.clear()
+        for observer in observers:
+            self._join(observer)
+
+    def _emit_notice(self, event_type: RapEventType, notice: AudioPlaybackNotice, absolute_frame: int) -> None:
         self._emit(
             event_type,
             bar=notice.bar,
             tick=self._current_tick,
             payload={
-                "absolute_frame": notice.absolute_frame,
+                "absolute_frame": absolute_frame,
                 "queue_depth": notice.queue_depth,
                 "message": notice.message,
             },

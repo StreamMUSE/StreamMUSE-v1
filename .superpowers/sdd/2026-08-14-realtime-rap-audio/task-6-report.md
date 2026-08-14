@@ -111,6 +111,48 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infras
 426 passed in 2.10s
 ```
 
+## Review Round Two
+
+Round two keeps the poll mutex across effect delivery so tick callbacks and
+publishers remain strictly ordered and non-concurrent. A close invoked from
+that dispatch owner now closes the sink but defers observer joining until the
+poll releases the mutex; a normal external close still joins the observer
+before returning.
+
+- Stop during `PRIMING` now resets the sink and clears prepared/session timing
+  state before returning `STOPPED`, so a fresh bar 0 can be primed without a
+  stale queued bar.
+- Notice payload frames capture the continuation sample origin during effect
+  derivation, so bar start/completion and underrun records use the same global
+  coordinate as ticks and syllables.
+- The existing stop-ordering regression remains in the focused suite.
+
+Round-two TDD red evidence:
+
+```text
+test_stop_during_priming_discards_queued_bar_and_allows_fresh_prime
+FAILED: expected sink.reset_calls == 1, got 0
+
+test_close_from_tick_callback_defers_observer_join_until_poll_releases_its_mutex
+FAILED: observer join was attempted while the callback owned dispatch
+
+test_continuation_notice_payloads_use_global_absolute_samples
+FAILED: notice payload frames were [96, 96, 96], not [192096, 192096, 192096]
+```
+
+Round-two verification:
+
+```text
+uv run pytest tests/unit/application/rap/test_playback.py -q
+19 passed in 0.52s
+
+uv run ruff check src/streammuse/application/rap/playback.py tests/unit/application/rap/test_playback.py
+All checks passed!
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+429 passed in 2.00s
+```
+
 ## Concerns
 
 Task 6 intentionally does not wire the service into the coordinator, runtime,

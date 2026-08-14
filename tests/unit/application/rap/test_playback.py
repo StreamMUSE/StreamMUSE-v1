@@ -192,6 +192,27 @@ class ManualPlaybackService(RapPlaybackService):
         stop.wait(timeout=1.0)
 
 
+class ContendingObserverPlaybackService(RapPlaybackService):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.allow_poll = Event()
+        self.poll_attempted = Event()
+        self.finished = Event()
+        self.dispatch_active = Event()
+        self.join_during_dispatch = Event()
+
+    def _observe(self, epoch: int, stop: Event) -> None:
+        assert self.allow_poll.wait(timeout=1.0)
+        self.poll_attempted.set()
+        self.poll()
+        self.finished.set()
+
+    def _join(self, observer: Thread | None, timeout: float | None = None) -> None:
+        if self.dispatch_active.is_set():
+            self.join_during_dispatch.set()
+        RapPlaybackService._join(observer, 0.05)
+
+
 class StartMarkerPlaybackService(RapPlaybackService):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -327,6 +348,23 @@ def test_reset_rejects_running_playback() -> None:
     service.close()
 
 
+def test_stop_during_priming_discards_queued_bar_and_allows_fresh_prime() -> None:
+    sink = FakeRapAudioSink()
+    service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=lambda _: None)
+    queued = prepared_bar(bar=0, source="discarded")
+    fresh = prepared_bar(bar=0, source="fresh")
+    service.prime(queued)
+
+    service.request_stop()
+
+    assert service.state == PlaybackState.STOPPED
+    assert sink.reset_calls == 1
+    assert sink.queued == []
+    assert service.current_tick is None
+    service.prime(fresh)
+    assert sink.queued == [fresh]
+
+
 def test_notice_kinds_map_to_canonical_events() -> None:
     service, sink, publisher = running_service()
     sink.publish(AudioPlaybackNoticeKind.BAR_STARTED, bar=0)
@@ -345,6 +383,63 @@ def test_notice_kinds_map_to_canonical_events() -> None:
         "queue_depth": 1,
         "message": "device unavailable",
     }
+
+    service.close()
+
+
+def test_close_from_tick_callback_defers_observer_join_until_poll_releases_its_mutex() -> None:
+    sink = FakeRapAudioSink()
+    holder: dict[str, ContendingObserverPlaybackService] = {}
+
+    def on_tick(_: int) -> None:
+        service = holder["service"]
+        service.allow_poll.set()
+        assert service.poll_attempted.wait(timeout=1.0)
+        service.dispatch_active.set()
+        try:
+            service.close()
+        finally:
+            service.dispatch_active.clear()
+
+    service = ContendingObserverPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=on_tick)
+    holder["service"] = service
+    service.prime(prepared_bar(bar=0))
+    service.start()
+    caller = Thread(target=service.poll)
+    caller.start()
+    caller.join(timeout=1.0)
+
+    assert not caller.is_alive()
+    assert service.finished.wait(timeout=1.0)
+    assert not service.join_during_dispatch.is_set()
+    assert service.state == PlaybackState.CLOSED
+    assert sink.close_calls == 1
+
+
+def test_continuation_notice_payloads_use_global_absolute_samples() -> None:
+    sink = FakeRapAudioSink()
+    publisher = RecordingPublisher()
+    service = ManualPlaybackService(tempo=tempo(), sink=sink, publisher=publisher, on_tick=lambda _: None)
+    service.prime(prepared_bar(bar=0))
+    service.start()
+    service.request_stop()
+    sink.complete_bar(0)
+    service.poll()
+    service.prime(prepared_bar(bar=1))
+    service.start()
+    sink.set_absolute_frame(96, current_bar=1)
+    sink.publish(AudioPlaybackNoticeKind.BAR_STARTED, bar=1)
+    sink.publish(AudioPlaybackNoticeKind.UNDERRUN, message="empty queue")
+    sink.publish(AudioPlaybackNoticeKind.BAR_COMPLETED, bar=1)
+
+    service.poll()
+
+    events = [event for event in publisher.events if event.event_type in {
+        RapEventType.BAR_PLAYBACK_STARTED,
+        RapEventType.AUDIO_UNDERRUN,
+        RapEventType.BAR_PLAYBACK_COMPLETED,
+    }]
+    assert [event.payload["absolute_frame"] for event in events[-3:]] == [192_096, 192_096, 192_096]
 
     service.close()
 
@@ -415,12 +510,14 @@ def test_close_invalidates_an_observer_poll_already_waiting_on_the_sink() -> Non
 
 def test_close_is_idempotent_and_waits_for_its_observer() -> None:
     service, sink, _publisher = running_service()
+    observer = service._observer
 
     service.close()
     service.close()
-    service.wait(timeout=0.1)
 
     assert service.state == PlaybackState.CLOSED
+    assert observer is not None
+    assert not observer.is_alive()
     assert sink.close_calls == 1
 
 
