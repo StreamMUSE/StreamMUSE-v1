@@ -61,6 +61,8 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infras
 - Base: `62706060` (`docs: record detached stream cleanup`)
 - Implementation: `fecb91fd` (`feat: drive rap playback from the audio sample clock`)
 - Review fixes: `eeef26f4` (`fix: harden rap playback stop and polling`)
+- Round-two fixes: `b2408221` (`fix: harden rap playback event ordering`)
+- Round-three fix: `98eef34a` (`fix: make rap priming stop atomic`)
 
 ## Review Remediation
 
@@ -151,6 +153,38 @@ All checks passed!
 
 uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
 429 passed in 2.00s
+```
+
+## Review Round Three
+
+`request_stop()` previously changed the public state to `STOPPED`, released the
+service lock, and only then reset the local Task 5 sink. A concurrent
+`prime()` could enqueue a fresh bar into that window, after which the delayed
+sink reset silently discarded it.
+
+The priming-stop path now holds the service lifecycle lock while calling the
+local, callback-free sink reset. It clears playback metadata and exposes
+`STOPPED` only after cleanup, so a concurrent `prime()` blocks until its fresh
+bar can remain queued and prepared.
+
+Round-three TDD red evidence:
+
+```text
+test_stop_during_priming_keeps_concurrent_prime_out_until_sink_cleanup_finishes
+FAILED: concurrent prime_completed event was set before the blocked sink reset completed
+```
+
+Round-three verification:
+
+```text
+uv run pytest tests/unit/application/rap/test_playback.py -q
+20 passed in 0.57s
+
+uv run ruff check src/streammuse/application/rap/playback.py tests/unit/application/rap/test_playback.py
+All checks passed!
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+430 passed in 2.25s
 ```
 
 ## Concerns
