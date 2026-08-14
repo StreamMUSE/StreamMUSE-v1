@@ -72,6 +72,38 @@ def test_trim_leading_rest_applies_max_tick_after_shift(tmp_path, monkeypatch):
     assert info["actual_max_tick"] == 128
 
 
+def test_explicit_observed_until_tick_overrides_inference_and_validates_prompt_boundary():
+    assert offline.resolve_observed_until_tick(
+        observed_until_tick=128,
+        prompt_length_ticks=32,
+        max_tick=124,
+        melody_end_tick=123,
+    ) == 128
+
+    with pytest.raises(ValueError, match="at least --prompt-length-ticks"):
+        offline.resolve_observed_until_tick(
+            observed_until_tick=31,
+            prompt_length_ticks=32,
+            max_tick=128,
+            melody_end_tick=128,
+        )
+
+
+def test_observed_until_tick_inference_is_unchanged_when_not_explicit():
+    assert offline.resolve_observed_until_tick(
+        observed_until_tick=None,
+        prompt_length_ticks=32,
+        max_tick=124,
+        melody_end_tick=123,
+    ) == 124
+    assert offline.resolve_observed_until_tick(
+        observed_until_tick=None,
+        prompt_length_ticks=32,
+        max_tick=None,
+        melody_end_tick=125,
+    ) == 128
+
+
 def test_parse_execution_paths_accepts_explicit_subsets():
     assert runner.parse_execution_paths("offline") == ["offline"]
     assert runner.parse_execution_paths("streammuse") == ["streammuse"]

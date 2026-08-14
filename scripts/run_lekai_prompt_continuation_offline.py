@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bpm", type=int, default=120)
     parser.add_argument("--ticks-per-beat", type=int, default=4)
     parser.add_argument("--max-tick", type=int, default=None)
+    parser.add_argument(
+        "--observed-until-tick",
+        type=int,
+        default=None,
+        help="Explicit final melody observation boundary; defaults to the existing inferred boundary.",
+    )
     parser.add_argument("--trim-leading-rest", action="store_true")
 
     parser.add_argument("--prompt-seed", type=int, default=12345)
@@ -248,6 +254,29 @@ def events_until(events: list[EventPayload], start_tick: int, end_tick: int) -> 
     ]
 
 
+def resolve_observed_until_tick(
+    *,
+    observed_until_tick: int | None,
+    prompt_length_ticks: int,
+    max_tick: int | None,
+    melody_end_tick: int,
+) -> int:
+    if observed_until_tick is not None:
+        if int(observed_until_tick) < int(prompt_length_ticks):
+            raise ValueError("--observed-until-tick must be at least --prompt-length-ticks")
+        return int(observed_until_tick)
+    if max_tick is not None:
+        return max(int(prompt_length_ticks), int(max_tick))
+    return max(
+        int(prompt_length_ticks),
+        (
+            (int(melody_end_tick) + TIMESTEPS_PER_BEAT - 1)
+            // TIMESTEPS_PER_BEAT
+        )
+        * TIMESTEPS_PER_BEAT,
+    )
+
+
 def payload_to_musical_event(event: EventPayload) -> MusicalEvent:
     return event_from_dict(dict(event))
 
@@ -340,20 +369,12 @@ def run_one(
             trim_leading_rest=bool(args.trim_leading_rest),
         )
         melody_end_tick = max([int(event.get("tick", 0)) for event in melody_events] or [0])
-        if args.max_tick is not None:
-            final_observed_until_tick = max(
-                int(args.prompt_length_ticks),
-                int(args.max_tick),
-            )
-        else:
-            final_observed_until_tick = max(
-                int(args.prompt_length_ticks),
-                (
-                    (int(melody_end_tick) + TIMESTEPS_PER_BEAT - 1)
-                    // TIMESTEPS_PER_BEAT
-                )
-                * TIMESTEPS_PER_BEAT,
-            )
+        final_observed_until_tick = resolve_observed_until_tick(
+            observed_until_tick=args.observed_until_tick,
+            prompt_length_ticks=int(args.prompt_length_ticks),
+            max_tick=args.max_tick,
+            melody_end_tick=melody_end_tick,
+        )
         prompt_events = events_until(melody_events, 0, int(args.prompt_length_ticks))
         append_events = events_until(melody_events, int(args.prompt_length_ticks), final_observed_until_tick)
 
@@ -426,6 +447,7 @@ def run_one(
             "continuation_checkpoint": str(continuation_checkpoint),
             "config": {
                 "prompt_length_ticks": int(args.prompt_length_ticks),
+                "observed_until_tick": int(final_observed_until_tick),
                 "generation_interval_ticks": int(args.generation_interval_ticks),
                 "bpm": int(args.bpm),
                 "ticks_per_beat": int(args.ticks_per_beat),
