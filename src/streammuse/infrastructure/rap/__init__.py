@@ -12,6 +12,13 @@ from streammuse.infrastructure.rap.recorder import (
 )
 from streammuse.infrastructure.rap.speech import CommandRunner, EspeakPhonemeSynthesizer, arpabet_syllable_to_espeak
 from streammuse.infrastructure.rap.drums import ProceduralBoomBapRenderer
+from streammuse.infrastructure.rap.audio_output import (
+    CompositeAudioSink,
+    Float32WavAudioSink,
+    NullAudioSink,
+    SoundDeviceAudioSink,
+    TimedAudioSink,
+)
 
 __all__ = [
     "LocalChatCandidateGenerator",
@@ -28,4 +35,9 @@ __all__ = [
     "EspeakPhonemeSynthesizer",
     "arpabet_syllable_to_espeak",
     "ProceduralBoomBapRenderer",
+    "CompositeAudioSink",
+    "Float32WavAudioSink",
+    "NullAudioSink",
+    "SoundDeviceAudioSink",
+    "TimedAudioSink",
 ]
