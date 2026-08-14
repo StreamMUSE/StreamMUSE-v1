@@ -25,6 +25,7 @@ class SessionLoggerOutputSink:
         beats_per_bar: int = 4,
         record_metronome: bool = False,
         artifact_tier: str = "debug",
+        close_active_notes_on_finalize: bool = True,
     ) -> None:
         self.session_dir = Path(session_dir)
         self.include_midi = include_midi
@@ -37,6 +38,9 @@ class SessionLoggerOutputSink:
         self._bpm = float(bpm)
         self._ticks_per_beat = int(ticks_per_beat)
         self._beats_per_bar = int(beats_per_bar)
+        self._close_active_notes_on_finalize = bool(
+            close_active_notes_on_finalize
+        )
         self._schedule_trace_path = self.session_dir / "model_schedule_trace.jsonl"
         self._theoretical_midi_path = self.session_dir / "theoretical_model.mid"
         self._theoretical_summary_path = self.session_dir / "theoretical_model_summary.json"
@@ -53,6 +57,7 @@ class SessionLoggerOutputSink:
                 ticks_per_beat=int(ticks_per_beat),
                 beats_per_bar=int(beats_per_bar),
                 output_path=str(self.session_dir / "combined.mid"),
+                close_active_notes_on_finalize=self._close_active_notes_on_finalize,
                 record_metronome=bool(record_metronome),
             )
             self.midi_sink = MidiFileOutputSink(midi_config)
@@ -241,6 +246,7 @@ class SessionLoggerOutputSink:
                 output_path=str(self._theoretical_midi_path),
                 user_track_name="Melody",
                 model_track_name="Theoretical Accompaniment",
+                close_active_notes_on_finalize=self._close_active_notes_on_finalize,
                 record_metronome=False,
             )
         )

@@ -41,6 +41,9 @@ class OutputSinkFactory:
                 ticks_per_beat=int(tempo.ticks_per_beat),
                 beats_per_bar=int(tempo.beats_per_bar),
                 output_path=str(session_manager.get_session_dir() / "combined.mid"),
+                close_active_notes_on_finalize=bool(
+                    app_config.output.close_active_notes_on_finalize
+                ),
                 record_metronome=bool(app_config.output.metronome_enabled),
             )
         )
@@ -103,6 +106,9 @@ class OutputSinkFactory:
                     ticks_per_beat=int(tempo.ticks_per_beat),
                     beats_per_bar=int(tempo.beats_per_bar),
                     output_path=cfg.midi_file_output_path,
+                    close_active_notes_on_finalize=bool(
+                        cfg.close_active_notes_on_finalize
+                    ),
                     record_metronome=bool(cfg.metronome_enabled),
                 )
             )
@@ -137,6 +143,9 @@ class OutputSinkFactory:
                 ticks_per_beat=int(tempo.ticks_per_beat),
                 beats_per_bar=int(tempo.beats_per_bar),
                 record_metronome=bool(cfg.metronome_enabled),
+                close_active_notes_on_finalize=bool(
+                    cfg.close_active_notes_on_finalize
+                ),
                 artifact_tier=cfg.session_artifact_tier,
             )
             return OutputSinkFactory._attach_metronome_if_needed(base_sink=sink, app_config=app_config)
@@ -154,6 +163,9 @@ class OutputSinkFactory:
                             ticks_per_beat=int(tempo.ticks_per_beat),
                             beats_per_bar=int(tempo.beats_per_bar),
                             record_metronome=bool(cfg.metronome_enabled),
+                            close_active_notes_on_finalize=bool(
+                                cfg.close_active_notes_on_finalize
+                            ),
                             artifact_tier=cfg.session_artifact_tier,
                         ),
                     ]

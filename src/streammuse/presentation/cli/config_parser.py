@@ -80,6 +80,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--web-port", type=int, default=8001, help="Port for the web viewer")
     parser.add_argument("--midi-out-port", type=str, default=None, help="MIDI output port name (for audio output)")
     parser.add_argument("--midi-file-output-path", type=str, default=None, help="Path to save MIDI file output")
+    parser.add_argument(
+        "--close-active-notes-on-finalize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Close notes still active at the final observed tick when exporting MIDI",
+    )
     parser.add_argument("--enable-metronome", action="store_true", help="Play MIDI metronome clicks aligned with playback")
     parser.add_argument("--metronome-port", type=str, default=None, help="MIDI output port for metronome clicks")
     parser.add_argument("--metronome-channel", type=int, default=9, help="MIDI channel for metronome clicks")
@@ -266,6 +272,9 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         type=args.output_type,  # type: ignore
         midi_out_port=args.midi_out_port,
         midi_file_output_path=args.midi_file_output_path,
+        close_active_notes_on_finalize=bool(
+            getattr(args, "close_active_notes_on_finalize", True)
+        ),
         inference_log_detail=getattr(args, "inference_log_detail", "summary"),  # type: ignore
         session_artifact_tier=getattr(args, "session_artifact_tier", "debug"),  # type: ignore
         metronome_enabled=bool(getattr(args, "enable_metronome", False)),

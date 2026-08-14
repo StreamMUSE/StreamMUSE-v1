@@ -46,6 +46,7 @@ class OutputConfig:
     metronome_enabled: bool = False
     metronome_port: Optional[str] = None
     metronome_channel: int = 9
+    close_active_notes_on_finalize: bool = True
 
 
 @dataclass(frozen=True)

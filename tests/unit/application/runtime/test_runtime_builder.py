@@ -9,6 +9,7 @@ from streammuse.application.config import (
     RapConfig,
 )
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
+from streammuse.infrastructure.output.midi_file import MidiFileOutputSink
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 
 
@@ -54,6 +55,7 @@ def test_builder_creates_web_standard_runtime_session(
     tmp_path,
 ) -> None:
     config = ApplicationConfig(
+        output=OutputConfig(close_active_notes_on_finalize=False),
         inference=InferenceConfig(generation_interval_ticks=4),
     )
     input_factory.create.return_value = MagicMock()
@@ -65,6 +67,11 @@ def test_builder_creates_web_standard_runtime_session(
 
     assert session.service is service
     assert isinstance(session.websocket_sink, WebSocketOutputSink)
+    midi_sink = next(
+        sink for sink in session.output_sink.sinks if isinstance(sink, MidiFileOutputSink)
+    )
+    assert midi_sink._config.close_active_notes_on_finalize is False
+    assert session.session_config["close_active_notes_on_finalize"] is False
     assert service_cls.call_args.kwargs["generation_interval_ticks"] == 4
 
 

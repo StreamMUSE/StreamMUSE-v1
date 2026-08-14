@@ -37,6 +37,147 @@ def test_midi_file_output_sink_records_and_writes(tmp_path):
     assert out_path.stat().st_size > 0
 
 
+def test_midi_file_output_sink_closes_unmatched_user_and_model_notes_at_final_tick(
+    tmp_path,
+):
+    out_path = tmp_path / "unmatched.mid"
+    sink = MidiFileOutputSink(
+        MidiFileOutputConfig(
+            bpm=120.0,
+            ticks_per_beat=4,
+            output_path=str(out_path),
+        )
+    )
+
+    sink.output_event(
+        MusicalEvent(tick=1, pitch=60, event_type=EventType.NOTE_ON, velocity=100),
+        source="user",
+    )
+    sink.output_event(
+        MusicalEvent(tick=3, pitch=48, event_type=EventType.NOTE_ON, velocity=80),
+        source="model",
+    )
+    sink.output_tick(8, bar=0, beat=2)
+    sink.close()
+
+    midi = pretty_midi.PrettyMIDI(str(out_path))
+    by_name = {instrument.name: instrument for instrument in midi.instruments}
+    user_note = by_name["Melody"].notes[0]
+    model_note = by_name["Accompaniment"].notes[0]
+    assert user_note.start == pytest.approx(0.125, abs=1e-3)
+    assert model_note.start == pytest.approx(0.375, abs=1e-3)
+    assert user_note.end == pytest.approx(1.0, abs=1e-3)
+    assert model_note.end == pytest.approx(1.0, abs=1e-3)
+
+
+def test_midi_file_output_sink_gives_last_tick_note_positive_duration(tmp_path):
+    out_path = tmp_path / "last_tick.mid"
+    sink = MidiFileOutputSink(
+        MidiFileOutputConfig(
+            bpm=120.0,
+            ticks_per_beat=4,
+            output_path=str(out_path),
+        )
+    )
+
+    sink.output_tick(8, bar=0, beat=2)
+    sink.output_event(
+        MusicalEvent(tick=8, pitch=60, event_type=EventType.NOTE_ON, velocity=100),
+        source="user",
+    )
+    sink.close()
+
+    note = pretty_midi.PrettyMIDI(str(out_path)).instruments[0].notes[0]
+    assert note.end - note.start == pytest.approx(0.125, abs=1e-3)
+
+
+def test_midi_file_output_sink_can_omit_unmatched_notes(tmp_path):
+    out_path = tmp_path / "unmatched_disabled.mid"
+    sink = MidiFileOutputSink(
+        MidiFileOutputConfig(
+            bpm=120.0,
+            ticks_per_beat=4,
+            output_path=str(out_path),
+            close_active_notes_on_finalize=False,
+        )
+    )
+
+    sink.output_event(
+        MusicalEvent(tick=0, pitch=60, event_type=EventType.NOTE_ON, velocity=100),
+        source="user",
+    )
+    sink.output_event(
+        MusicalEvent(tick=2, pitch=48, event_type=EventType.NOTE_ON, velocity=80),
+        source="model",
+    )
+    sink.output_tick(8, bar=0, beat=2)
+    sink.close()
+
+    midi = pretty_midi.PrettyMIDI(str(out_path))
+    assert sum(len(instrument.notes) for instrument in midi.instruments) == 0
+    assert sink._active_user == {}
+    assert sink._active_model == {}
+
+
+def test_midi_file_output_sink_preserves_paired_notes_and_idempotent_close(tmp_path):
+    out_path = tmp_path / "paired.mid"
+    sink = MidiFileOutputSink(
+        MidiFileOutputConfig(
+            bpm=120.0,
+            ticks_per_beat=4,
+            output_path=str(out_path),
+        )
+    )
+
+    sink.output_event(
+        MusicalEvent(tick=2, pitch=60, event_type=EventType.NOTE_ON, velocity=100),
+        source="user",
+    )
+    sink.output_event(
+        MusicalEvent(tick=6, pitch=60, event_type=EventType.NOTE_OFF, velocity=0),
+        source="user",
+    )
+    sink.output_tick(12, bar=0, beat=3)
+    sink.close()
+    sink.close()
+
+    notes = pretty_midi.PrettyMIDI(str(out_path)).instruments[0].notes
+    assert len(notes) == 1
+    assert notes[0].start == pytest.approx(0.25, abs=1e-3)
+    assert notes[0].end == pytest.approx(0.75, abs=1e-3)
+
+
+def test_midi_file_output_sink_preserves_retrigger_behavior(tmp_path):
+    out_path = tmp_path / "retrigger.mid"
+    sink = MidiFileOutputSink(
+        MidiFileOutputConfig(
+            bpm=120.0,
+            ticks_per_beat=4,
+            output_path=str(out_path),
+        )
+    )
+
+    sink.output_event(
+        MusicalEvent(tick=0, pitch=60, event_type=EventType.NOTE_ON, velocity=100),
+        source="model",
+    )
+    sink.output_event(
+        MusicalEvent(tick=4, pitch=60, event_type=EventType.NOTE_ON, velocity=80),
+        source="model",
+    )
+    sink.output_event(
+        MusicalEvent(tick=8, pitch=60, event_type=EventType.NOTE_OFF, velocity=0),
+        source="model",
+    )
+    sink.close()
+
+    notes = pretty_midi.PrettyMIDI(str(out_path)).instruments[0].notes
+    assert [(note.start, note.end, note.velocity) for note in notes] == pytest.approx(
+        [(0.0, 0.5, 100), (0.5, 1.0, 80)],
+        abs=1e-3,
+    )
+
+
 def test_midi_file_output_sink_records_metronome_when_enabled(tmp_path):
     out_path = tmp_path / "metronome.mid"
     cfg = MidiFileOutputConfig(

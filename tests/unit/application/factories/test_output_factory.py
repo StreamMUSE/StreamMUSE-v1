@@ -16,15 +16,28 @@ from streammuse.infrastructure.output import (
 )
 
 
-def _make_config(output_type: str, bpm: float = 120.0, ticks_per_beat: int = 4) -> ApplicationConfig:
+def _make_config(
+    output_type: str,
+    bpm: float = 120.0,
+    ticks_per_beat: int = 4,
+    close_active_notes_on_finalize: bool = True,
+) -> ApplicationConfig:
     return ApplicationConfig(
         tempo=TempoConfig(bpm=bpm, ticks_per_beat=ticks_per_beat, beats_per_bar=4),
-        output=OutputConfig(type=output_type),  # type: ignore[arg-type]
+        output=OutputConfig(
+            type=output_type,  # type: ignore[arg-type]
+            close_active_notes_on_finalize=close_active_notes_on_finalize,
+        ),
     )
 
 
 def test_output_factory_console_with_session_manager_attaches_auto_midi(tmp_path):
-    config = _make_config("console", bpm=96.0, ticks_per_beat=8)
+    config = _make_config(
+        "console",
+        bpm=96.0,
+        ticks_per_beat=8,
+        close_active_notes_on_finalize=False,
+    )
     session_manager = SessionManager(base_log_dir=str(tmp_path))
     session_dir = session_manager.create_session_directory()
 
@@ -36,6 +49,7 @@ def test_output_factory_console_with_session_manager_attaches_auto_midi(tmp_path
     assert sink.sinks[1]._config.bpm == 96.0
     assert sink.sinks[1]._config.ticks_per_beat == 8
     assert sink.sinks[1]._config.output_path == str(session_dir / "combined.mid")
+    assert sink.sinks[1]._config.close_active_notes_on_finalize is False
     sink.close()
 
 
@@ -63,7 +77,12 @@ def test_output_factory_json_log_does_not_attach_midi(tmp_path):
 
 
 def test_output_factory_session_keeps_session_logger_without_double_attach(tmp_path):
-    config = _make_config("session", bpm=110.0, ticks_per_beat=8)
+    config = _make_config(
+        "session",
+        bpm=110.0,
+        ticks_per_beat=8,
+        close_active_notes_on_finalize=False,
+    )
     session_manager = SessionManager(base_log_dir=str(tmp_path))
     session_manager.create_session_directory()
 
@@ -72,6 +91,23 @@ def test_output_factory_session_keeps_session_logger_without_double_attach(tmp_p
     assert sink.midi_sink is not None
     assert sink.midi_sink._config.bpm == 110.0
     assert sink.midi_sink._config.ticks_per_beat == 8
+    assert sink.midi_sink._config.close_active_notes_on_finalize is False
+    sink.close()
+
+
+def test_output_factory_midi_file_propagates_finalize_policy(tmp_path):
+    config = ApplicationConfig(
+        output=OutputConfig(
+            type="midi_file",
+            midi_file_output_path=str(tmp_path / "direct.mid"),
+            close_active_notes_on_finalize=False,
+        )
+    )
+
+    sink = OutputSinkFactory.create(config)
+
+    assert isinstance(sink, MidiFileOutputSink)
+    assert sink._config.close_active_notes_on_finalize is False
     sink.close()
 
 
@@ -129,9 +165,11 @@ def test_session_logger_uses_passed_bpm_and_ticks(tmp_path):
         include_json=False,
         bpm=110.0,
         ticks_per_beat=8,
+        close_active_notes_on_finalize=False,
     )
 
     assert sink.midi_sink is not None
     assert sink.midi_sink._config.bpm == 110.0
     assert sink.midi_sink._config.ticks_per_beat == 8
+    assert sink.midi_sink._config.close_active_notes_on_finalize is False
     sink.close()

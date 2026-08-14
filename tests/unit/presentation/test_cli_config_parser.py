@@ -27,6 +27,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "output_type": "console",
         "midi_out_port": None,
         "midi_file_output_path": None,
+        "close_active_notes_on_finalize": True,
         "enable_metronome": False,
         "metronome_port": None,
         "metronome_channel": 9,
@@ -75,6 +76,7 @@ def test_parse_args_defaults() -> None:
     assert config.input.injection_length_ticks == 0
     assert config.input.injection_acc_file is None
     assert config.output.type == "console"
+    assert config.output.close_active_notes_on_finalize is True
     assert config.output.inference_log_detail == "summary"
     assert config.output.session_artifact_tier == "debug"
     assert config.output.metronome_enabled is False
@@ -126,6 +128,25 @@ def test_parse_args_exposes_rt_horizon_and_drain_contract(monkeypatch) -> None:
     assert args.tail_beats == 24
     assert args.drain_timeout_s == 15.0
     assert args.model_condition_bpm == 120
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [
+        (None, True),
+        ("--close-active-notes-on-finalize", True),
+        ("--no-close-active-notes-on-finalize", False),
+    ],
+)
+def test_parse_args_exposes_midi_finalize_policy(monkeypatch, flag, expected) -> None:
+    argv = ["streammuse-cli"]
+    if flag is not None:
+        argv.append(flag)
+    monkeypatch.setattr(sys, "argv", argv)
+
+    args = parse_args()
+
+    assert args.close_active_notes_on_finalize is expected
 
 
 def test_args_to_config_separates_playback_and_model_condition_bpm() -> None:
@@ -193,6 +214,7 @@ def test_args_to_config_midi_file() -> None:
         midi_file_trim_leading_rest=True,
         output_type="midi_file",
         midi_file_output_path="/path/to/output.mid",
+        close_active_notes_on_finalize=False,
         inference_log_detail="full",
     )
 
@@ -204,6 +226,7 @@ def test_args_to_config_midi_file() -> None:
     assert config.input.midi_file_trim_leading_rest is True
     assert config.output.type == "midi_file"
     assert config.output.midi_file_output_path == "/path/to/output.mid"
+    assert config.output.close_active_notes_on_finalize is False
     assert config.output.inference_log_detail == "full"
 
 

@@ -28,6 +28,7 @@ class MidiFileOutputConfig:
     metronome_velocity: int = 80
     metronome_downbeat_velocity: int = 110
     metronome_duration_ticks: int = 1
+    close_active_notes_on_finalize: bool = True
 
     def seconds_per_tick(self) -> float:
         return (60.0 / float(self.bpm)) / float(self.ticks_per_beat)
@@ -39,7 +40,8 @@ class MidiFileOutputSink:
 
     Notes are reconstructed from note_on/note_off pairs per pitch; if a note is
     retriggered without an intervening note_off, the previous note is closed at
-    the retrigger time.
+    the retrigger time. Active notes can be closed at the final observed timeline
+    tick when the sink is finalized.
     """
 
     def __init__(self, config: MidiFileOutputConfig) -> None:
@@ -63,7 +65,9 @@ class MidiFileOutputSink:
         self._active_user: Dict[int, Dict[str, float]] = {}
         self._active_model: Dict[int, Dict[str, float]] = {}
         self._max_time = 0.0
+        self._max_observed_tick: Optional[int] = None
         self._recording_tick_offset = 0
+        self._closed = False
 
     def _time(self, tick: int) -> float:
         return float(int(tick) + int(self._recording_tick_offset)) * self._sp_tick
@@ -71,6 +75,12 @@ class MidiFileOutputSink:
     def _observe_recording_tick(self, tick: int) -> None:
         if int(tick) < 0:
             self._recording_tick_offset = max(self._recording_tick_offset, -int(tick))
+
+    def _observe_timeline_tick(self, tick: int) -> None:
+        tick = int(tick)
+        self._observe_recording_tick(tick)
+        if self._max_observed_tick is None or tick > self._max_observed_tick:
+            self._max_observed_tick = tick
 
     def _handle_event(
         self,
@@ -80,6 +90,7 @@ class MidiFileOutputSink:
         active: Dict[int, Dict[str, float]],
         default_velocity: int,
     ) -> None:
+        self._observe_timeline_tick(event.tick)
         if event.is_placeholder or event.pitch == -1:
             return
         t = self._time(event.tick)
@@ -112,13 +123,14 @@ class MidiFileOutputSink:
             self._handle_event(event, instrument=self._model, active=self._active_model, default_velocity=80)
 
     def output_tick(self, tick: int, bar: int, beat: int) -> None:
-        return
+        _ = bar, beat
+        self._observe_timeline_tick(tick)
 
     def output_metronome_tick(self, tick: int, bar: int, beat: int) -> None:
         _ = bar, beat
         if self._metronome is None:
             return
-        self._observe_recording_tick(int(tick))
+        self._observe_timeline_tick(tick)
         if int(tick) % int(self._config.ticks_per_beat) != 0:
             return
 
@@ -162,17 +174,39 @@ class MidiFileOutputSink:
 
     def _finalize(self) -> None:
         end = self._max_time
+        if self._max_observed_tick is not None:
+            end = max(end, self._time(self._max_observed_tick))
+
+        active_starts = [
+            float(info["start"])
+            for active in (self._active_user, self._active_model)
+            for info in active.values()
+        ]
+        if active_starts and end <= max(active_starts):
+            end = max(active_starts) + self._sp_tick
+
         for active, inst in ((self._active_user, self._user), (self._active_model, self._model)):
-            for pitch, info in list(active.items()):
-                start = float(info["start"])
-                vel = int(info["velocity"])
-                if end > start:
-                    inst.notes.append(pretty_midi.Note(velocity=vel, pitch=int(pitch), start=start, end=end))
-                active.pop(pitch, None)
+            if self._config.close_active_notes_on_finalize:
+                for pitch, info in active.items():
+                    start = float(info["start"])
+                    vel = int(info["velocity"])
+                    inst.notes.append(
+                        pretty_midi.Note(
+                            velocity=vel,
+                            pitch=int(pitch),
+                            start=start,
+                            end=end,
+                        )
+                    )
+                self._max_time = max(self._max_time, end)
+            active.clear()
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._finalize()
         if self._config.output_path:
             path = Path(self._config.output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             self._midi.write(str(path))
+        self._closed = True

@@ -89,6 +89,9 @@ class RuntimeSessionBuilder:
             "beats_per_bar": self.config.tempo.beats_per_bar,
             "input_type": self.config.input.type,
             "output_type": self.config.output.type,
+            "close_active_notes_on_finalize": (
+                self.config.output.close_active_notes_on_finalize
+            ),
             "metronome_enabled": self.config.output.metronome_enabled,
             "metronome_port": self.config.output.metronome_port,
             "metronome_channel": self.config.output.metronome_channel,
@@ -235,6 +238,9 @@ class RuntimeSessionBuilder:
                 bpm=float(self.config.tempo.bpm),
                 ticks_per_beat=int(self.config.tempo.ticks_per_beat),
                 output_path=str(session_manager.get_session_dir() / "combined.mid"),
+                close_active_notes_on_finalize=bool(
+                    self.config.output.close_active_notes_on_finalize
+                ),
             )
         )
         sinks: list[Any] = [ws_sink, auto_midi, ConsoleOutputSink(ConsoleOutputConfig())]
