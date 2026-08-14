@@ -208,3 +208,39 @@ git diff --check
 ## Fix Round 4 Commit
 
 - `97d90a14 fix: detach stale rap audio streams on reset`
+
+## Fix Round 5
+
+The final permitted Task 5 lifecycle round closes reset-detached device
+resources without expanding into Task 6.
+
+- `SoundDeviceAudioSink.reset()` now uses `_stop_and_close_stream()` for the
+  stream it atomically detached before advancing the lifecycle epoch. Ordinary
+  reset/start cycles therefore release the old PortAudio stream before a new
+  lifecycle constructs its replacement.
+- Cleanup remains scoped to the detached local stream instance. The existing
+  three-phase stale A/B start race test continues to prove stale start A cannot
+  stop or close the newer running B stream after reset.
+- A new deterministic normal running-reset test asserts the old stream gets
+  exactly one `stop()` call and is closed, then verifies a subsequent start
+  constructs and retains a distinct active stream in `RUNNING` state.
+
+## Fix Round 5 Verification
+
+```text
+uv run pytest tests/unit/infrastructure/rap/test_audio_output.py::test_running_reset_closes_detached_stream_before_starting_new_stream -q
+1 passed in 0.32s
+
+uv run pytest tests/unit/infrastructure/rap/test_audio_output.py -q
+22 passed in 0.52s
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+410 passed in 1.95s
+
+git diff --check
+(no output)
+```
+
+## Fix Round 5 Commit
+
+- `e886800a fix: close detached rap audio streams on reset`
