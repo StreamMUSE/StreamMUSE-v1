@@ -65,3 +65,46 @@ git diff --check
   device. A later runtime/acceptance task should exercise a real CoreAudio
   device and observe device-failure reporting; physical speaker latency remains
   outside the software sample-placement guarantee.
+
+## Review Fix Round
+
+The Task 5 review findings were addressed without beginning Task 6.
+
+- Callback stop now raises an injected callback-termination exception. The
+  default factory lazily creates `sounddevice.CallbackStop`; the callback no
+  longer invokes `stream.stop()` or other device control operations.
+- Prepared-bar acquisition now holds the short state and queue critical
+  sections through active-bar assignment and `BAR_STARTED` publication, so a
+  concurrent Stop observes either the active bar or the untouched queue.
+- Empty prepared queues emit one `UNDERRUN` notice and increment the count per
+  starvation episode. Acquiring a bar clears the episode, allowing a later
+  shortage to be observed without one notice per callback block.
+- `CompositeAudioSink` retains primary notices while it commits completed bars
+  to the WAV recorder, including when close performs the final drain.
+- Null and timed primary sinks now stop immediately when no bar is active and
+  leave queued bars untouched.
+- Stream-factory and stream-start exceptions convert to `DEVICE_FAILED` notices
+  with a `STOPPED` snapshot instead of escaping from `start()`.
+- `uv.lock` was restored to lock revision 3. Relative to the Task 4 base it
+  contains only the 18 required `sounddevice` entries; `uv lock --locked`
+  validates the result.
+
+## Fix Round Verification
+
+```text
+uv lock --locked
+Resolved 195 packages in 2ms
+
+uv run pytest tests/unit/infrastructure/rap/test_audio_output.py -q
+15 passed in 0.52s
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+403 passed in 1.97s
+
+git diff --check
+(no output)
+```
+
+## Fix Round Commit
+
+- `e3724294 fix: harden realtime rap audio sinks`
