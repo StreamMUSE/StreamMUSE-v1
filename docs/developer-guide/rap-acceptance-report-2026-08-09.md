@@ -14,7 +14,7 @@ Artifacts below are ignored local files and were not committed.
 
 ```text
 uv run pytest tests/ -q --tb=no
-1145 passed, 4 skipped, 1 warning in 28.21s
+1148 passed, 4 skipped, 1 warning in 27.75s
 
 Focused decoder/transport/audio diagnostics
 70 passed in 1.45s
@@ -28,6 +28,9 @@ a real local `espeak-ng` smoke with nonempty PCM and no `synthesis_failed`,
 misaligned PCM rejection, a blank `httpx.ReadTimeout` diagnostic with a
 sanitized URL, and generator-warning propagation. The lifecycle tests exercise
 Start/Stop/Reset/Start/Stop, complete-bar stopping, and reset epoch cleanup.
+Round 2 adds finite-RIFF chunk walking: underdeclared data with either a hidden
+full frame or partial frame now rejects, while a legal padded trailing RIFF
+chunk remains accepted. The focused speech suite is 16 passed and Ruff passes.
 This is automated evidence, not a physical-device claim.
 
 ### Local Real Evidence
@@ -98,7 +101,9 @@ the H200 through the tunnel at 60 BPM. It does **not** establish that the model
 reliably returns 12 complete candidates: the 12-request batches returned 11
 and 8, and the adapter retained those discrepancies as warnings. The tunnel was
 closed and only PID 1702486 was stopped. Post-stop checks showed GPU 0 at
-0 MiB/0% and port 18001 unbound.
+0 MiB/0% and port 18001 unbound. Repeated and 92 BPM sweeps remain unrun under
+the Task 10 urgency ruling; this is bounded prototype evidence, not a benchmark
+matrix.
 
 ### Compatibility And Scope
 

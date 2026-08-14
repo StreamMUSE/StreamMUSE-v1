@@ -65,6 +65,21 @@ def espeak_streaming_wav_bytes(*, frames: int) -> bytes:
     return bytes(streaming)
 
 
+def with_declared_data_size(wav: bytes, size: int) -> bytes:
+    updated = bytearray(wav)
+    data_offset = updated.index(b"data")
+    struct.pack_into("<I", updated, data_offset + 4, size)
+    return bytes(updated)
+
+
+def wav_with_trailing_chunk(*, frames: int) -> bytes:
+    updated = bytearray(wav_bytes(frames=frames))
+    trailing = b"JUNK" + struct.pack("<I", 3) + b"xyz" + b"\x00"
+    updated.extend(trailing)
+    struct.pack_into("<I", updated, 4, len(updated) - 8)
+    return bytes(updated)
+
+
 def cmu_request(phonemes: tuple[str, ...]) -> SyllableRenderRequest:
     return SyllableRenderRequest(
         bar=2,
@@ -150,6 +165,33 @@ def test_espeak_synthesizer_rejects_misaligned_streaming_pcm() -> None:
 
     assert result.pronunciation_source == "synthesis_failed"
     assert result.audio.frame_count == 0
+
+
+def test_espeak_synthesizer_rejects_underdeclared_data_with_trailing_full_frame() -> None:
+    runner = FakeEspeakRunner(wav_bytes=with_declared_data_size(wav_bytes(frames=240), 478))
+
+    result = EspeakPhonemeSynthesizer(command="espeak-ng", runner=runner).synthesize(cmu_request(("M", "UW1", "V")))
+
+    assert result.pronunciation_source == "synthesis_failed"
+    assert result.audio.frame_count == 0
+
+
+def test_espeak_synthesizer_rejects_underdeclared_data_with_trailing_partial_frame() -> None:
+    runner = FakeEspeakRunner(wav_bytes=with_declared_data_size(wav_bytes(frames=240), 479))
+
+    result = EspeakPhonemeSynthesizer(command="espeak-ng", runner=runner).synthesize(cmu_request(("M", "UW1", "V")))
+
+    assert result.pronunciation_source == "synthesis_failed"
+    assert result.audio.frame_count == 0
+
+
+def test_espeak_synthesizer_accepts_finite_data_followed_by_a_valid_riff_chunk() -> None:
+    runner = FakeEspeakRunner(wav_bytes=wav_with_trailing_chunk(frames=240))
+
+    result = EspeakPhonemeSynthesizer(command="espeak-ng", runner=runner).synthesize(cmu_request(("M", "UW1", "V")))
+
+    assert result.pronunciation_source == "cmudict_arpabet"
+    assert result.audio.frame_count == 240
 
 
 @pytest.mark.skipif(shutil.which("espeak-ng") is None, reason="espeak-ng is required for the real adapter smoke")

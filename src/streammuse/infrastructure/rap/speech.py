@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from io import BytesIO
 import re
+import struct
 import subprocess
 from time import perf_counter
 from typing import Protocol
-import wave
 
 import numpy as np
 
@@ -173,7 +172,7 @@ class EspeakPhonemeSynthesizer(SpeechSynthesizer):
             return None
         try:
             decoded = _decode_mono_float32_wav(result.stdout)
-        except (EOFError, ValueError, wave.Error):
+        except (EOFError, ValueError):
             return None
         self._pcm_cache[key] = decoded
         return decoded
@@ -245,14 +244,7 @@ def _grapheme_fragment(word: str, syllable_count: int, index_in_word: int) -> st
 
 
 def _decode_mono_float32_wav(wav_bytes: bytes) -> PcmAudio:
-    with wave.open(BytesIO(wav_bytes), "rb") as wav_file:
-        if wav_file.getcomptype() != "NONE":
-            raise ValueError("compressed WAV output is unsupported")
-        channels = wav_file.getnchannels()
-        width = wav_file.getsampwidth()
-        sample_rate_hz = wav_file.getframerate()
-        declared_frames = wav_file.getnframes()
-        raw = wav_file.readframes(declared_frames)
+    channels, width, sample_rate_hz, raw = _read_pcm_wav_payload(wav_bytes)
     if channels != 1:
         raise ValueError(f"Expected mono WAV output, received {channels} channels")
     if width not in (1, 2, 3, 4):
@@ -262,15 +254,81 @@ def _decode_mono_float32_wav(wav_bytes: bytes) -> PcmAudio:
     bytes_per_frame = channels * width
     if not raw or len(raw) % bytes_per_frame:
         raise ValueError("WAV PCM payload is empty or not aligned to complete frames")
-    # Homebrew eSpeak 1.52 streams a sentinel RIFF/data length while stdout
-    # contains the actual complete PCM payload. The payload is authoritative.
     frames = len(raw) // bytes_per_frame
     samples = _pcm_samples_to_float32(raw, width).reshape(frames, channels)
     mono = samples.mean(axis=1, dtype=np.float32)
     return PcmAudio(AudioFormat(sample_rate_hz, 1), frames, mono.astype(np.float32).tobytes())
 
 
-def _pcm_samples_to_float32(raw: bytes, sample_width: int) -> np.ndarray:
+_ESPEAK_STREAMING_RIFF_SIZE = 2_147_479_588
+_ESPEAK_STREAMING_DATA_SIZE = 2_147_479_552
+
+
+def _read_pcm_wav_payload(wav_bytes: bytes) -> tuple[int, int, int, memoryview]:
+    """Validate a complete RIFF/WAVE payload and return its declared PCM data."""
+    if len(wav_bytes) < 12 or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
+        raise ValueError("Expected RIFF/WAVE output")
+
+    riff_size = struct.unpack_from("<I", wav_bytes, 4)[0]
+    streaming_espeak = riff_size == _ESPEAK_STREAMING_RIFF_SIZE
+    if not streaming_espeak and riff_size != len(wav_bytes) - 8:
+        raise ValueError("RIFF size does not match the complete WAV payload")
+
+    cursor = 12
+    format_fields: tuple[int, int, int, int, int, int] | None = None
+    data_payload: memoryview | None = None
+    payload = memoryview(wav_bytes)
+    while cursor < len(wav_bytes):
+        if len(wav_bytes) - cursor < 8:
+            raise ValueError("WAV contains trailing bytes outside a complete chunk")
+        chunk_id = wav_bytes[cursor : cursor + 4]
+        chunk_size = struct.unpack_from("<I", wav_bytes, cursor + 4)[0]
+        data_offset = cursor + 8
+
+        if chunk_id == b"data" and streaming_espeak and chunk_size == _ESPEAK_STREAMING_DATA_SIZE:
+            if data_payload is not None:
+                raise ValueError("WAV contains multiple data chunks")
+            # Homebrew eSpeak 1.52 emits these sentinel RIFF/data lengths while
+            # stdout contains the complete PCM stream through EOF.
+            data_payload = payload[data_offset:]
+            cursor = len(wav_bytes)
+            continue
+
+        data_end = data_offset + chunk_size
+        padded_end = data_end + (chunk_size & 1)
+        if padded_end > len(wav_bytes):
+            raise EOFError("WAV chunk exceeds the emitted payload")
+
+        if chunk_id == b"fmt ":
+            if format_fields is not None:
+                raise ValueError("WAV contains multiple fmt chunks")
+            if chunk_size < 16:
+                raise ValueError("WAV fmt chunk is incomplete")
+            format_fields = struct.unpack_from("<HHIIHH", wav_bytes, data_offset)
+        elif chunk_id == b"data":
+            if data_payload is not None:
+                raise ValueError("WAV contains multiple data chunks")
+            data_payload = payload[data_offset:data_end]
+
+        cursor = padded_end
+
+    if format_fields is None or data_payload is None:
+        raise ValueError("WAV requires one fmt chunk and one data chunk")
+
+    format_tag, channels, sample_rate_hz, byte_rate, block_align, bits_per_sample = format_fields
+    if format_tag != 1:
+        raise ValueError("compressed WAV output is unsupported")
+    if bits_per_sample % 8:
+        raise ValueError("WAV sample width must be a whole number of bytes")
+    sample_width = bits_per_sample // 8
+    if block_align != channels * sample_width:
+        raise ValueError("WAV block alignment does not match its format")
+    if byte_rate != sample_rate_hz * block_align:
+        raise ValueError("WAV byte rate does not match its format")
+    return channels, sample_width, sample_rate_hz, data_payload
+
+
+def _pcm_samples_to_float32(raw: bytes | memoryview, sample_width: int) -> np.ndarray:
     if sample_width == 1:
         return (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128) / 128
     if sample_width == 2:
