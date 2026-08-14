@@ -280,6 +280,7 @@ def derive_summary(
 
     history = list(events)
     event_list, epoch = _current_epoch(history)
+    event_list = _current_epoch_coordinator_events(event_list, epoch)
     frozen = _frozen_bars(event_list)
     plans = _requests(event_list, RapEventType.BAR_PLANNING_STARTED)
     batches = _requests(event_list, RapEventType.CANDIDATE_BATCH_RECEIVED)
@@ -357,10 +358,25 @@ def _current_epoch(events: list[RapEvent]) -> tuple[list[RapEvent], int]:
     return events[reset_index + 1 :], epoch
 
 
+def _current_epoch_coordinator_events(events: list[RapEvent], epoch: int) -> list[RapEvent]:
+    """Exclude late audio-worker events that belong to an earlier reset epoch."""
+
+    active: list[RapEvent] = []
+    for event in events:
+        coordinator_epoch = event.payload.get("coordinator_epoch")
+        if isinstance(coordinator_epoch, int) and not isinstance(coordinator_epoch, bool):
+            if coordinator_epoch != epoch:
+                continue
+        active.append(event)
+    return active
+
+
 def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
     """Derive deterministic, one-row-per-bar CSV-ready research evidence."""
 
-    event_list = list(events)
+    history = list(events)
+    event_list, epoch = _current_epoch(history)
+    event_list = _current_epoch_coordinator_events(event_list, epoch)
     frozen = _frozen_bars(event_list)
     bars: dict[int, dict[str, Any]] = {}
     seen_batches: set[str] = set()

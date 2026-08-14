@@ -8,7 +8,8 @@ from collections import deque
 from dataclasses import asdict
 from pathlib import Path
 from queue import Empty, SimpleQueue
-from threading import Event
+from threading import Event, Thread
+from time import sleep
 
 from streammuse.application.rap.audio_coordination import BarAudioCoordinator
 from streammuse.application.rap.audio_rendering import bar_start_frame
@@ -17,6 +18,7 @@ from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPu
 from streammuse.application.rap.monitoring_payloads import flow_template_payload
 from streammuse.application.rap.playback import RapPlaybackService
 from streammuse.application.rap.realtime import RollingRapController
+from streammuse.application.rap.runtime import RapAudioDemoDependencies
 from streammuse.domain.rap import (
     AudioFormat,
     AudioPlaybackNotice,
@@ -36,7 +38,7 @@ from streammuse.infrastructure.rap.audio_output import CompositeAudioSink, Float
 from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
 from streammuse.infrastructure.rap.drums import ProceduralBoomBapRenderer
 from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
-from streammuse.infrastructure.rap.recorder import RapSessionRecorder, build_session_manifest
+from streammuse.infrastructure.rap.recorder import RapSessionRecorder, build_session_manifest, read_events
 from streammuse.infrastructure.rap.scenarios import default_scenario
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 
@@ -160,6 +162,22 @@ class FakeSpeech:
         )
 
 
+class BlockingSuccessorRenderer:
+    """Block exactly the fallback needed for the next complete-bar restart."""
+
+    def __init__(self, renderer: DeterministicRapBarRenderer, *, successor_bar: int) -> None:
+        self._renderer = renderer
+        self._successor_bar = successor_bar
+        self.entered = Event()
+        self.release = Event()
+
+    def render(self, plan) -> PreparedRapBar:
+        if plan.bar == self._successor_bar:
+            self.entered.set()
+            assert self.release.wait(timeout=2.0)
+        return self._renderer.render(plan)
+
+
 class DelayedGenerator:
     """Keeps the real planner behind playback until teardown releases it."""
 
@@ -255,15 +273,16 @@ def test_audio_reset_starts_a_new_recorder_and_wav_epoch(tmp_path: Path) -> None
     manual = ManualAudioSink(audio_format)
     output_path = tmp_path / "session.wav"
     sink = CompositeAudioSink(manual, Float32WavAudioSink(output_path, audio_format))
-    coordinator = BarAudioCoordinator(
+    renderer = BlockingSuccessorRenderer(
         DeterministicRapBarRenderer(
             tempo=tempo,
             audio_format=audio_format,
             synthesizer=FakeSpeech(),
             drums=ProceduralBoomBapRenderer(seed=7),
         ),
-        publisher=publisher,
+        successor_bar=1,
     )
+    coordinator = BarAudioCoordinator(renderer, publisher=publisher)
     controller: RollingRapController
     playback = RapPlaybackService(
         tempo=tempo,
@@ -291,24 +310,29 @@ def test_audio_reset_starts_a_new_recorder_and_wav_epoch(tmp_path: Path) -> None
 
     try:
         controller.start()
+        assert renderer.entered.wait(timeout=1.0)
         playback.start()
-        manual.advance(bar_frames)
+        manual.advance(1)
         playback.poll()
         controller.request_stop(successor_bar=1)
         playback.request_stop()
+        manual.advance(bar_frames - 1)
         playback.poll()
 
         playback.reset()
         controller.reset()
+        renderer.release.set()
 
         controller.start()
         playback.start()
-        manual.advance(bar_frames)
+        manual.advance(1)
         playback.poll()
         controller.request_stop(successor_bar=1)
         playback.request_stop()
+        manual.advance(bar_frames - 1)
         playback.poll()
     finally:
+        renderer.release.set()
         playback.close()
         controller.close()
         dispatcher.flush_and_close()
@@ -316,11 +340,131 @@ def test_audio_reset_starts_a_new_recorder_and_wav_epoch(tmp_path: Path) -> None
 
     summary = json.loads((tmp_path / "session" / "summary.json").read_text(encoding="utf-8"))
     wav_bytes = output_path.read_bytes()
+    history = read_events(tmp_path / "session" / "events.jsonl")
+    reset_index = next(index for index, event in enumerate(history) if event.event_type == RapEventType.SESSION_RESET)
+    stale = [
+        event
+        for event in history[reset_index + 1 :]
+        if event.payload.get("coordinator_epoch") == 0
+    ]
+    current = [
+        event
+        for event in history[reset_index + 1 :]
+        if event.payload.get("coordinator_epoch") in (None, 1)
+    ]
 
     assert summary["events"]["epoch"] == 1
+    assert any(event.event_type == RapEventType.AUDIO_RENDER_COMPLETED for event in stale)
+    assert summary["events"]["count"] == len(current)
     assert summary["audio"]["completed_bars"] == 1
     assert summary["audio"]["completed_frames"] == bar_frames
     assert struct.unpack("<I", wav_bytes[40:44])[0] == bar_frames * audio_format.channels * 4
+
+
+def test_stop_arms_sink_while_successor_fallback_is_blocked_then_restarts(tmp_path: Path) -> None:
+    tempo = Tempo(60.0, 4, 4)
+    audio_format = AudioFormat()
+    scenario = default_scenario()
+    analyzer = CmuProsodyAnalyzer()
+    publisher = RapEventPublisher("audio-stop-blocked-render")
+    events = []
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(events.append,))
+    dispatcher.start()
+    manual = ManualAudioSink(audio_format)
+    renderer = BlockingSuccessorRenderer(
+        DeterministicRapBarRenderer(
+            tempo=tempo,
+            audio_format=audio_format,
+            synthesizer=FakeSpeech(),
+            drums=ProceduralBoomBapRenderer(seed=7),
+        ),
+        successor_bar=1,
+    )
+    coordinator = BarAudioCoordinator(renderer, publisher=publisher)
+    controller: RollingRapController
+    playback = RapPlaybackService(
+        tempo=tempo,
+        sink=manual,
+        publisher=publisher,
+        on_tick=lambda tick: controller.on_tick(tick),
+    )
+    controller = RollingRapController(
+        tempo=tempo,
+        scenario=scenario,
+        templates=BUILTIN_TEMPLATES,
+        fallback_catalog=PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer),
+        analyzer=analyzer,
+        weights=ScoreWeights(),
+        publisher=publisher,
+        primary_generator=None,
+        candidate_count=12,
+        lookahead_bars=3,
+        minimum_score=0.55,
+        seed=7,
+        audio_coordinator=coordinator,
+        on_audio_committed=playback.enqueue,
+    )
+    dependencies = RapAudioDemoDependencies(
+        tempo=tempo,
+        controller=controller,
+        coordinator=coordinator,
+        playback=playback,
+        publisher=publisher,
+        dispatcher=dispatcher,
+        session_dir=tmp_path,
+    )
+    bar_frames = bar_start_frame(1, tempo, audio_format)
+    stop_thread: Thread | None = None
+    restart_thread: Thread | None = None
+
+    try:
+        controller.start()
+        playback.start()
+        assert renderer.entered.wait(timeout=1.0)
+        manual.advance(1)
+        playback.poll()
+
+        stop_thread = Thread(target=dependencies.request_stop)
+        stop_thread.start()
+        for _ in range(100):
+            if manual.snapshot().state == PlaybackState.STOP_REQUESTED:
+                break
+            sleep(0.01)
+        assert manual.snapshot().state == PlaybackState.STOP_REQUESTED
+        stop_thread.join(timeout=1.0)
+        assert not stop_thread.is_alive()
+
+        manual.advance(bar_frames - 1)
+        playback.poll()
+        assert manual.snapshot().state == PlaybackState.STOPPED
+        assert [bar.bar for bar in manual.completed] == [0]
+        assert not [event for event in events if event.event_type == RapEventType.AUDIO_UNDERRUN]
+
+        renderer.release.set()
+        restart_thread = Thread(target=dependencies.start)
+        restart_thread.start()
+        for _ in range(100):
+            if playback.state == PlaybackState.RUNNING:
+                break
+            sleep(0.01)
+        assert playback.state == PlaybackState.RUNNING
+        manual.advance(1)
+        playback.poll()
+        dependencies.request_stop()
+        manual.advance(bar_frames - 1)
+        playback.poll()
+        restart_thread.join(timeout=1.0)
+        assert not restart_thread.is_alive()
+    finally:
+        renderer.release.set()
+        if stop_thread is not None:
+            stop_thread.join(timeout=1.0)
+        if restart_thread is not None:
+            restart_thread.join(timeout=1.0)
+        dependencies.close()
+
+    assert [bar.bar for bar in manual.completed] == [0, 1]
+    assert not [event for event in events if event.event_type == RapEventType.AUDIO_UNDERRUN]
 
 
 def test_rolling_audio_runs_without_gap_when_generator_is_late(tmp_path: Path) -> None:

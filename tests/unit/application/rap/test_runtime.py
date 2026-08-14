@@ -1,6 +1,7 @@
 """Tests for the standalone rap tick loop."""
 
 from collections import UserDict
+from threading import Event, Thread
 from types import MappingProxyType
 
 import pytest
@@ -410,3 +411,49 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
     assert calls.count("playback_close") == 1
     assert calls.count("dispatcher_close") == 1
     assert calls.count("recorder_close") == 1
+
+
+def test_audio_dependency_arms_playback_before_a_blocked_controller_stop(tmp_path) -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.entered = Event()
+            self.release = Event()
+
+        def request_stop(self, *, successor_bar: int) -> None:
+            assert successor_bar == 2
+            self.entered.set()
+            assert self.release.wait(timeout=1.0)
+
+    class Playback:
+        state = PlaybackState.RUNNING
+        stop_successor_bar = 1
+
+        def __init__(self) -> None:
+            self.stop_entered = Event()
+
+        def request_stop(self) -> int:
+            self.stop_entered.set()
+            self.state = PlaybackState.STOP_REQUESTED
+            return 2
+
+    controller = Controller()
+    playback = Playback()
+    dependencies = RapAudioDemoDependencies(
+        tempo=Tempo(60.0, 4, 4),
+        controller=controller,
+        coordinator=object(),
+        playback=playback,
+        publisher=object(),
+        dispatcher=object(),
+        session_dir=tmp_path,
+    )
+    worker = Thread(target=dependencies.request_stop)
+    worker.start()
+
+    try:
+        assert playback.stop_entered.wait(timeout=1.0)
+        assert controller.entered.wait(timeout=1.0)
+    finally:
+        controller.release.set()
+        worker.join(timeout=1.0)
+    assert not worker.is_alive()

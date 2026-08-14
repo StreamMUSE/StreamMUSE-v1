@@ -83,10 +83,9 @@ class RapPlaybackService:
 
     @property
     def stop_successor_bar(self) -> int:
+        snapshot = self._sink.snapshot()
         with self._lock:
-            if self._current_tick is None:
-                return self._next_start_bar + 1
-            return self._current_tick // self._tempo.ticks_per_bar + 1
+            return self._stop_successor_bar_locked(snapshot)
 
     def prime(self, bar: PreparedRapBar) -> None:
         with self._lock:
@@ -130,11 +129,13 @@ class RapPlaybackService:
                 raise RuntimeError(f"cannot enqueue while playback is {self._state.value}")
             self._enqueue_locked(bar)
 
-    def request_stop(self) -> None:
+    def request_stop(self) -> int | None:
         with self._lifecycle_dispatch_lock:
             with self._lock:
                 if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.STOP_REQUESTED):
-                    return
+                    return None
+                snapshot = self._sink.snapshot() if self._state == PlaybackState.RUNNING else None
+                successor_bar = self._stop_successor_bar_locked(snapshot)
                 if self._state == PlaybackState.PRIMING:
                     self._stop_observer_locked()
                     self._epoch += 1
@@ -151,6 +152,7 @@ class RapPlaybackService:
                     self._state = PlaybackState.STOP_REQUESTED
                     self._sink.request_stop_after_bar()
             self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
+        return successor_bar
 
     def reset(self) -> None:
         with self._lifecycle_dispatch_lock:
@@ -328,6 +330,13 @@ class RapPlaybackService:
     def _enqueue_locked(self, bar: PreparedRapBar) -> None:
         self._sink.enqueue(bar)
         self._prepared[bar.bar] = bar
+
+    def _stop_successor_bar_locked(self, snapshot: AudioPlaybackSnapshot | None) -> int:
+        if snapshot is not None and snapshot.current_bar is not None:
+            return snapshot.current_bar + 1
+        if self._current_tick is None:
+            return self._next_start_bar + 1
+        return self._current_tick // self._tempo.ticks_per_bar + 1
 
     def _prime_locked(self, bar: PreparedRapBar) -> None:
         if bar.bar != self._next_start_bar:

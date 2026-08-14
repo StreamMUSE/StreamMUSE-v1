@@ -276,11 +276,11 @@ class RecordingAudioCoordinator:
 
     def pause(self, successor_bar: int) -> None:
         self.paused_successors.append(successor_bar)
-        prepared = next(item for item in self.committed if item.bar == successor_bar)
+        prepared = next((item for item in self.committed if item.bar == successor_bar), None)
         self.fallbacks = {successor_bar: self.fallbacks[successor_bar]}
         self.primaries.clear()
         self.ready.clear()
-        self.committed = [prepared]
+        self.committed = [] if prepared is None else [prepared]
 
     def close(self) -> None:
         self.closed = True
@@ -442,6 +442,7 @@ def test_audio_controller_commits_target_bar_one_tick_before_its_boundary() -> N
         "render_latency_ms": 8.0,
         "frame_count": 16,
         "deadline_slack_ms": 125.0,
+        "coordinator_epoch": 0,
     }
 
 
@@ -488,18 +489,18 @@ def test_audio_controller_stop_keeps_only_one_successor_and_pauses_planning() ->
         controller.on_tick(tick)
 
     assert audio.paused_successors == [1]
-    assert [prepared.bar for prepared in audio.committed] == [1]
+    assert audio.committed == []
     assert len(audio.fallbacks) == 1
     assert len(audio.primaries) == 0
     assert fallback_count > len(audio.fallbacks)
     assert audio.fallback_reservations == fallback_reservations
     assert audio.primary_submissions == primary_submissions
     assert stop_calls == ["stopped"]
-    assert delivered == [audio.committed[0]]
+    assert delivered == []
 
     delivered.clear()
-    controller.resume_after_stop()
     controller.resume_audio(1)
+    controller.resume_after_stop()
     _finish(controller, dispatcher)
 
     assert [prepared.bar for prepared in delivered] == [1]
@@ -517,7 +518,7 @@ def test_audio_controller_stop_materializes_one_successor_past_planning_limit() 
     _finish(controller, dispatcher)
 
     assert set(audio.fallbacks) == {1}
-    assert [prepared.bar for prepared in audio.committed] == [1]
+    assert audio.committed == []
     assert audio.paused_successors == [1]
 
 

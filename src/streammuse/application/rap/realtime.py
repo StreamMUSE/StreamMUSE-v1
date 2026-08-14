@@ -251,8 +251,6 @@ class RollingRapController:
     def request_stop(self, *, successor_bar: int) -> None:
         """Freeze audio planning at one restart-safe immutable successor bar."""
 
-        committed = None
-        delivery_epoch = None
         with self._lifecycle_lock:
             with self._lock:
                 if self._audio_coordinator is None:
@@ -269,7 +267,6 @@ class RollingRapController:
                     # later complete-bar restart.  This is the only reservation made
                     # after stop has been requested; no primary work is submitted.
                     self._reserve_through(successor_bar)
-                committed = self._commit_audio_bar(successor_bar, tick=None)
                 self._stopping = True
                 self._stop_successor_bar = successor_bar
                 future = self._future
@@ -278,7 +275,6 @@ class RollingRapController:
                 self._audio_primary_plans.clear()
                 audio_coordinator = self._audio_coordinator
                 stop_primary = self._stop_primary
-                delivery_epoch = self._lifecycle_epoch
             if future is not None:
                 future.cancel()
             if stop_primary is not None:
@@ -290,7 +286,6 @@ class RollingRapController:
                         payload={"error_type": "abort_error", "error_message": str(exc)},
                     )
             audio_coordinator.pause(successor_bar)
-        self._notify_audio_committed(committed, delivery_epoch)
 
     def reset(self) -> None:
         """Clear an audio-controlled planning session after playback has stopped."""
@@ -330,9 +325,13 @@ class RollingRapController:
                     raise RuntimeError("audio resume is available only for audio-controlled sessions")
                 if self._closed or not self._started:
                     raise RuntimeError("cannot resume an inactive audio controller")
-                if bar not in self._audio_committed_bars:
+                is_stop_successor = self._stopping and bar == self._stop_successor_bar
+                if bar not in self._audio_committed_bars and not is_stop_successor:
                     raise ValueError("audio resume requires an already committed bar")
-                prepared = self._audio_coordinator.commit(bar)
+                if bar in self._audio_committed_bars:
+                    prepared = self._audio_coordinator.commit(bar)
+                else:
+                    prepared = self._commit_audio_bar(bar, tick=None)
                 epoch = self._lifecycle_epoch
         self._notify_audio_committed(prepared, epoch)
 
@@ -348,7 +347,7 @@ class RollingRapController:
                 successor = self._stop_successor_bar
                 assert successor is not None
                 self._bars = {bar: plan for bar, plan in self._bars.items() if bar <= successor}
-                self._audio_committed_bars = {successor}
+                self._audio_committed_bars.intersection_update({successor})
                 self._audio_primary_plans.clear()
                 self._next_primary_bar = successor + 1
                 self._stopping = False
@@ -668,6 +667,7 @@ class RollingRapController:
                 "render_latency_ms": prepared.render_latency_ms,
                 "frame_count": prepared.audio.frame_count,
                 "deadline_slack_ms": deadline_slack_ms,
+                "coordinator_epoch": getattr(self._audio_coordinator, "epoch", self._lifecycle_epoch),
             },
         )
         return prepared

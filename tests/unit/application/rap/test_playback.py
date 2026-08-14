@@ -394,6 +394,16 @@ def test_enqueue_primes_first_bar_and_rejects_later_first_bar() -> None:
         )
 
 
+def test_stop_successor_uses_sink_active_bar_when_observer_tick_is_stale() -> None:
+    sink = FakeRapAudioSink()
+    service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=lambda _: None)
+    sink.state = PlaybackState.RUNNING
+    sink.current_bar = 1
+    service._current_tick = 15  # Simulate observer lag at the bar-one callback boundary.
+
+    assert service.stop_successor_bar == 2
+
+
 def test_reset_requires_stopped_and_clears_audio_state() -> None:
     service, sink, publisher = running_service()
     sink.complete_bar(0)

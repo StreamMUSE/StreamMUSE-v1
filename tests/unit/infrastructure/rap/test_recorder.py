@@ -187,6 +187,36 @@ def test_summary_uses_only_the_current_audio_epoch_after_reset() -> None:
     assert summary["audio"]["completed_frames"] == 200
 
 
+def test_summary_ignores_stale_coordinator_events_arriving_after_reset() -> None:
+    summary = derive_summary(
+        (
+            _event(1, RapEventType.SESSION_RESET, payload={}),
+            _event(
+                2,
+                RapEventType.AUDIO_RENDER_COMPLETED,
+                bar=0,
+                payload={"render_latency_ms": 99.0, "coordinator_epoch": 0, "accepted": False},
+            ),
+            _event(3, RapEventType.TIMING_PRESSURE, bar=0, payload={"coordinator_epoch": 0}),
+            _event(4, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"frame_count": 99, "coordinator_epoch": 0}),
+            _event(
+                5,
+                RapEventType.AUDIO_RENDER_COMPLETED,
+                bar=0,
+                payload={"render_latency_ms": 12.0, "coordinator_epoch": 1, "accepted": True},
+            ),
+            _event(6, RapEventType.TIMING_PRESSURE, bar=0, payload={"coordinator_epoch": 1}),
+            _event(7, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"frame_count": 20, "coordinator_epoch": 1}),
+            _event(8, RapEventType.BAR_PLAYBACK_COMPLETED, bar=0, payload={}),
+        )
+    )
+
+    assert summary["events"] == {"count": 4, "history_count": 8, "epoch": 1}
+    assert summary["audio"]["render_latency_ms"] == {"count": 1, "p50": 12.0, "p95": 12.0, "max": 12.0}
+    assert summary["audio"]["warning_counts"]["timing_pressure"] == 1
+    assert summary["audio"]["completed_frames"] == 20
+
+
 def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:
     rows = derive_bar_rows(_scripted_session_events())
     assert rows == [

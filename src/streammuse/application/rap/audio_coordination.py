@@ -43,6 +43,11 @@ class BarAudioCoordinator:
         self._primary_polled: set[int] = set()
         self._committed: dict[int, PreparedRapBar] = {}
 
+    @property
+    def epoch(self) -> int:
+        with self._lock:
+            return self._epoch
+
     def reserve_fallback(self, plan: PlannedRapBar) -> None:
         """Start one fallback render for a bar; duplicate reservations are no-ops."""
 
@@ -130,17 +135,30 @@ class BarAudioCoordinator:
             future.cancel()
 
     def pause(self, successor_bar: int) -> None:
-        """Cancel all pending work while retaining one immutable restart bar."""
+        """Cancel future planning work while retaining one restart-safe fallback."""
 
         with self._lock:
             self._require_open()
             successor = self._committed.get(successor_bar)
-            if successor is None:
-                raise ValueError("pause requires a committed successor bar")
-            self._epoch += 1
-            futures = tuple(self._fallback_futures.values()) + tuple(self._primary_futures.values())
+            fallback_work = self._fallback_work.get(successor_bar)
+            fallback_future = self._fallback_futures.get(successor_bar)
+            fallback_result = self._fallback_results.get(successor_bar)
+            if successor is None and (fallback_work is None or fallback_future is None):
+                raise ValueError("pause requires a reserved successor bar")
+            futures = tuple(
+                future
+                for bar, future in self._fallback_futures.items()
+                if successor is not None or bar != successor_bar
+            ) + tuple(self._primary_futures.values())
             self._clear_locked()
-            self._committed[successor_bar] = successor
+            if successor is not None:
+                self._committed[successor_bar] = successor
+            else:
+                assert fallback_work is not None and fallback_future is not None
+                self._fallback_work[successor_bar] = fallback_work
+                self._fallback_futures[successor_bar] = fallback_future
+                if fallback_result is not None:
+                    self._fallback_results[successor_bar] = fallback_result
         for future in futures:
             future.cancel()
 
@@ -163,7 +181,12 @@ class BarAudioCoordinator:
         self._event(
             RapEventType.AUDIO_RENDER_STARTED,
             bar=work.plan.bar,
-            payload={"source": work.plan.source, "role": work.role, "text": work.plan.text},
+            payload={
+                "source": work.plan.source,
+                "role": work.role,
+                "text": work.plan.text,
+                "coordinator_epoch": work.epoch,
+            },
         )
         try:
             prepared = self._renderer.render(work.plan)
@@ -177,18 +200,19 @@ class BarAudioCoordinator:
                     "ready": False,
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
+                    "coordinator_epoch": work.epoch,
                 },
             )
             raise
 
         with self._lock:
             accepted = self._accept_result_locked(work, prepared)
-        payload = self._audio_payload(prepared, role=work.role, accepted=accepted)
+        payload = self._audio_payload(prepared, role=work.role, accepted=accepted, coordinator_epoch=work.epoch)
         self._event(RapEventType.AUDIO_RENDER_COMPLETED, bar=prepared.bar, payload=payload)
         if accepted:
             self._event(RapEventType.BAR_AUDIO_READY, bar=prepared.bar, payload=payload)
             for warning in prepared.warnings:
-                self._publish_warning(prepared.bar, warning)
+                self._publish_warning(prepared.bar, warning, coordinator_epoch=work.epoch)
         return prepared
 
     def _accept_result_locked(self, work: _RenderWork, prepared: PreparedRapBar) -> bool:
@@ -225,7 +249,7 @@ class BarAudioCoordinator:
         self._primary_polled.clear()
         self._committed.clear()
 
-    def _publish_warning(self, bar: int, warning: AudioWarning) -> None:
+    def _publish_warning(self, bar: int, warning: AudioWarning, *, coordinator_epoch: int) -> None:
         event_type = {
             AudioWarningCode.PRONUNCIATION_FALLBACK: RapEventType.PRONUNCIATION_FALLBACK,
             AudioWarningCode.TIMING_PRESSURE: RapEventType.TIMING_PRESSURE,
@@ -246,11 +270,18 @@ class BarAudioCoordinator:
                 "compression_ratio": warning.compression_ratio,
                 "overlap_ms": warning.overlap_ms,
                 "action": warning.action,
+                "coordinator_epoch": coordinator_epoch,
             },
         )
 
     @staticmethod
-    def _audio_payload(prepared: PreparedRapBar, *, role: str, accepted: bool) -> dict[str, object]:
+    def _audio_payload(
+        prepared: PreparedRapBar,
+        *,
+        role: str,
+        accepted: bool,
+        coordinator_epoch: int,
+    ) -> dict[str, object]:
         return {
             "source": prepared.source,
             "role": role,
@@ -259,6 +290,7 @@ class BarAudioCoordinator:
             "frame_count": prepared.audio.frame_count,
             "warnings": [warning.code.value for warning in prepared.warnings],
             "accepted": accepted,
+            "coordinator_epoch": coordinator_epoch,
         }
 
     def _require_open(self) -> None:

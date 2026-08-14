@@ -248,6 +248,34 @@ def test_render_events_mark_stale_reset_work_unaccepted_without_ready_or_warning
         coordinator.close()
 
 
+def test_stale_render_completion_retains_its_original_coordinator_epoch() -> None:
+    renderer = ControlledBarRenderer()
+    publisher = RecordingPublisher()
+    coordinator = BarAudioCoordinator(renderer, publisher=publisher)
+    stale = planned_bar(bar=8, source="prevalidated_fallback")
+    current = planned_bar(bar=0, source="prevalidated_fallback")
+    try:
+        coordinator.reserve_fallback(stale)
+        renderer.wait_started(stale)
+        coordinator.reset()
+        renderer.complete(stale)
+        _wait_for_event_count(publisher, bar=8, count=2)
+        coordinator.reserve_fallback(current)
+        renderer.wait_started(current)
+        renderer.complete(current)
+        coordinator.commit(0)
+
+        stale_events = [event for event in publisher.events if event[1] == 8]
+        current_events = [event for event in publisher.events if event[1] == 0]
+        assert stale_events[0][2]["coordinator_epoch"] == 0
+        assert stale_events[1][2]["coordinator_epoch"] == 0
+        assert stale_events[1][2]["accepted"] is False
+        assert current_events[0][2]["coordinator_epoch"] == 1
+        assert current_events[1][2]["coordinator_epoch"] == 1
+    finally:
+        coordinator.close()
+
+
 def test_concurrent_duplicate_fallback_reservations_render_once() -> None:
     renderer = ControlledBarRenderer()
     coordinator = BarAudioCoordinator(renderer, publisher=RecordingPublisher())
