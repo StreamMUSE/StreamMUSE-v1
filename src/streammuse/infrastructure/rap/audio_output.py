@@ -84,6 +84,7 @@ class SoundDeviceAudioSink:
         self._stream: OutputStream | None = None
         self._state = PlaybackState.STOPPED
         self._active: PreparedRapBar | None = None
+        self._last_completed_bar: int | None = None
         self._frame_in_bar = 0
         self._absolute_frame = 0
         self._underrun_count = 0
@@ -178,6 +179,7 @@ class SoundDeviceAudioSink:
             self._stream = None
             self._epoch += 1
             self._active = None
+            self._last_completed_bar = None
             self._frame_in_bar = 0
             self._absolute_frame = 0
             self._underrun_count = 0
@@ -201,6 +203,7 @@ class SoundDeviceAudioSink:
         return AudioPlaybackSnapshot(
             state=self._state,
             current_bar=self._active.bar if self._active is not None else None,
+            last_completed_bar=self._last_completed_bar,
             frame_in_bar=self._frame_in_bar,
             absolute_frame=self._absolute_frame,
             queue_depth=queue_depth,
@@ -287,6 +290,8 @@ class SoundDeviceAudioSink:
                 self._frame_in_bar += to_copy
                 self._absolute_frame += to_copy
                 completed = self._frame_in_bar == active.audio.frame_count
+                if completed:
+                    self._last_completed_bar = active.bar
 
             if not completed:
                 continue
@@ -532,6 +537,7 @@ class NullAudioSink:
         self._notices: SimpleQueue[AudioPlaybackNotice] = SimpleQueue()
         self._state = PlaybackState.STOPPED
         self._absolute_frame = 0
+        self._last_completed_bar: int | None = None
         self._stop_requested = False
 
     @property
@@ -564,6 +570,7 @@ class NullAudioSink:
         self._publish(AudioPlaybackNoticeKind.BAR_STARTED, bar.bar, "bar playback started")
         self._absolute_frame += bar.audio.frame_count
         self._recorded.append(bar)
+        self._last_completed_bar = bar.bar
         self._publish(AudioPlaybackNoticeKind.BAR_COMPLETED, bar.bar, "bar playback completed")
         if self._stop_requested:
             self._state = PlaybackState.STOPPED
@@ -575,6 +582,7 @@ class NullAudioSink:
         self._queued.clear()
         self._recorded.clear()
         self._absolute_frame = 0
+        self._last_completed_bar = None
         self._stop_requested = False
         if self._state != PlaybackState.CLOSED:
             self._state = PlaybackState.STOPPED
@@ -584,6 +592,7 @@ class NullAudioSink:
         return AudioPlaybackSnapshot(
             state=self._state,
             current_bar=None,
+            last_completed_bar=self._last_completed_bar,
             frame_in_bar=0,
             absolute_frame=self._absolute_frame,
             queue_depth=len(self._queued),
@@ -640,6 +649,7 @@ class TimedAudioSink:
         self._queued: deque[PreparedRapBar] = deque()
         self._state = PlaybackState.STOPPED
         self._active: PreparedRapBar | None = None
+        self._last_completed_bar: int | None = None
         self._frame_in_bar = 0
         self._absolute_frame = 0
         self._fractional_frames = 0.0
@@ -686,6 +696,7 @@ class TimedAudioSink:
         with self._lock:
             self._queued.clear()
             self._active = None
+            self._last_completed_bar = None
             self._frame_in_bar = 0
             self._absolute_frame = 0
             self._fractional_frames = 0.0
@@ -703,6 +714,7 @@ class TimedAudioSink:
         return AudioPlaybackSnapshot(
             state=self._state,
             current_bar=self._active.bar if self._active is not None else None,
+            last_completed_bar=self._last_completed_bar,
             frame_in_bar=self._frame_in_bar,
             absolute_frame=self._absolute_frame,
             queue_depth=len(self._queued),
@@ -767,6 +779,7 @@ class TimedAudioSink:
             if self._frame_in_bar != active.audio.frame_count:
                 continue
 
+            self._last_completed_bar = active.bar
             self._publish_locked(AudioPlaybackNoticeKind.BAR_COMPLETED, active.bar, "bar playback completed")
             self._active = None
             self._frame_in_bar = 0

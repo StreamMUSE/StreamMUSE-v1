@@ -334,6 +334,8 @@ class RapPlaybackService:
     def _stop_successor_bar_locked(self, snapshot: AudioPlaybackSnapshot | None) -> int:
         if snapshot is not None and snapshot.current_bar is not None:
             return snapshot.current_bar + 1
+        if snapshot is not None and snapshot.last_completed_bar is not None:
+            return snapshot.last_completed_bar + 1
         if self._current_tick is None:
             return self._next_start_bar + 1
         return self._current_tick // self._tempo.ticks_per_bar + 1

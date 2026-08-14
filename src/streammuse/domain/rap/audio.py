@@ -144,6 +144,7 @@ class AudioPlaybackNotice:
 class AudioPlaybackSnapshot:
     state: PlaybackState
     current_bar: int | None
+    last_completed_bar: int | None
     frame_in_bar: int
     absolute_frame: int
     queue_depth: int

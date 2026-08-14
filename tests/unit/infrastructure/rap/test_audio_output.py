@@ -280,8 +280,12 @@ def test_stop_request_finishes_current_bar_without_dequeuing_next() -> None:
 
     snapshot = sink.snapshot()
     assert snapshot.state == PlaybackState.STOPPED
+    assert snapshot.last_completed_bar == 0
     assert snapshot.absolute_frame == 16
     assert snapshot.queue_depth == 1
+
+    sink.reset()
+    assert sink.snapshot().last_completed_bar is None
 
 
 def test_sounddevice_callback_uses_termination_signal_without_stream_stop() -> None:
@@ -375,6 +379,7 @@ def test_composite_commits_only_completed_bar_bytes_on_stop(tmp_path: Path) -> N
 
     _, payload = read_float_wav(tmp_path / "session.wav")
     assert payload == first.audio.data
+    assert composite.snapshot().last_completed_bar == 0
 
 
 def test_wav_recorder_reset_replaces_the_previous_audio_epoch(tmp_path: Path) -> None:
@@ -428,10 +433,14 @@ def test_null_sink_records_and_completes_bars_without_opening_a_device() -> None
 
     assert sink.recorded_bars == (bar,)
     assert sink.snapshot().absolute_frame == 6
+    assert sink.snapshot().last_completed_bar == 0
     assert [notice.kind for notice in sink.drain_notices()] == [
         AudioPlaybackNoticeKind.BAR_STARTED,
         AudioPlaybackNoticeKind.BAR_COMPLETED,
     ]
+
+    sink.reset()
+    assert sink.snapshot().last_completed_bar is None
 
 
 def test_null_sink_stop_before_completion_does_not_start_a_queued_bar() -> None:
@@ -459,11 +468,13 @@ def test_timed_sink_advances_realtime_clock_and_stops_after_current_bar() -> Non
         wait_until(lambda: sink.snapshot().state == PlaybackState.STOPPED)
 
         snapshot = sink.snapshot()
+        assert snapshot.last_completed_bar == 0
         assert snapshot.absolute_frame == 10
         assert snapshot.queue_depth == 1
 
         sink.reset()
         assert sink.snapshot().state == PlaybackState.STOPPED
+        assert sink.snapshot().last_completed_bar is None
         assert sink.snapshot().absolute_frame == 0
         assert sink.snapshot().queue_depth == 0
     finally:

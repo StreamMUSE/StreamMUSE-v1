@@ -96,6 +96,7 @@ class FakeRapAudioSink:
         self.state = PlaybackState.STOPPED
         self.absolute_frame = 0
         self.current_bar: int | None = None
+        self.last_completed_bar: int | None = None
         self.queued: list[PreparedRapBar] = []
         self.notices: deque[AudioPlaybackNotice] = deque()
         self.start_calls = 0
@@ -120,6 +121,7 @@ class FakeRapAudioSink:
         self.state = PlaybackState.STOPPED
         self.absolute_frame = 0
         self.current_bar = None
+        self.last_completed_bar = None
         self.queued.clear()
         self.notices.clear()
 
@@ -127,6 +129,7 @@ class FakeRapAudioSink:
         return AudioPlaybackSnapshot(
             state=self.state,
             current_bar=self.current_bar,
+            last_completed_bar=self.last_completed_bar,
             frame_in_bar=0,
             absolute_frame=self.absolute_frame,
             queue_depth=len(self.queued),
@@ -162,6 +165,7 @@ class FakeRapAudioSink:
         self.current_bar = bar
         self.absolute_frame += completed.audio.frame_count
         self.queued.remove(completed)
+        self.last_completed_bar = bar
         self.publish(AudioPlaybackNoticeKind.BAR_COMPLETED, bar=bar)
         self.state = PlaybackState.STOPPED
         self.current_bar = None
@@ -169,26 +173,21 @@ class FakeRapAudioSink:
 
 
 class SnapshotToArmRaceSink(FakeRapAudioSink):
-    """Activate bar one immediately after the legacy snapshot capture."""
+    """Activate the successor while atomically arming the stop boundary."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.current_bar = 0
+        self.last_completed_bar = 1
         self.activation_attempts = 0
-
-    def snapshot(self) -> AudioPlaybackSnapshot:
-        captured = super().snapshot()
-        self._activate_next_bar()
-        return captured
 
     def request_stop_after_bar(self):
         self._activate_next_bar()
         return super().request_stop_after_bar()
 
     def _activate_next_bar(self) -> None:
-        if self.current_bar == 0:
+        if self.current_bar is None:
             self.activation_attempts += 1
-            self.current_bar = 1
+            self.current_bar = 2
 
 
 class BlockingSnapshotSink(FakeRapAudioSink):
@@ -428,24 +427,26 @@ def test_stop_successor_uses_sink_active_bar_when_observer_tick_is_stale() -> No
     assert service.stop_successor_bar == 2
 
 
-def test_stop_arming_returns_successor_after_callback_activates_next_bar() -> None:
+def test_stop_arming_prefers_new_active_bar_over_last_completed_bar() -> None:
     sink = SnapshotToArmRaceSink()
     sink.state = PlaybackState.RUNNING
     service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=lambda _: None)
     service._state = PlaybackState.RUNNING
+    service._current_tick = 15
 
-    assert service.request_stop() == 2
+    assert service.request_stop() == 3
     assert sink.activation_attempts == 1
 
 
-def test_stop_arming_returns_next_bar_when_callback_does_not_activate() -> None:
+def test_stop_arming_uses_last_completed_bar_during_no_active_gap() -> None:
     sink = FakeRapAudioSink()
     sink.state = PlaybackState.RUNNING
-    sink.current_bar = 0
+    sink.last_completed_bar = 1
     service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=lambda _: None)
     service._state = PlaybackState.RUNNING
+    service._current_tick = 15
 
-    assert service.request_stop() == 1
+    assert service.request_stop() == 2
 
 
 def test_reset_requires_stopped_and_clears_audio_state() -> None:

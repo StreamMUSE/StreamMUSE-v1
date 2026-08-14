@@ -53,6 +53,7 @@ class ManualAudioSink:
         self._frame_in_bar = 0
         self._absolute_frame = 0
         self._state = PlaybackState.STOPPED
+        self._last_completed_bar: int | None = None
         self._stop_requested = False
         self._notices: SimpleQueue[AudioPlaybackNotice] = SimpleQueue()
         self.completed: list[PreparedRapBar] = []
@@ -99,6 +100,7 @@ class ManualAudioSink:
                 continue
             completed = self._active
             self.completed.append(completed)
+            self._last_completed_bar = completed.bar
             self._notice(AudioPlaybackNoticeKind.BAR_COMPLETED, completed.bar, "bar playback completed")
             self._active = None
             self._frame_in_bar = 0
@@ -110,6 +112,7 @@ class ManualAudioSink:
     def reset(self) -> None:
         self._queued.clear()
         self._active = None
+        self._last_completed_bar = None
         self._frame_in_bar = 0
         self._absolute_frame = 0
         self._stop_requested = False
@@ -121,6 +124,7 @@ class ManualAudioSink:
         return AudioPlaybackSnapshot(
             state=self._state,
             current_bar=self._active.bar if self._active is not None else None,
+            last_completed_bar=self._last_completed_bar,
             frame_in_bar=self._frame_in_bar,
             absolute_frame=self._absolute_frame,
             queue_depth=len(self._queued),
