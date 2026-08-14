@@ -5,6 +5,17 @@ from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPu
 from streammuse.application.rap.realtime import RollingRapController
 from streammuse.application.rap.rhythm import available_patterns, build_bar_slots
 from streammuse.application.rap.scoring import evaluate_candidate, rank_candidates
+from streammuse.application.rap.audio_rendering import (
+    FitContext,
+    FittedSyllable,
+    bar_frame_count,
+    bar_start_frame,
+    fit_syllable,
+    limit_peak,
+    mix_at,
+    tick_frame_in_bar,
+    trim_silence,
+)
 
 __all__ = [
     "RollingRapController",
@@ -19,4 +30,13 @@ __all__ = [
     "choose_best_line",
     "evaluate_candidate",
     "rank_candidates",
+    "FitContext",
+    "FittedSyllable",
+    "bar_frame_count",
+    "bar_start_frame",
+    "fit_syllable",
+    "limit_peak",
+    "mix_at",
+    "tick_frame_in_bar",
+    "trim_silence",
 ]
