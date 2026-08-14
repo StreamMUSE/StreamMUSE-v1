@@ -11,6 +11,7 @@ from streammuse.infrastructure.rap.recorder import (
     validate_session_manifest,
 )
 from streammuse.infrastructure.rap.speech import CommandRunner, EspeakPhonemeSynthesizer, arpabet_syllable_to_espeak
+from streammuse.infrastructure.rap.drums import ProceduralBoomBapRenderer
 
 __all__ = [
     "LocalChatCandidateGenerator",
@@ -26,4 +27,5 @@ __all__ = [
     "CommandRunner",
     "EspeakPhonemeSynthesizer",
     "arpabet_syllable_to_espeak",
+    "ProceduralBoomBapRenderer",
 ]
