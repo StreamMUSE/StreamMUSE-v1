@@ -141,13 +141,16 @@ class RapPlaybackService:
             self._require_state(PlaybackState.STOPPED)
             self._epoch += 1
             observer = self._stop_observer_locked()
+            # Task 5 reset is local and has no publication callback. Keep the
+            # lifecycle lock until it has discarded old queue contents so a
+            # concurrent prime cannot enqueue work that this reset erases.
+            self._sink.reset()
             self._prepared.clear()
             self._current_tick = None
             self._emitted_syllables.clear()
             self._next_start_bar = 0
             self._sample_origin_frame = 0
         self._join(observer)
-        self._sink.reset()
         self._emit(RapEventType.SESSION_RESET, payload={"playback_state": PlaybackState.STOPPED.value})
 
     def wait(self, timeout: float | None = None) -> None:

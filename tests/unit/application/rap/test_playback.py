@@ -164,11 +164,25 @@ class BlockingResetSink(FakeRapAudioSink):
         super().__init__()
         self.reset_entered = Event()
         self.allow_reset = Event()
+        self.reset_finished = Event()
 
     def reset(self) -> None:
         self.reset_entered.set()
         assert self.allow_reset.wait(timeout=1.0)
         super().reset()
+        self.reset_finished.set()
+
+
+class ResetCompletionPublisher(RecordingPublisher):
+    def __init__(self, sink: BlockingResetSink) -> None:
+        super().__init__()
+        self._sink = sink
+        self.cleanup_completed_before_session_reset: bool | None = None
+
+    def emit(self, event_type: RapEventType, **kwargs: object) -> None:
+        if event_type == RapEventType.SESSION_RESET:
+            self.cleanup_completed_before_session_reset = self._sink.reset_finished.is_set()
+        super().emit(event_type, **kwargs)
 
 
 class StaleSnapshotSink(FakeRapAudioSink):
@@ -403,6 +417,40 @@ def test_stop_during_priming_keeps_concurrent_prime_out_until_sink_cleanup_finis
     assert errors == []
     assert service.state == PlaybackState.PRIMING
     assert sink.queued == [fresh]
+
+
+def test_reset_keeps_concurrent_prime_out_until_sink_cleanup_finishes() -> None:
+    sink = BlockingResetSink()
+    publisher = ResetCompletionPublisher(sink)
+    service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=publisher, on_tick=lambda _: None)
+    fresh = prepared_bar(bar=0, source="fresh")
+    reset_errors: list[Exception] = []
+    prime_errors: list[Exception] = []
+    reset_completed = Event()
+    prime_completed = Event()
+
+    resetter = Thread(target=lambda: _reset_and_capture(service, reset_errors, reset_completed))
+    resetter.start()
+    assert sink.reset_entered.wait(timeout=1.0)
+    primer = Thread(target=lambda: _prime_and_capture(service, fresh, prime_errors, prime_completed))
+    primer.start()
+    try:
+        assert not prime_completed.wait(timeout=0.1)
+        assert not reset_completed.is_set()
+        assert publisher.events == []
+    finally:
+        sink.allow_reset.set()
+        resetter.join(timeout=1.0)
+        primer.join(timeout=1.0)
+
+    assert not resetter.is_alive()
+    assert not primer.is_alive()
+    assert reset_errors == []
+    assert prime_errors == []
+    assert service.state == PlaybackState.PRIMING
+    assert sink.queued == [fresh]
+    assert publisher.only(RapEventType.SESSION_RESET).payload == {"playback_state": "stopped"}
+    assert publisher.cleanup_completed_before_session_reset is True
 
 
 def test_notice_kinds_map_to_canonical_events() -> None:
@@ -731,6 +779,19 @@ def _prime_and_capture(
 ) -> None:
     try:
         service.prime(bar)
+    except Exception as error:
+        errors.append(error)
+    finally:
+        completed.set()
+
+
+def _reset_and_capture(
+    service: RapPlaybackService,
+    errors: list[Exception],
+    completed: Event,
+) -> None:
+    try:
+        service.reset()
     except Exception as error:
         errors.append(error)
     finally:
