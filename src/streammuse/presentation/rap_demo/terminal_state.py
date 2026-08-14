@@ -13,6 +13,20 @@ from typing import Any
 from streammuse.domain.rap import RapEvent, RapEventType
 
 
+_COORDINATOR_EVENTS = frozenset(
+    {
+        RapEventType.AUDIO_RENDER_STARTED,
+        RapEventType.AUDIO_RENDER_COMPLETED,
+        RapEventType.BAR_AUDIO_READY,
+        RapEventType.BAR_AUDIO_COMMITTED,
+        RapEventType.PRONUNCIATION_FALLBACK,
+        RapEventType.TIMING_PRESSURE,
+        RapEventType.FORCED_BAR_FIT,
+        RapEventType.SYNTHESIS_FAILED,
+    }
+)
+
+
 @dataclass(frozen=True)
 class TerminalRapBarView:
     bar: int
@@ -86,6 +100,7 @@ class TerminalRapViewState:
     audio: Mapping[str, Any]
     audio_warnings: tuple[Mapping[str, Any], ...]
     recent_events: tuple[TerminalRapEventView, ...]
+    coordinator_epoch: int | None = None
 
 
 class TerminalRapStateProjector:
@@ -98,6 +113,7 @@ class TerminalRapStateProjector:
         self._history_limit = history_limit
         self._candidate_limit = candidate_limit or history_limit
         self._session_id: str | None = None
+        self._coordinator_epoch: int | None = None
         self._session_metadata: Mapping[str, Any] = MappingProxyType({})
         self._current_bar: int | None = None
         self._current_tick: int | None = None
@@ -133,9 +149,11 @@ class TerminalRapStateProjector:
     def apply(self, event: RapEvent) -> TerminalRapViewState:
         with self._lock:
             self._session_id = event.session_id
+            kind = event.event_type
+            if self._is_stale_coordinator_event(event):
+                return self._snapshot()
             event_view = _event_view(event)
             self._recent_events.append(event_view)
-            kind = event.event_type
             if kind == RapEventType.SESSION_STARTED:
                 self._session_metadata = _freeze({**self._session_metadata, **event.payload})
                 self._stopped = False
@@ -261,6 +279,7 @@ class TerminalRapStateProjector:
             audio=_freeze(self._audio),
             audio_warnings=tuple(self._audio_warnings),
             recent_events=tuple(self._recent_events),
+            coordinator_epoch=self._coordinator_epoch,
         )
 
     def _update_audio(self, event: RapEvent, *, state: str | None = None) -> None:
@@ -296,6 +315,7 @@ class TerminalRapStateProjector:
     def _reset_epoch(self, event: RapEvent, event_view: TerminalRapEventView) -> None:
         device = self._audio["device"]
         recording_path = self._audio["recording_path"]
+        self._coordinator_epoch = _coordinator_epoch(event.payload)
         self._current_bar = None
         self._current_tick = None
         self._bars.clear()
@@ -319,6 +339,20 @@ class TerminalRapStateProjector:
         self._audio_warnings.clear()
         self._recent_events.clear()
         self._recent_events.append(event_view)
+
+    def _is_stale_coordinator_event(self, event: RapEvent) -> bool:
+        event_epoch = _coordinator_epoch(event.payload)
+        return (
+            event.event_type in _COORDINATOR_EVENTS
+            and self._coordinator_epoch is not None
+            and event_epoch is not None
+            and event_epoch < self._coordinator_epoch
+        )
+
+
+def _coordinator_epoch(payload: Mapping[str, Any]) -> int | None:
+    value = payload.get("coordinator_epoch")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _request_view(event: RapEvent) -> TerminalRapRequestView:

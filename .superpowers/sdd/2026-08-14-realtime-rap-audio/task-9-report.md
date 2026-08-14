@@ -111,3 +111,47 @@ no output
 ### Review Commit
 
 `fix: complete realtime rap audio telemetry`
+
+## Review Fix Round 2
+
+- Reset now advances the controller/coordinator epoch before playback emits the
+  single canonical `SESSION_RESET`. The reset payload carries
+  `coordinator_epoch`; a failed coordinator reset leaves controller state and
+  playback publication untouched.
+- `RapStateProjector` and `TerminalRapStateProjector` retain that epoch and
+  ignore stale coordinator render, ready, commit, and warning events without
+  reintroducing bars, warnings, audio state, or latency data. The recorder
+  history and its existing epoch filter remain unchanged.
+- Added a runtime-level blocked-worker regression using the real publisher and
+  dispatcher: old-epoch completion and warning events after reset leave both
+  projections empty and stopped; new-epoch events update latency and warning
+  evidence.
+- No website files or controls changed in this round.
+
+### Round 2 Verification
+
+```text
+uv run pytest tests/unit/application/rap/test_runtime.py \
+  tests/unit/application/rap/test_monitoring.py \
+  tests/unit/presentation/rap_demo/test_terminal_state.py \
+  tests/unit/application/rap/test_playback.py -q
+64 passed in 0.99s
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap \
+  tests/unit/infrastructure/rap tests/unit/presentation/rap_demo \
+  tests/integration/test_realtime_rap_audio.py -q
+500 passed in 3.70s
+
+uv run pytest tests/ -q --tb=no
+Completed without failures (4 environment skips)
+
+uv run ruff check [round 2 source and test paths]
+All checks passed
+
+git diff --check
+no output
+```
+
+### Round 2 Commit
+
+`fix: guard realtime rap reset epochs`

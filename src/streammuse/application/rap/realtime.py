@@ -287,7 +287,7 @@ class RollingRapController:
                     )
             audio_coordinator.pause(successor_bar)
 
-    def reset(self) -> None:
+    def reset(self) -> int:
         """Clear an audio-controlled planning session after playback has stopped."""
 
         with self._lifecycle_lock:
@@ -296,6 +296,15 @@ class RollingRapController:
                     raise RuntimeError("reset is available only for audio-controlled sessions")
                 if self._closed:
                     raise RuntimeError("cannot reset a closed controller")
+                audio_coordinator = self._audio_coordinator
+
+            # Establish the new render epoch before clearing controller state or
+            # allowing the runtime to publish SESSION_RESET. A failed coordinator
+            # reset leaves this controller state untouched.
+            audio_coordinator.reset()
+            coordinator_epoch = getattr(audio_coordinator, "epoch", None)
+
+            with self._lock:
                 self._lifecycle_epoch += 1
                 future = self._future
                 self._future = None
@@ -311,10 +320,11 @@ class RollingRapController:
                 self._started = False
                 self._stopping = False
                 self._stop_successor_bar = None
-                audio_coordinator = self._audio_coordinator
             if future is not None:
                 future.cancel()
-            audio_coordinator.reset()
+            if isinstance(coordinator_epoch, int) and not isinstance(coordinator_epoch, bool):
+                return coordinator_epoch
+            return self._lifecycle_epoch
 
     def resume_audio(self, bar: int) -> None:
         """Re-deliver the immutable next committed bar after a quantized stop."""

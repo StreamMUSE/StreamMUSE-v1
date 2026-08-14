@@ -14,6 +14,18 @@ from streammuse.domain.rap import RapEvent, RapEventType, normalize_text
 
 
 _SENTINEL = object()
+_COORDINATOR_EVENTS = frozenset(
+    {
+        RapEventType.AUDIO_RENDER_STARTED,
+        RapEventType.AUDIO_RENDER_COMPLETED,
+        RapEventType.BAR_AUDIO_READY,
+        RapEventType.BAR_AUDIO_COMMITTED,
+        RapEventType.PRONUNCIATION_FALLBACK,
+        RapEventType.TIMING_PRESSURE,
+        RapEventType.FORCED_BAR_FIT,
+        RapEventType.SYNTHESIS_FAILED,
+    }
+)
 
 
 class _RapEventQueue:
@@ -379,6 +391,7 @@ class RapStateProjector:
         self._state: dict[str, Any] = {
             "session_id": None,
             "last_sequence": 0,
+            "coordinator_epoch": None,
             "current_tick": None,
             "current_playback": None,
             "current_syllable": None,
@@ -424,6 +437,8 @@ class RapStateProjector:
         with self._lock:
             self._state["session_id"] = event.session_id
             self._state["last_sequence"] = event.sequence
+            if self._is_stale_coordinator_event(event):
+                return
             self._state["recent_events"].append(self._canonical_event_state(event))
             del self._state["recent_events"][:-self._max_recent_events]
             self._remember_segment(event)
@@ -665,6 +680,7 @@ class RapStateProjector:
         session_metadata = deepcopy(self._state["session_metadata"])
         device = self._state["audio"]["device"]
         recording_path = self._state["audio"]["recording_path"]
+        coordinator_epoch = self._coordinator_epoch(event.payload)
         self._segments.clear()
         self._latest_request_id = None
         self._research_metrics = _CumulativeResearchMetrics()
@@ -672,6 +688,7 @@ class RapStateProjector:
             {
                 "session_id": event.session_id,
                 "last_sequence": event.sequence,
+                "coordinator_epoch": coordinator_epoch,
                 "current_tick": None,
                 "current_playback": None,
                 "current_syllable": None,
@@ -710,3 +727,18 @@ class RapStateProjector:
                 "research_metrics": self._research_metrics.snapshot(),
             }
         )
+
+    def _is_stale_coordinator_event(self, event: RapEvent) -> bool:
+        current_epoch = self._state["coordinator_epoch"]
+        event_epoch = self._coordinator_epoch(event.payload)
+        return (
+            event.event_type in _COORDINATOR_EVENTS
+            and isinstance(current_epoch, int)
+            and event_epoch is not None
+            and event_epoch < current_epoch
+        )
+
+    @staticmethod
+    def _coordinator_epoch(payload: dict[str, Any]) -> int | None:
+        value = payload.get("coordinator_epoch")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None

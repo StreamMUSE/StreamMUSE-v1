@@ -2,14 +2,16 @@
 
 from collections import UserDict
 from threading import Event, Thread
+from time import monotonic, sleep
 from types import MappingProxyType
 
 import pytest
 
-from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
+from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
 from streammuse.application.rap.runtime import RapAudioDemoDependencies, RapDemoDependencies, RapTickLoop
-from streammuse.domain.rap import PlaybackState
+from streammuse.domain.rap import PlaybackState, RapEventType
 from streammuse.domain.timing import Tempo
+from streammuse.presentation.rap_demo.terminal_state import TerminalRapStateProjector
 
 
 class FakeClock:
@@ -325,8 +327,9 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
         def request_stop(self, *, successor_bar: int) -> None:
             calls.append(f"controller_stop_{successor_bar}")
 
-        def reset(self) -> None:
+        def reset(self) -> int:
             calls.append("controller_reset")
+            return 1
 
         def close(self) -> None:
             calls.append("controller_close")
@@ -352,9 +355,10 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
             self.state = PlaybackState.STOPPED
             self.next_start_bar = 1
 
-        def reset(self) -> None:
+        def reset(self, *, coordinator_epoch: int) -> None:
             calls.append("playback_reset")
             assert self.state == PlaybackState.STOPPED
+            assert coordinator_epoch == 1
 
         def close(self) -> None:
             calls.append("playback_close")
@@ -457,3 +461,114 @@ def test_audio_dependency_arms_playback_before_a_blocked_controller_stop(tmp_pat
         controller.release.set()
         worker.join(timeout=1.0)
     assert not worker.is_alive()
+
+
+def test_runtime_reset_ignores_blocked_old_epoch_audio_events_in_monitor_and_terminal(tmp_path) -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.epoch = 0
+
+        def reset(self) -> int:
+            self.epoch += 1
+            return self.epoch
+
+        def close(self) -> None:
+            return None
+
+    class Playback:
+        state = PlaybackState.STOPPED
+
+        def reset(self, *, coordinator_epoch: int) -> None:
+            publisher.emit(
+                RapEventType.SESSION_RESET,
+                payload={"playback_state": "stopped", "coordinator_epoch": coordinator_epoch},
+            )
+
+        def close(self) -> None:
+            self.state = PlaybackState.CLOSED
+
+    class Coordinator:
+        def close(self) -> None:
+            return None
+
+    monitor = RapStateProjector()
+    terminal = TerminalRapStateProjector()
+    received = []
+    publisher = RapEventPublisher("reset-race")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(monitor, terminal, received.append))
+    dispatcher.start()
+    release_old_worker = Event()
+    old_worker_ready = Event()
+
+    def publish_old_completion() -> None:
+        old_worker_ready.set()
+        assert release_old_worker.wait(timeout=1.0)
+        publisher.emit(
+            RapEventType.AUDIO_RENDER_COMPLETED,
+            bar=0,
+            payload={"coordinator_epoch": 0, "synthesis_latency_ms": 5.0, "render_latency_ms": 9.0},
+        )
+        publisher.emit(
+            RapEventType.PRONUNCIATION_FALLBACK,
+            bar=0,
+            payload={"coordinator_epoch": 0, "word": "stale"},
+        )
+
+    dependencies = RapAudioDemoDependencies(
+        tempo=Tempo(60.0, 4, 4),
+        controller=Controller(),
+        coordinator=Coordinator(),
+        playback=Playback(),
+        publisher=publisher,
+        dispatcher=dispatcher,
+        session_dir=tmp_path,
+    )
+    worker = Thread(target=publish_old_completion)
+    worker.start()
+    assert old_worker_ready.wait(timeout=1.0)
+    try:
+        dependencies.reset()
+        release_old_worker.set()
+        worker.join(timeout=1.0)
+        _wait_for_events(received, 3)
+
+        reset_state = monitor.snapshot()
+        assert reset_state["coordinator_epoch"] == 1
+        assert reset_state["stopped"] is True
+        assert reset_state["bars"] == {}
+        assert reset_state["audio"]["state"] == "stopped"
+        assert reset_state["audio_warnings"] == []
+        assert reset_state["latencies"]["synthesis_latency_ms"]["count"] == 0
+        assert terminal.state.stopped is True
+        assert terminal.state.bars == {}
+        assert terminal.state.audio["state"] == "stopped"
+        assert terminal.state.audio_warnings == ()
+
+        publisher.emit(
+            RapEventType.AUDIO_RENDER_COMPLETED,
+            bar=0,
+            payload={"coordinator_epoch": 1, "synthesis_latency_ms": 7.0, "render_latency_ms": 11.0},
+        )
+        publisher.emit(
+            RapEventType.PRONUNCIATION_FALLBACK,
+            bar=0,
+            payload={"coordinator_epoch": 1, "word": "current"},
+        )
+        _wait_for_events(received, 5)
+
+        current_state = monitor.snapshot()
+        assert current_state["latencies"]["synthesis_latency_ms"]["total"] == 7.0
+        assert current_state["audio_warnings"][-1]["word"] == "current"
+        assert terminal.state.audio["state"] == "rendering"
+        assert terminal.state.audio_warnings[-1]["word"] == "current"
+    finally:
+        release_old_worker.set()
+        worker.join(timeout=1.0)
+        dependencies.close()
+
+
+def _wait_for_events(events: list[object], count: int) -> None:
+    deadline = monotonic() + 1.0
+    while len(events) < count and monotonic() < deadline:
+        sleep(0.005)
+    assert len(events) >= count

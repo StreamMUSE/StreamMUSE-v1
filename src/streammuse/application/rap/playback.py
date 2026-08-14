@@ -154,7 +154,7 @@ class RapPlaybackService:
             self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
         return successor_bar
 
-    def reset(self) -> None:
+    def reset(self, *, coordinator_epoch: int | None = None) -> None:
         with self._lifecycle_dispatch_lock:
             with self._lock:
                 self._require_state(PlaybackState.STOPPED)
@@ -169,7 +169,10 @@ class RapPlaybackService:
                 self._emitted_syllables.clear()
                 self._next_start_bar = 0
                 self._sample_origin_frame = 0
-            self._emit(RapEventType.SESSION_RESET, payload={"playback_state": PlaybackState.STOPPED.value})
+            payload: dict[str, object] = {"playback_state": PlaybackState.STOPPED.value}
+            if isinstance(coordinator_epoch, int) and not isinstance(coordinator_epoch, bool):
+                payload["coordinator_epoch"] = coordinator_epoch
+            self._emit(RapEventType.SESSION_RESET, payload=payload)
         self._join(observer)
 
     def wait(self, timeout: float | None = None) -> None:

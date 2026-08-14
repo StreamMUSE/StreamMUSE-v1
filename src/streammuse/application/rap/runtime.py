@@ -239,8 +239,10 @@ class RapAudioDemoDependencies:
                 raise RuntimeError("rap audio runtime is closed")
             if self.playback.state != PlaybackState.STOPPED:
                 raise RuntimeError("rap audio runtime can reset only while stopped")
-            self.playback.reset()
-            self.controller.reset()
+            coordinator_epoch = self.controller.reset()
+            if not isinstance(coordinator_epoch, int) or isinstance(coordinator_epoch, bool):
+                raise RuntimeError("audio controller reset did not establish a coordinator epoch")
+            self.playback.reset(coordinator_epoch=coordinator_epoch)
 
     def close(self) -> None:
         """Permanently close audio, planning, publication, and recording once."""

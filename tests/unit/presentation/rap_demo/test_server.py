@@ -437,8 +437,9 @@ def test_control_endpoints_drive_the_concrete_restartable_audio_runtime(tmp_path
             assert successor_bar == 1
             self.stops += 1
 
-        def reset(self) -> None:
+        def reset(self) -> int:
             self.resets += 1
+            return self.resets
 
         def close(self) -> None:
             self.closed += 1
@@ -468,9 +469,10 @@ def test_control_endpoints_drive_the_concrete_restartable_audio_runtime(tmp_path
         def wait(self, timeout: float | None = None) -> None:
             return None
 
-        def reset(self) -> None:
+        def reset(self, *, coordinator_epoch: int) -> None:
             assert self.state == PlaybackState.STOPPED
             self.resets += 1
+            assert coordinator_epoch == self.resets
 
         def close(self) -> None:
             self.closed += 1
