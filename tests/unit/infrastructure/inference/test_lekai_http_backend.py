@@ -6,6 +6,10 @@ import numpy as np
 import pytest
 import torch
 
+from streammuse.infrastructure.inference.lekai_continuation_model.my_tokenizer import (
+    PianoMusicTokenizer,
+)
+from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
 from streammuse.infrastructure.inference.lekai_http_backend import (
     LekaiHttpBackend,
     SessionStateError,
@@ -125,21 +129,62 @@ def test_generate_rule_based_length_is_independent_of_interval():
 def test_trim_histories_keeps_recent_window_only(monkeypatch):
     monkeypatch.setenv("LEKAI_HISTORY_MAX_TICKS", "20")
     backend = LekaiHttpBackend()
-    backend._melody_history = [_note_on(60, 0), _note_on(62, 40)]
+    melody_anchor = _note_on(60, 12)
+    accompaniment_anchor = _note_on(48, 10)
+    backend._melody_history = [
+        _note_on(55, 0),
+        {"type": "note_off", "pitch": 55, "tick": 4, "velocity": 0},
+        _note_on(60, 8),
+        melody_anchor,
+        _note_on(62, 40),
+        {"type": "note_off", "pitch": 62, "tick": 42, "velocity": 0},
+        {"type": "note_off", "pitch": 60, "tick": 45, "velocity": 0},
+    ]
     backend._accompaniment_history = [
-        {"type": "note_off", "pitch": 48, "tick": 1, "velocity": 0},
-        {"type": "note_off", "pitch": 50, "tick": 41, "velocity": 0},
+        _note_on(46, 1),
+        {"type": "note_off", "pitch": 46, "tick": 2, "velocity": 0},
+        _note_on(48, 5),
+        accompaniment_anchor,
+        _note_on(50, 40),
+        {"type": "note_off", "pitch": 48, "tick": 41, "velocity": 0},
+        {"type": "note_off", "pitch": 50, "tick": 43, "velocity": 0},
     ]
     backend._accompaniment_token_history = {0: [255], 10: [169]}
     backend._accompaniment_bar_token_history = {0: [255], 10: [255]}
 
-    # max_history_ticks=20 (from env), cutoff=30 -> remove tick < 30
+    # cutoff=30: keep recent events plus one original anchor per active pitch.
     backend._trim_histories(generation_start_tick=50, generation_length_frames=10)
 
-    assert all(int(e["tick"]) >= 30 for e in backend._melody_history)
-    assert all(int(e["tick"]) >= 30 for e in backend._accompaniment_history)
+    assert backend._melody_history == [
+        melody_anchor,
+        _note_on(62, 40),
+        {"type": "note_off", "pitch": 62, "tick": 42, "velocity": 0},
+        {"type": "note_off", "pitch": 60, "tick": 45, "velocity": 0},
+    ]
+    assert backend._melody_history[0] is melody_anchor
+    assert backend._accompaniment_history == [
+        accompaniment_anchor,
+        _note_on(50, 40),
+        {"type": "note_off", "pitch": 48, "tick": 41, "velocity": 0},
+        {"type": "note_off", "pitch": 50, "tick": 43, "velocity": 0},
+    ]
+    assert backend._accompaniment_history[0] is accompaniment_anchor
+    assert backend._active_pitches_before_tick(backend._melody_history, 30) == {60}
+    assert backend._active_pitches_before_tick(
+        backend._accompaniment_history, 30
+    ) == {48}
+    assert all(event["pitch"] != 55 for event in backend._melody_history)
+    assert all(event["pitch"] != 46 for event in backend._accompaniment_history)
     assert backend._accompaniment_token_history == {10: [169]}
     assert backend._accompaniment_bar_token_history == {10: [255]}
+
+    # cutoff=50: retained note_off events close both anchors before this cutoff.
+    backend._trim_histories(generation_start_tick=70, generation_length_frames=10)
+
+    assert backend._melody_history == []
+    assert backend._accompaniment_history == []
+    assert backend._accompaniment_token_history == {}
+    assert backend._accompaniment_bar_token_history == {}
 
 
 def test_runtime_info_contract_default_stub():
@@ -202,7 +247,7 @@ def test_generate_part1_tokens_uses_acc_structural_stops(
     )
 
     generated = backend._generate_part1_tokens_from_prompt(
-        torch.tensor([257, 263, 265, 173, 255, 173, 169, 143, 6, 83, 2, 170]),
+        torch.tensor([257, 263, 265, 255, 172]),
         temperature=0.0,
         top_k=1,
         top_p=0.0,
@@ -212,17 +257,72 @@ def test_generate_part1_tokens_uses_acc_structural_stops(
     assert generated == expected
 
 
-def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
-    backend = LekaiHttpBackend()
+@pytest.mark.parametrize(
+    ("raw_tokens", "expected"),
+    [
+        ([258, 140, 170], [140, 170]),
+        ([258, 172], [169, 170]),
+        ([258, 255], [169, 170]),
+        ([258, 170], [169, 170]),
+        ([140, 255], [140, 170]),
+        ([169, 170], [169, 170]),
+    ],
+)
+def test_playable_part1_tokens_filters_pad_and_structural_stop(raw_tokens, expected):
+    assert LekaiHttpBackend._playable_part1_tokens(raw_tokens) == expected
 
+
+class _RollConverter:
+    def __init__(self, roll):
+        self.roll = roll
+
+    def events_to_pianoroll(
+        self, events, start_tick, end_tick, active_pitches=None
+    ):
+        _ = events, start_tick, end_tick, active_pitches
+        return self.roll.copy()
+
+
+@pytest.mark.parametrize("track_marker", [170, 171])
+def test_encode_empty_beat_uses_real_continuation_codec(track_marker):
+    backend = LekaiHttpBackend()
+    backend._tokenizer = PianoMusicTokenizer()
+    backend._converter = _RollConverter(np.zeros((2, 88, 4), dtype=np.float32))
+
+    tokens, active = backend._encode_beat_tokens(
+        events=[],
+        beat_start_tick=0,
+        active_pitches={48},
+        end_marker=track_marker,
+    )
+
+    assert tokens.tolist() == [169, track_marker]
+    assert active == {48}
+
+
+def test_nonempty_beat_round_trips_through_real_continuation_codec():
+    roll = np.zeros((2, 88, 4), dtype=np.float32)
+    roll[0, 0, :] = 1
+    backend = LekaiHttpBackend()
+    backend._tokenizer = PianoMusicTokenizer()
+    backend._converter = _RollConverter(roll)
+
+    tokens, _ = backend._encode_beat_tokens(
+        events=[],
+        beat_start_tick=0,
+        active_pitches=set(),
+        end_marker=170,
+    )
+    decoded = backend._decode_acc_beat_tokens(tokens.tolist())
+
+    assert tokens.tolist() == [81, 40, 170]
+    np.testing.assert_array_equal(decoded, roll)
+
+
+def _install_interleaved_test_runtime(backend, monkeypatch):
     class _DummyAdapter:
-        BAR_TOKEN = 255
-        BOS_TOKEN = 257
-        BPM_OFFSET_ID = 264
-        TIME_SIG_OFFSET_ID = 259
-        PAD_MARKER = 173
         model = object()
-        tokenizer = object()
+        tokenizer = PianoMusicTokenizer()
 
     class _DummyConverter:
         def events_to_pianoroll(
@@ -239,16 +339,98 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
 
     backend._model_adapter = _DummyAdapter()
     backend._converter = _DummyConverter()
-    backend._tokenizer = object()
+    backend._tokenizer = backend._model_adapter.tokenizer
+    monkeypatch.setenv("LEKAI_DEFAULT_BPM", "120")
+    monkeypatch.setenv("LEKAI_TIME_SIGNATURE_INDEX", "4")
+    monkeypatch.setenv("LEKAI_PROMPT_CONTEXT_BEATS", "128")
+    monkeypatch.delenv("LEKAI_MEASURE_BEATS", raising=False)
+
+    decoded_beats = []
+    monkeypatch.setattr(
+        backend,
+        "_decode_acc_beat_tokens",
+        lambda tokens: (
+            decoded_beats.append([tokens])
+            or np.zeros((2, 88, 4), dtype=np.float32)
+        ),
+    )
+    return decoded_beats
+
+
+def test_trimmed_active_anchors_preserve_sustain_in_continuation_prompt(monkeypatch):
+    backend = LekaiHttpBackend()
+    _install_interleaved_test_runtime(backend, monkeypatch)
+    backend._converter = MidiConverter(ticks_per_beat=4)
+    monkeypatch.setenv("LEKAI_HISTORY_MAX_TICKS", "20")
+    monkeypatch.setenv("LEKAI_PROMPT_CONTEXT_BEATS", "5")
+    monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
+
+    melody_anchor = _note_on(60, 4)
+    accompaniment_anchor = _note_on(48, 8)
+    backend._melody_history = [
+        melody_anchor,
+        {"type": "note_off", "pitch": 60, "tick": 44, "velocity": 0},
+    ]
+    backend._accompaniment_history = [
+        accompaniment_anchor,
+        {"type": "note_off", "pitch": 48, "tick": 44, "velocity": 0},
+    ]
+    backend._trim_histories(generation_start_tick=40, generation_length_frames=4)
+
+    assert backend._melody_history[0] is melody_anchor
+    assert backend._accompaniment_history[0] is accompaniment_anchor
+    assert all(
+        not (event["type"] == "note_on" and int(event["tick"]) == 20)
+        for event in backend._melody_history + backend._accompaniment_history
+    )
+
+    prompts = []
+    monkeypatch.setattr(
+        backend,
+        "_generate_part1_tokens_from_prompt",
+        lambda prompt_tokens, **kwargs: (
+            prompts.append(prompt_tokens.tolist()) or [169, 170]
+        ),
+    )
+
+    backend._generate_with_interleaved_prompt(
+        generation_start_tick=40,
+        generation_interval_ticks=4,
+        generation_length_frames=4,
+    )
+
+    # Sustain-only patch 40 is retained for both tracks; onset patch 67 is absent.
+    assert prompts[0][:11] == [
+        257,
+        263,
+        265,
+        255,
+        172,
+        108,
+        40,
+        170,
+        120,
+        40,
+        171,
+    ]
+    assert 67 not in prompts[0]
+    assert backend._current_generation_trace["context_start_tick"] == 20
+    assert backend._current_generation_trace[
+        "token_decode_initial_active_pitches"
+    ] == [48]
+    part0_roll = backend._current_generation_trace["part0_roll"]
+    assert part0_roll[0, 39, 0] == 1
+    assert part0_roll[1, 39, 0] == 0
+
+
+def test_interleaved_prompt_rebuilds_history_from_events_across_requests(monkeypatch):
+    backend = LekaiHttpBackend()
+    _install_interleaved_test_runtime(backend, monkeypatch)
     generation_logs = []
     monkeypatch.setattr(
         backend._logger,
         "log_generation",
         lambda **kwargs: generation_logs.append(kwargs),
-    )
-    monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.beats_to_pianoroll",
-        lambda *args, **kwargs: np.zeros((2, 88, 4), dtype=np.float32),
     )
 
     encoded_calls = []
@@ -256,9 +438,10 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
     def _encode(events, beat_start_tick, active_pitches, end_marker):
         _ = events
         encoded_calls.append((beat_start_tick, end_marker))
-        return torch.tensor([end_marker], dtype=torch.long), set(active_pitches)
+        token = (100 if end_marker == 170 else 200) + beat_start_tick // 4
+        return torch.tensor([token, end_marker], dtype=torch.long), set(active_pitches)
 
-    generated_beats = iter(([255], [169]))
+    generated_beats = iter(([140, 170], [141, 170]))
     prompts = []
 
     def _generate(prompt_tokens, **kwargs):
@@ -274,9 +457,11 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
         generation_interval_ticks=4,
         generation_length_frames=4,
     )
-    assert encoded_calls == [(0, 170), (0, 171), (4, 171)]
-    assert prompts[0][-2:] == [170, 171]
-    assert backend._accompaniment_token_history[1] == [255]
+
+    assert encoded_calls == [(0, 170), (0, 171)]
+    assert prompts[0] == [257, 263, 265, 255, 172, 100, 170, 200, 171, 172]
+    assert backend._accompaniment_token_history[1] == [140, 170]
+    assert generation_logs[0]["prompt_tokens"] == prompts[0]
     assert generation_logs[0]["diagnostics"] == {
         "context_start_tick": 0,
         "current_beat": 1,
@@ -286,9 +471,9 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
             {
                 "target_beat": 1,
                 "beat_start_tick": 4,
-                "prompt_token_count": 8,
-                "generated_tokens": [255],
-                "generated_token_count": 1,
+                "prompt_token_count": 10,
+                "generated_tokens": [140, 170],
+                "generated_token_count": 2,
                 "pianoroll_nonzero": 0,
                 "event_count": 0,
                 "note_on_count": 0,
@@ -298,6 +483,7 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
         ],
     }
 
+    backend._accompaniment_token_history[1] = [258, 99, 170]
     encoded_calls.clear()
     backend._generate_with_interleaved_prompt(
         generation_start_tick=8,
@@ -305,165 +491,278 @@ def test_interleaved_prompt_reuses_exact_tokens_across_requests(monkeypatch):
         generation_length_frames=4,
     )
 
-    assert encoded_calls == [(0, 170), (0, 171), (4, 171), (8, 171)]
-    assert prompts[1][-2:] == [255, 171]
+    assert encoded_calls == [
+        (0, 170),
+        (0, 171),
+        (4, 170),
+        (4, 171),
+    ]
+    assert prompts[1] == [
+        257,
+        263,
+        265,
+        255,
+        172,
+        100,
+        170,
+        200,
+        171,
+        172,
+        101,
+        170,
+        201,
+        171,
+        172,
+    ]
+    assert backend._accompaniment_token_history[1] == [99, 170]
+    assert 258 not in backend._accompaniment_token_history[1]
 
 
-def test_measure_boundary_slot_is_generated_in_offline_order(monkeypatch):
+def test_interleaved_prompt_matches_stable_grammar_across_bar_boundary(monkeypatch):
     backend = LekaiHttpBackend()
-
-    class _DummyAdapter:
-        BAR_TOKEN = 255
-        BOS_TOKEN = 257
-        BPM_OFFSET_ID = 264
-        TIME_SIG_OFFSET_ID = 259
-        PAD_MARKER = 173
-        model = object()
-        tokenizer = object()
-
-    class _DummyConverter:
-        def events_to_pianoroll(
-            self, events, start_tick, end_tick, active_pitches=None
-        ):
-            _ = events, active_pitches
-            return np.zeros((2, 88, end_tick - start_tick), dtype=np.float32)
-
-        def pianoroll_to_events(
-            self, pianoroll, start_tick, close_at_end=False, active_pitches=None
-        ):
-            _ = pianoroll, start_tick, close_at_end
-            return [], set(active_pitches or set())
-
-    backend._model_adapter = _DummyAdapter()
-    backend._converter = _DummyConverter()
-    backend._tokenizer = object()
-    monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
-
-    decoded_beats = []
-
-    def _decode(beats, *args, **kwargs):
-        _ = args, kwargs
-        decoded_beats.append(beats)
-        return np.zeros((2, 88, 4), dtype=np.float32)
-
+    decoded_beats = _install_interleaved_test_runtime(backend, monkeypatch)
+    backend._converter = MidiConverter(ticks_per_beat=4)
+    generation_logs = []
     monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.beats_to_pianoroll",
-        _decode,
-    )
-    monkeypatch.setattr(
-        backend,
-        "_encode_beat_tokens",
-        lambda events, beat_start_tick, active_pitches, end_marker: (
-            torch.tensor([169], dtype=torch.long),
-            set(active_pitches),
-        ),
+        backend._logger,
+        "log_generation",
+        lambda **kwargs: generation_logs.append(kwargs),
     )
 
     prompts = []
-    generated_slots = iter(
-        ([255], [258, 140, 7, 84, 63, 171])
+    generated_beats = iter(
+        ([258, 140, 170], [258, 141, 170], [258, 142, 170])
     )
 
     def _generate(prompt_tokens, **kwargs):
         _ = kwargs
         prompts.append(prompt_tokens.tolist())
-        return list(next(generated_slots))
+        return list(next(generated_beats))
 
     monkeypatch.setattr(backend, "_generate_part1_tokens_from_prompt", _generate)
+    monkeypatch.setattr(
+        backend,
+        "_submit_boundary_generation",
+        lambda *args, **kwargs: pytest.fail("boundary generation must not be submitted"),
+    )
+
+    empty_roll = np.zeros((2, 88, 4), dtype=np.float32)
+    note_roll = empty_roll.copy()
+    note_roll[0, 39, :] = 1
+    note_roll[1, 39, 0] = 1
+    decoded_rolls = iter((empty_roll, note_roll, empty_roll))
+
+    def _decode(tokens):
+        decoded_beats.append([tokens])
+        return next(decoded_rolls)
+
+    monkeypatch.setattr(backend, "_decode_acc_beat_tokens", _decode)
+
+    generated_events = backend._generate_with_interleaved_prompt(
+        generation_start_tick=12,
+        generation_interval_ticks=4,
+        generation_length_frames=12,
+    )
+
+    first_prompt = [
+        257,
+        263,
+        265,
+        255,
+        172,
+        169,
+        170,
+        169,
+        171,
+        172,
+        169,
+        170,
+        169,
+        171,
+        172,
+        169,
+        170,
+        169,
+        171,
+        172,
+    ]
+    second_prompt = first_prompt + [169, 170, 169, 171, 255, 172]
+    third_prompt = second_prompt + [120, 67, 170, 169, 171, 172]
+    assert prompts == [first_prompt, second_prompt, third_prompt]
+    assert generated_events == [
+        {"type": "note_on", "pitch": 60, "tick": 16},
+        {"type": "note_off", "pitch": 60, "tick": 20},
+    ]
+    assert 140 not in second_prompt
+    assert second_prompt[-6:-2] == [169, 170, 169, 171]
+    assert 141 not in third_prompt
+    assert third_prompt[-6:-3] == [120, 67, 170]
+    assert len(prompts) == 3
+    assert [prompt.count(172) for prompt in prompts] == [4, 5, 6]
+    assert [prompt.count(170) for prompt in prompts] == [3, 4, 5]
+    assert [prompt.count(171) for prompt in prompts] == [3, 4, 5]
+    assert all(173 not in prompt for prompt in prompts)
+    assert prompts[1][-2:] == [255, 172]
+    assert decoded_beats == [[[140, 170]], [[141, 170]], [[142, 170]]]
+    assert backend._accompaniment_token_history == {
+        3: [140, 170],
+        4: [141, 170],
+        5: [142, 170],
+    }
+    assert all(
+        258 not in tokens for tokens in backend._accompaniment_token_history.values()
+    )
+    assert backend._accompaniment_bar_token_history == {}
+    assert backend._pending_boundary_generations == {}
+    assert backend._current_generation_trace["raw_tokens"] == [
+        258,
+        140,
+        170,
+        258,
+        141,
+        170,
+        258,
+        142,
+        170,
+    ]
+    assert backend._current_generation_trace["token_decode_beats"] == [
+        {
+            "target_beat": 3,
+            "start_tick": 12,
+            "raw_tokens": [258, 140, 170],
+            "boundary_tokens": [],
+        },
+        {
+            "target_beat": 4,
+            "start_tick": 16,
+            "raw_tokens": [258, 141, 170],
+            "boundary_tokens": [],
+        },
+        {
+            "target_beat": 5,
+            "start_tick": 20,
+            "raw_tokens": [258, 142, 170],
+            "boundary_tokens": [],
+        },
+    ]
+    assert backend._current_generation_trace["prompt_tokens"] == prompts[-1]
+    assert backend._current_generation_trace["part0_tokens"] == [169, 171] * 5
+    assert generation_logs[0]["prompt_tokens"] == prompts[-1]
+    assert backend._current_generation_trace["structural_tokens"] == []
+
+
+@pytest.mark.parametrize(
+    ("time_signature_idx", "expected_beats"),
+    [(0, 4), (1, 3), (2, 2), (3, 3), (4, 4), (6, 6), (9, 4), (99, 4)],
+)
+def test_measure_beats_matches_stable_time_signature_mapping(
+    monkeypatch, time_signature_idx, expected_beats
+):
+    monkeypatch.delenv("LEKAI_MEASURE_BEATS", raising=False)
+    backend = LekaiHttpBackend()
+
+    assert (
+        backend._measure_beats_from_time_signature_idx(time_signature_idx)
+        == expected_beats
+    )
+
+
+def test_measure_override_controls_bars_from_context_window_start(monkeypatch):
+    backend = LekaiHttpBackend()
+    _install_interleaved_test_runtime(backend, monkeypatch)
+    monkeypatch.setenv("LEKAI_PROMPT_CONTEXT_BEATS", "3")
+    monkeypatch.setenv("LEKAI_MEASURE_BEATS", "3")
+    monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
+
+    def _encode(events, beat_start_tick, active_pitches, end_marker):
+        _ = events
+        token = (100 if end_marker == 170 else 200) + beat_start_tick // 4
+        return torch.tensor([token, end_marker], dtype=torch.long), set(active_pitches)
+
+    prompts = []
+    monkeypatch.setattr(backend, "_encode_beat_tokens", _encode)
+    monkeypatch.setattr(
+        backend,
+        "_generate_part1_tokens_from_prompt",
+        lambda prompt_tokens, **kwargs: (
+            prompts.append(prompt_tokens.tolist()) or [150, 170]
+        ),
+    )
 
     backend._generate_with_interleaved_prompt(
-        generation_start_tick=16,
+        generation_start_tick=28,
         generation_interval_ticks=4,
         generation_length_frames=4,
     )
 
-    assert len(prompts) == 2
-    assert prompts[1][-2:] == [255, 255]
-    assert backend._accompaniment_token_history[4] == [255]
-    assert backend._accompaniment_bar_token_history[4] == [258, 140, 7, 84, 63, 171]
-    assert decoded_beats == [[[140, 7, 84, 63, 171]]]
+    assert prompts == [
+        [
+            257,
+            263,
+            265,
+            255,
+            172,
+            104,
+            170,
+            204,
+            171,
+            172,
+            105,
+            170,
+            205,
+            171,
+            255,
+            172,
+            106,
+            170,
+            206,
+            171,
+            172,
+        ]
+    ]
+    assert backend._current_generation_trace["context_start_tick"] == 16
 
 
-def test_non_bar_boundary_slot_is_played_while_structure_runs_deferred(monkeypatch):
+def test_target_active_pitches_are_derived_from_event_history(monkeypatch):
     backend = LekaiHttpBackend()
-
-    class _DummyAdapter:
-        BAR_TOKEN = 255
-        BOS_TOKEN = 257
-        BPM_OFFSET_ID = 264
-        TIME_SIG_OFFSET_ID = 259
-        PAD_MARKER = 173
-        model = object()
-        tokenizer = object()
-
-    class _DummyConverter:
-        def events_to_pianoroll(
-            self, events, start_tick, end_tick, active_pitches=None
-        ):
-            _ = events, active_pitches
-            return np.zeros((2, 88, end_tick - start_tick), dtype=np.float32)
-
-        def pianoroll_to_events(
-            self, pianoroll, start_tick, close_at_end=False, active_pitches=None
-        ):
-            _ = pianoroll, start_tick, close_at_end
-            return [], set(active_pitches or set())
-
-    backend._model_adapter = _DummyAdapter()
-    backend._converter = _DummyConverter()
-    backend._tokenizer = object()
+    _install_interleaved_test_runtime(backend, monkeypatch)
     monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
+    backend._accompaniment_history = [_note_on(48, 0)]
+    backend._active_pitches = {99}
+
     monkeypatch.setattr(
         backend,
         "_encode_beat_tokens",
         lambda events, beat_start_tick, active_pitches, end_marker: (
-            torch.tensor([169], dtype=torch.long),
+            torch.tensor([169, end_marker], dtype=torch.long),
             set(active_pitches),
         ),
     )
-
-    decoded_beats = []
-    monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.beats_to_pianoroll",
-        lambda beats, *args, **kwargs: (
-            decoded_beats.append(beats)
-            or np.zeros((2, 88, 4), dtype=np.float32)
-        ),
-    )
-    generated = [140, 7, 84, 63, 171]
     monkeypatch.setattr(
         backend,
         "_generate_part1_tokens_from_prompt",
-        lambda prompt_tokens, **kwargs: list(generated),
+        lambda prompt_tokens, **kwargs: [169, 170],
     )
+    active_snapshots = []
 
-    submitted_prompts = []
+    def _convert(pianoroll, start_tick, close_at_end=False, active_pitches=None):
+        _ = pianoroll, start_tick, close_at_end
+        active_snapshots.append(set(active_pitches or set()))
+        return [], set(active_pitches or set())
 
-    def _submit(beat, prompt_tokens, **kwargs):
-        _ = kwargs
-        submitted_prompts.append((beat, prompt_tokens.tolist()))
-        future = Future()
-        future.set_result([169])
-        backend._pending_boundary_generations[beat] = future
-
-    monkeypatch.setattr(backend, "_submit_boundary_generation", _submit)
+    monkeypatch.setattr(backend._converter, "pianoroll_to_events", _convert)
 
     backend._generate_with_interleaved_prompt(
-        generation_start_tick=16,
+        generation_start_tick=8,
         generation_interval_ticks=4,
         generation_length_frames=4,
     )
 
-    assert decoded_beats == [[generated]]
-    assert submitted_prompts[0][0] == 4
-    assert submitted_prompts[0][1][-1] == 255
-    assert backend._accompaniment_token_history[4] == generated
-    assert 4 not in backend._accompaniment_bar_token_history
-
-    backend._resolve_pending_boundary_generations(through_beat=4)
-
-    assert backend._accompaniment_bar_token_history[4] == [169]
-    assert backend._pending_boundary_generations == {}
+    assert active_snapshots == [{48}]
+    assert backend._active_pitches == {48}
+    assert backend._current_generation_trace[
+        "token_decode_initial_active_pitches"
+    ] == [48]
 
 
 def test_generate_respects_generation_length_cap(monkeypatch):
@@ -494,6 +793,8 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
     monkeypatch.setenv("LEKAI_DTYPE", "auto")
     monkeypatch.setenv("LEKAI_ENABLE_MPS_FALLBACK", "true")
     monkeypatch.setenv("LEKAI_WARMUP_STEPS", "1")
+    monkeypatch.setenv("LEKAI_DEFAULT_BPM", "120")
+    monkeypatch.setenv("LEKAI_TIME_SIGNATURE_INDEX", "4")
     monkeypatch.setattr(
         "streammuse.infrastructure.inference.lekai_http_backend.resolve_device",
         lambda preference: "mps" if preference == "mps" else "cpu",
@@ -504,31 +805,45 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
     )
 
     calls: list[str] = []
+    adapters = []
+    warmup_calls = []
 
     class _DummyAdapter:
-        BAR_TOKEN = 255
+        def __init__(self):
+            self.tokenizer = PianoMusicTokenizer()
 
-        def generate_from_beats(self, *args, **kwargs):
-            return [[169]]
-
-    def _fake_from_checkpoint(checkpoint_path: str, device: str, dtype=None, use_cache: bool = True):
+    def _fake_from_checkpoint(
+        checkpoint_path: str,
+        device: str,
+        dtype=None,
+        use_cache: bool = True,
+    ):
         _ = checkpoint_path, dtype, use_cache
         calls.append(device)
         if device == "mps":
             raise RuntimeError("mps unsupported op")
-        return _DummyAdapter()
+        adapter = _DummyAdapter()
+        adapters.append(adapter)
+        return adapter
 
     monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.inference_adapter.PianoLLaMAAdapter.from_checkpoint",
+        "streammuse.infrastructure.inference.lekai_continuation_model.inference_adapter.PianoContinuationAdapter.from_checkpoint",
         _fake_from_checkpoint,
     )
     monkeypatch.setattr(
         "streammuse.infrastructure.inference.lekai_model.MidiConverter.MidiConverter",
         lambda ticks_per_beat: object(),
     )
+
+    def _warmup_generate(self, prompt_tokens, **kwargs):
+        _ = self
+        warmup_calls.append((prompt_tokens.tolist(), kwargs))
+        return [170]
+
     monkeypatch.setattr(
-        "streammuse.infrastructure.inference.lekai_model.my_tokenizer.PianoRollTokenizer",
-        lambda patch_h, patch_w: object(),
+        LekaiHttpBackend,
+        "_generate_part1_tokens_from_prompt",
+        _warmup_generate,
     )
 
     backend = LekaiHttpBackend()
@@ -539,6 +854,18 @@ def test_load_model_mps_failure_falls_back_to_cpu(monkeypatch, tmp_path):
     assert info["mode"] == "real_model"
     assert info["resolved_device"] == "cpu"
     assert str(info["fallback_reason"]).startswith("mps_load_failed:")
+    assert backend._tokenizer is adapters[0].tokenizer
+    assert warmup_calls == [
+        (
+            [257, 263, 265, 255, 172],
+            {
+                "temperature": 0.8,
+                "top_k": 20,
+                "top_p": 0.9,
+                "repetition_penalty": 1.0,
+            },
+        )
+    ]
 
 
 def test_generate_zero_prompt_window_with_model_path_falls_back_without_error():
@@ -734,7 +1061,10 @@ def test_generation_metadata_keeps_full_input_digest_after_prompt_history_trim(m
     metadata_rows = []
 
     increments = [
-        [_note_on(60, 0)],
+        [
+            _note_on(60, 0),
+            {"type": "note_off", "pitch": 60, "tick": 1, "velocity": 0},
+        ],
         [_note_on(62, 16)],
         [_note_on(64, 20)],
     ]

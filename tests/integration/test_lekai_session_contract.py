@@ -171,5 +171,12 @@ def test_service_client_server_metadata_contract_survives_backend_history_trim(
     assert third_metadata["input_cumulative_digest"] == lifecycle_requests[-1].input_cumulative_digest
     assert third_metadata["input_increment_digest"] == lifecycle_requests[-1].input_increment_digest
     assert third_metadata["part0_roll_digest"] != third_metadata["input_cumulative_digest"]
-    assert all(int(event["tick"]) >= 20 for event in backend._melody_history)
+    assert [
+        (int(event["pitch"]), int(event["tick"]))
+        for event in backend._melody_history
+    ] == [(60, 0), (62, 16), (64, 20)]
+    assert backend._active_pitches_before_tick(backend._melody_history, 20) == {
+        60,
+        62,
+    }
     assert len(backend._input_digest_history) == 3

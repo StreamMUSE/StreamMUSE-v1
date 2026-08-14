@@ -35,6 +35,15 @@ TIMESTEPS_PER_BEAT = 4
 DEFAULT_PROMPT_CONTEXT_BEATS = 128
 DEFAULT_HISTORY_MAX_TICKS = DEFAULT_PROMPT_CONTEXT_BEATS * TIMESTEPS_PER_BEAT
 
+# Stable continuation vocabulary used by the acc-first checkpoint.
+LEKAI_EMPTY_TOKEN = 169
+LEKAI_ACC_END_TOKEN = 170
+LEKAI_MEL_END_TOKEN = 171
+LEKAI_BEAT_TOKEN = 172
+LEKAI_BAR_TOKEN = 255
+LEKAI_BOS_TOKEN = 257
+LEKAI_PAD_TOKEN = 258
+
 
 def decode_part1_token_trace(
     beat_records: Sequence[Mapping[str, Any]],
@@ -51,14 +60,11 @@ def decode_part1_token_trace(
     from streammuse.infrastructure.inference.lekai_model.MidiConverter import (
         MidiConverter,
     )
-    from streammuse.infrastructure.inference.lekai_model.inference_adapter import (
-        beats_to_pianoroll,
-    )
-    from streammuse.infrastructure.inference.lekai_model.my_tokenizer import (
-        PianoRollTokenizer,
+    from streammuse.infrastructure.inference.lekai_continuation_model.my_tokenizer import (
+        PianoMusicTokenizer,
     )
 
-    tokenizer = PianoRollTokenizer(patch_h=1, patch_w=4)
+    tokenizer = PianoMusicTokenizer()
     converter = MidiConverter(ticks_per_beat=TIMESTEPS_PER_BEAT)
     active = {int(pitch) for pitch in initial_active_pitches}
     decoded: List[EventPayload] = []
@@ -84,13 +90,22 @@ def decode_part1_token_trace(
         if previous_start is not None and start_tick != previous_start + TIMESTEPS_PER_BEAT:
             raise ValueError("token-decode beat starts are not contiguous")
         previous_start = start_tick
-        playable_raw = [token for token in raw if token != 258]
-        playback_source = boundary if playable_raw == [255] and boundary else raw
-        playable = [token for token in playback_source if token != 258]
-        pianoroll = beats_to_pianoroll(
+        playable_raw = [token for token in raw if token != LEKAI_PAD_TOKEN]
+        playback_source = (
+            boundary
+            if playable_raw == [LEKAI_BAR_TOKEN] and boundary
+            else raw
+        )
+        playable = [token for token in playback_source if token != LEKAI_PAD_TOKEN]
+        if playable and playable[-1] in {LEKAI_BAR_TOKEN, LEKAI_BEAT_TOKEN}:
+            playable.pop()
+        if not playable or playable in ([LEKAI_EMPTY_TOKEN], [LEKAI_ACC_END_TOKEN]):
+            playable = [LEKAI_EMPTY_TOKEN, LEKAI_ACC_END_TOKEN]
+        elif playable[-1] != LEKAI_ACC_END_TOKEN:
+            playable.append(LEKAI_ACC_END_TOKEN)
+        pianoroll = tokenizer.decode_beats_to_pianoroll(
             [playable],
-            tokenizer=tokenizer,
-            timesteps_per_beat=TIMESTEPS_PER_BEAT,
+            track_marker_id=LEKAI_ACC_END_TOKEN,
         )
         if tuple(int(value) for value in pianoroll.shape) != (2, 88, TIMESTEPS_PER_BEAT):
             raise ValueError(f"token-decode beat {index} has invalid pianoroll shape")
@@ -270,6 +285,21 @@ class LekaiHttpBackend:
         value = int(raw)
         return value if value > 0 else None
 
+    def _measure_beats_from_time_signature_idx(self, time_signature_idx: int) -> int:
+        override = self._env_positive_int("LEKAI_MEASURE_BEATS")
+        if override is not None:
+            return override
+        if time_signature_idx == 9:
+            time_signature_idx = 4
+        return {
+            0: 4,
+            1: 3,
+            2: 2,
+            3: 3,
+            4: 4,
+            6: 6,
+        }.get(time_signature_idx, 4)
+
     def _runtime_bool(self, name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
 
@@ -278,6 +308,26 @@ class LekaiHttpBackend:
             self._env_positive_int("LEKAI_PROMPT_CONTEXT_BEATS")
             or DEFAULT_PROMPT_CONTEXT_BEATS
         )
+
+    def _continuation_initial_tokens(
+        self,
+        *,
+        bpm: int,
+        time_signature_idx: int,
+    ) -> List[int]:
+        if self._tokenizer is None:
+            raise RuntimeError("Continuation tokenizer is not loaded.")
+        encode_time_sig = getattr(self._tokenizer, "encode_time_sig", None)
+        encode_bpm = getattr(self._tokenizer, "encode_bpm", None)
+        if not callable(encode_time_sig) or not callable(encode_bpm):
+            raise RuntimeError(
+                "Continuation tokenizer must expose encode_time_sig() and encode_bpm()."
+            )
+        return [
+            LEKAI_BOS_TOKEN,
+            int(encode_time_sig(int(time_signature_idx))),
+            int(encode_bpm(int(bpm))),
+        ]
 
     def _set_stub_mode(self, *, checkpoint_path: Optional[str], fallback_reason: Optional[str]) -> None:
         self._model_adapter = None
@@ -295,18 +345,26 @@ class LekaiHttpBackend:
         self._runtime_status.warmup_time_ms = None
 
     def _warmup_model(self, warmup_steps: int) -> float:
-        assert self._model_adapter is not None
+        assert self._model_adapter is not None and self._tokenizer is not None
         warmup_start = time.perf_counter()
-        part0 = [torch.tensor([self._model_adapter.BAR_TOKEN], dtype=torch.long)]
-        _ = self._model_adapter.generate_from_beats(
-            part0_beats=part0,
-            num_beats_to_generate=max(1, int(warmup_steps)),
-            bpm=int(os.environ.get("LEKAI_DEFAULT_BPM", "120")),
-            temperature=0.8,
-            top_k=20,
-            top_p=0.9,
-            verbose=False,
+        prompt = torch.tensor(
+            self._continuation_initial_tokens(
+                bpm=int(os.environ.get("LEKAI_DEFAULT_BPM", "120")),
+                time_signature_idx=int(
+                    os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4")
+                ),
+            )
+            + [LEKAI_BAR_TOKEN, LEKAI_BEAT_TOKEN],
+            dtype=torch.long,
         )
+        for _ in range(max(1, int(warmup_steps))):
+            self._generate_part1_tokens_from_prompt(
+                prompt,
+                temperature=0.8,
+                top_k=20,
+                top_p=0.9,
+                repetition_penalty=1.0,
+            )
         return (time.perf_counter() - warmup_start) * 1000
 
     def _load_model_once(
@@ -318,20 +376,34 @@ class LekaiHttpBackend:
         use_cache: bool,
         warmup_steps: int,
     ) -> tuple[float, float]:
+        from streammuse.infrastructure.inference.lekai_continuation_model.inference_adapter import (
+            PianoContinuationAdapter,
+        )
         from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
-        from streammuse.infrastructure.inference.lekai_model.inference_adapter import PianoLLaMAAdapter
-        from streammuse.infrastructure.inference.lekai_model.my_tokenizer import PianoRollTokenizer
 
         load_start = time.perf_counter()
-        self._model_adapter = PianoLLaMAAdapter.from_checkpoint(
+        self._model_adapter = PianoContinuationAdapter.from_checkpoint(
             checkpoint_path,
             device=device,
             dtype=dtype,
             use_cache=use_cache,
         )
         self._converter = MidiConverter(ticks_per_beat=4)
-        self._tokenizer = PianoRollTokenizer(patch_h=1, patch_w=4)
+        self._tokenizer = self._model_adapter.tokenizer
+        codec = getattr(self._tokenizer, "_codec", None)
+        required_apis = (
+            getattr(codec, "image_to_patch_tokens", None),
+            getattr(self._tokenizer, "compress_tokens", None),
+            getattr(self._tokenizer, "decode_beats_to_pianoroll", None),
+            getattr(self._tokenizer, "encode_time_sig", None),
+            getattr(self._tokenizer, "encode_bpm", None),
+        )
+        if not all(callable(api) for api in required_apis):
+            raise RuntimeError(
+                "Loaded adapter does not expose the continuation tokenizer API."
+            )
         load_time_ms = (time.perf_counter() - load_start) * 1000
+        self._sample_generator = self._make_generator(self._effective_seed, device)
         warmup_time_ms = self._warmup_model(warmup_steps)
         return load_time_ms, warmup_time_ms
 
@@ -606,6 +678,33 @@ class LekaiHttpBackend:
                 active.discard(pitch)
         return active
 
+    def _trim_event_history(
+        self,
+        events: List[EventPayload],
+        cutoff_tick: int,
+    ) -> List[EventPayload]:
+        active_anchors: Dict[int, EventPayload] = {}
+        recent_events: List[EventPayload] = []
+
+        for event in sorted(events, key=self._event_sort_key):
+            if int(event.get("tick", 0)) >= cutoff_tick:
+                recent_events.append(event)
+                continue
+            if "pitch" not in event:
+                continue
+            pitch = int(event["pitch"])
+            if not 0 <= pitch <= 127:
+                continue
+            event_type = str(event.get("type", ""))
+            if event_type == "note_on":
+                active_anchors[pitch] = event
+            elif event_type == "note_off":
+                active_anchors.pop(pitch, None)
+
+        retained = [*active_anchors.values(), *recent_events]
+        retained.sort(key=self._event_sort_key)
+        return retained
+
     def _advance_active_pitches(
         self,
         events: List[EventPayload],
@@ -650,8 +749,16 @@ class LekaiHttpBackend:
             active_pitches=active_pitches,
         )
 
-        tokens_matrix = self._tokenizer.image_to_patch_tokens(beat_pr, strict_mode=True)
-        compressed = self._tokenizer.compress_tokens(tokens_matrix, end_marker=end_marker)
+        codec = getattr(self._tokenizer, "_codec", None)
+        image_to_patch_tokens = getattr(codec, "image_to_patch_tokens", None)
+        compress_tokens = getattr(self._tokenizer, "compress_tokens", None)
+        if not callable(image_to_patch_tokens) or not callable(compress_tokens):
+            raise RuntimeError(
+                "Continuation tokenizer must expose _codec.image_to_patch_tokens() "
+                "and compress_tokens()."
+            )
+        tokens_matrix = image_to_patch_tokens(beat_pr, strict_mode=True)
+        compressed = compress_tokens(tokens_matrix, track_marker=int(end_marker))
 
         next_active = self._advance_active_pitches(
             events=events,
@@ -679,10 +786,6 @@ class LekaiHttpBackend:
 
         device = str(getattr(self._model_adapter, "device", "cpu"))
         use_cache = bool(getattr(self._model_adapter, "use_cache", True))
-        part1_end_marker = 170
-        part1_empty_marker = 169
-        beat_token = 172
-        bar_token = int(getattr(self._model_adapter, "BAR_TOKEN", 255))
 
         generated = prompt_tokens.unsqueeze(0).to(device)
         raw_tokens: List[int] = []
@@ -712,15 +815,47 @@ class LekaiHttpBackend:
                 generated = torch.cat([generated, next_token], dim=1)
                 raw_tokens.append(token_val)
 
-                if token_val in {part1_end_marker, beat_token, bar_token}:
+                if token_val in {
+                    LEKAI_ACC_END_TOKEN,
+                    LEKAI_BEAT_TOKEN,
+                    LEKAI_BAR_TOKEN,
+                }:
                     break
 
-        return raw_tokens or [part1_empty_marker]
+        return raw_tokens
 
     @staticmethod
     def _playable_part1_tokens(raw_tokens: List[int]) -> List[int]:
-        playable = [token for token in raw_tokens if token != 258]
-        return playable or [169]
+        playable = [token for token in raw_tokens if token != LEKAI_PAD_TOKEN]
+        if playable and playable[-1] in {LEKAI_BAR_TOKEN, LEKAI_BEAT_TOKEN}:
+            playable.pop()
+        if not playable or playable in ([LEKAI_EMPTY_TOKEN], [LEKAI_ACC_END_TOKEN]):
+            return [LEKAI_EMPTY_TOKEN, LEKAI_ACC_END_TOKEN]
+        if playable[-1] != LEKAI_ACC_END_TOKEN:
+            playable.append(LEKAI_ACC_END_TOKEN)
+        return playable
+
+    def _decode_acc_beat_tokens(self, beat_tokens: List[int]) -> np.ndarray:
+        if self._tokenizer is None:
+            raise RuntimeError("Continuation tokenizer is not loaded.")
+        decode_beats = getattr(self._tokenizer, "decode_beats_to_pianoroll", None)
+        if not callable(decode_beats):
+            raise RuntimeError(
+                "Continuation tokenizer must expose decode_beats_to_pianoroll()."
+            )
+        pianoroll = decode_beats(
+            [beat_tokens],
+            track_marker_id=LEKAI_ACC_END_TOKEN,
+        )
+        if pianoroll.shape[2] < TIMESTEPS_PER_BEAT:
+            pianoroll = np.pad(
+                pianoroll,
+                ((0, 0), (0, 0), (0, TIMESTEPS_PER_BEAT - pianoroll.shape[2])),
+                mode="constant",
+            )
+        elif pianoroll.shape[2] > TIMESTEPS_PER_BEAT:
+            pianoroll = pianoroll[:, :, :TIMESTEPS_PER_BEAT]
+        return pianoroll
 
     def _submit_boundary_generation(
         self,
@@ -780,12 +915,12 @@ class LekaiHttpBackend:
         part0_tokens: List[int] = []
         token_decode_beats: List[Dict[str, Any]] = []
         self._current_generation_trace = {}
-
-        from streammuse.infrastructure.inference.lekai_model.PianoDataset import encode_bpm
-        from streammuse.infrastructure.inference.lekai_model.inference_adapter import beats_to_pianoroll
+        self._accompaniment_token_history = {
+            beat: self._playable_part1_tokens(tokens)
+            for beat, tokens in self._accompaniment_token_history.items()
+        }
 
         current_beat = int(generation_start_tick) // TIMESTEPS_PER_BEAT
-        self._resolve_pending_boundary_generations(through_beat=current_beat)
         num_beats_to_generate = max(1, int(generation_length_frames) // TIMESTEPS_PER_BEAT)
         if int(generation_length_frames) % TIMESTEPS_PER_BEAT != 0:
             num_beats_to_generate += 1
@@ -795,84 +930,79 @@ class LekaiHttpBackend:
         context_start_tick = start_beat * TIMESTEPS_PER_BEAT
 
         effective_bpm = self._request_bpm if self._request_bpm is not None else int(os.environ.get("LEKAI_DEFAULT_BPM", "120"))
-        bpm_token = encode_bpm(effective_bpm) + int(
-            getattr(self._model_adapter, "BPM_OFFSET_ID", 5)
-        )
         time_signature_idx = int(os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4"))
-        time_sig_token = time_signature_idx + int(getattr(self._model_adapter, "TIME_SIG_OFFSET_ID", 0))
+        measure_beats = self._measure_beats_from_time_signature_idx(
+            time_signature_idx
+        )
 
-        bar_token = int(getattr(self._model_adapter, "BAR_TOKEN", 255))
-        bos_token = int(getattr(self._model_adapter, "BOS_TOKEN", 1))
-        pad_token = int(getattr(self._model_adapter, "PAD_MARKER", 173))
-
-        # Initial sequence matches the current offline delay_beats=-1 loop:
-        # [BOS, ts, bpm, part0_pad, generated_primer_BAR, part0_pad, acc_0, ...].
-        # The offline loop consumes two leading part0 positions as PAD slots.
-        seq: List[torch.Tensor] = [
-            torch.tensor([bos_token], dtype=torch.long),
-            torch.tensor([time_sig_token], dtype=torch.long),
-            torch.tensor([bpm_token], dtype=torch.long),
-            torch.tensor([pad_token], dtype=torch.long),
-        ]
+        initial_tokens = self._continuation_initial_tokens(
+            bpm=effective_bpm,
+            time_signature_idx=time_signature_idx,
+        )
 
         # Filter out any stale virtual events inserted by earlier debug code (tick < 0).
         real_accompaniment_history = [
             e for e in self._accompaniment_history if int(e.get("tick", 0)) >= 0
         ]
 
-        melody_active = self._active_pitches_before_tick(self._melody_history, context_start_tick)
         accompaniment_context_events: List[EventPayload] = list(real_accompaniment_history)
-        accompaniment_active = self._active_pitches_before_tick(accompaniment_context_events, context_start_tick)
 
-        # Rebuild the exact offline delay_beats=-1 order. Beat 0 has the
-        # generated acc_{-1} BAR and the second dummy PAD. At later measure
-        # boundaries, the part0 BAR and its generated part1 structural slot
-        # occur after that boundary beat accompaniment and before its melody.
-        for beat in range(start_beat, current_beat):
-            if beat == 0:
-                seq.append(torch.tensor([bar_token], dtype=torch.long))
-                seq.append(torch.tensor([pad_token], dtype=torch.long))
+        def build_standard_offline_prompt(
+            target_beat: int,
+        ) -> Tuple[torch.Tensor, List[int]]:
+            seq: List[torch.Tensor] = [
+                torch.tensor(initial_tokens, dtype=torch.long)
+            ]
+            prompt_part0_tokens: List[int] = []
+            melody_active = self._active_pitches_before_tick(
+                self._melody_history, context_start_tick
+            )
+            accompaniment_active = self._active_pitches_before_tick(
+                accompaniment_context_events, context_start_tick
+            )
 
-            beat_start_tick = beat * TIMESTEPS_PER_BEAT
+            # Re-encode every completed beat from event history. This keeps
+            # prompts consistent across request boundaries and within a
+            # multi-beat request.
+            for beat in range(start_beat, target_beat):
+                if beat == start_beat or beat % measure_beats == 0:
+                    seq.append(torch.tensor([LEKAI_BAR_TOKEN], dtype=torch.long))
+                seq.append(torch.tensor([LEKAI_BEAT_TOKEN], dtype=torch.long))
 
-            generated_history_tokens = self._accompaniment_token_history.get(beat)
-            if generated_history_tokens is None:
+                beat_start_tick = beat * TIMESTEPS_PER_BEAT
                 acc_tokens, accompaniment_active = self._encode_beat_tokens(
                     events=accompaniment_context_events,
                     beat_start_tick=beat_start_tick,
                     active_pitches=accompaniment_active,
-                    end_marker=170,
+                    end_marker=LEKAI_ACC_END_TOKEN,
                 )
-            else:
-                acc_tokens = torch.tensor(generated_history_tokens, dtype=torch.long)
-                accompaniment_active = self._advance_active_pitches(
-                    events=accompaniment_context_events,
-                    start_tick=beat_start_tick,
-                    end_tick=beat_start_tick + TIMESTEPS_PER_BEAT,
-                    active_pitches=accompaniment_active,
-                )
-            seq.append(acc_tokens)
+                seq.append(acc_tokens)
 
-            if beat > 0 and beat % 4 == 0:
-                seq.append(torch.tensor([bar_token], dtype=torch.long))
-                boundary_tokens = self._accompaniment_bar_token_history.get(
-                    beat, [bar_token]
+                mel_tokens, melody_active = self._encode_beat_tokens(
+                    events=self._melody_history,
+                    beat_start_tick=beat_start_tick,
+                    active_pitches=melody_active,
+                    end_marker=LEKAI_MEL_END_TOKEN,
                 )
-                seq.append(torch.tensor(boundary_tokens, dtype=torch.long))
+                prompt_part0_tokens.extend(
+                    int(token) for token in mel_tokens.tolist()
+                )
+                seq.append(mel_tokens)
 
-            mel_tokens, melody_active = self._encode_beat_tokens(
-                events=self._melody_history,
-                beat_start_tick=beat_start_tick,
-                active_pitches=melody_active,
-                end_marker=171,
-            )
-            part0_tokens.extend(int(token) for token in mel_tokens.tolist())
-            seq.append(mel_tokens)
+            if target_beat == start_beat or target_beat % measure_beats == 0:
+                seq.append(torch.tensor([LEKAI_BAR_TOKEN], dtype=torch.long))
+            seq.append(torch.tensor([LEKAI_BEAT_TOKEN], dtype=torch.long))
+            return torch.cat(seq, dim=0), prompt_part0_tokens
 
         generated_events: List[EventPayload] = []
-        running_active = set(self._active_pitches)
-        token_decode_initial_active_pitches = sorted(running_active)
+        token_decode_initial_active_pitches = sorted(
+            self._active_pitches_before_tick(
+                accompaniment_context_events,
+                current_beat * TIMESTEPS_PER_BEAT,
+            )
+        )
         beat_diagnostics: List[Dict[str, Any]] = []
+        last_prompt_tokens: List[int] = []
 
         try:
             rt_temperature = float(os.environ.get("LEKAI_RT_TEMPERATURE", "0.8"))
@@ -895,91 +1025,26 @@ class LekaiHttpBackend:
             target_beat = current_beat + beat_offset
             beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
 
-            if target_beat == 0:
-                seq.append(torch.tensor([bar_token], dtype=torch.long))
-                seq.append(torch.tensor([pad_token], dtype=torch.long))
-
-            # Generate ACC directly — do NOT inject mel[target_beat] first.
-            # At measure boundaries, the first slot may be either the playable
-            # beat or a structural BAR. Only the latter requires the post-BAR
-            # slot before this response can be returned.
-            prompt_tokens = torch.cat(seq, dim=0)
-            generated_beat_tokens = self._generate_part1_tokens_from_prompt(
+            prompt_tokens, part0_tokens = build_standard_offline_prompt(target_beat)
+            last_prompt_tokens = [int(token) for token in prompt_tokens.tolist()]
+            raw_generated_tokens = self._generate_part1_tokens_from_prompt(
                 prompt_tokens,
                 temperature=rt_temperature,
                 top_k=rt_top_k,
                 top_p=rt_top_p,
                 repetition_penalty=rt_repetition_penalty,
             )
-            raw_response_tokens.extend(int(token) for token in generated_beat_tokens)
-            boundary_tokens: Optional[List[int]] = None
-            boundary_pending = False
-            if target_beat > 0 and target_beat % 4 == 0:
-                boundary_prompt_tokens = torch.cat(
-                    seq
-                    + [
-                        torch.tensor(generated_beat_tokens, dtype=torch.long),
-                        torch.tensor([bar_token], dtype=torch.long),
-                    ],
-                    dim=0,
-                )
-                generated_is_bar = (
-                    self._playable_part1_tokens(generated_beat_tokens) == [bar_token]
-                )
-                has_following_beat = beat_offset + 1 < num_beats_to_generate
-                if generated_is_bar or has_following_beat:
-                    boundary_tokens = self._generate_part1_tokens_from_prompt(
-                        boundary_prompt_tokens,
-                        temperature=rt_temperature,
-                        top_k=rt_top_k,
-                        top_p=rt_top_p,
-                        repetition_penalty=rt_repetition_penalty,
-                    )
-                    structural_tokens.extend(int(token) for token in boundary_tokens)
-                elif self._runtime_bool("LEKAI_DETERMINISTIC_BOUNDARY_GENERATION", False):
-                    boundary_tokens = self._generate_part1_tokens_from_prompt(
-                        boundary_prompt_tokens,
-                        temperature=rt_temperature,
-                        top_k=rt_top_k,
-                        top_p=rt_top_p,
-                        repetition_penalty=rt_repetition_penalty,
-                    )
-                    structural_tokens.extend(int(token) for token in boundary_tokens)
-                else:
-                    self._submit_boundary_generation(
-                        target_beat,
-                        boundary_prompt_tokens,
-                        temperature=rt_temperature,
-                        top_k=rt_top_k,
-                        top_p=rt_top_p,
-                        repetition_penalty=rt_repetition_penalty,
-                    )
-                    boundary_pending = True
-
-            playback_source_tokens = generated_beat_tokens
-            if (
-                boundary_tokens is not None
-                and self._playable_part1_tokens(generated_beat_tokens) == [bar_token]
-            ):
-                playback_source_tokens = boundary_tokens
-            playable_beat_tokens = self._playable_part1_tokens(playback_source_tokens)
+            playable_beat_tokens = self._playable_part1_tokens(raw_generated_tokens)
+            raw_response_tokens.extend(int(token) for token in raw_generated_tokens)
             token_decode_beats.append(
                 {
                     "target_beat": int(target_beat),
                     "start_tick": int(beat_start_tick),
-                    "raw_tokens": [int(token) for token in generated_beat_tokens],
-                    "boundary_tokens": (
-                        [int(token) for token in boundary_tokens]
-                        if boundary_tokens is not None
-                        else []
-                    ),
+                    "raw_tokens": [int(token) for token in raw_generated_tokens],
+                    "boundary_tokens": [],
                 }
             )
-            beat_pianoroll = beats_to_pianoroll(
-                [playable_beat_tokens],
-                tokenizer=self._tokenizer,
-                timesteps_per_beat=TIMESTEPS_PER_BEAT,
-            )
+            beat_pianoroll = self._decode_acc_beat_tokens(playable_beat_tokens)
             pianoroll_nonzero = int(np.count_nonzero(beat_pianoroll))
 
             expected_shape = (2, 88, TIMESTEPS_PER_BEAT)
@@ -1002,15 +1067,17 @@ class LekaiHttpBackend:
                     f"Pianoroll shape mismatch: expected {expected_shape}, got {got_shape}."
                 )
 
-            active_snapshot = set(running_active)
+            active_snapshot = self._active_pitches_before_tick(
+                accompaniment_context_events,
+                beat_start_tick,
+            )
             beat_events, next_running_active = self._converter.pianoroll_to_events(
                 pianoroll=beat_pianoroll,
                 start_tick=beat_start_tick,
                 close_at_end=False,
                 active_pitches=active_snapshot,
             )
-            running_active = next_running_active
-            self._active_pitches = set(running_active)
+            self._active_pitches = set(next_running_active)
 
             normalized_beat_events: List[EventPayload] = []
             for event in beat_events:
@@ -1025,7 +1092,7 @@ class LekaiHttpBackend:
 
             generated_events.extend(normalized_beat_events)
             accompaniment_context_events.extend(normalized_beat_events)
-            self._accompaniment_token_history[target_beat] = list(generated_beat_tokens)
+            self._accompaniment_token_history[target_beat] = list(playable_beat_tokens)
 
             note_on_events = [
                 event
@@ -1040,8 +1107,8 @@ class LekaiHttpBackend:
                     "target_beat": int(target_beat),
                     "beat_start_tick": int(beat_start_tick),
                     "prompt_token_count": int(len(prompt_tokens)),
-                    "generated_tokens": [int(token) for token in generated_beat_tokens],
-                    "generated_token_count": int(len(generated_beat_tokens)),
+                    "generated_tokens": [int(token) for token in raw_generated_tokens],
+                    "generated_token_count": int(len(raw_generated_tokens)),
                     "pianoroll_nonzero": pianoroll_nonzero,
                     "event_count": int(len(normalized_beat_events)),
                     "note_on_count": int(len(note_on_events)),
@@ -1050,31 +1117,8 @@ class LekaiHttpBackend:
                 }
             )
 
-            # Preserve the raw ACC tokens in the model sequence. At a measure
-            # boundary, offline next injects a part0 BAR and generates a separate
-            # structural part1 slot before injecting this beats melody.
-            seq.append(torch.tensor(generated_beat_tokens, dtype=torch.long))
-            if target_beat > 0 and target_beat % 4 == 0:
-                seq.append(torch.tensor([bar_token], dtype=torch.long))
-                if boundary_tokens is not None:
-                    self._accompaniment_bar_token_history[target_beat] = list(boundary_tokens)
-                    seq.append(torch.tensor(boundary_tokens, dtype=torch.long))
-                else:
-                    assert boundary_pending
-
-            mel_tokens_current, melody_active = self._encode_beat_tokens(
-                events=self._melody_history,
-                beat_start_tick=beat_start_tick,
-                active_pitches=melody_active,
-                end_marker=171,
-            )
-            part0_tokens.extend(int(token) for token in mel_tokens_current.tolist())
-            if not boundary_pending:
-                seq.append(mel_tokens_current)
-
-        # Build full prompt tokens for logging
-        full_prompt_tokens = torch.cat(seq, dim=0).tolist()
-        part0_end_tick = (current_beat + num_beats_to_generate) * TIMESTEPS_PER_BEAT
+        final_target_beat = current_beat + num_beats_to_generate - 1
+        part0_end_tick = final_target_beat * TIMESTEPS_PER_BEAT
         part0_roll = self._converter.events_to_pianoroll(
             events=self._melody_history,
             start_tick=context_start_tick,
@@ -1088,7 +1132,7 @@ class LekaiHttpBackend:
             "structural_tokens": structural_tokens,
             "token_decode_beats": token_decode_beats,
             "token_decode_initial_active_pitches": token_decode_initial_active_pitches,
-            "prompt_tokens": [int(token) for token in full_prompt_tokens],
+            "prompt_tokens": last_prompt_tokens,
             "part0_tokens": part0_tokens,
             "part0_roll": part0_roll,
             "part0_roll_start_tick": context_start_tick,
@@ -1108,7 +1152,7 @@ class LekaiHttpBackend:
             input_file=input_file,
             generation_start_tick=int(generation_start_tick),
             generation_length_frames=int(generation_length_frames),
-            prompt_tokens=full_prompt_tokens,
+            prompt_tokens=last_prompt_tokens,
             temperature=rt_temperature,
             top_k=rt_top_k,
             top_p=rt_top_p,
@@ -1116,10 +1160,7 @@ class LekaiHttpBackend:
             melody_events=prompt_melody_events,
             accompaniment_events=generated_events,
             bpm=self._request_bpm,
-            notes=(
-                f"context_start_tick={context_start_tick}, current_beat={current_beat}, "
-                f"boundary_pending={boundary_pending}"
-            ),
+            notes=f"context_start_tick={context_start_tick}, current_beat={current_beat}",
             diagnostics={
                 "context_start_tick": int(context_start_tick),
                 "current_beat": int(current_beat),
@@ -1654,14 +1695,14 @@ class LekaiHttpBackend:
         cutoff_tick = int(generation_start_tick) - max_history_ticks
         
         if cutoff_tick > 0:
-            self._accompaniment_history = [
-                e for e in self._accompaniment_history
-                if int(e.get("tick", 0)) >= cutoff_tick
-            ]
-            self._melody_history = [
-                e for e in self._melody_history
-                if int(e.get("tick", 0)) >= cutoff_tick
-            ]
+            self._accompaniment_history = self._trim_event_history(
+                self._accompaniment_history,
+                cutoff_tick,
+            )
+            self._melody_history = self._trim_event_history(
+                self._melody_history,
+                cutoff_tick,
+            )
             self._accompaniment_token_history = {
                 beat: tokens
                 for beat, tokens in self._accompaniment_token_history.items()
