@@ -93,12 +93,14 @@ class SoundDeviceAudioSink:
             if self._state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
                 return
         stream: OutputStream | None = None
+        start_epoch = 0
         try:
             with self._state_lock:
                 if self._state == PlaybackState.CLOSED:
                     raise RuntimeError("audio sink is closed")
                 if self._state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
                     return
+                start_epoch = self._epoch
                 if self._stream is None:
                     self._stream = self._stream_factory(audio_format=self._audio_format, callback=self._callback)
                 self._state = PlaybackState.RUNNING
@@ -107,19 +109,32 @@ class SoundDeviceAudioSink:
             stream.start()
         except Exception as error:
             if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+                self._stop_and_close_stream(stream)
             with self._state_lock:
                 if self._state == PlaybackState.CLOSED:
                     raise RuntimeError("audio sink is closed") from error
+                if start_epoch != self._epoch:
+                    if self._stream is stream:
+                        self._stream = None
+                    return
                 self._stream = None
                 self._active = None
                 self._frame_in_bar = 0
                 self._state = PlaybackState.STOPPED
                 self._stop_requested = False
             self._publish(AudioPlaybackNoticeKind.DEVICE_FAILED, None, str(error))
+            return
+
+        with self._state_lock:
+            cancelled = start_epoch != self._epoch or self._state not in (
+                PlaybackState.RUNNING,
+                PlaybackState.STOP_REQUESTED,
+            )
+        if cancelled:
+            self._stop_and_close_stream(stream)
+            with self._state_lock:
+                if self._stream is stream:
+                    self._stream = None
 
     def enqueue(self, bar: PreparedRapBar) -> None:
         self._validate_bar(bar)
@@ -308,6 +323,17 @@ class SoundDeviceAudioSink:
         self._state = PlaybackState.STOPPED
         self._stop_requested = False
         self._publish(AudioPlaybackNoticeKind.STOPPED, None, "playback stopped")
+
+    @staticmethod
+    def _stop_and_close_stream(stream: OutputStream) -> None:
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
 
     def _publish(
         self,

@@ -95,6 +95,39 @@ class BlockingOutputBuffer:
         self.samples[key] = value
 
 
+class BlockingStartStream(FakeOutputStream):
+    """Lets a lifecycle transition complete while stream.start is in flight."""
+
+    def __init__(self, callback, block_frames: int) -> None:
+        super().__init__(callback, block_frames)
+        self.start_entered = Event()
+        self.allow_start = Event()
+        self.active = False
+
+    def start(self) -> None:
+        self.start_entered.set()
+        assert self.allow_start.wait(timeout=1.0)
+        self.started = True
+        self.active = True
+
+    def stop(self) -> None:
+        super().stop()
+        self.active = False
+
+    def close(self) -> None:
+        super().close()
+        self.active = False
+
+
+class BlockingStartStreamFactory:
+    def __init__(self) -> None:
+        self.stream: BlockingStartStream | None = None
+
+    def __call__(self, *, audio_format: AudioFormat, callback) -> BlockingStartStream:
+        self.stream = BlockingStartStream(callback, block_frames=4)
+        return self.stream
+
+
 class StopDuringAcquisitionSink(SoundDeviceAudioSink):
     """Requests Stop at the old dequeue/activation race boundary."""
 
@@ -392,6 +425,23 @@ def test_sounddevice_factory_failure_publishes_device_failed_notice() -> None:
     assert notices[0].message == str(failure)
 
 
+def test_sounddevice_factory_failure_after_reset_publishes_device_failed_notice() -> None:
+    failure = RuntimeError("no output device")
+
+    def failing_factory(*, audio_format: AudioFormat, callback):
+        raise failure
+
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=failing_factory)
+    sink.reset()
+
+    sink.start()
+
+    assert sink.snapshot().state == PlaybackState.STOPPED
+    notices = sink.drain_notices()
+    assert [notice.kind for notice in notices] == [AudioPlaybackNoticeKind.DEVICE_FAILED]
+    assert notices[0].message == str(failure)
+
+
 def test_sounddevice_stream_start_failure_publishes_device_failed_notice() -> None:
     failure = RuntimeError("stream start failed")
 
@@ -444,4 +494,41 @@ def test_reset_invalidates_callback_state_commit_and_notices_after_pcm_copy() ->
     assert sink.snapshot().absolute_frame == 0
     assert sink.snapshot().frame_in_bar == 0
     assert sink.snapshot().queue_depth == 0
+    assert sink.drain_notices() == ()
+
+
+def test_close_during_blocked_stream_start_cancels_physical_stream() -> None:
+    stream_factory = BlockingStartStreamFactory()
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    start_thread = Thread(target=sink.start)
+
+    start_thread.start()
+    assert stream_factory.stream is not None
+    assert stream_factory.stream.start_entered.wait(timeout=1.0)
+    sink.close()
+    stream_factory.stream.allow_start.set()
+    start_thread.join(timeout=1.0)
+
+    assert not start_thread.is_alive()
+    assert sink.snapshot().state == PlaybackState.CLOSED
+    assert stream_factory.stream.closed
+    assert not stream_factory.stream.active
+
+
+def test_reset_during_blocked_stream_start_cancels_physical_stream() -> None:
+    stream_factory = BlockingStartStreamFactory()
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    start_thread = Thread(target=sink.start)
+
+    start_thread.start()
+    assert stream_factory.stream is not None
+    assert stream_factory.stream.start_entered.wait(timeout=1.0)
+    sink.reset()
+    stream_factory.stream.allow_start.set()
+    start_thread.join(timeout=1.0)
+
+    assert not start_thread.is_alive()
+    assert sink.snapshot().state == PlaybackState.STOPPED
+    assert stream_factory.stream.closed
+    assert not stream_factory.stream.active
     assert sink.drain_notices() == ()
