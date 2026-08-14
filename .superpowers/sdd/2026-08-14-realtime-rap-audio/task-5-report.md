@@ -176,3 +176,35 @@ git diff --check
 ## Fix Round 3 Commit
 
 - `81fd1a4c fix: cancel stale rap audio stream starts`
+
+## Fix Round 4
+
+The remaining reset/start ABA race was addressed without beginning Task 6.
+
+- `SoundDeviceAudioSink.reset()` now atomically detaches `_stream` before it
+  advances the lifecycle epoch and stops the old device. The following start
+  must construct a distinct stream instance.
+- A stale start retains only its local stream reference. Its cancellation
+  cleanup can stop and close that detached stream but cannot touch a later
+  stream owned by the current lifecycle.
+- The deterministic three-phase regression blocks start A, completes reset,
+  starts B, then releases A. It verifies B remains physically active and the
+  sink remains logically `RUNNING`. A close variant is not applicable because
+  `CLOSED` has no valid restart path.
+
+## Fix Round 4 Verification
+
+```text
+uv run pytest tests/unit/infrastructure/rap/test_audio_output.py -q
+21 passed in 0.81s
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+409 passed in 3.34s
+
+git diff --check
+(no output)
+```
+
+## Fix Round 4 Commit
+
+- `97d90a14 fix: detach stale rap audio streams on reset`
