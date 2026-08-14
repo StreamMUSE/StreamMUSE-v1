@@ -64,6 +64,7 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infras
 - Round-two fixes: `b2408221` (`fix: harden rap playback event ordering`)
 - Round-three fix: `98eef34a` (`fix: make rap priming stop atomic`)
 - Round-four fix: `d42f8f78` (`fix: make rap reset cleanup atomic`)
+- Round-five fix: `bab21ab9` (`fix: serialize rap lifecycle event dispatch`)
 
 ## Review Remediation
 
@@ -228,4 +229,53 @@ All checks passed!
 
 uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
 431 passed in 2.30s
+```
+
+## Review Round Five
+
+`reset()` completed cleanup under the lifecycle lock but emitted
+`SESSION_RESET` after releasing it. A concurrent restart could therefore emit
+`SESSION_STARTED` first, while a concurrent `close()` could transition to
+`CLOSED` before the stale reset event was delivered.
+
+Lifecycle state/event sequences for `start`, `request_stop`, `reset`, and
+`close` now acquire a dedicated reentrant dispatch gate before the lifecycle
+lock. Publisher callbacks run after releasing the lifecycle lock, while the
+reentrant gate preserves ordering for same-thread lifecycle callbacks. Reset
+emits before releasing the gate and joins a cancelled observer afterward, so
+it cannot wait on an observer blocked by the gate. An early close-intent marker
+also prevents a start already publishing `SESSION_STARTED` from launching its
+observer while an external close waits on the gate.
+
+Round-five TDD red evidence:
+
+```text
+uv run pytest tests/unit/application/rap/test_playback.py -q -k 'reset_event_precedes_concurrent_restart_session_started or close_waits_for_reset_event_and_prevents_a_stale_reset_after_closed'
+FAILED test_reset_event_precedes_concurrent_restart_session_started: SESSION_STARTED was published while SESSION_RESET was blocked
+FAILED test_close_waits_for_reset_event_and_prevents_a_stale_reset_after_closed: close completed while SESSION_RESET was blocked
+2 failed, 21 deselected in 0.45s
+```
+
+The initial gate implementation exposed the existing start/close handoff
+regression, then the close-intent marker restored the established behavior:
+
+```text
+test_close_during_start_does_not_join_an_unstarted_observer
+FAILED: observer_started was set before the waiting close completed
+```
+
+Round-five verification:
+
+```text
+uv run pytest tests/unit/application/rap/test_playback.py -q -k 'reset_event_precedes_concurrent_restart_session_started or close_waits_for_reset_event_and_prevents_a_stale_reset_after_closed or close_from_tick_callback_defers_observer_join_until_poll_releases_its_mutex or close_during_start_does_not_join_an_unstarted_observer'
+4 passed, 19 deselected in 0.56s
+
+uv run pytest tests/unit/application/rap/test_playback.py -q
+23 passed in 0.88s
+
+uv run ruff check src/streammuse/application/rap/playback.py tests/unit/application/rap/test_playback.py
+All checks passed!
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+433 passed in 2.52s
 ```
