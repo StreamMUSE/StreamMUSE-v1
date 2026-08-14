@@ -21,6 +21,18 @@ class RapEventType(str, Enum):
     TICK = "tick"
     SYLLABLE_EMITTED = "syllable_emitted"
     PRESENTATION_ERROR = "presentation_error"
+    AUDIO_RENDER_STARTED = "audio_render_started"
+    AUDIO_RENDER_COMPLETED = "audio_render_completed"
+    PRONUNCIATION_FALLBACK = "pronunciation_fallback"
+    TIMING_PRESSURE = "timing_pressure"
+    BAR_AUDIO_READY = "bar_audio_ready"
+    BAR_AUDIO_COMMITTED = "bar_audio_committed"
+    BAR_PLAYBACK_STARTED = "bar_playback_started"
+    BAR_PLAYBACK_COMPLETED = "bar_playback_completed"
+    STOP_REQUESTED = "stop_requested"
+    SESSION_RESET = "session_reset"
+    AUDIO_UNDERRUN = "audio_underrun"
+    AUDIO_DEVICE_FAILED = "audio_device_failed"
 
 
 @dataclass(frozen=True)

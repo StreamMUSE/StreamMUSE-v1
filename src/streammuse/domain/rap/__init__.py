@@ -12,11 +12,33 @@ from streammuse.domain.rap.flow import FlowProvenance, FlowSlot, FlowTemplate, m
 from streammuse.domain.rap.generation import CandidateBatch, CandidateRequest
 from streammuse.domain.rap.evaluation import CandidateEvaluation, ScoreComponent, ScoreWeights, SelectionResult
 from streammuse.domain.rap.events import RapEvent, RapEventType
+from streammuse.domain.rap.audio import (
+    AudioFormat,
+    AudioPlaybackNotice,
+    AudioPlaybackNoticeKind,
+    AudioPlaybackSnapshot,
+    AudioWarning,
+    AudioWarningCode,
+    AudioWarningSeverity,
+    PcmAudio,
+    PlaybackState,
+    PreparedRapBar,
+    RenderedSyllable,
+    SyllablePlacementDiagnostic,
+    SyllableRenderRequest,
+)
 from streammuse.domain.rap.prosody import analyse_syllables, extract_words, normalize_text
 from streammuse.domain.rap.scenario import RapScenario, ScenarioSegment
 
 __all__ = [
     "AlignedLine",
+    "AudioFormat",
+    "AudioPlaybackNotice",
+    "AudioPlaybackNoticeKind",
+    "AudioPlaybackSnapshot",
+    "AudioWarning",
+    "AudioWarningCode",
+    "AudioWarningSeverity",
     "BeatSlot",
     "CandidateBatch",
     "CandidateRequest",
@@ -25,16 +47,22 @@ __all__ = [
     "FlowSlot",
     "FlowTemplate",
     "ProsodyAnalysis",
+    "PcmAudio",
+    "PlaybackState",
+    "PreparedRapBar",
     "RapPlan",
     "RapScenario",
     "RapEvent",
     "RapEventType",
     "ScheduledSyllable",
     "ScenarioSegment",
+    "RenderedSyllable",
     "ScoreComponent",
     "ScoreWeights",
     "SelectionResult",
     "Syllable",
+    "SyllablePlacementDiagnostic",
+    "SyllableRenderRequest",
     "analyse_syllables",
     "extract_words",
     "materialize_flow",
