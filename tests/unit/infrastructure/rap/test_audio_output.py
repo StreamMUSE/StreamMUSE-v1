@@ -32,12 +32,15 @@ class FakeOutputStream:
         self.started = False
         self.stopped = False
         self.closed = False
+        self.stop_calls = 0
+        self.callback_terminations = 0
 
     def start(self) -> None:
         self.started = True
 
     def stop(self) -> None:
         self.stopped = True
+        self.stop_calls += 1
 
     def close(self) -> None:
         self.closed = True
@@ -59,10 +62,28 @@ class FakeOutputStreamFactory:
         while remaining:
             frames = min(self.block_frames, remaining)
             block = np.zeros((frames, 2), dtype=np.float32)
-            self.stream.callback(block, frames, None, status)
+            try:
+                self.stream.callback(block, frames, None, status)
+            except BaseException as error:
+                if error.__class__.__name__ not in {"CallbackStop", "CallbackTerminated"}:
+                    raise
+                self.stream.callback_terminations += 1
             rendered.extend(block.reshape(-1).tolist())
             remaining -= frames
         return rendered
+
+
+class CallbackTerminated(Exception):
+    """Injected stand-in for sounddevice.CallbackStop."""
+
+
+class StopDuringAcquisitionSink(SoundDeviceAudioSink):
+    """Requests Stop at the old dequeue/activation race boundary."""
+
+    def _take_next_bar(self):
+        bar = super()._take_next_bar()
+        self.request_stop_after_bar()
+        return bar
 
 
 def stereo_format(sample_rate_hz: int = 48_000) -> AudioFormat:
@@ -126,7 +147,10 @@ def test_sounddevice_callback_fills_silence_and_reports_status_underrun() -> Non
 
     assert rendered == [0.0] * 8
     assert sink.snapshot().absolute_frame == 4
-    assert [notice.kind for notice in sink.drain_notices()] == [AudioPlaybackNoticeKind.UNDERRUN]
+    assert [notice.kind for notice in sink.drain_notices()] == [
+        AudioPlaybackNoticeKind.UNDERRUN,
+        AudioPlaybackNoticeKind.UNDERRUN,
+    ]
 
 
 def test_stop_request_finishes_current_bar_without_dequeuing_next() -> None:
@@ -144,6 +168,60 @@ def test_stop_request_finishes_current_bar_without_dequeuing_next() -> None:
     assert snapshot.state == PlaybackState.STOPPED
     assert snapshot.absolute_frame == 16
     assert snapshot.queue_depth == 1
+
+
+def test_sounddevice_callback_uses_termination_signal_without_stream_stop() -> None:
+    stream_factory = FakeOutputStreamFactory(block_frames=8)
+    sink = SoundDeviceAudioSink(
+        audio_format=stereo_format(),
+        stream_factory=stream_factory,
+        callback_stop_factory=CallbackTerminated,
+    )
+    sink.enqueue(prepared_bar(bar=0, frames=8))
+    sink.start()
+    stream_factory.render_frames(1)
+    sink.request_stop_after_bar()
+
+    stream_factory.render_frames(7)
+
+    assert stream_factory.stream is not None
+    assert stream_factory.stream.callback_terminations == 1
+    assert stream_factory.stream.stop_calls == 0
+
+
+def test_sounddevice_queue_underrun_is_reported_once_per_starvation_episode() -> None:
+    stream_factory = FakeOutputStreamFactory(block_frames=4)
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    sink.start()
+
+    stream_factory.render_frames(8)
+    first_episode = sink.drain_notices()
+
+    sink.enqueue(prepared_bar(bar=0, frames=4))
+    stream_factory.render_frames(4)
+    sink.drain_notices()
+    stream_factory.render_frames(4)
+    second_episode = sink.drain_notices()
+
+    assert [notice.kind for notice in first_episode] == [AudioPlaybackNoticeKind.UNDERRUN]
+    assert [notice.kind for notice in second_episode] == [AudioPlaybackNoticeKind.UNDERRUN]
+    assert sink.snapshot().underrun_count == 2
+
+
+def test_stop_during_bar_acquisition_treats_that_bar_as_current() -> None:
+    stream_factory = FakeOutputStreamFactory(block_frames=4)
+    sink = StopDuringAcquisitionSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    sink.enqueue(prepared_bar(bar=0, frames=4, value=0.25))
+    sink.start()
+
+    rendered = stream_factory.render_frames(4)
+
+    assert rendered == pytest.approx([0.25] * 8)
+    assert [notice.kind for notice in sink.drain_notices()] == [
+        AudioPlaybackNoticeKind.BAR_STARTED,
+        AudioPlaybackNoticeKind.BAR_COMPLETED,
+        AudioPlaybackNoticeKind.STOPPED,
+    ]
 
 
 def test_float32_wav_sink_writes_ieee_float_header_and_exact_pcm(tmp_path: Path) -> None:
@@ -185,6 +263,29 @@ def test_composite_commits_only_completed_bar_bytes_on_stop(tmp_path: Path) -> N
     assert payload == first.audio.data
 
 
+def test_composite_close_retains_primary_notices_after_committing_wav(tmp_path: Path) -> None:
+    stream_factory = FakeOutputStreamFactory(block_frames=4)
+    live = SoundDeviceAudioSink(
+        audio_format=stereo_format(),
+        stream_factory=stream_factory,
+        callback_stop_factory=CallbackTerminated,
+    )
+    recorder = Float32WavAudioSink(tmp_path / "session.wav", stereo_format())
+    composite = CompositeAudioSink(live, recorder)
+    composite.enqueue(prepared_bar(bar=0, frames=4))
+    composite.start()
+    stream_factory.render_frames(1)
+    composite.request_stop_after_bar()
+    stream_factory.render_frames(3)
+    composite.close()
+
+    assert [notice.kind for notice in composite.drain_notices()] == [
+        AudioPlaybackNoticeKind.BAR_STARTED,
+        AudioPlaybackNoticeKind.BAR_COMPLETED,
+        AudioPlaybackNoticeKind.STOPPED,
+    ]
+
+
 def test_null_sink_records_and_completes_bars_without_opening_a_device() -> None:
     sink = NullAudioSink(audio_format=stereo_format())
     bar = prepared_bar(bar=0, frames=6)
@@ -199,6 +300,18 @@ def test_null_sink_records_and_completes_bars_without_opening_a_device() -> None
         AudioPlaybackNoticeKind.BAR_STARTED,
         AudioPlaybackNoticeKind.BAR_COMPLETED,
     ]
+
+
+def test_null_sink_stop_before_completion_does_not_start_a_queued_bar() -> None:
+    sink = NullAudioSink(audio_format=stereo_format())
+    sink.enqueue(prepared_bar(bar=0, frames=6))
+    sink.start()
+
+    sink.request_stop_after_bar()
+
+    assert sink.complete_next() is None
+    assert sink.snapshot().state == PlaybackState.STOPPED
+    assert sink.snapshot().queue_depth == 1
 
 
 def test_timed_sink_advances_realtime_clock_and_stops_after_current_bar() -> None:
@@ -223,3 +336,59 @@ def test_timed_sink_advances_realtime_clock_and_stops_after_current_bar() -> Non
         assert sink.snapshot().queue_depth == 0
     finally:
         sink.close()
+
+
+def test_timed_sink_stop_before_clock_advances_does_not_start_a_queued_bar() -> None:
+    audio_format = stereo_format(sample_rate_hz=100)
+    sink = TimedAudioSink(
+        audio_format=audio_format,
+        poll_interval_seconds=1.0,
+        clock=lambda: 0.0,
+    )
+    sink.enqueue(prepared_bar(bar=0, frames=10, audio_format=audio_format))
+
+    try:
+        sink.start()
+        sink.request_stop_after_bar()
+        wait_until(lambda: sink.snapshot().state == PlaybackState.STOPPED)
+
+        assert sink.snapshot().absolute_frame == 0
+        assert sink.snapshot().queue_depth == 1
+    finally:
+        sink.close()
+
+
+def test_sounddevice_factory_failure_publishes_device_failed_notice() -> None:
+    failure = RuntimeError("no output device")
+
+    def failing_factory(*, audio_format: AudioFormat, callback):
+        raise failure
+
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=failing_factory)
+
+    sink.start()
+
+    assert sink.snapshot().state == PlaybackState.STOPPED
+    notices = sink.drain_notices()
+    assert [notice.kind for notice in notices] == [AudioPlaybackNoticeKind.DEVICE_FAILED]
+    assert notices[0].message == str(failure)
+
+
+def test_sounddevice_stream_start_failure_publishes_device_failed_notice() -> None:
+    failure = RuntimeError("stream start failed")
+
+    class FailingStartStream(FakeOutputStream):
+        def start(self) -> None:
+            raise failure
+
+    def failing_factory(*, audio_format: AudioFormat, callback) -> FailingStartStream:
+        return FailingStartStream(callback, block_frames=4)
+
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=failing_factory)
+
+    sink.start()
+
+    assert sink.snapshot().state == PlaybackState.STOPPED
+    notices = sink.drain_notices()
+    assert [notice.kind for notice in notices] == [AudioPlaybackNoticeKind.DEVICE_FAILED]
+    assert notices[0].message == str(failure)
