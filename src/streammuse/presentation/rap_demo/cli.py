@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+from math import isfinite
 import platform
 import shutil
 import subprocess
@@ -131,9 +132,9 @@ def build_demo(
         raise ValueError("max-bars must not be negative")
     if args.candidate_count <= 0 or args.lookahead_bars <= 0:
         raise ValueError("candidate-count and lookahead-bars must be positive")
-    if args.timeout_s <= 0:
+    if not isfinite(args.timeout_s) or args.timeout_s <= 0:
         raise ValueError("timeout-s must be positive")
-    if not 0.0 <= args.minimum_score <= 1.0:
+    if not isfinite(args.minimum_score) or not 0.0 <= args.minimum_score <= 1.0:
         raise ValueError("minimum-score must be between zero and one")
     _validate_audio_options(args, require_external=audio_factories is None)
 
@@ -414,15 +415,15 @@ def _build_audio_demo(
 
 
 def _validate_audio_options(args: argparse.Namespace, *, require_external: bool) -> None:
-    if args.tempo is not None and args.tempo <= 0:
+    if args.tempo is not None and (not isfinite(args.tempo) or args.tempo <= 0):
         raise ValueError("tempo must be positive")
-    if args.sample_rate <= 0:
+    if not isfinite(args.sample_rate) or args.sample_rate <= 0:
         raise ValueError("sample-rate must be positive")
     if not 80 <= args.voice_speed <= 450:
         raise ValueError("voice-speed must be between 80 and 450")
     if not 0 <= args.voice_pitch <= 99:
         raise ValueError("voice-pitch must be between 0 and 99")
-    if not 1.0 <= args.max_compression <= 4.0:
+    if not isfinite(args.max_compression) or not 1.0 <= args.max_compression <= 4.0:
         raise ValueError("max-compression must be between 1.0 and 4.0")
     if args.audio_output == "none" or not require_external:
         return

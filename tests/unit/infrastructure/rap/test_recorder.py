@@ -163,7 +163,28 @@ def test_summary_derives_additive_audio_metrics_from_canonical_events() -> None:
         "warning_counts": {"pronunciation_fallback": 1, "timing_pressure": 0},
         "underruns": 1,
         "completed_bars": 1,
+        "completed_frames": 0,
     }
+
+
+def test_summary_uses_only_the_current_audio_epoch_after_reset() -> None:
+    summary = derive_summary(
+        (
+            _event(1, RapEventType.BAR_FROZEN, bar=0, payload={"fallback": False}),
+            _event(2, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"frame_count": 100}),
+            _event(3, RapEventType.BAR_PLAYBACK_COMPLETED, bar=0, payload={}),
+            _event(4, RapEventType.SESSION_RESET, payload={}),
+            _event(5, RapEventType.BAR_FROZEN, bar=0, payload={"fallback": True}),
+            _event(6, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"frame_count": 200}),
+            _event(7, RapEventType.BAR_PLAYBACK_COMPLETED, bar=0, payload={}),
+        )
+    )
+
+    assert summary["events"] == {"count": 3, "history_count": 7, "epoch": 1}
+    assert summary["bars"]["frozen"] == 1
+    assert summary["bars"]["fallback"] == 1
+    assert summary["audio"]["completed_bars"] == 1
+    assert summary["audio"]["completed_frames"] == 200
 
 
 def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:

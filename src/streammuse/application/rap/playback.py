@@ -81,6 +81,13 @@ class RapPlaybackService:
         with self._lock:
             return self._next_start_bar
 
+    @property
+    def stop_successor_bar(self) -> int:
+        with self._lock:
+            if self._current_tick is None:
+                return self._next_start_bar + 1
+            return self._current_tick // self._tempo.ticks_per_bar + 1
+
     def prime(self, bar: PreparedRapBar) -> None:
         with self._lock:
             self._require_state(PlaybackState.STOPPED)

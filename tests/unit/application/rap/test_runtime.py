@@ -318,6 +318,12 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
             calls.append(f"controller_resume_{bar}")
             self.playback.state = PlaybackState.PRIMING
 
+        def resume_after_stop(self) -> None:
+            calls.append("controller_resume_after_stop")
+
+        def request_stop(self, *, successor_bar: int) -> None:
+            calls.append(f"controller_stop_{successor_bar}")
+
         def reset(self) -> None:
             calls.append("controller_reset")
 
@@ -329,10 +335,12 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
             self.state = PlaybackState.STOPPED
             self.current_tick: int | None = None
             self.next_start_bar = 0
+            self.stop_successor_bar = 1
 
         def start(self) -> None:
             calls.append("playback_start")
             self.state = PlaybackState.RUNNING
+            self.current_tick = 15
 
         def request_stop(self) -> None:
             calls.append("playback_stop")
@@ -377,17 +385,17 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
         dispatcher=Dispatcher(),
         session_dir=tmp_path,
         recorder=Recorder(),
+        configured_max_bars=1,
     )
 
     dependencies.start()
-    dependencies.request_stop()
-    playback.state = PlaybackState.STOPPED
     dependencies.start()
-    dependencies.request_stop()
-    playback.state = PlaybackState.STOPPED
     dependencies.reset()
 
+    assert calls.count("controller_stop_1") == 2
+    assert calls.count("playback_stop") == 2
     assert "controller_resume_1" in calls
+    assert "controller_resume_after_stop" in calls
 
     assert calls.count("controller_close") == 0
     assert calls.count("coordinator_close") == 0

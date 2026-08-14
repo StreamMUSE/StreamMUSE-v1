@@ -89,6 +89,24 @@ def test_audio_options_are_validated_before_session_assembly(
         build_demo(args)
 
 
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    (
+        (("--tempo", "nan"), "tempo"),
+        (("--tempo", "inf"), "tempo"),
+        (("--max-compression", "nan"), "max-compression"),
+        (("--max-compression", "inf"), "max-compression"),
+        (("--minimum-score", "nan"), "minimum-score"),
+        (("--timeout-s", "inf"), "timeout-s"),
+    ),
+)
+def test_cli_rejects_nonfinite_numeric_settings(tmp_path: Path, arguments: tuple[str, ...], message: str) -> None:
+    args = build_parser().parse_args([*arguments, "--log-dir", str(tmp_path)])
+
+    with pytest.raises(ValueError, match=message):
+        build_demo(args)
+
+
 def test_text_build_uses_existing_tick_loop_and_no_audio_dependencies(tmp_path: Path) -> None:
     class FailIfCalledAudioFactories:
         def __getattr__(self, name: str):

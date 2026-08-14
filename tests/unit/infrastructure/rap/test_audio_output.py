@@ -377,6 +377,24 @@ def test_composite_commits_only_completed_bar_bytes_on_stop(tmp_path: Path) -> N
     assert payload == first.audio.data
 
 
+def test_wav_recorder_reset_replaces_the_previous_audio_epoch(tmp_path: Path) -> None:
+    audio_format = stereo_format()
+    recorder = Float32WavAudioSink(tmp_path / "session.wav", audio_format)
+    first_epoch = prepared_bar(bar=0, frames=4, value=0.25, audio_format=audio_format)
+    current_epoch = prepared_bar(bar=0, frames=8, value=0.5, audio_format=audio_format)
+
+    recorder.enqueue(first_epoch)
+    recorder.mark_completed(first_epoch)
+    recorder.reset()
+    recorder.enqueue(current_epoch)
+    recorder.mark_completed(current_epoch)
+    recorder.close()
+
+    header, payload = read_float_wav(tmp_path / "session.wav")
+    assert header[-1] == len(current_epoch.audio.data)
+    assert payload == current_epoch.audio.data
+
+
 def test_composite_close_retains_primary_notices_after_committing_wav(tmp_path: Path) -> None:
     stream_factory = FakeOutputStreamFactory(block_frames=4)
     live = SoundDeviceAudioSink(

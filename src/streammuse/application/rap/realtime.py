@@ -132,6 +132,8 @@ class RollingRapController:
         self._clock_origin: float | None = None
         self._lifecycle_epoch = 0
         self._started = False
+        self._stopping = False
+        self._stop_successor_bar: int | None = None
         self._closed = False
 
     @property
@@ -146,6 +148,8 @@ class RollingRapController:
                 if self._started or self._closed:
                     return
                 self._started = True
+                self._stopping = False
+                self._stop_successor_bar = None
                 startup_last_bar = self._bounded_last_bar(self._lookahead_bars - 1)
                 self._reserve_through(startup_last_bar)
                 if self._audio_coordinator is not None:
@@ -166,6 +170,9 @@ class RollingRapController:
                 self._clock_origin = now - self._tempo.tick_to_seconds(tick)
             current_bar = tick // self._tempo.ticks_per_bar
             if self._planning_bar_limit is not None and current_bar >= self._planning_bar_limit:
+                return
+            if self._stopping:
+                self._observe_stopping_tick(current_bar, tick)
                 return
             self._reserve_through(self._planning_ceiling(current_bar))
             self._drain_primary_result()
@@ -241,6 +248,50 @@ class RollingRapController:
             if audio_coordinator is not None:
                 audio_coordinator.close()
 
+    def request_stop(self, *, successor_bar: int) -> None:
+        """Freeze audio planning at one restart-safe immutable successor bar."""
+
+        committed = None
+        delivery_epoch = None
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._audio_coordinator is None:
+                    raise RuntimeError("stop control is available only for audio-controlled sessions")
+                if self._closed or not self._started or self._stopping:
+                    return
+                if successor_bar < 0:
+                    raise ValueError("stop requires a non-negative successor bar")
+                if successor_bar not in self._bars:
+                    highest_reserved = max(self._bars, default=-1)
+                    if successor_bar != highest_reserved + 1:
+                        raise ValueError("stop requires the next reserved successor bar")
+                    # A finite max-bar run still needs one immutable successor for a
+                    # later complete-bar restart.  This is the only reservation made
+                    # after stop has been requested; no primary work is submitted.
+                    self._reserve_through(successor_bar)
+                committed = self._commit_audio_bar(successor_bar, tick=None)
+                self._stopping = True
+                self._stop_successor_bar = successor_bar
+                future = self._future
+                self._future = None
+                self._future_bar = None
+                self._audio_primary_plans.clear()
+                audio_coordinator = self._audio_coordinator
+                stop_primary = self._stop_primary
+                delivery_epoch = self._lifecycle_epoch
+            if future is not None:
+                future.cancel()
+            if stop_primary is not None:
+                try:
+                    stop_primary()
+                except Exception as exc:
+                    self._event(
+                        RapEventType.GENERATION_FAILED,
+                        payload={"error_type": "abort_error", "error_message": str(exc)},
+                    )
+            audio_coordinator.pause(successor_bar)
+        self._notify_audio_committed(committed, delivery_epoch)
+
     def reset(self) -> None:
         """Clear an audio-controlled planning session after playback has stopped."""
 
@@ -263,6 +314,8 @@ class RollingRapController:
                 self._last_tick = -1
                 self._clock_origin = None
                 self._started = False
+                self._stopping = False
+                self._stop_successor_bar = None
                 audio_coordinator = self._audio_coordinator
             if future is not None:
                 future.cancel()
@@ -282,6 +335,36 @@ class RollingRapController:
                 prepared = self._audio_coordinator.commit(bar)
                 epoch = self._lifecycle_epoch
         self._notify_audio_committed(prepared, epoch)
+
+    def resume_after_stop(self) -> None:
+        """Permit planning again after runtime has re-primed the saved successor."""
+
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._audio_coordinator is None:
+                    raise RuntimeError("audio resume is available only for audio-controlled sessions")
+                if self._closed or not self._started or not self._stopping:
+                    raise RuntimeError("audio controller is not stopped for resume")
+                successor = self._stop_successor_bar
+                assert successor is not None
+                self._bars = {bar: plan for bar, plan in self._bars.items() if bar <= successor}
+                self._audio_committed_bars = {successor}
+                self._audio_primary_plans.clear()
+                self._next_primary_bar = successor + 1
+                self._stopping = False
+                self._stop_successor_bar = None
+
+    def _observe_stopping_tick(self, current_bar: int, tick: int) -> None:
+        """Finish current-bar observation without scheduling any new work."""
+
+        successor = self._stop_successor_bar
+        if successor is None or current_bar != successor - 1:
+            return
+        if tick % self._tempo.ticks_per_bar == 0 and current_bar in self._bars:
+            self._freeze(current_bar, tick)
+        beat = (tick % self._tempo.ticks_per_bar) // self._tempo.ticks_per_beat
+        tick_in_beat = tick % self._tempo.ticks_per_beat
+        self._event(RapEventType.TICK, bar=current_bar, tick=tick, payload={"beat": beat, "tick_in_beat": tick_in_beat})
 
     def bar_for(self, index: int) -> PlannedRapBar:
         with self._lock:

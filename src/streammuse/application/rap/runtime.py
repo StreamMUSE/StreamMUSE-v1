@@ -192,6 +192,7 @@ class RapAudioDemoDependencies:
                 # A prior bar-quantized stop retains an immutable committed
                 # successor. Re-deliver it so playback clears stale queue data
                 # and primes exactly the next complete musical bar.
+                self.controller.resume_after_stop()
                 self.controller.resume_audio(self.playback.next_start_bar)
             if self.playback.state == PlaybackState.STOPPED:
                 raise RuntimeError("audio controller did not prepare a playback bar")
@@ -201,7 +202,7 @@ class RapAudioDemoDependencies:
         while self.playback.state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
             if self.configured_max_bars and self.playback.current_tick is not None:
                 if self.playback.current_tick >= maximum_tick:
-                    self.playback.request_stop()
+                    self.request_stop()
             self.playback.wait(timeout=0.01)
 
     def request_stop(self) -> None:
@@ -210,6 +211,14 @@ class RapAudioDemoDependencies:
         with self._lifecycle_lock:
             if self._closed:
                 return
+            if self.playback.state not in (PlaybackState.PRIMING, PlaybackState.RUNNING):
+                return
+            successor_bar = (
+                self.playback.next_start_bar
+                if self.playback.state == PlaybackState.PRIMING
+                else self.playback.stop_successor_bar
+            )
+            self.controller.request_stop(successor_bar=successor_bar)
             self.playback.request_stop()
 
     def reset(self) -> None:

@@ -129,6 +129,21 @@ class BarAudioCoordinator:
         for future in futures:
             future.cancel()
 
+    def pause(self, successor_bar: int) -> None:
+        """Cancel all pending work while retaining one immutable restart bar."""
+
+        with self._lock:
+            self._require_open()
+            successor = self._committed.get(successor_bar)
+            if successor is None:
+                raise ValueError("pause requires a committed successor bar")
+            self._epoch += 1
+            futures = tuple(self._fallback_futures.values()) + tuple(self._primary_futures.values())
+            self._clear_locked()
+            self._committed[successor_bar] = successor
+        for future in futures:
+            future.cancel()
+
     def close(self) -> None:
         """Permanently prevent new work and release the coordinator executor."""
 

@@ -236,11 +236,16 @@ class RecordingAudioCoordinator:
         self.committed = []
         self.closed = False
         self.reset_calls = 0
+        self.paused_successors: list[int] = []
+        self.fallback_reservations = 0
+        self.primary_submissions = 0
 
     def reserve_fallback(self, plan) -> None:
+        self.fallback_reservations += 1
         self.fallbacks.setdefault(plan.bar, plan)
 
     def submit_primary(self, plan) -> None:
+        self.primary_submissions += 1
         self.primaries[plan.bar] = plan
 
     def poll_primary(self, bar: int):
@@ -268,6 +273,14 @@ class RecordingAudioCoordinator:
         self.ready.clear()
         self.polled.clear()
         self.committed.clear()
+
+    def pause(self, successor_bar: int) -> None:
+        self.paused_successors.append(successor_bar)
+        prepared = next(item for item in self.committed if item.bar == successor_bar)
+        self.fallbacks = {successor_bar: self.fallbacks[successor_bar]}
+        self.primaries.clear()
+        self.ready.clear()
+        self.committed = [prepared]
 
     def close(self) -> None:
         self.closed = True
@@ -448,6 +461,64 @@ def test_audio_controller_redelivers_the_next_immutable_bar_after_stop() -> None
 
     assert [prepared.bar for prepared in delivered] == [1]
     assert _types(events).count("bar_audio_committed") == 2
+
+
+def test_audio_controller_stop_keeps_only_one_successor_and_pauses_planning() -> None:
+    audio = RecordingAudioCoordinator()
+    executor = ManualExecutor()
+    delivered = []
+    stop_calls = []
+    controller, _emitted, _events, dispatcher = _controller(
+        primary=FixedGenerator(),
+        executor=executor,
+        lookahead_bars=3,
+        audio_coordinator=audio,
+        on_audio_committed=delivered.append,
+        stop_primary=lambda: stop_calls.append("stopped"),
+    )
+    controller.start()
+    controller.on_tick(0)
+    fallback_count = len(audio.fallbacks)
+    fallback_reservations = audio.fallback_reservations
+    primary_submissions = audio.primary_submissions
+    delivered.clear()
+
+    controller.request_stop(successor_bar=1)
+    for tick in range(1, 16):
+        controller.on_tick(tick)
+
+    assert audio.paused_successors == [1]
+    assert [prepared.bar for prepared in audio.committed] == [1]
+    assert len(audio.fallbacks) == 1
+    assert len(audio.primaries) == 0
+    assert fallback_count > len(audio.fallbacks)
+    assert audio.fallback_reservations == fallback_reservations
+    assert audio.primary_submissions == primary_submissions
+    assert stop_calls == ["stopped"]
+    assert delivered == [audio.committed[0]]
+
+    delivered.clear()
+    controller.resume_after_stop()
+    controller.resume_audio(1)
+    _finish(controller, dispatcher)
+
+    assert [prepared.bar for prepared in delivered] == [1]
+
+
+def test_audio_controller_stop_materializes_one_successor_past_planning_limit() -> None:
+    audio = RecordingAudioCoordinator()
+    controller, _emitted, _events, dispatcher = _controller(
+        planning_bar_limit=1,
+        audio_coordinator=audio,
+    )
+    controller.start()
+
+    controller.request_stop(successor_bar=1)
+    _finish(controller, dispatcher)
+
+    assert set(audio.fallbacks) == {1}
+    assert [prepared.bar for prepared in audio.committed] == [1]
+    assert audio.paused_successors == [1]
 
 
 def test_audio_controller_reset_discards_uncommitted_state_without_closing_dependencies() -> None:

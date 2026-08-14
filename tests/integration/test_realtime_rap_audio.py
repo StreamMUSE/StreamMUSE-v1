@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
@@ -240,6 +241,86 @@ def _manifest(tempo: Tempo) -> dict[str, object]:
         git_revision="test",
         git_dirty=False,
     )
+
+
+def test_audio_reset_starts_a_new_recorder_and_wav_epoch(tmp_path: Path) -> None:
+    tempo = Tempo(60.0, 4, 4)
+    audio_format = AudioFormat()
+    scenario = default_scenario()
+    analyzer = CmuProsodyAnalyzer()
+    recorder = RapSessionRecorder(tmp_path / "session", _manifest(tempo))
+    publisher = RapEventPublisher("audio-reset")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(recorder,))
+    dispatcher.start()
+    manual = ManualAudioSink(audio_format)
+    output_path = tmp_path / "session.wav"
+    sink = CompositeAudioSink(manual, Float32WavAudioSink(output_path, audio_format))
+    coordinator = BarAudioCoordinator(
+        DeterministicRapBarRenderer(
+            tempo=tempo,
+            audio_format=audio_format,
+            synthesizer=FakeSpeech(),
+            drums=ProceduralBoomBapRenderer(seed=7),
+        ),
+        publisher=publisher,
+    )
+    controller: RollingRapController
+    playback = RapPlaybackService(
+        tempo=tempo,
+        sink=sink,
+        publisher=publisher,
+        on_tick=lambda tick: controller.on_tick(tick),
+    )
+    controller = RollingRapController(
+        tempo=tempo,
+        scenario=scenario,
+        templates=BUILTIN_TEMPLATES,
+        fallback_catalog=PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer),
+        analyzer=analyzer,
+        weights=ScoreWeights(),
+        publisher=publisher,
+        primary_generator=None,
+        candidate_count=12,
+        lookahead_bars=3,
+        minimum_score=0.55,
+        seed=7,
+        audio_coordinator=coordinator,
+        on_audio_committed=playback.enqueue,
+    )
+    bar_frames = bar_start_frame(1, tempo, audio_format)
+
+    try:
+        controller.start()
+        playback.start()
+        manual.advance(bar_frames)
+        playback.poll()
+        controller.request_stop(successor_bar=1)
+        playback.request_stop()
+        playback.poll()
+
+        playback.reset()
+        controller.reset()
+
+        controller.start()
+        playback.start()
+        manual.advance(bar_frames)
+        playback.poll()
+        controller.request_stop(successor_bar=1)
+        playback.request_stop()
+        playback.poll()
+    finally:
+        playback.close()
+        controller.close()
+        dispatcher.flush_and_close()
+        recorder.close()
+
+    summary = json.loads((tmp_path / "session" / "summary.json").read_text(encoding="utf-8"))
+    wav_bytes = output_path.read_bytes()
+
+    assert summary["events"]["epoch"] == 1
+    assert summary["audio"]["completed_bars"] == 1
+    assert summary["audio"]["completed_frames"] == bar_frames
+    assert struct.unpack("<I", wav_bytes[40:44])[0] == bar_frames * audio_format.channels * 4
 
 
 def test_rolling_audio_runs_without_gap_when_generator_is_late(tmp_path: Path) -> None:

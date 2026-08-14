@@ -278,7 +278,8 @@ def derive_summary(
 ) -> dict[str, Any]:
     """Derive research metrics from event evidence without hidden runtime state."""
 
-    event_list = list(events)
+    history = list(events)
+    event_list, epoch = _current_epoch(history)
     frozen = _frozen_bars(event_list)
     plans = _requests(event_list, RapEventType.BAR_PLANNING_STARTED)
     batches = _requests(event_list, RapEventType.CANDIDATE_BATCH_RECEIVED)
@@ -292,9 +293,17 @@ def derive_summary(
     repetitions, generated_bigrams = _repetition_counts(event_list, frozen, expected_manifest_window)
     audio_events = tuple(event for event in event_list if event.event_type == RapEventType.AUDIO_RENDER_COMPLETED)
     committed_audio = tuple(event for event in event_list if event.event_type == RapEventType.BAR_AUDIO_COMMITTED)
+    completed_audio_bars = {
+        event.bar for event in event_list if event.event_type == RapEventType.BAR_PLAYBACK_COMPLETED and event.bar is not None
+    }
+    committed_frames = {
+        event.bar: int(event.payload["frame_count"])
+        for event in committed_audio
+        if event.bar is not None and isinstance(event.payload.get("frame_count"), int) and event.payload["frame_count"] >= 0
+    }
 
     return {
-        "events": {"count": len(event_list)},
+        "events": {"count": len(event_list), "history_count": len(history), "epoch": epoch},
         "bars": {
             "frozen": len(frozen),
             "fallback": fallback_count,
@@ -332,9 +341,20 @@ def derive_summary(
                 "timing_pressure": sum(event.event_type == RapEventType.TIMING_PRESSURE for event in event_list),
             },
             "underruns": sum(event.event_type == RapEventType.AUDIO_UNDERRUN for event in event_list),
-            "completed_bars": sum(event.event_type == RapEventType.BAR_PLAYBACK_COMPLETED for event in event_list),
+            "completed_bars": len(completed_audio_bars),
+            "completed_frames": sum(committed_frames.get(bar, 0) for bar in completed_audio_bars),
         },
     }
+
+
+def _current_epoch(events: list[RapEvent]) -> tuple[list[RapEvent], int]:
+    reset_index = -1
+    epoch = 0
+    for index, event in enumerate(events):
+        if event.event_type == RapEventType.SESSION_RESET:
+            reset_index = index
+            epoch += 1
+    return events[reset_index + 1 :], epoch
 
 
 def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
