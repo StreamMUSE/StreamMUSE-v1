@@ -134,9 +134,8 @@ class RapPlaybackService:
             with self._lock:
                 if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.STOP_REQUESTED):
                     return None
-                snapshot = self._sink.snapshot() if self._state == PlaybackState.RUNNING else None
-                successor_bar = self._stop_successor_bar_locked(snapshot)
                 if self._state == PlaybackState.PRIMING:
+                    successor_bar = self._stop_successor_bar_locked(None)
                     self._stop_observer_locked()
                     self._epoch += 1
                     # Task 5 reset is local and has no publication callback. Keep
@@ -149,8 +148,9 @@ class RapPlaybackService:
                     self._sample_origin_frame = 0
                     self._state = PlaybackState.STOPPED
                 else:
+                    snapshot = self._sink.request_stop_after_bar()
+                    successor_bar = self._stop_successor_bar_locked(snapshot)
                     self._state = PlaybackState.STOP_REQUESTED
-                    self._sink.request_stop_after_bar()
             self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
         return successor_bar
 

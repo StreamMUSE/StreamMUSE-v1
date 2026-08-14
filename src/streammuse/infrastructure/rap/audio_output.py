@@ -156,10 +156,10 @@ class SoundDeviceAudioSink:
         with self._queue_lock:
             self._queued.append(bar)
 
-    def request_stop_after_bar(self) -> None:
+    def request_stop_after_bar(self) -> AudioPlaybackSnapshot:
         with self._state_lock:
             if self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
-                return
+                return self._snapshot_locked()
             if self._active is None:
                 self._finish_stop_locked()
                 stream = self._stream
@@ -167,8 +167,10 @@ class SoundDeviceAudioSink:
                 self._stop_requested = True
                 self._state = PlaybackState.STOP_REQUESTED
                 stream = None
+            snapshot = self._snapshot_locked()
         if stream is not None:
             stream.stop()
+        return snapshot
 
     def reset(self) -> None:
         with self._state_lock:
@@ -191,20 +193,18 @@ class SoundDeviceAudioSink:
 
     def snapshot(self) -> AudioPlaybackSnapshot:
         with self._state_lock:
-            state = self._state
-            current_bar = self._active.bar if self._active is not None else None
-            frame_in_bar = self._frame_in_bar
-            absolute_frame = self._absolute_frame
-            underrun_count = self._underrun_count
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> AudioPlaybackSnapshot:
         with self._queue_lock:
             queue_depth = len(self._queued)
         return AudioPlaybackSnapshot(
-            state=state,
-            current_bar=current_bar,
-            frame_in_bar=frame_in_bar,
-            absolute_frame=absolute_frame,
+            state=self._state,
+            current_bar=self._active.bar if self._active is not None else None,
+            frame_in_bar=self._frame_in_bar,
+            absolute_frame=self._absolute_frame,
             queue_depth=queue_depth,
-            underrun_count=underrun_count,
+            underrun_count=self._underrun_count,
         )
 
     def drain_notices(self) -> tuple[AudioPlaybackNotice, ...]:
@@ -480,9 +480,10 @@ class CompositeAudioSink:
         self._primary.enqueue(bar)
         self._recorder.enqueue(bar)
 
-    def request_stop_after_bar(self) -> None:
-        self._primary.request_stop_after_bar()
+    def request_stop_after_bar(self) -> AudioPlaybackSnapshot:
+        snapshot = self._primary.request_stop_after_bar()
         self._recorder.request_stop_after_bar()
+        return snapshot
 
     def reset(self) -> None:
         self._retain_primary_notices()
@@ -549,11 +550,12 @@ class NullAudioSink:
             raise RuntimeError("audio sink is closed")
         self._queued.append(bar)
 
-    def request_stop_after_bar(self) -> None:
+    def request_stop_after_bar(self) -> AudioPlaybackSnapshot:
         if self._state == PlaybackState.RUNNING:
             self._state = PlaybackState.STOPPED
             self._stop_requested = False
             self._publish(AudioPlaybackNoticeKind.STOPPED, None, "playback stopped")
+        return self.snapshot()
 
     def complete_next(self) -> PreparedRapBar | None:
         if self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED) or not self._queued:
@@ -667,16 +669,18 @@ class TimedAudioSink:
             self._queued.append(bar)
         self._wake.set()
 
-    def request_stop_after_bar(self) -> None:
+    def request_stop_after_bar(self) -> AudioPlaybackSnapshot:
         with self._lock:
             if self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
-                return
+                return self._snapshot_locked()
             if self._active is None:
                 self._finish_stop_locked()
             else:
                 self._stop_requested = True
                 self._state = PlaybackState.STOP_REQUESTED
+            snapshot = self._snapshot_locked()
         self._wake.set()
+        return snapshot
 
     def reset(self) -> None:
         with self._lock:
@@ -693,14 +697,17 @@ class TimedAudioSink:
 
     def snapshot(self) -> AudioPlaybackSnapshot:
         with self._lock:
-            return AudioPlaybackSnapshot(
-                state=self._state,
-                current_bar=self._active.bar if self._active is not None else None,
-                frame_in_bar=self._frame_in_bar,
-                absolute_frame=self._absolute_frame,
-                queue_depth=len(self._queued),
-                underrun_count=0,
-            )
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> AudioPlaybackSnapshot:
+        return AudioPlaybackSnapshot(
+            state=self._state,
+            current_bar=self._active.bar if self._active is not None else None,
+            frame_in_bar=self._frame_in_bar,
+            absolute_frame=self._absolute_frame,
+            queue_depth=len(self._queued),
+            underrun_count=0,
+        )
 
     def drain_notices(self) -> tuple[AudioPlaybackNotice, ...]:
         notices: list[AudioPlaybackNotice] = []

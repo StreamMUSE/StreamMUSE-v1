@@ -67,15 +67,16 @@ class ManualAudioSink:
             raise ValueError("prepared bar format does not match manual sink")
         self._queued.append(bar)
 
-    def request_stop_after_bar(self) -> None:
+    def request_stop_after_bar(self) -> AudioPlaybackSnapshot:
         if self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
-            return
+            return self.snapshot()
         if self._active is None:
             self._state = PlaybackState.STOPPED
             self._notice(AudioPlaybackNoticeKind.STOPPED, None, "playback stopped")
         else:
             self._stop_requested = True
             self._state = PlaybackState.STOP_REQUESTED
+        return self.snapshot()
 
     def advance(self, frames: int) -> None:
         """Advance exact frames without gaps or wall-clock sleeps."""

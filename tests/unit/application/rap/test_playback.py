@@ -110,9 +110,10 @@ class FakeRapAudioSink:
     def enqueue(self, bar: PreparedRapBar) -> None:
         self.queued.append(bar)
 
-    def request_stop_after_bar(self) -> None:
+    def request_stop_after_bar(self) -> AudioPlaybackSnapshot:
         self.stop_requests += 1
         self.state = PlaybackState.STOP_REQUESTED
+        return self.snapshot()
 
     def reset(self) -> None:
         self.reset_calls += 1
@@ -165,6 +166,29 @@ class FakeRapAudioSink:
         self.state = PlaybackState.STOPPED
         self.current_bar = None
         self.publish(AudioPlaybackNoticeKind.STOPPED)
+
+
+class SnapshotToArmRaceSink(FakeRapAudioSink):
+    """Activate bar one immediately after the legacy snapshot capture."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_bar = 0
+        self.activation_attempts = 0
+
+    def snapshot(self) -> AudioPlaybackSnapshot:
+        captured = super().snapshot()
+        self._activate_next_bar()
+        return captured
+
+    def request_stop_after_bar(self):
+        self._activate_next_bar()
+        return super().request_stop_after_bar()
+
+    def _activate_next_bar(self) -> None:
+        if self.current_bar == 0:
+            self.activation_attempts += 1
+            self.current_bar = 1
 
 
 class BlockingSnapshotSink(FakeRapAudioSink):
@@ -402,6 +426,26 @@ def test_stop_successor_uses_sink_active_bar_when_observer_tick_is_stale() -> No
     service._current_tick = 15  # Simulate observer lag at the bar-one callback boundary.
 
     assert service.stop_successor_bar == 2
+
+
+def test_stop_arming_returns_successor_after_callback_activates_next_bar() -> None:
+    sink = SnapshotToArmRaceSink()
+    sink.state = PlaybackState.RUNNING
+    service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=lambda _: None)
+    service._state = PlaybackState.RUNNING
+
+    assert service.request_stop() == 2
+    assert sink.activation_attempts == 1
+
+
+def test_stop_arming_returns_next_bar_when_callback_does_not_activate() -> None:
+    sink = FakeRapAudioSink()
+    sink.state = PlaybackState.RUNNING
+    sink.current_bar = 0
+    service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=lambda _: None)
+    service._state = PlaybackState.RUNNING
+
+    assert service.request_stop() == 1
 
 
 def test_reset_requires_stopped_and_clears_audio_state() -> None:
