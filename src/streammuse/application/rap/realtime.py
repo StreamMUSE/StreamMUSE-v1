@@ -165,6 +165,8 @@ class RollingRapController:
             if self._clock_origin is None:
                 self._clock_origin = now - self._tempo.tick_to_seconds(tick)
             current_bar = tick // self._tempo.ticks_per_bar
+            if self._planning_bar_limit is not None and current_bar >= self._planning_bar_limit:
+                return
             self._reserve_through(self._planning_ceiling(current_bar))
             self._drain_primary_result()
             if self._audio_coordinator is not None:
@@ -265,6 +267,21 @@ class RollingRapController:
             if future is not None:
                 future.cancel()
             audio_coordinator.reset()
+
+    def resume_audio(self, bar: int) -> None:
+        """Re-deliver the immutable next committed bar after a quantized stop."""
+
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._audio_coordinator is None:
+                    raise RuntimeError("audio resume is available only for audio-controlled sessions")
+                if self._closed or not self._started:
+                    raise RuntimeError("cannot resume an inactive audio controller")
+                if bar not in self._audio_committed_bars:
+                    raise ValueError("audio resume requires an already committed bar")
+                prepared = self._audio_coordinator.commit(bar)
+                epoch = self._lifecycle_epoch
+        self._notify_audio_committed(prepared, epoch)
 
     def bar_for(self, index: int) -> PlannedRapBar:
         with self._lock:

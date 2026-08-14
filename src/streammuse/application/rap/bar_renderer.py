@@ -48,6 +48,7 @@ class DeterministicRapBarRenderer:
         voice: str = "en-us",
         speed_wpm: int = 175,
         pitch: int = 50,
+        max_compression: float = 2.0,
     ) -> None:
         _validate_format(audio_format)
         self._tempo = tempo
@@ -57,6 +58,7 @@ class DeterministicRapBarRenderer:
         self.voice = voice
         self.speed_wpm = speed_wpm
         self.pitch = pitch
+        self.max_compression = max_compression
 
     def render(self, plan: PlannedRapBar) -> PreparedRapBar:
         started = perf_counter()
@@ -101,6 +103,7 @@ class DeterministicRapBarRenderer:
                 available_frames=available_frames,
                 final_in_bar=index == len(scheduled) - 1,
                 context=FitContext(plan.bar, item.slot.slot_index, item.syllable.word),
+                max_compression=self.max_compression,
             )
             mix_at(mixed, fitted.audio, target_sample, _VOCAL_GAIN)
             diagnostics.append(

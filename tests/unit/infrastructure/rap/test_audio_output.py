@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+import sys
 import time
 from pathlib import Path
 from threading import Event, Thread
@@ -231,6 +232,24 @@ def test_sounddevice_callback_copies_bar_bytes_across_arbitrary_blocks() -> None
         AudioPlaybackNoticeKind.BAR_STARTED,
         AudioPlaybackNoticeKind.BAR_COMPLETED,
     ]
+
+
+def test_sounddevice_sink_passes_selected_device_to_the_lazy_portaudio_factory(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class LazySoundDevice:
+        class OutputStream(FakeOutputStream):
+            def __init__(self, **kwargs) -> None:
+                observed.update(kwargs)
+                super().__init__(kwargs["callback"], block_frames=4)
+
+    monkeypatch.setitem(sys.modules, "sounddevice", LazySoundDevice)
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), device="Studio Speakers")
+
+    sink.start()
+    sink.close()
+
+    assert observed["device"] == "Studio Speakers"
 
 
 def test_sounddevice_callback_fills_silence_and_reports_status_underrun() -> None:

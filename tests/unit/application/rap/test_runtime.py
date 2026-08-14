@@ -6,7 +6,8 @@ from types import MappingProxyType
 import pytest
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
-from streammuse.application.rap.runtime import RapDemoDependencies, RapTickLoop
+from streammuse.application.rap.runtime import RapAudioDemoDependencies, RapDemoDependencies, RapTickLoop
+from streammuse.domain.rap import PlaybackState
 from streammuse.domain.timing import Tempo
 
 
@@ -297,3 +298,107 @@ def test_demo_session_metadata_recursively_freezes_mapping_proxy_and_user_dict(t
 
     assert dependencies.session_metadata["nested"][0]["lines"][0]["text"] == "original"
     assert dependencies.session_metadata["nested"][1][0]["mode"] == "split"
+
+
+def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(tmp_path) -> None:
+    calls: list[str] = []
+
+    class Controller:
+        def __init__(self, playback) -> None:
+            self.playback = playback
+            self.starts = 0
+
+        def start(self) -> None:
+            calls.append("controller_start")
+            self.starts += 1
+            if self.starts == 1:
+                self.playback.state = PlaybackState.PRIMING
+
+        def resume_audio(self, bar: int) -> None:
+            calls.append(f"controller_resume_{bar}")
+            self.playback.state = PlaybackState.PRIMING
+
+        def reset(self) -> None:
+            calls.append("controller_reset")
+
+        def close(self) -> None:
+            calls.append("controller_close")
+
+    class Playback:
+        def __init__(self) -> None:
+            self.state = PlaybackState.STOPPED
+            self.current_tick: int | None = None
+            self.next_start_bar = 0
+
+        def start(self) -> None:
+            calls.append("playback_start")
+            self.state = PlaybackState.RUNNING
+
+        def request_stop(self) -> None:
+            calls.append("playback_stop")
+            self.state = PlaybackState.STOP_REQUESTED
+
+        def wait(self, timeout: float | None = None) -> None:
+            calls.append("playback_wait")
+            self.state = PlaybackState.STOPPED
+            self.next_start_bar = 1
+
+        def reset(self) -> None:
+            calls.append("playback_reset")
+            assert self.state == PlaybackState.STOPPED
+
+        def close(self) -> None:
+            calls.append("playback_close")
+            self.state = PlaybackState.CLOSED
+
+    class Coordinator:
+        def close(self) -> None:
+            calls.append("coordinator_close")
+
+    class Publisher:
+        def emit(self, *_args, **_kwargs) -> None:
+            calls.append("session_stopped")
+
+    class Dispatcher:
+        def flush_and_close(self) -> None:
+            calls.append("dispatcher_close")
+
+    class Recorder:
+        def close(self) -> None:
+            calls.append("recorder_close")
+
+    playback = Playback()
+    dependencies = RapAudioDemoDependencies(
+        tempo=Tempo(60.0, 4, 4),
+        controller=Controller(playback),
+        coordinator=Coordinator(),
+        playback=playback,
+        publisher=Publisher(),
+        dispatcher=Dispatcher(),
+        session_dir=tmp_path,
+        recorder=Recorder(),
+    )
+
+    dependencies.start()
+    dependencies.request_stop()
+    playback.state = PlaybackState.STOPPED
+    dependencies.start()
+    dependencies.request_stop()
+    playback.state = PlaybackState.STOPPED
+    dependencies.reset()
+
+    assert "controller_resume_1" in calls
+
+    assert calls.count("controller_close") == 0
+    assert calls.count("coordinator_close") == 0
+    assert calls.count("playback_close") == 0
+    assert calls.count("dispatcher_close") == 0
+    assert calls.count("recorder_close") == 0
+
+    dependencies.close()
+
+    assert calls.count("controller_close") == 1
+    assert calls.count("coordinator_close") == 1
+    assert calls.count("playback_close") == 1
+    assert calls.count("dispatcher_close") == 1
+    assert calls.count("recorder_close") == 1

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import platform
+import shutil
 import subprocess
 import time
 from dataclasses import asdict
@@ -11,7 +13,7 @@ from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from queue import Queue
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 import uvicorn
@@ -19,7 +21,7 @@ import uvicorn
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
 from streammuse.application.rap.monitoring_payloads import flow_template_payload
 from streammuse.application.rap.realtime import RollingRapController
-from streammuse.application.rap.runtime import RapDemoDependencies, RapTickLoop
+from streammuse.application.rap.runtime import RapAudioDemoDependencies, RapDemoDependencies, RapTickLoop
 from streammuse.domain.rap import ScoreWeights
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.inference.local_chat_client import LocalChatModelClient, LocalChatModelClientConfig
@@ -45,6 +47,45 @@ class _WebSocketQueueSink:
         self._queue.put(event_to_dict(event))
 
 
+class RapAudioFactories:
+    """Lazy construction seam for audio-only adapters and real-device tests."""
+
+    def create_synthesizer(self):
+        from streammuse.infrastructure.rap.speech import EspeakPhonemeSynthesizer
+
+        return EspeakPhonemeSynthesizer()
+
+    def create_drums(self, *, seed: int):
+        from streammuse.infrastructure.rap.drums import ProceduralBoomBapRenderer
+
+        return ProceduralBoomBapRenderer(seed=seed)
+
+    def create_sink(
+        self,
+        *,
+        output: str,
+        audio_format,
+        audio_file: Path,
+        audio_device: str | None,
+    ):
+        from streammuse.infrastructure.rap.audio_output import (
+            CompositeAudioSink,
+            Float32WavAudioSink,
+            SoundDeviceAudioSink,
+            TimedAudioSink,
+        )
+
+        if output == "live":
+            return SoundDeviceAudioSink(audio_format=audio_format, device=audio_device)
+        recorder = Float32WavAudioSink(audio_file, audio_format)
+        primary = (
+            TimedAudioSink(audio_format=audio_format)
+            if output == "wav"
+            else SoundDeviceAudioSink(audio_format=audio_format, device=audio_device)
+        )
+        return CompositeAudioSink(primary, recorder)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="streammuse-rap-demo",
@@ -58,6 +99,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-s", type=float, default=5.0)
     parser.add_argument("--candidate-count", type=int, default=8)
     parser.add_argument("--lookahead-bars", type=int, default=2)
+    parser.add_argument("--audio-output", choices=("none", "live", "wav", "composite"), default="none")
+    parser.add_argument("--tempo", type=float, default=None, help="Override the scenario playback tempo")
+    parser.add_argument("--audio-device", default=None)
+    parser.add_argument("--sample-rate", type=int, default=48_000)
+    parser.add_argument("--voice", default="en-us")
+    parser.add_argument("--voice-speed", type=int, default=175)
+    parser.add_argument("--voice-pitch", type=int, default=50)
+    parser.add_argument("--max-compression", type=float, default=2.0)
+    parser.add_argument("--audio-file", type=Path, default=None)
     parser.add_argument("--minimum-score", type=float, default=0.55)
     parser.add_argument("--seed", type=int, default=20260807)
     parser.add_argument("--max-bars", type=int, default=12, help="Zero runs until interrupted")
@@ -75,7 +125,8 @@ def build_demo(
     *,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
-) -> RapDemoDependencies:
+    audio_factories: RapAudioFactories | Any | None = None,
+) -> RapDemoDependencies | RapAudioDemoDependencies:
     if args.max_bars < 0:
         raise ValueError("max-bars must not be negative")
     if args.candidate_count <= 0 or args.lookahead_bars <= 0:
@@ -84,13 +135,14 @@ def build_demo(
         raise ValueError("timeout-s must be positive")
     if not 0.0 <= args.minimum_score <= 1.0:
         raise ValueError("minimum-score must be between zero and one")
+    _validate_audio_options(args, require_external=audio_factories is None)
 
     scenario = load_scenario(args.scenario) if args.scenario else default_scenario()
     if not scenario.loop and args.max_bars == 0:
         raise ValueError("max-bars 0 requires a looping scenario")
     if not scenario.loop and args.max_bars > scenario.total_bars:
         raise ValueError("max-bars exceeds the non-looping scenario length")
-    tempo = Tempo(scenario.tempo_bpm, 4, 4)
+    tempo = Tempo(args.tempo if args.tempo is not None else scenario.tempo_bpm, 4, 4)
     analyzer = CmuProsodyAnalyzer()
     fallbacks = PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer)
     session_id = f"rap-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
@@ -104,6 +156,18 @@ def build_demo(
             "terminal_detail": args.terminal_detail,
         }
     )
+    if args.audio_output != "none":
+        return _build_audio_demo(
+            args,
+            tempo=tempo,
+            scenario=scenario,
+            analyzer=analyzer,
+            fallbacks=fallbacks,
+            session_dir=session_dir,
+            manifest=manifest,
+            clock=clock,
+            audio_factories=audio_factories or RapAudioFactories(),
+        )
     generator, stop_primary, close_primary = _build_generator(args)
     recorder = None
     dispatcher = None
@@ -195,12 +259,196 @@ def build_demo(
     )
 
 
+def _build_audio_demo(
+    args: argparse.Namespace,
+    *,
+    tempo: Tempo,
+    scenario,
+    analyzer,
+    fallbacks,
+    session_dir: Path,
+    manifest: dict[str, object],
+    clock: Callable[[], float],
+    audio_factories: RapAudioFactories | Any,
+) -> RapAudioDemoDependencies:
+    """Assemble the audio graph only after explicit audio mode selection."""
+
+    from streammuse.application.rap.audio_coordination import BarAudioCoordinator
+    from streammuse.application.rap.bar_renderer import DeterministicRapBarRenderer
+    from streammuse.application.rap.playback import RapPlaybackService
+    from streammuse.domain.rap import AudioFormat
+
+    audio_format = AudioFormat(sample_rate_hz=args.sample_rate, channels=2, sample_width_bytes=4)
+    audio_file = args.audio_file or session_dir / "mixed.wav"
+    manifest["audio"] = {
+        "output": args.audio_output,
+        "sample_rate_hz": audio_format.sample_rate_hz,
+        "channels": audio_format.channels,
+        "sample_width_bytes": audio_format.sample_width_bytes,
+        "voice": args.voice,
+        "voice_speed": args.voice_speed,
+        "voice_pitch": args.voice_pitch,
+        "max_compression": args.max_compression,
+        "audio_device": args.audio_device,
+        "artifact_paths": {"wav": str(audio_file)} if args.audio_output in ("wav", "composite") else {},
+    }
+    generator, stop_primary, close_primary = _build_generator(args)
+    recorder = None
+    dispatcher = None
+    coordinator = None
+    playback = None
+    try:
+        recorder = RapSessionRecorder(session_dir, manifest)
+        publisher = RapEventPublisher(str(manifest["session_id"]))
+        projector = RapStateProjector()
+        websocket_queue: Queue[dict[str, object]] = Queue()
+        dispatcher = RapEventDispatcher(
+            publisher.queue,
+            sinks=(
+                recorder,
+                projector,
+                _WebSocketQueueSink(websocket_queue),
+                TerminalRapSink(args.terminal_detail, layout=args.terminal_layout),
+            ),
+        )
+        dispatcher.start()
+        synthesizer = audio_factories.create_synthesizer()
+        drums = audio_factories.create_drums(seed=args.seed)
+        renderer = DeterministicRapBarRenderer(
+            tempo=tempo,
+            audio_format=audio_format,
+            synthesizer=synthesizer,
+            drums=drums,
+            voice=args.voice,
+            speed_wpm=args.voice_speed,
+            pitch=args.voice_pitch,
+            max_compression=args.max_compression,
+        )
+        coordinator = BarAudioCoordinator(renderer, publisher=publisher)
+        sink = audio_factories.create_sink(
+            output=args.audio_output,
+            audio_format=audio_format,
+            audio_file=audio_file,
+            audio_device=args.audio_device,
+        )
+        controller: RollingRapController
+        playback = RapPlaybackService(
+            tempo=tempo,
+            sink=sink,
+            publisher=publisher,
+            on_tick=lambda tick: controller.on_tick(tick),
+            monotonic=clock,
+        )
+        controller = RollingRapController(
+            tempo=tempo,
+            scenario=scenario,
+            templates=BUILTIN_TEMPLATES,
+            fallback_catalog=fallbacks,
+            analyzer=analyzer,
+            weights=ScoreWeights(),
+            publisher=publisher,
+            primary_generator=generator,
+            candidate_count=args.candidate_count,
+            lookahead_bars=args.lookahead_bars,
+            minimum_score=args.minimum_score,
+            seed=args.seed,
+            planning_bar_limit=args.max_bars or (None if scenario.loop else scenario.total_bars),
+            stop_primary=stop_primary,
+            close_primary=close_primary,
+            audio_coordinator=coordinator,
+            on_audio_committed=playback.enqueue,
+            monotonic=clock,
+        )
+    except BaseException:
+        if playback is not None:
+            playback.close()
+        elif coordinator is not None:
+            coordinator.close()
+        if dispatcher is not None:
+            dispatcher.flush_and_close()
+        if recorder is not None:
+            recorder.close()
+        if stop_primary is not None:
+            stop_primary()
+        if close_primary is not None:
+            close_primary()
+        raise
+
+    generator_config = manifest["generator_config"]
+    model_config = manifest["model_config"]
+    assert isinstance(generator_config, dict) and isinstance(model_config, dict)
+    session_metadata = {
+        "scenario_id": scenario.scenario_id,
+        "tempo_bpm": tempo.bpm,
+        "ticks_per_beat": tempo.ticks_per_beat,
+        "beats_per_bar": tempo.beats_per_bar,
+        "max_bars": args.max_bars,
+        "generator": generator_config["name"],
+        "model_url": model_config["base_url"],
+        "model": model_config["name"],
+        "generator_config": generator_config,
+        "model_config": model_config,
+        "candidate_count": args.candidate_count,
+        "lookahead_bars": args.lookahead_bars,
+        "minimum_score": args.minimum_score,
+        "seed": args.seed,
+        "score_weights": manifest["score_weights"],
+        "terminal_layout": args.terminal_layout,
+        "terminal_detail": args.terminal_detail,
+        "audio": manifest["audio"],
+    }
+    return RapAudioDemoDependencies(
+        tempo=tempo,
+        controller=controller,
+        coordinator=coordinator,
+        playback=playback,
+        publisher=publisher,
+        dispatcher=dispatcher,
+        session_dir=session_dir,
+        session_metadata=session_metadata,
+        recorder=recorder,
+        projector=projector,
+        websocket_queue=websocket_queue,
+        configured_max_bars=args.max_bars,
+    )
+
+
+def _validate_audio_options(args: argparse.Namespace, *, require_external: bool) -> None:
+    if args.tempo is not None and args.tempo <= 0:
+        raise ValueError("tempo must be positive")
+    if args.sample_rate <= 0:
+        raise ValueError("sample-rate must be positive")
+    if not 80 <= args.voice_speed <= 450:
+        raise ValueError("voice-speed must be between 80 and 450")
+    if not 0 <= args.voice_pitch <= 99:
+        raise ValueError("voice-pitch must be between 0 and 99")
+    if not 1.0 <= args.max_compression <= 4.0:
+        raise ValueError("max-compression must be between 1.0 and 4.0")
+    if args.audio_output == "none" or not require_external:
+        return
+    if not isinstance(args.voice, str) or not args.voice:
+        raise ValueError("voice must not be empty")
+    if shutil.which("espeak-ng") is None:
+        raise OSError("audio output requires the espeak-ng executable")
+    if args.audio_output in ("live", "composite"):
+        try:
+            importlib.import_module("sounddevice")
+        except ImportError as error:
+            raise OSError("live audio output requires sounddevice") from error
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         demo = build_demo(args)
         if args.no_web:
-            demo.run(max_bars=args.max_bars)
+            if getattr(demo, "autostart", True):
+                demo.run(max_bars=args.max_bars)
+            else:
+                try:
+                    demo.start()
+                finally:
+                    demo.close()
         else:
             app = create_app(runtime=demo, projector=demo.projector, websocket_queue=demo.websocket_queue)
             print(f"Rap monitor: http://{args.host}:{args.port}")
@@ -258,7 +506,7 @@ def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[st
         )
     scenario_payload = {
         "scenario_id": scenario.scenario_id,
-        "tempo_bpm": scenario.tempo_bpm,
+        "tempo_bpm": tempo.bpm,
         "loop": scenario.loop,
         "segments": [
             {

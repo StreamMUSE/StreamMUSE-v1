@@ -9,11 +9,11 @@ from math import isfinite
 from pathlib import Path
 from threading import Event, RLock
 from types import MappingProxyType
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
 from streammuse.application.rap.realtime import RollingRapController
-from streammuse.domain.rap import RapEventType
+from streammuse.domain.rap import PlaybackState, RapEventType
 from streammuse.domain.timing import Tempo
 
 
@@ -140,6 +140,115 @@ class RapDemoDependencies:
                     add_note(f"rap runtime teardown first failed during {first_phase}")
                     for phase, error in failures[1:]:
                         add_note(f"additional teardown failure during {phase}: {type(error).__name__}: {error}")
+                raise first_error
+
+
+@dataclass
+class RapAudioDemoDependencies:
+    """Own a restartable audio demo without changing text-runtime semantics."""
+
+    autostart: ClassVar[bool] = False
+
+    tempo: Tempo
+    controller: RollingRapController
+    coordinator: Any
+    playback: Any
+    publisher: RapEventPublisher
+    dispatcher: RapEventDispatcher
+    session_dir: Path
+    session_metadata: Mapping[str, Any] = field(default_factory=dict)
+    recorder: Any | None = None
+    projector: Any | None = None
+    websocket_queue: Any | None = None
+    configured_max_bars: int = 0
+    _closed: bool = field(default=False, init=False)
+    _lifecycle_lock: RLock = field(default_factory=RLock, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.configured_max_bars, int)
+            or isinstance(self.configured_max_bars, bool)
+            or self.configured_max_bars < 0
+        ):
+            raise ValueError("configured_max_bars must be a nonnegative integer")
+        if not isinstance(self.session_metadata, Mapping):
+            raise ValueError("session_metadata must be a mapping")
+        self.session_metadata = _freeze_metadata(self.session_metadata)
+
+    @property
+    def control_state(self) -> PlaybackState:
+        return self.playback.state
+
+    def start(self) -> None:
+        """Start audio playback and block until a requested or automatic stop."""
+
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("rap audio runtime is closed")
+            if self.playback.state not in (PlaybackState.STOPPED, PlaybackState.PRIMING):
+                return
+            self.controller.start()
+            if self.playback.state == PlaybackState.STOPPED:
+                # A prior bar-quantized stop retains an immutable committed
+                # successor. Re-deliver it so playback clears stale queue data
+                # and primes exactly the next complete musical bar.
+                self.controller.resume_audio(self.playback.next_start_bar)
+            if self.playback.state == PlaybackState.STOPPED:
+                raise RuntimeError("audio controller did not prepare a playback bar")
+            self.playback.start()
+
+        maximum_tick = self.configured_max_bars * self.tempo.ticks_per_bar - 1
+        while self.playback.state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
+            if self.configured_max_bars and self.playback.current_tick is not None:
+                if self.playback.current_tick >= maximum_tick:
+                    self.playback.request_stop()
+            self.playback.wait(timeout=0.01)
+
+    def request_stop(self) -> None:
+        """Request a stop that the playback service quantizes to the current bar."""
+
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self.playback.request_stop()
+
+    def reset(self) -> None:
+        """Discard stopped session state so the next start begins at bar zero."""
+
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("rap audio runtime is closed")
+            if self.playback.state != PlaybackState.STOPPED:
+                raise RuntimeError("rap audio runtime can reset only while stopped")
+            self.playback.reset()
+            self.controller.reset()
+
+    def close(self) -> None:
+        """Permanently close audio, planning, publication, and recording once."""
+
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            failures: list[tuple[str, BaseException]] = []
+
+            def attempt(phase: str, action: Callable[[], None]) -> None:
+                try:
+                    action()
+                except BaseException as exc:
+                    failures.append((phase, exc))
+
+            attempt("playback close", self.playback.close)
+            attempt("controller close", self.controller.close)
+            attempt("coordinator close", self.coordinator.close)
+            attempt("dispatcher close", self.dispatcher.flush_and_close)
+            if self.recorder is not None:
+                attempt("recorder close", self.recorder.close)
+            if failures:
+                first_phase, first_error = failures[0]
+                add_note = getattr(first_error, "add_note", None)
+                if callable(add_note):
+                    add_note(f"rap audio runtime teardown first failed during {first_phase}")
                 raise first_error
 
 

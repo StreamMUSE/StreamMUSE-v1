@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, isfinite
 
 import numpy as np
 from scipy.signal import resample
@@ -81,16 +81,19 @@ def fit_syllable(
     available_frames: int,
     final_in_bar: bool,
     context: FitContext,
+    max_compression: float = 2.0,
 ) -> FittedSyllable:
     _require_float32_format(audio.format)
     if available_frames < 1:
         raise ValueError("available_frames must be positive")
+    if not isfinite(max_compression) or max_compression < 1.0:
+        raise ValueError("max_compression must be finite and at least one")
     source_frames = audio.frame_count
     if source_frames == 0:
         return FittedSyllable(audio, 1.0, 0, ())
 
     required_ratio = source_frames / available_frames
-    capped_ratio = min(max(required_ratio, 1.0), 2.0)
+    capped_ratio = min(max(required_ratio, 1.0), max_compression)
     target_frames = max(1, ceil(source_frames / capped_ratio))
     forced_bar_fit = final_in_bar and target_frames > available_frames
     if forced_bar_fit:

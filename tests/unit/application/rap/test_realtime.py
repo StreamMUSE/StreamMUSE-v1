@@ -432,6 +432,24 @@ def test_audio_controller_commits_target_bar_one_tick_before_its_boundary() -> N
     }
 
 
+def test_audio_controller_redelivers_the_next_immutable_bar_after_stop() -> None:
+    audio = RecordingAudioCoordinator()
+    delivered = []
+    controller, _emitted, events, dispatcher = _controller(
+        audio_coordinator=audio,
+        on_audio_committed=delivered.append,
+    )
+    controller.start()
+    controller.on_tick(15)
+    delivered.clear()
+
+    controller.resume_audio(1)
+    _finish(controller, dispatcher)
+
+    assert [prepared.bar for prepared in delivered] == [1]
+    assert _types(events).count("bar_audio_committed") == 2
+
+
 def test_audio_controller_reset_discards_uncommitted_state_without_closing_dependencies() -> None:
     executor = ManualExecutor()
     audio = RecordingAudioCoordinator()
@@ -907,3 +925,18 @@ def test_finite_session_never_reserves_or_plans_past_its_last_emitted_bar() -> N
 
     assert {event.bar for event in events if event.bar is not None} <= {0, 1}
     assert controller.bar_state(2) == "unreserved"
+
+
+def test_finite_session_ignores_the_tick_at_its_terminal_bar_boundary() -> None:
+    controller, _emitted, events, dispatcher = _controller(
+        primary=FixedGenerator(),
+        executor=ManualExecutor(),
+        planning_bar_limit=2,
+    )
+    controller.start()
+
+    for tick in range(33):
+        controller.on_tick(tick)
+    _finish(controller, dispatcher)
+
+    assert {event.bar for event in events if event.bar is not None} <= {0, 1}

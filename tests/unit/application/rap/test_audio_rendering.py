@@ -103,6 +103,23 @@ def test_long_nonfinal_syllable_caps_compression_and_reports_overlap() -> None:
     assert fitted.warnings[0].code == AudioWarningCode.TIMING_PRESSURE
 
 
+def test_fit_syllable_uses_configured_compression_cap() -> None:
+    source = mono_pcm(frames=900, value=0.25)
+    context = FitContext(bar=2, slot_index=4, word="timing")
+
+    fitted = fit_syllable(
+        source,
+        available_frames=300,
+        final_in_bar=False,
+        context=context,
+        max_compression=3.0,
+    )
+
+    assert fitted.audio.frame_count == 300
+    assert fitted.compression_ratio == pytest.approx(3.0)
+    assert fitted.overlap_frames == 0
+
+
 def test_final_syllable_is_forced_to_bar_boundary() -> None:
     source = mono_pcm(frames=1_000, value=0.25)
     context = FitContext(bar=2, slot_index=8, word="ending")

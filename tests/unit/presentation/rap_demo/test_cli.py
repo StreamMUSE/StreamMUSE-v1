@@ -5,7 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from streammuse.presentation.rap_demo.cli import _repository_state, build_demo, build_parser, main
+from streammuse.application.rap.runtime import RapAudioDemoDependencies, RapDemoDependencies
+from streammuse.domain.rap import AudioFormat, PlaybackState
+from streammuse.infrastructure.rap.audio_output import NullAudioSink
+from streammuse.presentation.rap_demo.cli import (
+    RapAudioFactories,
+    _repository_state,
+    build_demo,
+    build_parser,
+    main,
+)
 
 
 class FakeClock:
@@ -27,6 +36,115 @@ def test_parser_defaults_to_showcase_local_endpoint_and_model() -> None:
     assert args.generator == "phrase_bank"
     assert args.no_web is False
     assert args.terminal_layout == "auto"
+
+
+def test_existing_parser_defaults_remain_text_only() -> None:
+    args = build_parser().parse_args([])
+
+    assert args.audio_output == "none"
+    assert args.tempo is None
+    assert args.candidate_count == 8
+    assert args.lookahead_bars == 2
+
+
+def test_audio_parser_accepts_explicit_research_configuration() -> None:
+    args = build_parser().parse_args(
+        [
+            "--audio-output",
+            "composite",
+            "--tempo",
+            "60",
+            "--candidate-count",
+            "12",
+            "--lookahead-bars",
+            "3",
+            "--audio-device",
+            "MacBook Pro Speakers",
+            "--voice",
+            "en-us",
+        ]
+    )
+
+    assert args.audio_output == "composite"
+    assert args.tempo == 60.0
+    assert args.sample_rate == 48_000
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    (
+        (("--tempo", "0"), "tempo"),
+        (("--sample-rate", "0"), "sample-rate"),
+        (("--voice-speed", "79"), "voice-speed"),
+        (("--voice-pitch", "100"), "voice-pitch"),
+        (("--max-compression", "4.1"), "max-compression"),
+    ),
+)
+def test_audio_options_are_validated_before_session_assembly(
+    tmp_path: Path, arguments: tuple[str, ...], message: str
+) -> None:
+    args = build_parser().parse_args([*arguments, "--log-dir", str(tmp_path)])
+
+    with pytest.raises(ValueError, match=message):
+        build_demo(args)
+
+
+def test_text_build_uses_existing_tick_loop_and_no_audio_dependencies(tmp_path: Path) -> None:
+    class FailIfCalledAudioFactories:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"audio factory should not be used: {name}")
+
+    args = build_parser().parse_args(["--max-bars", "1", "--log-dir", str(tmp_path)])
+    demo = build_demo(args, audio_factories=FailIfCalledAudioFactories())
+    try:
+        assert type(demo) is RapDemoDependencies
+    finally:
+        demo.close()
+
+
+def test_audio_build_uses_mac_synthesis_renderer_playback_and_recording(tmp_path: Path) -> None:
+    class SilentSynthesizer:
+        def synthesize(self, request):
+            raise AssertionError(f"rendering should not start during assembly: {request}")
+
+    class AudioFactories(RapAudioFactories):
+        def create_synthesizer(self):
+            return SilentSynthesizer()
+
+        def create_sink(self, *, output, audio_format, audio_file, audio_device):
+            assert output == "composite"
+            assert audio_format == AudioFormat()
+            assert audio_file.name == "mixed.wav"
+            assert audio_device == "MacBook Pro Speakers"
+            return NullAudioSink(audio_format=audio_format)
+
+    args = build_parser().parse_args(
+        [
+            "--audio-output",
+            "composite",
+            "--tempo",
+            "60",
+            "--candidate-count",
+            "12",
+            "--lookahead-bars",
+            "3",
+            "--audio-device",
+            "MacBook Pro Speakers",
+            "--log-dir",
+            str(tmp_path),
+        ]
+    )
+    demo = build_demo(args, audio_factories=AudioFactories())
+    try:
+        assert isinstance(demo, RapAudioDemoDependencies)
+        assert demo.tempo.bpm == 60.0
+        assert demo.autostart is False
+        assert demo.control_state == PlaybackState.STOPPED
+        manifest = json.loads((demo.session_dir / "session.json").read_text(encoding="utf-8"))
+        assert manifest["audio"]["output"] == "composite"
+        assert manifest["audio"]["artifact_paths"]["wav"].endswith("mixed.wav")
+    finally:
+        demo.close()
 
 
 def test_build_demo_prevalidates_fallbacks_and_runs_finite_terminal_session(tmp_path: Path, capsys) -> None:

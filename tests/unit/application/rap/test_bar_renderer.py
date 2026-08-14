@@ -152,3 +152,17 @@ def test_bar_renderer_preserves_pronunciation_and_timing_warnings() -> None:
         AudioWarningCode.PRONUNCIATION_FALLBACK,
         AudioWarningCode.TIMING_PRESSURE,
     }
+
+
+def test_bar_renderer_passes_its_configured_compression_cap_to_syllable_fitting() -> None:
+    renderer = DeterministicRapBarRenderer(
+        tempo=Tempo(60.0, 4, 4),
+        audio_format=AudioFormat(48_000, 2),
+        synthesizer=ImpulseSpeechSynthesizer(frames=144_000, sustained=True),
+        drums=SilentDrumRenderer(),
+        max_compression=3.0,
+    )
+
+    prepared = renderer.render(planned_bar_with_slots(bar=0, ticks=(0, 4)))
+
+    assert prepared.diagnostics[0].compression_ratio == 3.0

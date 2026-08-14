@@ -39,7 +39,9 @@ def _require_float32(audio_format: AudioFormat) -> None:
         raise ValueError("audio output requires 32-bit float PCM")
 
 
-def _default_output_stream_factory(*, audio_format: AudioFormat, callback: Callable[..., None]) -> OutputStream:
+def _default_output_stream_factory(
+    *, audio_format: AudioFormat, callback: Callable[..., None], device: str | None = None
+) -> OutputStream:
     # Keep PortAudio and its device discovery out of text-only imports.
     import sounddevice
 
@@ -48,6 +50,7 @@ def _default_output_stream_factory(*, audio_format: AudioFormat, callback: Calla
         channels=audio_format.channels,
         dtype="float32",
         callback=callback,
+        device=device,
     )
 
 
@@ -65,12 +68,14 @@ class SoundDeviceAudioSink:
         self,
         *,
         audio_format: AudioFormat,
+        device: str | None = None,
         stream_factory: OutputStreamFactory | None = None,
         callback_stop_factory: CallbackStopFactory | None = None,
     ) -> None:
         _require_float32(audio_format)
         self._audio_format = audio_format
-        self._stream_factory = stream_factory or _default_output_stream_factory
+        self._device = device
+        self._stream_factory = stream_factory
         self._callback_stop_factory = callback_stop_factory or _default_callback_stop_factory
         self._queued: deque[PreparedRapBar] = deque()
         self._queue_lock = Lock()
@@ -102,7 +107,14 @@ class SoundDeviceAudioSink:
                     return
                 start_epoch = self._epoch
                 if self._stream is None:
-                    self._stream = self._stream_factory(audio_format=self._audio_format, callback=self._callback)
+                    if self._stream_factory is None:
+                        self._stream = _default_output_stream_factory(
+                            audio_format=self._audio_format,
+                            callback=self._callback,
+                            device=self._device,
+                        )
+                    else:
+                        self._stream = self._stream_factory(audio_format=self._audio_format, callback=self._callback)
                 self._state = PlaybackState.RUNNING
                 self._stop_requested = False
                 stream = self._stream

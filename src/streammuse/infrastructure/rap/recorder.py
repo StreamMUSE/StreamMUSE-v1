@@ -290,6 +290,8 @@ def derive_summary(
     generator_errors = _generator_error_requests(event_list, plans, batches)
     pronunciation_fallbacks, pronunciation_total = _pronunciation_counts(evaluations.values())
     repetitions, generated_bigrams = _repetition_counts(event_list, frozen, expected_manifest_window)
+    audio_events = tuple(event for event in event_list if event.event_type == RapEventType.AUDIO_RENDER_COMPLETED)
+    committed_audio = tuple(event for event in event_list if event.event_type == RapEventType.BAR_AUDIO_COMMITTED)
 
     return {
         "events": {"count": len(event_list)},
@@ -319,6 +321,18 @@ def derive_summary(
             "warnings": {
                 "count": sum(isinstance(event.payload.get("warning"), str) and bool(event.payload["warning"]) for event in batches.values())
             },
+        },
+        "audio": {
+            "render_latency_ms": _distribution(_payload_numbers(audio_events, "render_latency_ms")),
+            "commit_slack_ms": _distribution(_payload_numbers(committed_audio, "deadline_slack_ms")),
+            "warning_counts": {
+                "pronunciation_fallback": sum(
+                    event.event_type == RapEventType.PRONUNCIATION_FALLBACK for event in event_list
+                ),
+                "timing_pressure": sum(event.event_type == RapEventType.TIMING_PRESSURE for event in event_list),
+            },
+            "underruns": sum(event.event_type == RapEventType.AUDIO_UNDERRUN for event in event_list),
+            "completed_bars": sum(event.event_type == RapEventType.BAR_PLAYBACK_COMPLETED for event in event_list),
         },
     }
 

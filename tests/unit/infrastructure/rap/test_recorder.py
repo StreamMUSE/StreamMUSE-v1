@@ -146,6 +146,26 @@ def test_summary_uses_explicit_ratio_denominators_and_null_empty_observations() 
     assert empty["latencies"]["generation_latency_ms"] == {"count": 0, "p50": None, "p95": None, "max": None}
 
 
+def test_summary_derives_additive_audio_metrics_from_canonical_events() -> None:
+    summary = derive_summary(
+        (
+            _event(1, RapEventType.AUDIO_RENDER_COMPLETED, bar=0, payload={"render_latency_ms": 12.0}),
+            _event(2, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"deadline_slack_ms": 250.0}),
+            _event(3, RapEventType.PRONUNCIATION_FALLBACK, bar=0, payload={}),
+            _event(4, RapEventType.AUDIO_UNDERRUN, payload={}),
+            _event(5, RapEventType.BAR_PLAYBACK_COMPLETED, bar=0, payload={}),
+        )
+    )
+
+    assert summary["audio"] == {
+        "render_latency_ms": {"count": 1, "p50": 12.0, "p95": 12.0, "max": 12.0},
+        "commit_slack_ms": {"count": 1, "p50": 250.0, "p95": 250.0, "max": 250.0},
+        "warning_counts": {"pronunciation_fallback": 1, "timing_pressure": 0},
+        "underruns": 1,
+        "completed_bars": 1,
+    }
+
+
 def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:
     rows = derive_bar_rows(_scripted_session_events())
     assert rows == [
