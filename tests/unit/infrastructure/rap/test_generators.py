@@ -3,6 +3,7 @@
 import json
 
 import pytest
+import requests
 
 from streammuse.domain.rap import CandidateBatch, CandidateRequest, FlowTemplate
 from streammuse.domain.tasks import ChatModelResponse
@@ -174,6 +175,21 @@ def test_local_chat_empty_response_is_an_explicit_generation_error() -> None:
     assert batch.latency_ms == 12.5
     assert batch.prompt_tokens == 21
     assert batch.completion_tokens == 13
+
+
+def test_local_chat_error_batch_retains_safe_transport_diagnostic_as_warning() -> None:
+    class TimeoutClient:
+        def generate(self, _messages, **_kwargs):
+            raise requests.Timeout(
+                "target_url=http://127.0.0.1:18001/v1/chat/completions "
+                "exception_class=ReadTimeout exception_repr=ReadTimeout('')"
+            )
+
+    batch = LocalChatCandidateGenerator(TimeoutClient()).generate(request_for_bar())
+
+    assert batch.error_type == "generation_error"
+    assert batch.warning == batch.error_message
+    assert "target_url=http://127.0.0.1:18001/v1/chat/completions" in (batch.error_message or "")
 
 
 def test_local_chat_parsing_deduplicates_without_filtering_by_requested_syllable_count() -> None:

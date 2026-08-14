@@ -291,12 +291,21 @@ class BarAudioCoordinator:
         accepted: bool,
         coordinator_epoch: int,
     ) -> dict[str, object]:
+        pronunciation_sources: dict[str, int] = {}
+        for diagnostic in prepared.diagnostics:
+            pronunciation_sources[diagnostic.pronunciation_source] = (
+                pronunciation_sources.get(diagnostic.pronunciation_source, 0) + 1
+            )
         return {
             "source": prepared.source,
             "role": role,
             "text": prepared.text,
             "render_latency_ms": prepared.render_latency_ms,
             "synthesis_latency_ms": sum(item.synthesis_latency_ms for item in prepared.diagnostics),
+            "vocal_syllable_count": len(prepared.diagnostics),
+            "vocal_source_frames": sum(item.source_frames for item in prepared.diagnostics),
+            "vocal_fitted_frames": sum(item.fitted_frames for item in prepared.diagnostics),
+            "pronunciation_sources": pronunciation_sources,
             "frame_count": prepared.audio.frame_count,
             "warnings": [warning.code.value for warning in prepared.warnings],
             "accepted": accepted,

@@ -136,6 +136,30 @@ def test_local_chat_client_allows_per_call_timeout_override(monkeypatch) -> None
     client.close()
 
 
+def test_local_chat_client_blank_timeout_keeps_safe_target_and_exception_diagnostics(monkeypatch) -> None:
+    request = httpx.Request("POST", "http://127.0.0.1:18001/v1/chat/completions")
+    session = FakeSession(error=httpx.ReadTimeout("", request=request))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(
+            base_url="http://user:password@127.0.0.1:18001/v1?access_token=do-not-record",
+            model="qwen-rap",
+            api_key="do-not-record",
+        )
+    )
+
+    with pytest.raises(requests.Timeout) as error:
+        client.generate([{"role": "user", "content": "do-not-record"}])
+
+    message = str(error.value)
+    assert "target_url=http://127.0.0.1:18001/v1/chat/completions" in message
+    assert "exception_class=ReadTimeout" in message
+    assert "exception_repr=ReadTimeout('')" in message
+    for secret in ("user", "password", "access_token", "do-not-record"):
+        assert secret not in message
+    client.close()
+
+
 def test_local_chat_client_includes_top_p_and_extra_payload_when_configured(monkeypatch) -> None:
     session = FakeSession()
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)

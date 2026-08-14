@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from threading import Event, RLock, Thread
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import requests
@@ -276,16 +278,19 @@ class LocalChatModelClient:
                     if attempt < attempts - 1:
                         await _retry_sleep(float(self.config.retry_delay_s))
                         continue
+                    diagnostic = _transport_diagnostic(self._chat_url(), exc)
                     if isinstance(exc, httpx.TimeoutException):
-                        raise requests.Timeout(str(exc)) from exc
-                    raise
+                        raise requests.Timeout(diagnostic) from exc
+                    raise RuntimeError(diagnostic) from exc
         except asyncio.CancelledError as exc:
             raise LocalChatRequestAborted("local chat request aborted") from exc
 
         raise RuntimeError("local chat client exhausted attempts without a response")
 
     def _chat_url(self) -> str:
-        return f"{self.config.base_url.rstrip('/')}/chat/completions"
+        parts = urlsplit(self.config.base_url)
+        path = f"{parts.path.rstrip('/')}/chat/completions"
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
     @staticmethod
     def _parse_response(data: dict[str, Any], *, latency_ms: float) -> ChatModelResponse:
@@ -315,3 +320,42 @@ def _optional_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+_URL_CREDENTIALS = re.compile(r"([a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
+_SECRET_VALUE = re.compile(
+    r"\b(authorization|api[_-]?key|access[_-]?token|token|password|secret)\b\s*([=:])\s*([^,\s}\]]+)",
+    re.IGNORECASE,
+)
+_BEARER_VALUE = re.compile(r"\bbearer\s+[^,\s}\]]+", re.IGNORECASE)
+
+
+def _transport_diagnostic(target_url: str, error: httpx.HTTPError) -> str:
+    """Preserve useful transport context without retaining request credentials or body."""
+    return (
+        f"target_url={_safe_target_url(target_url)} "
+        f"exception_class={type(error).__name__} "
+        f"exception_repr={_sanitize_transport_repr(repr(error))}"
+    )
+
+
+def _safe_target_url(url: str) -> str:
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.hostname:
+        return "<invalid-url>"
+    host = parts.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        return "<invalid-url>"
+    netloc = f"{host}:{port}" if port is not None else host
+    return urlunsplit((parts.scheme, netloc, parts.path or "/", "", ""))
+
+
+def _sanitize_transport_repr(value: str) -> str:
+    value = _URL_CREDENTIALS.sub(r"\1", value)
+    value = _BEARER_VALUE.sub("Bearer [REDACTED]", value)
+    value = _SECRET_VALUE.sub(r"\1\2[REDACTED]", value)
+    return value[:512]

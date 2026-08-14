@@ -65,11 +65,28 @@ ssh -o ExitOnForwardFailure=yes -N \
 Keep that tunnel open while the demo runs. It maps Mac `127.0.0.1:8001` to the
 H200 model endpoint; it does not forward the web monitor.
 
+Before a session or candidate sweep, verify both the model discovery and one
+minimal chat request through this exact tunnel:
+
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8001/v1/models
+curl --fail --silent --show-error \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen-rap","messages":[{"role":"user","content":"Reply exactly: ok"}],"max_tokens":4,"temperature":0}' \
+  http://127.0.0.1:8001/v1/chat/completions
+```
+
+The second command must return a chat completion before starting a sweep. If it
+fails, retain its curl output and do not report a candidate sweep as remote
+evidence.
+
 ## Mac: Run The Audible Demo
 
 Run this command in a third Mac terminal. It records an IEEE-float WAV while
 playing through the selected CoreAudio default device and starts the local web
-monitor at `http://127.0.0.1:8012/`.
+monitor at `http://127.0.0.1:8012/`. The accepted device-free evidence confirms
+nonempty eSpeak vocal PCM alongside drums; physical speaker audibility and
+latency remain unmeasured.
 
 ```bash
 uv run streammuse-rap-demo \
@@ -210,16 +227,21 @@ website for the split Mac/H200 flow.
 
 `espeak-ng` must be present before audio mode starts. A `synthesis_failed`
 warning means the renderer substituted empty vocal PCM for that syllable; drum
-PCM and the timing/WAV path can still run. On the macOS acceptance machine,
-Homebrew eSpeak's `--stdout` stream advertised an invalid WAV frame count even
-though its PCM payload was valid, so all tested vocal syllables failed to
-decode. Reproduce the environment check with:
+PCM and the timing/WAV path can still run. Homebrew eSpeak 1.52 may advertise a
+streaming RIFF/data length that is larger than stdout's actual PCM payload. The
+adapter validates format and frame alignment, then derives the frame count from
+the complete payload rather than trusting that streaming length. Reproduce the
+environment check with:
 
 ```bash
 espeak-ng -D -z -v en-us -s 175 -p 50 --stdout "[['mu:v]]" > /tmp/espeak-check.wav
 file /tmp/espeak-check.wav
 ```
 
-Do not claim audible vocal output until the session has no
-`synthesis_failed` warnings. The complete Task 10 evidence and remaining
-blockers are recorded in `rap-acceptance-report-2026-08-09.md`.
+Do not claim vocal PCM evidence until the session has no `synthesis_failed`
+warnings and its `audio_render_completed` events report nonzero
+`vocal_source_frames`. Transport failures retain a sanitized
+`target_url`, exception class, and exception repr in the generator warning and
+session artifact; request bodies, credentials, and query strings are excluded.
+The complete Task 10 evidence is recorded in
+`rap-acceptance-report-2026-08-09.md`.

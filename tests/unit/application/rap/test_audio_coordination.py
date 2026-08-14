@@ -344,6 +344,29 @@ def test_coordinator_produces_complete_warning_and_latency_evidence_for_terminal
     assert all(warning["source"] == "espeak_g2p" for warning in warnings)
     assert monitor_state["latencies"]["synthesis_latency_ms"]["total"] == 7.5
     assert monitor_state["latencies"]["bar_render_latency_ms"]["count"] == 1
+    rendered_payload = BarAudioCoordinator._audio_payload(
+        prepared(plan, diagnostics=(
+            SyllablePlacementDiagnostic(
+                bar=plan.bar,
+                slot_index=3,
+                word="StreamMUSE",
+                target_sample=12_345,
+                source_frames=5_000,
+                fitted_frames=4_000,
+                available_frames=4_000,
+                compression_ratio=1.25,
+                overlap_frames=48,
+                pronunciation_source="espeak_g2p",
+            ),
+        )),
+        role="fallback",
+        accepted=True,
+        coordinator_epoch=0,
+    )
+    assert rendered_payload["vocal_syllable_count"] == 1
+    assert rendered_payload["vocal_source_frames"] == 5_000
+    assert rendered_payload["vocal_fitted_frames"] == 4_000
+    assert rendered_payload["pronunciation_sources"] == {"espeak_g2p": 1}
 
     stream = StringIO()
     Console(file=stream, force_terminal=False, width=120).print(build_dashboard(terminal_state, detail="full", width=120))

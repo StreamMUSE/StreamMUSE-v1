@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from io import BytesIO
+import shutil
+import struct
 import subprocess
 import wave
 
@@ -53,6 +55,14 @@ def wav_bytes(*, frames: int, sample_rate_hz: int = 24_000) -> bytes:
         wav.setframerate(sample_rate_hz)
         wav.writeframes(pcm)
     return buffer.getvalue()
+
+
+def espeak_streaming_wav_bytes(*, frames: int) -> bytes:
+    """Model the oversized RIFF/data lengths emitted by eSpeak 1.52 --stdout."""
+    streaming = bytearray(wav_bytes(frames=frames, sample_rate_hz=22_050))
+    struct.pack_into("<I", streaming, 4, 2_147_479_588)
+    struct.pack_into("<I", streaming, 40, 2_147_479_552)
+    return bytes(streaming)
 
 
 def cmu_request(phonemes: tuple[str, ...]) -> SyllableRenderRequest:
@@ -120,6 +130,35 @@ def test_espeak_synthesizer_uses_explicit_phonemes() -> None:
     assert result.audio.format.channels == 1
     assert result.audio.format.sample_width_bytes == 4
     assert result.audio.frame_count == 240
+
+
+def test_espeak_synthesizer_uses_actual_payload_length_for_streaming_wav() -> None:
+    runner = FakeEspeakRunner(wav_bytes=espeak_streaming_wav_bytes(frames=240))
+
+    result = EspeakPhonemeSynthesizer(command="espeak-ng", runner=runner).synthesize(cmu_request(("M", "UW1", "V")))
+
+    assert result.pronunciation_source == "cmudict_arpabet"
+    assert result.audio.format.sample_rate_hz == 22_050
+    assert result.audio.frame_count == 240
+    assert result.warnings == ()
+
+
+def test_espeak_synthesizer_rejects_misaligned_streaming_pcm() -> None:
+    runner = FakeEspeakRunner(wav_bytes=espeak_streaming_wav_bytes(frames=240)[:-1])
+
+    result = EspeakPhonemeSynthesizer(command="espeak-ng", runner=runner).synthesize(cmu_request(("M", "UW1", "V")))
+
+    assert result.pronunciation_source == "synthesis_failed"
+    assert result.audio.frame_count == 0
+
+
+@pytest.mark.skipif(shutil.which("espeak-ng") is None, reason="espeak-ng is required for the real adapter smoke")
+def test_real_espeak_synthesizes_nonempty_vocal_pcm() -> None:
+    result = EspeakPhonemeSynthesizer().synthesize(cmu_request(("M", "UW1", "V")))
+
+    assert result.pronunciation_source == "cmudict_arpabet"
+    assert result.audio.frame_count > 0
+    assert AudioWarningCode.SYNTHESIS_FAILED not in {warning.code for warning in result.warnings}
 
 
 def test_missing_cmu_phonemes_use_espeak_g2p_and_warn() -> None:

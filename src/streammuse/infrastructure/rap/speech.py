@@ -250,9 +250,21 @@ def _decode_mono_float32_wav(wav_bytes: bytes) -> PcmAudio:
             raise ValueError("compressed WAV output is unsupported")
         channels = wav_file.getnchannels()
         width = wav_file.getsampwidth()
-        frames = wav_file.getnframes()
         sample_rate_hz = wav_file.getframerate()
-        raw = wav_file.readframes(frames)
+        declared_frames = wav_file.getnframes()
+        raw = wav_file.readframes(declared_frames)
+    if channels != 1:
+        raise ValueError(f"Expected mono WAV output, received {channels} channels")
+    if width not in (1, 2, 3, 4):
+        raise ValueError(f"Unsupported WAV sample width: {width}")
+    if sample_rate_hz <= 0:
+        raise ValueError(f"Invalid WAV sample rate: {sample_rate_hz}")
+    bytes_per_frame = channels * width
+    if not raw or len(raw) % bytes_per_frame:
+        raise ValueError("WAV PCM payload is empty or not aligned to complete frames")
+    # Homebrew eSpeak 1.52 streams a sentinel RIFF/data length while stdout
+    # contains the actual complete PCM payload. The payload is authoritative.
+    frames = len(raw) // bytes_per_frame
     samples = _pcm_samples_to_float32(raw, width).reshape(frames, channels)
     mono = samples.mean(axis=1, dtype=np.float32)
     return PcmAudio(AudioFormat(sample_rate_hz, 1), frames, mono.astype(np.float32).tobytes())

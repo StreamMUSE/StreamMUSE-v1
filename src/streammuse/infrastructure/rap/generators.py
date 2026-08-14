@@ -216,6 +216,7 @@ def _error_batch(
     diagnostics: "_ResponseDiagnostics | None" = None,
 ) -> CandidateBatch:
     diagnostics = diagnostics or _ResponseDiagnostics()
+    sanitized_message = _sanitize_error(message)
     return CandidateBatch(
         request_id=request.request_id,
         candidates=(),
@@ -225,8 +226,9 @@ def _error_batch(
         latency_ms=diagnostics.latency_ms,
         prompt_tokens=diagnostics.prompt_tokens,
         completion_tokens=diagnostics.completion_tokens,
+        warning=sanitized_message,
         error_type="generation_error",
-        error_message=_sanitize_error(message),
+        error_message=sanitized_message,
     )
 
 
