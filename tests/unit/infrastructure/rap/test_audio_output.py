@@ -5,6 +5,7 @@ from __future__ import annotations
 import struct
 import time
 from pathlib import Path
+from threading import Event, Thread
 
 import numpy as np
 import pytest
@@ -77,11 +78,28 @@ class CallbackTerminated(Exception):
     """Injected stand-in for sounddevice.CallbackStop."""
 
 
+class BlockingOutputBuffer:
+    """Blocks precisely after callback PCM assignment and before state commit."""
+
+    def __init__(self, frames: int, channels: int) -> None:
+        self.samples = np.zeros((frames, channels), dtype=np.float32)
+        self.copy_started = Event()
+        self.allow_commit = Event()
+
+    def fill(self, value: float) -> None:
+        self.samples.fill(value)
+
+    def __setitem__(self, key, value) -> None:
+        self.copy_started.set()
+        assert self.allow_commit.wait(timeout=1.0)
+        self.samples[key] = value
+
+
 class StopDuringAcquisitionSink(SoundDeviceAudioSink):
     """Requests Stop at the old dequeue/activation race boundary."""
 
-    def _take_next_bar(self):
-        bar = super()._take_next_bar()
+    def _take_next_bar(self, **kwargs):
+        bar = super()._take_next_bar(**kwargs)
         self.request_stop_after_bar()
         return bar
 
@@ -392,3 +410,38 @@ def test_sounddevice_stream_start_failure_publishes_device_failed_notice() -> No
     notices = sink.drain_notices()
     assert [notice.kind for notice in notices] == [AudioPlaybackNoticeKind.DEVICE_FAILED]
     assert notices[0].message == str(failure)
+
+
+def test_closed_sounddevice_sink_remains_terminal_after_start_and_enqueue_attempts() -> None:
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=FakeOutputStreamFactory(block_frames=4))
+    sink.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        sink.start()
+    with pytest.raises(RuntimeError, match="closed"):
+        sink.enqueue(prepared_bar(bar=0, frames=4))
+
+    assert sink.snapshot().state == PlaybackState.CLOSED
+    assert sink.drain_notices() == ()
+
+
+def test_reset_invalidates_callback_state_commit_and_notices_after_pcm_copy() -> None:
+    stream_factory = FakeOutputStreamFactory(block_frames=4)
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    sink.enqueue(prepared_bar(bar=0, frames=4, value=0.25))
+    sink.start()
+    output = BlockingOutputBuffer(frames=4, channels=2)
+    callback_thread = Thread(target=sink._callback, args=(output, 4, None, 0))
+
+    callback_thread.start()
+    assert output.copy_started.wait(timeout=1.0)
+    sink.reset()
+    output.allow_commit.set()
+    callback_thread.join(timeout=1.0)
+
+    assert not callback_thread.is_alive()
+    assert sink.snapshot().state == PlaybackState.STOPPED
+    assert sink.snapshot().absolute_frame == 0
+    assert sink.snapshot().frame_in_bar == 0
+    assert sink.snapshot().queue_depth == 0
+    assert sink.drain_notices() == ()

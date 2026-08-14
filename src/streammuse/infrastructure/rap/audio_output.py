@@ -84,8 +84,14 @@ class SoundDeviceAudioSink:
         self._underrun_count = 0
         self._queue_underrun_active = False
         self._stop_requested = False
+        self._epoch = 0
 
     def start(self) -> None:
+        with self._state_lock:
+            if self._state == PlaybackState.CLOSED:
+                raise RuntimeError("audio sink is closed")
+            if self._state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
+                return
         stream: OutputStream | None = None
         try:
             with self._state_lock:
@@ -106,6 +112,8 @@ class SoundDeviceAudioSink:
                 except Exception:
                     pass
             with self._state_lock:
+                if self._state == PlaybackState.CLOSED:
+                    raise RuntimeError("audio sink is closed") from error
                 self._stream = None
                 self._active = None
                 self._frame_in_bar = 0
@@ -138,6 +146,7 @@ class SoundDeviceAudioSink:
     def reset(self) -> None:
         with self._state_lock:
             stream = self._stream
+            self._epoch += 1
             self._active = None
             self._frame_in_bar = 0
             self._absolute_frame = 0
@@ -183,6 +192,7 @@ class SoundDeviceAudioSink:
             if self._state == PlaybackState.CLOSED:
                 return
             stream = self._stream
+            self._epoch += 1
             self._state = PlaybackState.CLOSED
             self._active = None
             self._stop_requested = False
@@ -192,13 +202,17 @@ class SoundDeviceAudioSink:
 
     def _callback(self, outdata: np.ndarray, frames: int, _time_info, status) -> None:
         outdata.fill(0.0)
-        if status:
-            with self._state_lock:
-                self._underrun_count += 1
-            self._publish(AudioPlaybackNoticeKind.UNDERRUN, None, str(status))
-
         with self._state_lock:
             state = self._state
+            callback_epoch = self._epoch
+            if status and state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
+                self._underrun_count += 1
+                publish_status = True
+            else:
+                publish_status = False
+        if publish_status:
+            self._publish(AudioPlaybackNoticeKind.UNDERRUN, None, str(status), epoch=callback_epoch)
+
         if state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
             return
 
@@ -206,9 +220,11 @@ class SoundDeviceAudioSink:
         while copied < frames:
             active = self._active
             if active is None:
-                active = self._take_next_bar()
+                active = self._take_next_bar(epoch=callback_epoch)
                 if active is None:
                     with self._state_lock:
+                        if callback_epoch != self._epoch:
+                            return
                         if self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
                             return
                         if self._stop_requested:
@@ -220,7 +236,12 @@ class SoundDeviceAudioSink:
                             if not self._queue_underrun_active:
                                 self._queue_underrun_active = True
                                 self._underrun_count += 1
-                                self._publish(AudioPlaybackNoticeKind.UNDERRUN, None, "prepared bar queue empty")
+                                self._publish(
+                                    AudioPlaybackNoticeKind.UNDERRUN,
+                                    None,
+                                    "prepared bar queue empty",
+                                    epoch=callback_epoch,
+                                )
                     if stop_callback:
                         raise self._callback_stop_factory()
                     return
@@ -233,6 +254,8 @@ class SoundDeviceAudioSink:
             outdata[copied : copied + to_copy, :] = samples[self._frame_in_bar : self._frame_in_bar + to_copy, :]
             copied += to_copy
             with self._state_lock:
+                if callback_epoch != self._epoch:
+                    return
                 self._frame_in_bar += to_copy
                 self._absolute_frame += to_copy
                 completed = self._frame_in_bar == active.audio.frame_count
@@ -240,18 +263,34 @@ class SoundDeviceAudioSink:
             if not completed:
                 continue
 
-            self._publish(AudioPlaybackNoticeKind.BAR_COMPLETED, active.bar, "bar playback completed")
-            self._active = None
-            self._frame_in_bar = 0
-            if self._stop_requested:
+            self._publish(
+                AudioPlaybackNoticeKind.BAR_COMPLETED,
+                active.bar,
+                "bar playback completed",
+                epoch=callback_epoch,
+            )
+            with self._state_lock:
+                if callback_epoch != self._epoch:
+                    return
+                self._active = None
+                self._frame_in_bar = 0
+                stop_requested = self._stop_requested
+            if stop_requested:
                 with self._state_lock:
+                    if callback_epoch != self._epoch:
+                        return
                     self._finish_stop_locked()
                 raise self._callback_stop_factory()
 
-    def _take_next_bar(self) -> PreparedRapBar | None:
+    def _take_next_bar(self, *, epoch: int | None = None) -> PreparedRapBar | None:
         # A stop request must either observe the active bar or the untouched queue.
         with self._state_lock:
-            if self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED) or self._stop_requested:
+            expected_epoch = self._epoch if epoch is None else epoch
+            if (
+                expected_epoch != self._epoch
+                or self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED)
+                or self._stop_requested
+            ):
                 return None
             with self._queue_lock:
                 if not self._queued:
@@ -260,7 +299,7 @@ class SoundDeviceAudioSink:
             self._active = active
             self._frame_in_bar = 0
             self._queue_underrun_active = False
-            self._publish(AudioPlaybackNoticeKind.BAR_STARTED, active.bar, "bar playback started")
+            self._publish(AudioPlaybackNoticeKind.BAR_STARTED, active.bar, "bar playback started", epoch=expected_epoch)
             return active
 
     def _finish_stop_locked(self) -> None:
@@ -270,20 +309,29 @@ class SoundDeviceAudioSink:
         self._stop_requested = False
         self._publish(AudioPlaybackNoticeKind.STOPPED, None, "playback stopped")
 
-    def _publish(self, kind: AudioPlaybackNoticeKind, bar: int | None, message: str) -> None:
+    def _publish(
+        self,
+        kind: AudioPlaybackNoticeKind,
+        bar: int | None,
+        message: str,
+        *,
+        epoch: int | None = None,
+    ) -> None:
         with self._state_lock:
+            if epoch is not None and epoch != self._epoch:
+                return
             absolute_frame = self._absolute_frame
-        with self._queue_lock:
-            queue_depth = len(self._queued)
-        self._notices.put(
-            AudioPlaybackNotice(
-                kind=kind,
-                bar=bar,
-                absolute_frame=absolute_frame,
-                queue_depth=queue_depth,
-                message=message,
+            with self._queue_lock:
+                queue_depth = len(self._queued)
+            self._notices.put(
+                AudioPlaybackNotice(
+                    kind=kind,
+                    bar=bar,
+                    absolute_frame=absolute_frame,
+                    queue_depth=queue_depth,
+                    message=message,
+                )
             )
-        )
 
     def _validate_bar(self, bar: PreparedRapBar) -> None:
         if bar.audio.format != self._audio_format:
