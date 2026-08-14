@@ -11,6 +11,9 @@ from streammuse.application.rap.audio_coordination import BarAudioCoordinator
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.domain.rap import (
     AudioFormat,
+    AudioWarning,
+    AudioWarningCode,
+    AudioWarningSeverity,
     PcmAudio,
     PreparedRapBar,
     RapEventType,
@@ -30,13 +33,14 @@ class ControlledBarRenderer:
         self.started: dict[tuple[int, str], Event] = {}
         self.release: dict[tuple[int, str], Event] = {}
         self.calls: list[tuple[int, str]] = []
+        self.warnings: dict[tuple[int, str], tuple[AudioWarning, ...]] = {}
 
     def render(self, plan: PlannedRapBar) -> PreparedRapBar:
         key = (plan.bar, plan.source)
         self.calls.append(key)
         self.started.setdefault(key, Event()).set()
         assert self.release.setdefault(key, Event()).wait(timeout=1.0)
-        return prepared(plan)
+        return prepared(plan, warnings=self.warnings.get(key, ()))
 
     def complete(self, plan: PlannedRapBar) -> None:
         self.release.setdefault((plan.bar, plan.source), Event()).set()
@@ -58,7 +62,7 @@ def planned_bar(*, bar: int, source: str) -> PlannedRapBar:
     )
 
 
-def prepared(plan: PlannedRapBar) -> PreparedRapBar:
+def prepared(plan: PlannedRapBar, *, warnings: tuple[AudioWarning, ...] = ()) -> PreparedRapBar:
     audio_format = AudioFormat()
     return PreparedRapBar(
         bar=plan.bar,
@@ -68,7 +72,7 @@ def prepared(plan: PlannedRapBar) -> PreparedRapBar:
         scheduled=plan.scheduled,
         audio=PcmAudio(audio_format, 1, bytes(8)),
         diagnostics=(),
-        warnings=(),
+        warnings=warnings,
         render_latency_ms=12.5,
     )
 
@@ -188,6 +192,62 @@ def test_reset_cancels_uncommitted_work_and_close_is_permanent() -> None:
         coordinator.reserve_fallback(planned_bar(bar=5, source="prevalidated_fallback"))
 
 
+def test_render_events_mark_stale_reset_work_unaccepted_without_ready_or_warnings() -> None:
+    renderer = ControlledBarRenderer()
+    publisher = RecordingPublisher()
+    coordinator = BarAudioCoordinator(renderer, publisher=publisher)
+    accepted = planned_bar(bar=7, source="prevalidated_fallback")
+    stale = planned_bar(bar=8, source="prevalidated_fallback")
+    warnings = (
+        AudioWarning(
+            code=AudioWarningCode.PRONUNCIATION_FALLBACK,
+            severity=AudioWarningSeverity.WARNING,
+            message="fallback pronunciation",
+            word="streammuse",
+        ),
+        AudioWarning(
+            code=AudioWarningCode.TIMING_PRESSURE,
+            severity=AudioWarningSeverity.WARNING,
+            message="compressed syllable",
+            compression_ratio=1.2,
+        ),
+    )
+    renderer.warnings[(7, "prevalidated_fallback")] = warnings
+    renderer.warnings[(8, "prevalidated_fallback")] = warnings
+    try:
+        coordinator.reserve_fallback(accepted)
+        renderer.wait_started(accepted)
+        renderer.complete(accepted)
+        coordinator.commit(7)
+
+        accepted_events = [event for event in publisher.events if event[1] == 7]
+        assert [event[0] for event in accepted_events] == [
+            RapEventType.AUDIO_RENDER_STARTED,
+            RapEventType.AUDIO_RENDER_COMPLETED,
+            RapEventType.BAR_AUDIO_READY,
+            RapEventType.PRONUNCIATION_FALLBACK,
+            RapEventType.TIMING_PRESSURE,
+        ]
+        assert accepted_events[1][2]["accepted"] is True
+        assert accepted_events[2][2]["warnings"] == ["pronunciation_fallback", "timing_pressure"]
+
+        coordinator.reserve_fallback(stale)
+        renderer.wait_started(stale)
+        coordinator.reset()
+        renderer.complete(stale)
+        _wait_for_event_count(publisher, bar=8, count=2)
+
+        stale_events = [event for event in publisher.events if event[1] == 8]
+        assert [event[0] for event in stale_events] == [
+            RapEventType.AUDIO_RENDER_STARTED,
+            RapEventType.AUDIO_RENDER_COMPLETED,
+        ]
+        assert stale_events[1][2]["accepted"] is False
+        assert stale_events[1][2]["warnings"] == ["pronunciation_fallback", "timing_pressure"]
+    finally:
+        coordinator.close()
+
+
 def test_concurrent_duplicate_fallback_reservations_render_once() -> None:
     renderer = ControlledBarRenderer()
     coordinator = BarAudioCoordinator(renderer, publisher=RecordingPublisher())
@@ -216,3 +276,12 @@ def _wait_for_primary(coordinator: BarAudioCoordinator, bar: int) -> PreparedRap
             return result
         sleep(0.005)
     raise AssertionError("primary audio did not become ready")
+
+
+def _wait_for_event_count(publisher: RecordingPublisher, *, bar: int, count: int) -> None:
+    deadline = monotonic() + 1.0
+    while monotonic() < deadline:
+        if len([event for event in publisher.events if event[1] == bar]) >= count:
+            return
+        sleep(0.005)
+    raise AssertionError(f"expected {count} events for bar {bar}")

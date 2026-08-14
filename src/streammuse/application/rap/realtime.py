@@ -117,6 +117,9 @@ class RollingRapController:
         )
         self._clock = monotonic
         self._lock = RLock()
+        # Serialize lifecycle changes without holding the state lock while
+        # resetting or closing the coordinator's independently locked state.
+        self._lifecycle_lock = RLock()
         self._bars: dict[int, PlannedRapBar] = {}
         self._frozen_history: list[ProsodyAnalysis] = []
         self._rhyme_anchors: dict[tuple[int, str], tuple[str, ...]] = {}
@@ -135,17 +138,21 @@ class RollingRapController:
         return self._scenario
 
     def start(self) -> None:
-        with self._lock:
-            if self._started or self._closed:
-                return
-            self._started = True
-            startup_last_bar = self._bounded_last_bar(self._lookahead_bars - 1)
-            self._reserve_through(startup_last_bar)
-            if self._audio_coordinator is not None:
-                self._commit_audio_bar(0, tick=None)
-            self._submit_next_primary(current_bar=0)
+        committed = None
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._started or self._closed:
+                    return
+                self._started = True
+                startup_last_bar = self._bounded_last_bar(self._lookahead_bars - 1)
+                self._reserve_through(startup_last_bar)
+                if self._audio_coordinator is not None:
+                    committed = self._commit_audio_bar(0, tick=None)
+                self._submit_next_primary(current_bar=0)
+        self._notify_audio_committed(committed)
 
     def on_tick(self, tick: int) -> None:
+        committed = None
         with self._lock:
             if not self._started or self._closed:
                 return
@@ -159,7 +166,7 @@ class RollingRapController:
             if self._audio_coordinator is not None:
                 self._drain_audio_primary_result()
                 if tick % self._tempo.ticks_per_bar == self._tempo.ticks_per_bar - 1:
-                    self._commit_audio_bar(current_bar + 1, tick=tick)
+                    committed = self._commit_audio_bar(current_bar + 1, tick=tick)
             if tick % self._tempo.ticks_per_bar == 0:
                 self._freeze(current_bar, tick)
             self._submit_next_primary(current_bar=current_bar)
@@ -171,6 +178,7 @@ class RollingRapController:
             )
             assert not scheduled or self._bars[current_bar].frozen
 
+        self._notify_audio_committed(committed)
         for item in scheduled:
             actual = self._clock()
             planned = (self._clock_origin or actual) + self._tempo.tick_to_seconds(tick)
@@ -192,62 +200,64 @@ class RollingRapController:
                     continue
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            future = self._future
-            executor = self._executor
-            stop_primary = self._stop_primary
-            close_primary = self._close_primary
-            audio_coordinator = self._audio_coordinator
-        if future is not None:
-            future.cancel()
-        if stop_primary is not None:
-            try:
-                stop_primary()
-            except Exception as exc:
-                self._event(
-                    RapEventType.GENERATION_FAILED,
-                    payload={"error_type": "abort_error", "error_message": str(exc)},
-                )
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=True)
-        if close_primary is not None:
-            try:
-                close_primary()
-            except Exception as exc:
-                self._event(
-                    RapEventType.GENERATION_FAILED,
-                    payload={"error_type": "close_error", "error_message": str(exc)},
-                )
-        if audio_coordinator is not None:
-            audio_coordinator.close()
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._closed:
+                    return
+                self._closed = True
+                future = self._future
+                executor = self._executor
+                stop_primary = self._stop_primary
+                close_primary = self._close_primary
+                audio_coordinator = self._audio_coordinator
+            if future is not None:
+                future.cancel()
+            if stop_primary is not None:
+                try:
+                    stop_primary()
+                except Exception as exc:
+                    self._event(
+                        RapEventType.GENERATION_FAILED,
+                        payload={"error_type": "abort_error", "error_message": str(exc)},
+                    )
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+            if close_primary is not None:
+                try:
+                    close_primary()
+                except Exception as exc:
+                    self._event(
+                        RapEventType.GENERATION_FAILED,
+                        payload={"error_type": "close_error", "error_message": str(exc)},
+                    )
+            if audio_coordinator is not None:
+                audio_coordinator.close()
 
     def reset(self) -> None:
         """Clear an audio-controlled planning session after playback has stopped."""
 
-        with self._lock:
-            if self._audio_coordinator is None:
-                raise RuntimeError("reset is available only for audio-controlled sessions")
-            if self._closed:
-                raise RuntimeError("cannot reset a closed controller")
-            future = self._future
-            self._future = None
-            self._future_bar = None
-            self._bars.clear()
-            self._frozen_history.clear()
-            self._rhyme_anchors.clear()
-            self._audio_primary_plans.clear()
-            self._audio_committed_bars.clear()
-            self._next_primary_bar = 1
-            self._last_tick = -1
-            self._clock_origin = None
-            self._started = False
-            audio_coordinator = self._audio_coordinator
-        if future is not None:
-            future.cancel()
-        audio_coordinator.reset()
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._audio_coordinator is None:
+                    raise RuntimeError("reset is available only for audio-controlled sessions")
+                if self._closed:
+                    raise RuntimeError("cannot reset a closed controller")
+                future = self._future
+                self._future = None
+                self._future_bar = None
+                self._bars.clear()
+                self._frozen_history.clear()
+                self._rhyme_anchors.clear()
+                self._audio_primary_plans.clear()
+                self._audio_committed_bars.clear()
+                self._next_primary_bar = 1
+                self._last_tick = -1
+                self._clock_origin = None
+                self._started = False
+                audio_coordinator = self._audio_coordinator
+            if future is not None:
+                future.cancel()
+            audio_coordinator.reset()
 
     def bar_for(self, index: int) -> PlannedRapBar:
         with self._lock:
@@ -529,10 +539,10 @@ class RollingRapController:
             },
         )
 
-    def _commit_audio_bar(self, bar_index: int, *, tick: int | None) -> None:
+    def _commit_audio_bar(self, bar_index: int, *, tick: int | None) -> PreparedRapBar | None:
         assert self._audio_coordinator is not None
         if bar_index in self._audio_committed_bars or bar_index not in self._bars:
-            return
+            return None
         prepared = self._audio_coordinator.commit(bar_index)
         primary_plan = self._audio_primary_plans.pop(bar_index, None)
         target = self._bars[bar_index]
@@ -553,7 +563,10 @@ class RollingRapController:
                 "deadline_slack_ms": deadline_slack_ms,
             },
         )
-        if self._on_audio_committed is not None:
+        return prepared
+
+    def _notify_audio_committed(self, prepared: PreparedRapBar | None) -> None:
+        if prepared is not None and self._on_audio_committed is not None:
             self._on_audio_committed(prepared)
 
     def _freeze(self, bar_index: int, tick: int) -> None:

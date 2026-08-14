@@ -272,6 +272,18 @@ class RecordingAudioCoordinator:
         self.closed = True
 
 
+class BlockingResetAudioCoordinator(RecordingAudioCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reset_entered = Event()
+        self.allow_reset = Event()
+
+    def reset(self) -> None:
+        self.reset_entered.set()
+        assert self.allow_reset.wait(timeout=1.0)
+        super().reset()
+
+
 def _prepared_audio_bar(plan) -> PreparedRapBar:
     return PreparedRapBar(
         bar=plan.bar,
@@ -407,6 +419,48 @@ def test_audio_controller_reset_discards_uncommitted_state_without_closing_depen
     assert controller.bar_state(0) == "unreserved"
     controller.start()
     _finish(controller, dispatcher)
+
+
+def test_audio_controller_reset_blocks_a_new_start_until_coordinator_epoch_is_cleared() -> None:
+    audio = BlockingResetAudioCoordinator()
+    controller, _emitted, _events, dispatcher = _controller(audio_coordinator=audio)
+    controller.start()
+    reset_complete = Event()
+    start_complete = Event()
+
+    resetter = Thread(target=lambda: _reset_then_signal(controller, reset_complete))
+    resetter.start()
+    assert audio.reset_entered.wait(timeout=1.0)
+    starter = Thread(target=lambda: _start_then_signal(controller, start_complete))
+    starter.start()
+    try:
+        assert not start_complete.wait(timeout=0.1)
+    finally:
+        audio.allow_reset.set()
+        resetter.join(timeout=1.0)
+        starter.join(timeout=1.0)
+
+    assert not resetter.is_alive()
+    assert not starter.is_alive()
+    assert reset_complete.is_set()
+    assert start_complete.is_set()
+    assert [bar.bar for bar in audio.committed] == [0]
+    assert controller.bar_state(0) == "reserved"
+    _finish(controller, dispatcher)
+
+
+def _reset_then_signal(controller: RollingRapController, complete: Event) -> None:
+    try:
+        controller.reset()
+    finally:
+        complete.set()
+
+
+def _start_then_signal(controller: RollingRapController, complete: Event) -> None:
+    try:
+        controller.start()
+    finally:
+        complete.set()
 
 
 def test_controller_events_include_structured_request_flow_and_alignment() -> None:
