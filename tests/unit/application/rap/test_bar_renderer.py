@@ -124,6 +124,13 @@ def test_bar_renderer_uses_absolute_samples_at_92_bpm_for_nonzero_bars() -> None
     assert [item.target_sample for item in first.diagnostics] == [0, 23_479, 70_435, 117_392]
     assert second.audio.frame_count == 125_217
     assert [item.target_sample for item in second.diagnostics] == [0, 23_478, 70_435, 117_391]
+    for prepared, offsets in (
+        (first, (0, 23_479, 70_435, 117_392)),
+        (second, (0, 23_478, 70_435, 117_391)),
+    ):
+        samples = stereo_array(prepared.audio)
+        assert np.all(samples[list(offsets)] == np.float32(0.8))
+        assert not np.any(samples[[offset - 1 for offset in offsets[1:]]])
 
 
 def test_bar_renderer_preserves_pronunciation_and_timing_warnings() -> None:

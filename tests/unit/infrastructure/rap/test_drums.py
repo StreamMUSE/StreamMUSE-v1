@@ -6,6 +6,7 @@ import numpy as np
 
 from streammuse.domain.rap import AudioFormat, FlowProvenance, FlowSlot, FlowTemplate, PcmAudio
 from streammuse.domain.timing import Tempo
+from streammuse.infrastructure.rap import drums as drum_module
 from streammuse.infrastructure.rap.drums import ProceduralBoomBapRenderer
 
 
@@ -41,14 +42,25 @@ def test_boom_bap_has_stable_meter_hits_and_sixteenth_hats() -> None:
     assert all(has_energy(samples, frame=tick * 12_000, window=1_500) for tick in range(16))
 
 
-def test_boom_bap_kicks_and_snares_outlast_hats_at_their_fixed_ticks() -> None:
+def test_boom_bap_places_normalized_kicks_and_snares_on_their_dedicated_ticks(monkeypatch) -> None:
+    audio_format = AudioFormat(48_000, 2)
+    monkeypatch.setattr(drum_module, "_hat_hit", lambda rng: np.zeros(round(0.035 * audio_format.sample_rate_hz), dtype=np.float32))
     samples = stereo_array(
-        ProceduralBoomBapRenderer(seed=20260814).render(template(), Tempo(60.0, 4, 4), AudioFormat(48_000, 2), bar=0)
-    )
+        ProceduralBoomBapRenderer(seed=20260814).render(template(), Tempo(60.0, 4, 4), audio_format, bar=0)
+    )[:, 0]
+    kick = drum_module._normalise_hit(drum_module._kick_hit()) * np.float32(0.42)
+    snare_rng = np.random.default_rng(20260814)
+    snare = drum_module._normalise_hit(drum_module._snare_hit(snare_rng)) * np.float32(0.36)
 
-    assert all(has_energy(samples, frame=tick * 12_000 + 3_000, window=1_000) for tick in (0, 8))
-    assert all(has_energy(samples, frame=tick * 12_000 + 3_000, window=1_000) for tick in (4, 12))
-    assert not any(has_energy(samples, frame=tick * 12_000 + 3_000, window=1_000) for tick in (2, 6, 10, 14))
+    for tick in (0, 8):
+        onset = tick * 12_000
+        np.testing.assert_array_equal(samples[onset : onset + kick.size], kick)
+    for tick in (4, 12):
+        onset = tick * 12_000
+        np.testing.assert_array_equal(samples[onset : onset + snare.size], snare)
+    for tick in (2, 6, 10, 14):
+        onset = tick * 12_000
+        assert not np.any(samples[onset : onset + snare.size])
     assert np.max(np.abs(samples)) <= 0.65
 
 
