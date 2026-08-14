@@ -88,6 +88,7 @@ def test_fit_syllable_compresses_to_available_frames() -> None:
     assert fitted.audio.frame_count == 400
     assert fitted.compression_ratio == pytest.approx(1.5)
     assert fitted.overlap_frames == 0
+    assert [warning.code for warning in fitted.warnings] == [AudioWarningCode.TIMING_PRESSURE]
 
 
 def test_long_nonfinal_syllable_caps_compression_and_reports_overlap() -> None:
@@ -109,7 +110,10 @@ def test_final_syllable_is_forced_to_bar_boundary() -> None:
     fitted = fit_syllable(source, available_frames=300, final_in_bar=True, context=context)
 
     assert fitted.audio.frame_count == 300
-    assert fitted.warnings[-1].code == AudioWarningCode.FORCED_BAR_FIT
+    assert [warning.code for warning in fitted.warnings] == [
+        AudioWarningCode.TIMING_PRESSURE,
+        AudioWarningCode.FORCED_BAR_FIT,
+    ]
 
 
 def test_trim_silence_uses_dbfs_threshold_and_padding() -> None:

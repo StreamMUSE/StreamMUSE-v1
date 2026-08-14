@@ -18,7 +18,7 @@ class ProceduralBoomBapRenderer:
 
     def __init__(self, *, seed: int) -> None:
         self._seed = seed
-        self._kick = _kick_hit()
+        self._kick = _normalise_hit(_kick_hit())
 
     def render(self, template: FlowTemplate, tempo: Tempo, audio_format: AudioFormat, bar: int) -> PcmAudio:
         _validate_format(audio_format)
@@ -28,23 +28,23 @@ class ProceduralBoomBapRenderer:
             raise ValueError("bar must be nonnegative")
 
         rng = np.random.default_rng(self._seed + bar)
-        snare = _snare_hit(rng)
-        hat = _hat_hit(rng)
+        snare = _normalise_hit(_snare_hit(rng))
+        hat = _normalise_hit(_hat_hit(rng))
         samples = np.zeros((bar_frame_count(bar, tempo, audio_format), audio_format.channels), dtype=np.float32)
         stressed_ticks = {slot.tick_in_bar for slot in template.slots if slot.target_stress >= 0.75}
 
         for tick in range(tempo.ticks_per_bar):
             onset = tick_frame_in_bar(bar, tick, tempo, audio_format)
-            hat_gain = 0.18
+            hat_gain = 0.14
             if tick % tempo.ticks_per_beat == 0:
                 hat_gain += 0.03
             if tick in stressed_ticks:
                 hat_gain += 0.02
             mix_at(samples, _stereo(hit=hat, channels=audio_format.channels), onset, hat_gain)
             if tick in (0, 8):
-                mix_at(samples, _stereo(hit=self._kick, channels=audio_format.channels), onset, 0.75)
+                mix_at(samples, _stereo(hit=self._kick, channels=audio_format.channels), onset, 0.42)
             if tick in (4, 12):
-                mix_at(samples, _stereo(hit=snare, channels=audio_format.channels), onset, 0.45)
+                mix_at(samples, _stereo(hit=snare, channels=audio_format.channels), onset, 0.36)
 
         peak = float(np.max(np.abs(samples), initial=0.0))
         if peak > _DRUM_PEAK:
@@ -79,6 +79,11 @@ def _hat_hit(rng: np.random.Generator) -> np.ndarray:
 
 def _stereo(*, hit: np.ndarray, channels: int) -> np.ndarray:
     return np.repeat(hit[:, np.newaxis], channels, axis=1)
+
+
+def _normalise_hit(hit: np.ndarray) -> np.ndarray:
+    peak = float(np.max(np.abs(hit), initial=0.0))
+    return hit if peak == 0 else (hit / np.float32(peak)).astype(np.float32)
 
 
 def _validate_format(audio_format: AudioFormat) -> None:

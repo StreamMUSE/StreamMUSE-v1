@@ -109,6 +109,23 @@ def test_bar_renderer_places_every_syllable_at_exact_target_sample() -> None:
     assert [request.slot_index for request in synthesizer.requests] == [0, 1, 2, 3, 4]
 
 
+def test_bar_renderer_uses_absolute_samples_at_92_bpm_for_nonzero_bars() -> None:
+    renderer = DeterministicRapBarRenderer(
+        tempo=Tempo(92.0, 4, 4),
+        audio_format=AudioFormat(48_000, 2),
+        synthesizer=ImpulseSpeechSynthesizer(frames=1_000),
+        drums=SilentDrumRenderer(),
+    )
+
+    first = renderer.render(planned_bar_with_slots(bar=1, ticks=(0, 3, 9, 15)))
+    second = renderer.render(planned_bar_with_slots(bar=2, ticks=(0, 3, 9, 15)))
+
+    assert first.audio.frame_count == 125_218
+    assert [item.target_sample for item in first.diagnostics] == [0, 23_479, 70_435, 117_392]
+    assert second.audio.frame_count == 125_217
+    assert [item.target_sample for item in second.diagnostics] == [0, 23_478, 70_435, 117_391]
+
+
 def test_bar_renderer_preserves_pronunciation_and_timing_warnings() -> None:
     pronunciation_warning = AudioWarning(
         code=AudioWarningCode.PRONUNCIATION_FALLBACK,

@@ -100,12 +100,12 @@ def fit_syllable(
     compression_ratio = source_frames / target_frames
     overlap_frames = max(0, target_frames - available_frames)
     warnings: list[AudioWarning] = []
-    if overlap_frames:
+    if compression_ratio > 1.1:
         warnings.append(
             AudioWarning(
                 code=AudioWarningCode.TIMING_PRESSURE,
                 severity=AudioWarningSeverity.WARNING,
-                message="Syllable exceeds available timing window; overlap retained",
+                message="Syllable compressed for its timing window",
                 bar=context.bar,
                 slot_index=context.slot_index,
                 word=context.word,
@@ -113,7 +113,7 @@ def fit_syllable(
                 rendered_ms=target_frames / audio.format.sample_rate_hz * 1000,
                 compression_ratio=compression_ratio,
                 overlap_ms=overlap_frames / audio.format.sample_rate_hz * 1000,
-                action="overlap",
+                action="overlap" if overlap_frames else "compress",
             )
         )
     if forced_bar_fit:
