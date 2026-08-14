@@ -46,6 +46,10 @@ class RapPlaybackService:
         self._publisher = publisher
         self._on_tick = on_tick
         self._monotonic = monotonic
+        # Lifecycle state changes and their publications share this reentrant
+        # gate. The lifecycle lock remains inner so publisher callbacks can
+        # reenter lifecycle methods without seeing a split state/event pair.
+        self._lifecycle_dispatch_lock = RLock()
         self._lock = RLock()
         self._poll_lock = Lock()
         self._dispatch_owner: int | None = None
@@ -60,6 +64,7 @@ class RapPlaybackService:
         self._epoch = 0
         self._observer_stop = Event()
         self._observer: Thread | None = None
+        self._close_requested = Event()
 
     @property
     def state(self) -> PlaybackState:
@@ -77,29 +82,30 @@ class RapPlaybackService:
             self._prime_locked(bar)
 
     def start(self) -> None:
-        with self._lock:
-            self._require_state(PlaybackState.PRIMING)
-            if not self._prepared:
-                raise RuntimeError("playback requires at least one queued bar")
-            epoch = self._epoch
+        with self._lifecycle_dispatch_lock:
+            with self._lock:
+                self._require_state(PlaybackState.PRIMING)
+                if not self._prepared:
+                    raise RuntimeError("playback requires at least one queued bar")
+                epoch = self._epoch
 
-        self._sink.start()
+            self._sink.start()
 
+            with self._lock:
+                if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                    return
+                self._state = PlaybackState.RUNNING
+                self._observer_stop = Event()
+                observer = Thread(
+                    target=self._observe,
+                    args=(epoch, self._observer_stop),
+                    name="streammuse-rap-playback-observer",
+                    daemon=True,
+                )
+                self._observer = observer
+            self._emit(RapEventType.SESSION_STARTED, payload={"playback_state": PlaybackState.RUNNING.value})
         with self._lock:
-            if epoch != self._epoch or self._state == PlaybackState.CLOSED:
-                return
-            self._state = PlaybackState.RUNNING
-            self._observer_stop = Event()
-            observer = Thread(
-                target=self._observe,
-                args=(epoch, self._observer_stop),
-                name="streammuse-rap-playback-observer",
-                daemon=True,
-            )
-            self._observer = observer
-        self._emit(RapEventType.SESSION_STARTED, payload={"playback_state": PlaybackState.RUNNING.value})
-        with self._lock:
-            if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+            if epoch != self._epoch or self._state == PlaybackState.CLOSED or self._close_requested.is_set():
                 return
             observer.start()
 
@@ -113,45 +119,44 @@ class RapPlaybackService:
             self._enqueue_locked(bar)
 
     def request_stop(self) -> None:
-        with self._lock:
-            if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.STOP_REQUESTED):
-                return
-            if self._state == PlaybackState.PRIMING:
-                self._stop_observer_locked()
+        with self._lifecycle_dispatch_lock:
+            with self._lock:
+                if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.STOP_REQUESTED):
+                    return
+                if self._state == PlaybackState.PRIMING:
+                    self._stop_observer_locked()
+                    self._epoch += 1
+                    # Task 5 reset is local and has no publication callback. Keep
+                    # the lifecycle lock until it has discarded the primed bytes.
+                    self._sink.reset()
+                    self._prepared.clear()
+                    self._current_tick = None
+                    self._emitted_syllables.clear()
+                    self._next_start_bar = 0
+                    self._sample_origin_frame = 0
+                    self._state = PlaybackState.STOPPED
+                else:
+                    self._state = PlaybackState.STOP_REQUESTED
+                    self._sink.request_stop_after_bar()
+            self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
+
+    def reset(self) -> None:
+        with self._lifecycle_dispatch_lock:
+            with self._lock:
+                self._require_state(PlaybackState.STOPPED)
                 self._epoch += 1
-                # Task 5 reset is local and has no publication callback. Keep
-                # the lifecycle lock until it has discarded the primed bytes.
+                observer = self._stop_observer_locked()
+                # Task 5 reset is local and has no publication callback. Keep the
+                # lifecycle lock until it has discarded old queue contents so a
+                # concurrent prime cannot enqueue work that this reset erases.
                 self._sink.reset()
                 self._prepared.clear()
                 self._current_tick = None
                 self._emitted_syllables.clear()
                 self._next_start_bar = 0
                 self._sample_origin_frame = 0
-                self._state = PlaybackState.STOPPED
-                emit = True
-            else:
-                self._state = PlaybackState.STOP_REQUESTED
-                self._sink.request_stop_after_bar()
-                emit = True
-        if emit:
-            self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
-
-    def reset(self) -> None:
-        with self._lock:
-            self._require_state(PlaybackState.STOPPED)
-            self._epoch += 1
-            observer = self._stop_observer_locked()
-            # Task 5 reset is local and has no publication callback. Keep the
-            # lifecycle lock until it has discarded old queue contents so a
-            # concurrent prime cannot enqueue work that this reset erases.
-            self._sink.reset()
-            self._prepared.clear()
-            self._current_tick = None
-            self._emitted_syllables.clear()
-            self._next_start_bar = 0
-            self._sample_origin_frame = 0
+            self._emit(RapEventType.SESSION_RESET, payload={"playback_state": PlaybackState.STOPPED.value})
         self._join(observer)
-        self._emit(RapEventType.SESSION_RESET, payload={"playback_state": PlaybackState.STOPPED.value})
 
     def wait(self, timeout: float | None = None) -> None:
         with self._lock:
@@ -159,22 +164,26 @@ class RapPlaybackService:
         self._join(observer, timeout)
 
     def close(self) -> None:
-        with self._lock:
-            if self._state != PlaybackState.CLOSED:
-                self._epoch += 1
-                self._state = PlaybackState.CLOSED
-                self._prepared.clear()
-                self._emitted_syllables.clear()
-            observer = self._stop_observer_locked()
-            defer_join = self._dispatch_owner == get_ident()
-            if defer_join and observer is not None:
-                self._deferred_joins.append(observer)
-            close_sink = not self._sink_closed
-            self._sink_closed = True
-        if not defer_join:
-            self._join(observer)
-        if close_sink:
-            self._sink.close()
+        # Let a start already publishing SESSION_STARTED avoid launching an
+        # observer while this caller waits for the lifecycle dispatch gate.
+        self._close_requested.set()
+        with self._lifecycle_dispatch_lock:
+            with self._lock:
+                if self._state != PlaybackState.CLOSED:
+                    self._epoch += 1
+                    self._state = PlaybackState.CLOSED
+                    self._prepared.clear()
+                    self._emitted_syllables.clear()
+                observer = self._stop_observer_locked()
+                defer_join = self._dispatch_owner == get_ident()
+                if defer_join and observer is not None:
+                    self._deferred_joins.append(observer)
+                close_sink = not self._sink_closed
+                self._sink_closed = True
+            if not defer_join:
+                self._join(observer)
+            if close_sink:
+                self._sink.close()
 
     def poll(self) -> None:
         """Observe current sink state explicitly for deterministic callers and tests."""

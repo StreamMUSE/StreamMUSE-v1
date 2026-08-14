@@ -51,6 +51,27 @@ class BlockingStartPublisher(RecordingPublisher):
         super().emit(event_type, **kwargs)
 
 
+class BlockingLifecyclePublisher(RecordingPublisher):
+    def __init__(self, blocked_event: RapEventType) -> None:
+        super().__init__()
+        self._blocked_event = blocked_event
+        self.entered = Event()
+        self.release = Event()
+        self.session_started = Event()
+        self.state_reader = None
+        self.state_at_blocked_event: PlaybackState | None = None
+
+    def emit(self, event_type: RapEventType, **kwargs: object) -> None:
+        if event_type == self._blocked_event:
+            self.entered.set()
+            assert self.release.wait(timeout=1.0)
+            if self.state_reader is not None:
+                self.state_at_blocked_event = self.state_reader()
+        super().emit(event_type, **kwargs)
+        if event_type == RapEventType.SESSION_STARTED:
+            self.session_started.set()
+
+
 class TimelinePublisher(RecordingPublisher):
     def __init__(self, timeline: list[object]) -> None:
         super().__init__()
@@ -453,6 +474,78 @@ def test_reset_keeps_concurrent_prime_out_until_sink_cleanup_finishes() -> None:
     assert publisher.cleanup_completed_before_session_reset is True
 
 
+def test_reset_event_precedes_concurrent_restart_session_started() -> None:
+    publisher = BlockingLifecyclePublisher(RapEventType.SESSION_RESET)
+    service = ManualPlaybackService(
+        tempo=tempo(),
+        sink=FakeRapAudioSink(),
+        publisher=publisher,
+        on_tick=lambda _: None,
+    )
+    errors: list[Exception] = []
+    reset_completed = Event()
+    start_requested = Event()
+
+    resetter = Thread(target=lambda: _reset_and_capture(service, errors, reset_completed))
+    resetter.start()
+    assert publisher.entered.wait(timeout=1.0)
+    service.prime(prepared_bar(bar=0, source="fresh"))
+    starter = Thread(target=lambda: _start_and_capture(service, errors, start_requested))
+    starter.start()
+    assert start_requested.wait(timeout=1.0)
+    try:
+        assert not publisher.session_started.wait(timeout=0.1)
+        assert starter.is_alive()
+        assert not reset_completed.is_set()
+    finally:
+        publisher.release.set()
+        resetter.join(timeout=1.0)
+        starter.join(timeout=1.0)
+
+    assert not resetter.is_alive()
+    assert not starter.is_alive()
+    assert errors == []
+    assert [event.event_type for event in publisher.events] == [
+        RapEventType.SESSION_RESET,
+        RapEventType.SESSION_STARTED,
+    ]
+    service.close()
+
+
+def test_close_waits_for_reset_event_and_prevents_a_stale_reset_after_closed() -> None:
+    publisher = BlockingLifecyclePublisher(RapEventType.SESSION_RESET)
+    service = ManualPlaybackService(
+        tempo=tempo(),
+        sink=FakeRapAudioSink(),
+        publisher=publisher,
+        on_tick=lambda _: None,
+    )
+    publisher.state_reader = lambda: service.state
+    errors: list[Exception] = []
+    reset_completed = Event()
+    close_completed = Event()
+
+    resetter = Thread(target=lambda: _reset_and_capture(service, errors, reset_completed))
+    resetter.start()
+    assert publisher.entered.wait(timeout=1.0)
+    closer = Thread(target=lambda: _close_and_capture(service, errors, close_completed))
+    closer.start()
+    try:
+        assert not close_completed.wait(timeout=0.1)
+        assert service.state == PlaybackState.STOPPED
+    finally:
+        publisher.release.set()
+        resetter.join(timeout=1.0)
+        closer.join(timeout=1.0)
+
+    assert not resetter.is_alive()
+    assert not closer.is_alive()
+    assert errors == []
+    assert publisher.state_at_blocked_event == PlaybackState.STOPPED
+    assert [event.event_type for event in publisher.events] == [RapEventType.SESSION_RESET]
+    assert service.state == PlaybackState.CLOSED
+
+
 def test_notice_kinds_map_to_canonical_events() -> None:
     service, sink, publisher = running_service()
     sink.publish(AudioPlaybackNoticeKind.BAR_STARTED, bar=0)
@@ -796,3 +889,21 @@ def _reset_and_capture(
         errors.append(error)
     finally:
         completed.set()
+
+
+def _start_and_capture(
+    service: RapPlaybackService,
+    errors: list[Exception],
+    requested: Event,
+) -> None:
+    requested.set()
+    _capture_error(service.start, errors)
+
+
+def _close_and_capture(
+    service: RapPlaybackService,
+    errors: list[Exception],
+    completed: Event,
+) -> None:
+    _capture_error(service.close, errors)
+    completed.set()
