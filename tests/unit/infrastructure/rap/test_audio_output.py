@@ -103,10 +103,13 @@ class BlockingStartStream(FakeOutputStream):
         self.start_entered = Event()
         self.allow_start = Event()
         self.active = False
+        self.start_calls = 0
 
     def start(self) -> None:
-        self.start_entered.set()
-        assert self.allow_start.wait(timeout=1.0)
+        self.start_calls += 1
+        if self.start_calls == 1:
+            self.start_entered.set()
+            assert self.allow_start.wait(timeout=1.0)
         self.started = True
         self.active = True
 
@@ -126,6 +129,37 @@ class BlockingStartStreamFactory:
     def __call__(self, *, audio_format: AudioFormat, callback) -> BlockingStartStream:
         self.stream = BlockingStartStream(callback, block_frames=4)
         return self.stream
+
+
+class ActiveOutputStream(FakeOutputStream):
+    def __init__(self, callback, block_frames: int) -> None:
+        super().__init__(callback, block_frames)
+        self.active = False
+
+    def start(self) -> None:
+        super().start()
+        self.active = True
+
+    def stop(self) -> None:
+        super().stop()
+        self.active = False
+
+    def close(self) -> None:
+        super().close()
+        self.active = False
+
+
+class StartABARaceFactory:
+    def __init__(self) -> None:
+        self.first: BlockingStartStream | None = None
+        self.second: ActiveOutputStream | None = None
+
+    def __call__(self, *, audio_format: AudioFormat, callback) -> FakeOutputStream:
+        if self.first is None:
+            self.first = BlockingStartStream(callback, block_frames=4)
+            return self.first
+        self.second = ActiveOutputStream(callback, block_frames=4)
+        return self.second
 
 
 class StopDuringAcquisitionSink(SoundDeviceAudioSink):
@@ -532,3 +566,30 @@ def test_reset_during_blocked_stream_start_cancels_physical_stream() -> None:
     assert stream_factory.stream.closed
     assert not stream_factory.stream.active
     assert sink.drain_notices() == ()
+
+
+def test_reset_then_start_b_keeps_b_active_after_stale_start_a_returns() -> None:
+    stream_factory = StartABARaceFactory()
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    start_a = Thread(target=sink.start)
+
+    start_a.start()
+    assert stream_factory.first is not None
+    assert stream_factory.first.start_entered.wait(timeout=1.0)
+    try:
+        sink.reset()
+        sink.start()
+        assert stream_factory.second is not None
+        assert stream_factory.second.active
+        assert sink.snapshot().state == PlaybackState.RUNNING
+
+        stream_factory.first.allow_start.set()
+        start_a.join(timeout=1.0)
+
+        assert not start_a.is_alive()
+        assert stream_factory.second.active
+        assert not stream_factory.second.closed
+        assert sink.snapshot().state == PlaybackState.RUNNING
+    finally:
+        stream_factory.first.allow_start.set()
+        start_a.join(timeout=1.0)

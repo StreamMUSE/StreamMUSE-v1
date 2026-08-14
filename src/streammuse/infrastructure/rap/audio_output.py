@@ -161,6 +161,7 @@ class SoundDeviceAudioSink:
     def reset(self) -> None:
         with self._state_lock:
             stream = self._stream
+            self._stream = None
             self._epoch += 1
             self._active = None
             self._frame_in_bar = 0
