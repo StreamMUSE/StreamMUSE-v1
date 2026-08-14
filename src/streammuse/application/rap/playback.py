@@ -1,0 +1,307 @@
+"""Lifecycle control and non-callback observation for rap audio playback."""
+
+from __future__ import annotations
+
+from threading import Event, RLock, Thread, current_thread
+import time
+from typing import Callable
+
+from streammuse.application.rap.audio_rendering import bar_start_frame
+from streammuse.application.rap.audio_service import RapAudioSink
+from streammuse.application.rap.monitoring import RapEventPublisher
+from streammuse.domain.rap import (
+    AudioPlaybackNotice,
+    AudioPlaybackNoticeKind,
+    AudioPlaybackSnapshot,
+    PlaybackState,
+    PreparedRapBar,
+    RapEventType,
+)
+from streammuse.domain.timing import Tempo
+
+
+_OBSERVER_INTERVAL_SECONDS = 0.005
+_NOTICE_EVENTS = {
+    AudioPlaybackNoticeKind.BAR_STARTED: RapEventType.BAR_PLAYBACK_STARTED,
+    AudioPlaybackNoticeKind.BAR_COMPLETED: RapEventType.BAR_PLAYBACK_COMPLETED,
+    AudioPlaybackNoticeKind.UNDERRUN: RapEventType.AUDIO_UNDERRUN,
+    AudioPlaybackNoticeKind.DEVICE_FAILED: RapEventType.AUDIO_DEVICE_FAILED,
+}
+
+
+class RapPlaybackService:
+    """Own playback lifecycle while observing the sink away from its callback."""
+
+    def __init__(
+        self,
+        *,
+        tempo: Tempo,
+        sink: RapAudioSink,
+        publisher: RapEventPublisher | None,
+        on_tick: Callable[[int], None],
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._tempo = tempo
+        self._sink = sink
+        self._publisher = publisher
+        self._on_tick = on_tick
+        self._monotonic = monotonic
+        self._lock = RLock()
+        self._state = PlaybackState.STOPPED
+        self._prepared: dict[int, PreparedRapBar] = {}
+        self._current_tick: int | None = None
+        self._emitted_syllables: set[tuple[int, int]] = set()
+        self._epoch = 0
+        self._observer_stop = Event()
+        self._observer: Thread | None = None
+
+    @property
+    def state(self) -> PlaybackState:
+        with self._lock:
+            return self._state
+
+    @property
+    def current_tick(self) -> int | None:
+        with self._lock:
+            return self._current_tick
+
+    def prime(self, bar: PreparedRapBar) -> None:
+        if bar.bar != 0:
+            raise ValueError("prime requires prepared bar 0")
+        with self._lock:
+            self._require_state(PlaybackState.STOPPED)
+            self._enqueue_locked(bar)
+            self._state = PlaybackState.PRIMING
+
+    def start(self) -> None:
+        with self._lock:
+            self._require_state(PlaybackState.PRIMING)
+            if not self._prepared:
+                raise RuntimeError("playback requires at least one queued bar")
+            epoch = self._epoch
+
+        self._sink.start()
+
+        with self._lock:
+            if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                return
+            self._state = PlaybackState.RUNNING
+            self._observer_stop = Event()
+            observer = Thread(
+                target=self._observe,
+                args=(epoch, self._observer_stop),
+                name="streammuse-rap-playback-observer",
+                daemon=True,
+            )
+            self._observer = observer
+        self._emit(RapEventType.SESSION_STARTED, payload={"playback_state": PlaybackState.RUNNING.value})
+        with self._lock:
+            if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                return
+            observer.start()
+
+    def enqueue(self, bar: PreparedRapBar) -> None:
+        with self._lock:
+            if self._state == PlaybackState.STOPPED:
+                if bar.bar != 0:
+                    raise ValueError("the first prepared bar must be bar 0")
+                self._enqueue_locked(bar)
+                self._state = PlaybackState.PRIMING
+                return
+            if self._state not in (PlaybackState.PRIMING, PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
+                raise RuntimeError(f"cannot enqueue while playback is {self._state.value}")
+            self._enqueue_locked(bar)
+
+    def request_stop(self) -> None:
+        with self._lock:
+            if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.STOP_REQUESTED):
+                return
+            if self._state == PlaybackState.PRIMING:
+                self._state = PlaybackState.STOPPED
+                self._stop_observer_locked()
+                emit = True
+            else:
+                self._state = PlaybackState.STOP_REQUESTED
+                self._sink.request_stop_after_bar()
+                emit = True
+        if emit:
+            self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
+
+    def reset(self) -> None:
+        with self._lock:
+            self._require_state(PlaybackState.STOPPED)
+            self._epoch += 1
+            observer = self._stop_observer_locked()
+            self._prepared.clear()
+            self._current_tick = None
+            self._emitted_syllables.clear()
+        self._join(observer)
+        self._sink.reset()
+        self._emit(RapEventType.SESSION_RESET, payload={"playback_state": PlaybackState.STOPPED.value})
+
+    def wait(self, timeout: float | None = None) -> None:
+        with self._lock:
+            observer = self._observer
+        self._join(observer, timeout)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._state == PlaybackState.CLOSED:
+                return
+            self._epoch += 1
+            self._state = PlaybackState.CLOSED
+            observer = self._stop_observer_locked()
+            self._prepared.clear()
+            self._emitted_syllables.clear()
+        self._join(observer)
+        self._sink.close()
+
+    def poll(self) -> None:
+        """Observe current sink state explicitly for deterministic callers and tests."""
+        with self._lock:
+            if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.PRIMING):
+                return
+            epoch = self._epoch
+
+        snapshot = self._sink.snapshot()
+        notices = self._sink.drain_notices()
+        observed_at = self._monotonic()
+
+        with self._lock:
+            if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                return
+            effects = self._effects_locked(snapshot, notices, observed_at)
+
+        for effect in effects:
+            with self._lock:
+                if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                    return
+            effect()
+
+    def _observe(self, epoch: int, stop: Event) -> None:
+        while not stop.is_set():
+            self.poll()
+            with self._lock:
+                active = epoch == self._epoch and self._state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED)
+            if not active:
+                return
+            stop.wait(_OBSERVER_INTERVAL_SECONDS)
+
+    def _effects_locked(
+        self,
+        snapshot: AudioPlaybackSnapshot,
+        notices: tuple[AudioPlaybackNotice, ...],
+        observed_at: float,
+    ) -> list[Callable[[], None]]:
+        effects: list[Callable[[], None]] = []
+        completed_bars: list[int] = []
+        for notice in notices:
+            if notice.kind == AudioPlaybackNoticeKind.BAR_COMPLETED and notice.bar is not None:
+                completed_bars.append(notice.bar)
+            event_type = _NOTICE_EVENTS.get(notice.kind)
+            if event_type is not None:
+                effects.append(lambda notice=notice, event_type=event_type: self._emit_notice(event_type, notice))
+            if notice.kind == AudioPlaybackNoticeKind.STOPPED:
+                self._transition_to_stopped_locked(effects)
+
+        effects.extend(self._sample_effects_locked(snapshot, observed_at))
+        for bar in completed_bars:
+            self._prepared.pop(bar, None)
+        if snapshot.state == PlaybackState.STOPPED:
+            self._transition_to_stopped_locked(effects)
+        return effects
+
+    def _sample_effects_locked(self, snapshot: AudioPlaybackSnapshot, observed_at: float) -> list[Callable[[], None]]:
+        effects: list[Callable[[], None]] = []
+        sample_rate = self._sample_rate()
+        next_tick = 0 if self._current_tick is None else self._current_tick + 1
+        while self._tick_sample(next_tick) <= snapshot.absolute_frame:
+            tick = next_tick
+            self._current_tick = tick
+            effects.append(lambda tick=tick: self._on_tick(tick))
+            next_tick += 1
+
+        for bar in tuple(self._prepared.values()):
+            for diagnostic in bar.diagnostics:
+                key = (bar.bar, diagnostic.slot_index)
+                scheduled_sample = bar_start_frame(bar.bar, self._tempo, bar.audio.format) + diagnostic.target_sample
+                if key in self._emitted_syllables or scheduled_sample > snapshot.absolute_frame:
+                    continue
+                scheduled = next((item for item in bar.scheduled if item.slot.slot_index == diagnostic.slot_index), None)
+                if scheduled is None:
+                    continue
+                self._emitted_syllables.add(key)
+                payload = {
+                    "scheduled_sample": scheduled_sample,
+                    "software_error_samples": 0,
+                    "observation_delay_ms": (snapshot.absolute_frame - scheduled_sample) / sample_rate * 1000.0,
+                    "word": scheduled.syllable.word,
+                    "label": scheduled.syllable.label,
+                    "stress": scheduled.syllable.stress,
+                    "beat": scheduled.slot.beat,
+                    "subdivision": scheduled.slot.tick_in_beat,
+                }
+                effects.append(
+                    lambda bar=bar.bar, tick=scheduled.slot.tick, payload=payload: self._emit(
+                        RapEventType.SYLLABLE_EMITTED,
+                        bar=bar,
+                        tick=tick,
+                        payload=payload,
+                    )
+                )
+        return effects
+
+    def _transition_to_stopped_locked(self, effects: list[Callable[[], None]]) -> None:
+        if self._state == PlaybackState.STOPPED:
+            return
+        self._state = PlaybackState.STOPPED
+        self._stop_observer_locked()
+        effects.append(lambda: self._emit(RapEventType.SESSION_STOPPED, payload={"playback_state": PlaybackState.STOPPED.value}))
+
+    def _enqueue_locked(self, bar: PreparedRapBar) -> None:
+        self._sink.enqueue(bar)
+        self._prepared[bar.bar] = bar
+
+    def _emit_notice(self, event_type: RapEventType, notice: AudioPlaybackNotice) -> None:
+        self._emit(
+            event_type,
+            bar=notice.bar,
+            tick=self._current_tick,
+            payload={
+                "absolute_frame": notice.absolute_frame,
+                "queue_depth": notice.queue_depth,
+                "message": notice.message,
+            },
+        )
+
+    def _emit(
+        self,
+        event_type: RapEventType,
+        *,
+        bar: int | None = None,
+        tick: int | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        if self._publisher is not None:
+            self._publisher.emit(event_type, bar=bar, tick=tick, payload=payload)
+
+    def _tick_sample(self, tick: int) -> int:
+        return round(self._tempo.tick_to_seconds(tick) * self._sample_rate())
+
+    def _sample_rate(self) -> int:
+        if self._prepared:
+            return next(iter(self._prepared.values())).audio.format.sample_rate_hz
+        return 48_000
+
+    def _stop_observer_locked(self) -> Thread | None:
+        self._observer_stop.set()
+        return self._observer
+
+    def _require_state(self, expected: PlaybackState) -> None:
+        if self._state != expected:
+            raise RuntimeError(f"playback must be {expected.value}, got {self._state.value}")
+
+    @staticmethod
+    def _join(observer: Thread | None, timeout: float | None = None) -> None:
+        if observer is not None and observer.ident is not None and observer is not current_thread():
+            observer.join(timeout)

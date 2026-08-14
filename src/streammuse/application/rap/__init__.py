@@ -18,6 +18,7 @@ from streammuse.application.rap.audio_rendering import (
 )
 from streammuse.application.rap.audio_service import DrumRenderer, RapAudioSink, RapBarRenderer, SpeechSynthesizer
 from streammuse.application.rap.bar_renderer import DeterministicRapBarRenderer
+from streammuse.application.rap.playback import RapPlaybackService
 
 __all__ = [
     "RollingRapController",
@@ -46,4 +47,5 @@ __all__ = [
     "RapBarRenderer",
     "SpeechSynthesizer",
     "DeterministicRapBarRenderer",
+    "RapPlaybackService",
 ]
