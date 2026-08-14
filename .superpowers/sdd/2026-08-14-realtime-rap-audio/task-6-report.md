@@ -60,6 +60,56 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infras
 
 - Base: `62706060` (`docs: record detached stream cleanup`)
 - Implementation: `fecb91fd` (`feat: drive rap playback from the audio sample clock`)
+- Review fixes: `eeef26f4` (`fix: harden rap playback stop and polling`)
+
+## Review Remediation
+
+The Task 6 review found four lifecycle and ordering gaps. The fixes remain
+within playback; no coordinator, runtime, CLI, or UI wiring was added.
+
+- After a bar-quantized stop, `prime` and `enqueue` accept only the completed
+  bar's successor. The service resets the stopped Task 5 sink to discard its
+  retained future queue, then offsets local sink samples to the successor's
+  global musical bar. Public `reset()` clears that continuation state and again
+  requires bar 0.
+- A completion notice now raises the observation frame to the completed
+  prepared bar's exact end even if the separately-read snapshot is older. The
+  service observes final ticks and diagnostics before discarding metadata.
+- `SESSION_STOPPED` is queued only after final tick and syllable effects.
+- A dedicated poll mutex serializes sink reads, effect derivation, and callback
+  execution without holding the lifecycle lock across callbacks.
+
+Review TDD red evidence:
+
+```text
+test_restart_after_stop_discards_stale_future_bars_and_starts_next_complete_bar
+FAILED: prime requires prepared bar 0
+
+test_completion_notice_advances_observation_past_an_older_snapshot_before_metadata_removal
+FAILED: no SYLLABLE_EMITTED event after a newer BAR_COMPLETED notice
+
+test_interleaved_polls_do_not_derive_or_execute_effects_concurrently
+FAILED: the second poll read its snapshot while the first poll callback blocked
+
+test_enqueue_after_stop_discards_stale_future_bars_and_primes_the_next_bar
+FAILED: the first prepared bar must be bar 0
+
+test_reset_after_stop_requires_a_fresh_bar_zero_session
+FAILED: DID NOT RAISE ValueError
+```
+
+Review-fix verification:
+
+```text
+uv run pytest tests/unit/application/rap/test_playback.py -q
+16 passed in 0.50s
+
+uv run ruff check src/streammuse/application/rap/playback.py tests/unit/application/rap/test_playback.py
+All checks passed!
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+426 passed in 2.10s
+```
 
 ## Concerns
 
