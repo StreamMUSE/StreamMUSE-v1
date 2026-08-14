@@ -108,3 +108,37 @@ git diff --check
 ## Fix Round Commit
 
 - `e3724294 fix: harden realtime rap audio sinks`
+
+## Fix Round 2
+
+The final two Task 5 lifecycle defects were addressed without beginning Task 6.
+
+- `SoundDeviceAudioSink.start()` now validates `CLOSED` before entering device
+  failure handling. A closed sink remains terminal: both `start()` and
+  `enqueue()` raise without publishing `DEVICE_FAILED` or changing the
+  snapshot state.
+- `SoundDeviceAudioSink` now increments an epoch on reset and close. Each
+  callback captures that epoch, and all subsequent frame-offset commits and
+  notice publication verify it. PCM assignment remains lock-free; a callback
+  that started before reset can finish its assignment but cannot mutate the
+  reset state or add stale notices.
+- Reviewed sibling sink terminal behavior: Float32 WAV rejects operations after
+  close, and Null/Timed preserve `CLOSED` across reset while rejecting start or
+  enqueue. Composite delegates lifecycle operations to those terminal sinks.
+
+## Fix Round 2 Verification
+
+```text
+uv run pytest tests/unit/infrastructure/rap/test_audio_output.py -q
+17 passed in 0.51s
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+405 passed in 1.85s
+
+git diff --check
+(no output)
+```
+
+## Fix Round 2 Commit
+
+- `12bd2046 fix: guard rap audio sink lifecycle`
