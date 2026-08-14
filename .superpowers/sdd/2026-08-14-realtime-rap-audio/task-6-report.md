@@ -63,6 +63,7 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infras
 - Review fixes: `eeef26f4` (`fix: harden rap playback stop and polling`)
 - Round-two fixes: `b2408221` (`fix: harden rap playback event ordering`)
 - Round-three fix: `98eef34a` (`fix: make rap priming stop atomic`)
+- Round-four fix: `d42f8f78` (`fix: make rap reset cleanup atomic`)
 
 ## Review Remediation
 
@@ -192,3 +193,39 @@ uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infras
 Task 6 intentionally does not wire the service into the coordinator, runtime,
 CLI, or UI; those remain Tasks 7-9. The service delegates physical
 bar-quantized completion and sample advancement to the Task 5 sink contract.
+
+## Review Round Four
+
+`reset()` previously released the lifecycle lock while the Task 5 sink reset
+was still pending. Its public state remained `STOPPED`, so a concurrent
+`prime()` could enqueue fresh audio that the delayed sink reset then erased.
+
+The reset path now calls the local, callback-free sink reset while holding the
+service lifecycle lock. It clears playback metadata in that same critical
+section, joins a cancelled observer only after releasing the lock, and emits
+`SESSION_RESET` only after cleanup has completed. A deterministic blocked-reset
+regression proves a concurrent `prime()` cannot finish early and that its fresh
+bar remains queued once cleanup releases it.
+
+Round-four TDD red evidence:
+
+```text
+uv run pytest tests/unit/application/rap/test_playback.py -q -k reset_keeps_concurrent_prime_out_until_sink_cleanup_finishes
+FAILED: concurrent prime_completed event was set while the blocked sink reset was still in progress
+```
+
+Round-four verification:
+
+```text
+uv run pytest tests/unit/application/rap/test_playback.py -q -k reset_keeps_concurrent_prime_out_until_sink_cleanup_finishes
+1 passed, 20 deselected in 0.44s
+
+uv run pytest tests/unit/application/rap/test_playback.py -q
+21 passed in 0.65s
+
+uv run ruff check src/streammuse/application/rap/playback.py tests/unit/application/rap/test_playback.py
+All checks passed!
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+431 passed in 2.30s
+```
