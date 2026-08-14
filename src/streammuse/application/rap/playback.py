@@ -113,27 +113,26 @@ class RapPlaybackService:
             self._enqueue_locked(bar)
 
     def request_stop(self) -> None:
-        reset_sink = False
         with self._lock:
             if self._state in (PlaybackState.STOPPED, PlaybackState.CLOSED, PlaybackState.STOP_REQUESTED):
                 return
             if self._state == PlaybackState.PRIMING:
-                self._state = PlaybackState.STOPPED
                 self._stop_observer_locked()
                 self._epoch += 1
+                # Task 5 reset is local and has no publication callback. Keep
+                # the lifecycle lock until it has discarded the primed bytes.
+                self._sink.reset()
                 self._prepared.clear()
                 self._current_tick = None
                 self._emitted_syllables.clear()
                 self._next_start_bar = 0
                 self._sample_origin_frame = 0
-                reset_sink = True
+                self._state = PlaybackState.STOPPED
                 emit = True
             else:
                 self._state = PlaybackState.STOP_REQUESTED
                 self._sink.request_stop_after_bar()
                 emit = True
-        if reset_sink:
-            self._sink.reset()
         if emit:
             self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
 

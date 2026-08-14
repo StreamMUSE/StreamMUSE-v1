@@ -159,6 +159,18 @@ class BlockingSnapshotSink(FakeRapAudioSink):
         return super().snapshot()
 
 
+class BlockingResetSink(FakeRapAudioSink):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reset_entered = Event()
+        self.allow_reset = Event()
+
+    def reset(self) -> None:
+        self.reset_entered.set()
+        assert self.allow_reset.wait(timeout=1.0)
+        super().reset()
+
+
 class StaleSnapshotSink(FakeRapAudioSink):
     def __init__(self) -> None:
         super().__init__()
@@ -362,6 +374,34 @@ def test_stop_during_priming_discards_queued_bar_and_allows_fresh_prime() -> Non
     assert sink.queued == []
     assert service.current_tick is None
     service.prime(fresh)
+    assert sink.queued == [fresh]
+
+
+def test_stop_during_priming_keeps_concurrent_prime_out_until_sink_cleanup_finishes() -> None:
+    sink = BlockingResetSink()
+    service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=lambda _: None)
+    discarded = prepared_bar(bar=0, source="discarded")
+    fresh = prepared_bar(bar=0, source="fresh")
+    errors: list[Exception] = []
+    prime_completed = Event()
+    service.prime(discarded)
+
+    stopper = Thread(target=service.request_stop)
+    stopper.start()
+    assert sink.reset_entered.wait(timeout=1.0)
+    primer = Thread(target=lambda: _prime_and_capture(service, fresh, errors, prime_completed))
+    primer.start()
+    try:
+        assert not prime_completed.wait(timeout=0.1)
+    finally:
+        sink.allow_reset.set()
+        stopper.join(timeout=1.0)
+        primer.join(timeout=1.0)
+
+    assert not stopper.is_alive()
+    assert not primer.is_alive()
+    assert errors == []
+    assert service.state == PlaybackState.PRIMING
     assert sink.queued == [fresh]
 
 
@@ -681,3 +721,17 @@ def _capture_error(callback, errors: list[Exception]) -> None:
         callback()
     except Exception as error:
         errors.append(error)
+
+
+def _prime_and_capture(
+    service: RapPlaybackService,
+    bar: PreparedRapBar,
+    errors: list[Exception],
+    completed: Event,
+) -> None:
+    try:
+        service.prime(bar)
+    except Exception as error:
+        errors.append(error)
+    finally:
+        completed.set()
