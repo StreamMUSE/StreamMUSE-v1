@@ -176,6 +176,7 @@ def _controller(
     close_primary=None,
     audio_coordinator=None,
     on_audio_committed=None,
+    controller_type=RollingRapController,
 ):
     analyzer = analyzer or CmuProsodyAnalyzer()
     scenario = _scenario()
@@ -190,7 +191,7 @@ def _controller(
         kwargs["audio_coordinator"] = audio_coordinator
     if on_audio_committed is not None:
         kwargs["on_audio_committed"] = on_audio_committed
-    controller = RollingRapController(
+    controller = controller_type(
         tempo=Tempo(120.0, 4, 4),
         scenario=scenario,
         templates=templates,
@@ -282,6 +283,35 @@ class BlockingResetAudioCoordinator(RecordingAudioCoordinator):
         self.reset_entered.set()
         assert self.allow_reset.wait(timeout=1.0)
         super().reset()
+
+
+class BlockingAudioDeliveryController(RollingRapController):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.block_delivery = Event()
+        self.delivery_entered = Event()
+        self.allow_delivery = Event()
+
+    def _notify_audio_committed(self, *args) -> None:
+        prepared = args[0]
+        if prepared is not None and self.block_delivery.is_set():
+            self.delivery_entered.set()
+            assert self.allow_delivery.wait(timeout=1.0)
+        super()._notify_audio_committed(*args)
+
+
+class BlockingAudioCommitCallback:
+    def __init__(self, bar: int) -> None:
+        self._bar = bar
+        self.entered = Event()
+        self.release = Event()
+        self.bars = []
+
+    def __call__(self, prepared: PreparedRapBar) -> None:
+        self.bars.append(prepared.bar)
+        if prepared.bar == self._bar:
+            self.entered.set()
+            assert self.release.wait(timeout=1.0)
 
 
 def _prepared_audio_bar(plan) -> PreparedRapBar:
@@ -449,6 +479,125 @@ def test_audio_controller_reset_blocks_a_new_start_until_coordinator_epoch_is_cl
     _finish(controller, dispatcher)
 
 
+def test_reset_suppresses_a_blocked_start_bar_audio_callback_from_the_old_epoch() -> None:
+    audio = RecordingAudioCoordinator()
+    callbacks = []
+    controller, _emitted, _events, dispatcher = _controller(
+        audio_coordinator=audio,
+        on_audio_committed=callbacks.append,
+        controller_type=BlockingAudioDeliveryController,
+    )
+    controller.block_delivery.set()
+    starter = Thread(target=controller.start)
+    starter.start()
+    assert controller.delivery_entered.wait(timeout=1.0)
+
+    controller.reset()
+    controller.allow_delivery.set()
+    starter.join(timeout=1.0)
+
+    assert not starter.is_alive()
+    assert callbacks == []
+    _finish(controller, dispatcher)
+
+
+def test_close_suppresses_a_blocked_later_bar_audio_callback_from_the_old_epoch() -> None:
+    audio = RecordingAudioCoordinator()
+    callbacks = []
+    controller, _emitted, _events, dispatcher = _controller(
+        audio_coordinator=audio,
+        on_audio_committed=callbacks.append,
+        controller_type=BlockingAudioDeliveryController,
+    )
+    controller.start()
+    assert [bar.bar for bar in callbacks] == [0]
+    callbacks.clear()
+    controller.block_delivery.set()
+    ticker = Thread(target=lambda: controller.on_tick(15))
+    ticker.start()
+    assert controller.delivery_entered.wait(timeout=1.0)
+
+    controller.close()
+    controller.allow_delivery.set()
+    ticker.join(timeout=1.0)
+
+    assert not ticker.is_alive()
+    assert callbacks == []
+    dispatcher.flush_and_close()
+
+
+def test_reset_waits_for_an_active_start_bar_audio_callback() -> None:
+    audio = RecordingAudioCoordinator()
+    callback = BlockingAudioCommitCallback(bar=0)
+    controller, _emitted, _events, dispatcher = _controller(
+        audio_coordinator=audio,
+        on_audio_committed=callback,
+    )
+    started = Thread(target=controller.start)
+    started.start()
+    assert callback.entered.wait(timeout=1.0)
+    reset_complete = Event()
+    resetter = Thread(target=lambda: _reset_then_signal(controller, reset_complete))
+    resetter.start()
+    try:
+        assert not reset_complete.wait(timeout=0.1)
+    finally:
+        callback.release.set()
+        started.join(timeout=1.0)
+        resetter.join(timeout=1.0)
+
+    assert not started.is_alive()
+    assert not resetter.is_alive()
+    assert callback.bars == [0]
+    _finish(controller, dispatcher)
+
+
+def test_close_waits_for_an_active_later_bar_audio_callback() -> None:
+    audio = RecordingAudioCoordinator()
+    callback = BlockingAudioCommitCallback(bar=1)
+    controller, _emitted, _events, dispatcher = _controller(
+        audio_coordinator=audio,
+        on_audio_committed=callback,
+    )
+    controller.start()
+    ticker = Thread(target=lambda: controller.on_tick(15))
+    ticker.start()
+    assert callback.entered.wait(timeout=1.0)
+    close_complete = Event()
+    closer = Thread(target=lambda: _close_then_signal(controller, close_complete))
+    closer.start()
+    try:
+        assert not close_complete.wait(timeout=0.1)
+    finally:
+        callback.release.set()
+        ticker.join(timeout=1.0)
+        closer.join(timeout=1.0)
+
+    assert not ticker.is_alive()
+    assert not closer.is_alive()
+    assert callback.bars == [0, 1]
+    dispatcher.flush_and_close()
+
+
+def test_audio_commit_callback_can_close_controller_reentrantly() -> None:
+    audio = RecordingAudioCoordinator()
+    holder = {}
+
+    def close_from_callback(_bar) -> None:
+        holder["controller"].close()
+
+    controller, _emitted, _events, dispatcher = _controller(
+        audio_coordinator=audio,
+        on_audio_committed=close_from_callback,
+    )
+    holder["controller"] = controller
+
+    controller.start()
+
+    assert audio.closed is True
+    dispatcher.flush_and_close()
+
+
 def _reset_then_signal(controller: RollingRapController, complete: Event) -> None:
     try:
         controller.reset()
@@ -459,6 +608,13 @@ def _reset_then_signal(controller: RollingRapController, complete: Event) -> Non
 def _start_then_signal(controller: RollingRapController, complete: Event) -> None:
     try:
         controller.start()
+    finally:
+        complete.set()
+
+
+def _close_then_signal(controller: RollingRapController, complete: Event) -> None:
+    try:
+        controller.close()
     finally:
         complete.set()
 

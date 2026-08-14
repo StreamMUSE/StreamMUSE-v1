@@ -130,6 +130,7 @@ class RollingRapController:
         self._audio_committed_bars: set[int] = set()
         self._last_tick = -1
         self._clock_origin: float | None = None
+        self._lifecycle_epoch = 0
         self._started = False
         self._closed = False
 
@@ -139,6 +140,7 @@ class RollingRapController:
 
     def start(self) -> None:
         committed = None
+        delivery_epoch = None
         with self._lifecycle_lock:
             with self._lock:
                 if self._started or self._closed:
@@ -148,11 +150,13 @@ class RollingRapController:
                 self._reserve_through(startup_last_bar)
                 if self._audio_coordinator is not None:
                     committed = self._commit_audio_bar(0, tick=None)
+                    delivery_epoch = self._lifecycle_epoch
                 self._submit_next_primary(current_bar=0)
-        self._notify_audio_committed(committed)
+        self._notify_audio_committed(committed, delivery_epoch)
 
     def on_tick(self, tick: int) -> None:
         committed = None
+        delivery_epoch = None
         with self._lock:
             if not self._started or self._closed:
                 return
@@ -167,6 +171,7 @@ class RollingRapController:
                 self._drain_audio_primary_result()
                 if tick % self._tempo.ticks_per_bar == self._tempo.ticks_per_bar - 1:
                     committed = self._commit_audio_bar(current_bar + 1, tick=tick)
+                    delivery_epoch = self._lifecycle_epoch
             if tick % self._tempo.ticks_per_bar == 0:
                 self._freeze(current_bar, tick)
             self._submit_next_primary(current_bar=current_bar)
@@ -178,7 +183,7 @@ class RollingRapController:
             )
             assert not scheduled or self._bars[current_bar].frozen
 
-        self._notify_audio_committed(committed)
+        self._notify_audio_committed(committed, delivery_epoch)
         for item in scheduled:
             actual = self._clock()
             planned = (self._clock_origin or actual) + self._tempo.tick_to_seconds(tick)
@@ -205,6 +210,7 @@ class RollingRapController:
                 if self._closed:
                     return
                 self._closed = True
+                self._lifecycle_epoch += 1
                 future = self._future
                 executor = self._executor
                 stop_primary = self._stop_primary
@@ -242,6 +248,7 @@ class RollingRapController:
                     raise RuntimeError("reset is available only for audio-controlled sessions")
                 if self._closed:
                     raise RuntimeError("cannot reset a closed controller")
+                self._lifecycle_epoch += 1
                 future = self._future
                 self._future = None
                 self._future_bar = None
@@ -565,9 +572,18 @@ class RollingRapController:
         )
         return prepared
 
-    def _notify_audio_committed(self, prepared: PreparedRapBar | None) -> None:
-        if prepared is not None and self._on_audio_committed is not None:
-            self._on_audio_committed(prepared)
+    def _notify_audio_committed(self, prepared: PreparedRapBar | None, epoch: int | None) -> None:
+        if prepared is None or epoch is None:
+            return
+        # Keep delivery ordered against reset/close, but do not retain the
+        # controller state lock while a playback callback may reenter us.
+        with self._lifecycle_lock:
+            with self._lock:
+                if epoch != self._lifecycle_epoch or not self._started or self._closed:
+                    return
+                callback = self._on_audio_committed
+            if callback is not None:
+                callback(prepared)
 
     def _freeze(self, bar_index: int, tick: int) -> None:
         bar = self._bars[bar_index]
