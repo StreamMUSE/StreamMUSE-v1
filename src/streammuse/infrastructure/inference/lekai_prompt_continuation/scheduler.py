@@ -7,9 +7,12 @@ the backend thread can continue accepting melody events.
 
 from __future__ import annotations
 
+import os
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional
+
+import torch
 
 from streammuse.infrastructure.inference.lekai_prompt_continuation.catchup_state import (
     CatchUpState,
@@ -70,6 +73,7 @@ class LekaiPromptContinuationScheduler:
         self._last_continuation_min_tick: Optional[int] = None
         self._last_continuation_max_tick: Optional[int] = None
         self._empty_continuation_output_streak = 0
+        self._continuation_seed: Optional[int] = None
         self._run_id = 0
 
     @staticmethod
@@ -134,6 +138,7 @@ class LekaiPromptContinuationScheduler:
             self._last_continuation_min_tick = None
             self._last_continuation_max_tick = None
             self._empty_continuation_output_streak = 0
+            self._continuation_seed = None
             self._run_id += 1
             run_id = self._run_id
 
@@ -199,6 +204,7 @@ class LekaiPromptContinuationScheduler:
             self._last_continuation_min_tick = None
             self._last_continuation_max_tick = None
             self._empty_continuation_output_streak = 0
+            self._continuation_seed = None
             return self.status()
 
     def shutdown(self) -> None:
@@ -225,6 +231,7 @@ class LekaiPromptContinuationScheduler:
                 "empty_continuation_output_streak": int(
                     self._empty_continuation_output_streak
                 ),
+                "continuation_seed": self._continuation_seed,
                 **snapshot,
             }
 
@@ -281,6 +288,7 @@ class LekaiPromptContinuationScheduler:
                 melody_snapshot = copy_events(self._melody_history)
                 self._continuation_sent_melody_event_count = len(self._melody_history)
 
+            self._seed_continuation_generation()
             self._continuation_engine.inject_history(
                 melody_events=melody_snapshot,
                 accompaniment_events=prompt_accompaniment,
@@ -294,6 +302,21 @@ class LekaiPromptContinuationScheduler:
                     self._phase = "failed"
                     self._error = f"{type(exc).__name__}: {exc}"
             raise
+
+    def _seed_continuation_generation(self) -> None:
+        raw_seed = os.environ.get("LEKAI_RT_SEED")
+        if raw_seed is None or not raw_seed.strip():
+            self._continuation_seed = None
+            return
+        try:
+            seed = int(raw_seed)
+        except ValueError as exc:
+            raise ValueError(f"LEKAI_RT_SEED must be an integer, got {raw_seed!r}") from exc
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        self._continuation_seed = seed
+        print(f"[LekaiPromptContinuationScheduler] continuation_seed={seed}")
 
     def _run_catchup_loop(self, run_id: int) -> None:
         while True:

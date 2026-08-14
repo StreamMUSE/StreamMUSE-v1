@@ -180,6 +180,37 @@ def test_scheduler_restarts_catchup_when_append_arrives_after_prompt_ready():
     ]
 
 
+def test_scheduler_seeds_continuation_after_prompt(monkeypatch):
+    seeded = []
+    monkeypatch.setenv("LEKAI_RT_SEED", "37")
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_prompt_continuation.scheduler.torch.manual_seed",
+        lambda seed: seeded.append(seed),
+    )
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.lekai_prompt_continuation.scheduler.torch.cuda.is_available",
+        lambda: False,
+    )
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=_ImmediatePromptEngine(),
+        continuation_engine=_RecordingContinuationEngine(),
+    )
+
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        observed_until_tick=32,
+    )
+    status = scheduler.wait(timeout=2.0)
+
+    assert seeded == [37]
+    assert status["continuation_seed"] == 37
+
+
 def test_scheduler_uses_midi_converted_ticks_for_prompt_and_append_boundaries(tmp_path):
     midi_ticks_per_beat = 480
     output_ticks_per_beat = 4
