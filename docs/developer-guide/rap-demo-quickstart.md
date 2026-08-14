@@ -1,43 +1,37 @@
-# Real-Time Rap Demo Quick Start
+# Real-Time Rap Audio Demo Quick Start
 
-## Open the H200 Checkout
+## Split Architecture
+
+The H200 is a text-only service. It runs one loopback-bound vLLM endpoint and
+returns lyric candidates over HTTP. The Mac runs the authoritative rap clock,
+MCFlow/prosody planning, eSpeak rendering, drum rendering, playback, WAV
+recording, session logging, and the web monitor. The browser never owns audio;
+closing it does not stop the Mac process.
+
+The local website is always `http://127.0.0.1:8012/` for the commands below.
+Only the vLLM HTTP port is forwarded from the H200 in this architecture.
+
+## H200: Start Text Generation Only
+
+Connect to the H200 and choose a GPU with zero used memory. Do not select a GPU
+with an existing compute process.
 
 ```bash
-cd /data/home/Andrew.Yang/StreamMUSE/real_rap
-conda activate /data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron
+ssh Andrew.Yang@masdar
+nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu \
+  --format=csv,noheader
+nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
+  --format=csv,noheader
 ```
 
-The checkout should be on `feature/real_rap`. Confirm the commands resolve from
-the StreamMUSE environment:
+On the H200, start one server on the selected unused GPU. The environment `bin`
+directory is intentionally first in `PATH`: vLLM/FlashInfer may need its
+existing `ninja` executable during startup.
 
 ```bash
-git branch --show-current
-which streammuse-rap-demo
-```
-
-## Run Without a Model
-
-Use the deterministic phrase bank to check the real-time clock, candidate gate,
-ranking, fallback behavior, terminal monitor, and browser monitor:
-
-```bash
-streammuse-rap-demo \
-  --generator phrase_bank \
-  --max-bars 0 \
-  --terminal-layout split \
-  --terminal-detail full \
-  --port 8012
-```
-
-`--max-bars 0` runs continuously until interrupted. Use a positive number for a
-finite run.
-
-## Run With a Real LLM
-
-First start one OpenAI-compatible model server on an unused GPU:
-
-```bash
-CUDA_VISIBLE_DEVICES=<GPU_ID> vllm serve Qwen/Qwen2.5-7B-Instruct \
+PATH=/data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron/bin:$PATH \
+CUDA_VISIBLE_DEVICES=<UNUSED_GPU_ID> \
+vllm serve Qwen/Qwen2.5-7B-Instruct \
   --host 127.0.0.1 \
   --port 8001 \
   --served-model-name qwen-rap \
@@ -46,87 +40,186 @@ CUDA_VISIBLE_DEVICES=<GPU_ID> vllm serve Qwen/Qwen2.5-7B-Instruct \
   --gpu-memory-utilization 0.25
 ```
 
-In a second terminal, activate the same Conda environment and run:
+Keep this terminal visible. Stop only this server with `Ctrl-C` when the Mac
+session is finished. It is not an audio server and must not host the website.
+
+## Mac: Install And Tunnel
+
+Install the local rendering and device dependencies, then resolve the project
+environment from the repository root:
 
 ```bash
-streammuse-rap-demo \
+brew install espeak-ng portaudio
+uv sync
+command -v espeak-ng
+```
+
+In another Mac terminal, forward only the H200 model endpoint:
+
+```bash
+ssh -o ExitOnForwardFailure=yes -N \
+  -L 8001:127.0.0.1:8001 \
+  Andrew.Yang@masdar
+```
+
+Keep that tunnel open while the demo runs. It maps Mac `127.0.0.1:8001` to the
+H200 model endpoint; it does not forward the web monitor.
+
+## Mac: Run The Audible Demo
+
+Run this command in a third Mac terminal. It records an IEEE-float WAV while
+playing through the selected CoreAudio default device and starts the local web
+monitor at `http://127.0.0.1:8012/`.
+
+```bash
+uv run streammuse-rap-demo \
   --generator local_chat \
   --model-url http://127.0.0.1:8001/v1 \
   --model qwen-rap \
+  --audio-output composite \
+  --tempo 60 \
+  --candidate-count 12 \
+  --lookahead-bars 3 \
   --max-bars 0 \
   --terminal-layout split \
   --terminal-detail full \
   --port 8012
 ```
 
-The model proposes candidates; it does not control the clock. Candidates with
-the wrong syllable count, low score, errors, or late responses are rejected and
-the prevalidated fallback remains available.
+`--max-bars 0` runs until stopped. Candidate count, lookahead, tempo, drums,
+and voice are startup configuration; the website intentionally exposes no
+controls for them.
 
-## Open the H200 Website Through SSH
+### Start, Stop, And Reset
 
-Keep the rap demo running on the H200 with web port `8012`. Then open a separate
-terminal on your laptop, not inside the H200 SSH session, and start the tunnel:
+The website has exactly three runtime controls:
+
+- **Start** begins a stopped audio session. It is the only way to begin an
+  audio-web session after the server is opened.
+- **Stop** is bar-quantized: the active bar finishes, then no successor starts.
+- **Reset** is available only after the runtime is stopped. It clears the
+  current epoch's bars, warnings, metrics, WAV contents, and audio clock so the
+  next Start begins again at bar zero.
+
+There are no browser controls for topic, model, tempo, candidate count,
+lookahead, drums, voice, or mixer settings.
+
+## Device-Free WAV Fallback
+
+Use this deterministic, no-web command when speakers, PortAudio, or a web
+browser are unavailable. `wav` uses the timed device-free primary sink and
+writes only completed bars to `mixed.wav`.
+
+```bash
+uv run streammuse-rap-demo \
+  --generator phrase_bank \
+  --audio-output wav \
+  --tempo 60 \
+  --candidate-count 12 \
+  --lookahead-bars 3 \
+  --max-bars 12 \
+  --terminal-layout stream \
+  --terminal-detail summary \
+  --no-web
+```
+
+Each invocation creates `logs/rap/<session-id>/` with `session.json`, ordered
+`events.jsonl`, `bars.csv`, `summary.json`, and, for `wav` or `composite`,
+`mixed.wav`. Regenerate derived text artifacts with:
+
+```bash
+uv run python scripts/summarize_rap_session.py logs/rap/<session-id>
+```
+
+The canonical log exposes `software_error_samples`, audio commit slack,
+completed frame counts, and underruns. It does not measure physical speaker
+latency.
+
+## Legacy H200-Hosted Website (Text Only)
+
+This is the previous symbolic/text workflow, retained for comparison and for
+H200-only experiments. It is not the audio-demo architecture: the H200 runs
+both its text process and website, while the Mac only views the forwarded page.
+
+On the H200:
+
+```bash
+cd /data/home/Andrew.Yang/StreamMUSE/real_rap
+conda activate /data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron
+streammuse-rap-demo \
+  --generator phrase_bank \
+  --audio-output none \
+  --max-bars 0 \
+  --terminal-layout split \
+  --terminal-detail full \
+  --port 8012
+```
+
+On the Mac, forward the old H200 website with any unused local port, then open
+the matching local URL:
 
 ```bash
 ssh -o ExitOnForwardFailure=yes -N \
-  -L 8012:127.0.0.1:8012 \
+  -L <UNUSED_LOCAL_PORT>:127.0.0.1:8012 \
   Andrew.Yang@masdar
 ```
 
-Keep that terminal open and visit:
+Visit `http://127.0.0.1:<UNUSED_LOCAL_PORT>/`. Stop the tunnel with `Ctrl-C`;
+it does not stop the H200 process.
 
-```text
-http://127.0.0.1:8012/
-```
-
-The first `8012` is the port on your laptop; the second is the website port on
-the H200. If laptop port `8012` is already occupied, use a different local port:
+To inspect the pre-audio website baseline without changing this branch, create
+a detached worktree pinned to the implementation baseline:
 
 ```bash
-ssh -o ExitOnForwardFailure=yes -N \
-  -L 18012:127.0.0.1:8012 \
-  Andrew.Yang@masdar
+git worktree add --detach <BASELINE_WORKTREE_PATH> 884cd616
 ```
 
-Then visit `http://127.0.0.1:18012/`. Stop the tunnel with `Ctrl-C`; this does
-not stop the rap demo running on the H200.
+## Troubleshooting
 
-## Read the Monitor
+### `uv` Or Virtual Environment
 
-- **Live delivery** shows the frozen lyric, sounding syllable, beat/subdivision,
-  stress, jitter, generation latency, deadline slack, and fallback state.
-- **Beat-aligned flow** shows the moving tick playhead plus the exact tick,
-  duration, stress, boundary, rhyme, and template-provenance arrays.
-- **Generation audit** shows frozen context, the role-labelled LLM prompt, raw
-  response, token/deadline/error diagnostics, and the active request identity.
-- **Candidate gate and ranking** shows observed versus required syllables,
-  validity, rejection reasons, OOV words, and every score value, weight, and
-  contribution. The winning-score strip isolates the selected breakdown.
-- **Queue and health** shows the next reserved lyric, lifecycle state, and last
-  retained error. History and the canonical event console remain available
-  below the cumulative metrics.
-- Clear **Follow live** to inspect older events without automatic scrolling;
-  generation and all other page updates continue normally.
-- **Replaced** means a candidate passed validation, ranking, threshold, and the
-  planning deadline.
-- **Frozen** is the authoritative line being emitted; later responses cannot
-  change it.
-- **Fallback** means no generated candidate was usable in time. The first bar
-  intentionally uses a fallback so playback can start immediately.
-- `*` marks a stressed syllable in stream output.
+Run commands as `uv run ...` from the repository root. If a shell resolves a
+different executable, compare it with the project environment instead of
+installing packages globally:
 
-Unless `--no-web` is supplied, open the local or SSH-forwarded website URL.
+```bash
+which streammuse-rap-demo
+.venv/bin/streammuse-rap-demo --help
+uv run streammuse-rap-demo --help
+```
 
-## Stop and Inspect Results
+If `uv` reports a cache permission error, rerun from an authorized terminal or
+use the existing `.venv` executable only for diagnosis. `uv sync` is the normal
+repair after dependency changes.
 
-Press `Ctrl-C` for a clean shutdown. Each run writes a directory under
-`logs/rap/<session-id>/` containing:
+### Ports And Tunnels
 
-- `session.json`: scenario, model, template, scoring, and environment settings.
-- `events.jsonl`: complete ordered runtime evidence.
-- `bars.csv`: one row per frozen bar.
-- `summary.json`: candidate, fallback, latency, deadline, and jitter metrics.
+Check a local port before binding it:
 
-The current prototype schedules and visualizes symbolic syllables. It does not
-yet produce speech or accept live drum input.
+```bash
+lsof -nP -iTCP:8001 -sTCP:LISTEN
+lsof -nP -iTCP:8012 -sTCP:LISTEN
+```
+
+For the split demo, choose an unused local model port consistently in both the
+SSH `-L` option and `--model-url`. If the website port is occupied, select any
+unused `--port` and open the corresponding `127.0.0.1` URL. Do not forward the
+website for the split Mac/H200 flow.
+
+### eSpeak And Audio Warnings
+
+`espeak-ng` must be present before audio mode starts. A `synthesis_failed`
+warning means the renderer substituted empty vocal PCM for that syllable; drum
+PCM and the timing/WAV path can still run. On the macOS acceptance machine,
+Homebrew eSpeak's `--stdout` stream advertised an invalid WAV frame count even
+though its PCM payload was valid, so all tested vocal syllables failed to
+decode. Reproduce the environment check with:
+
+```bash
+espeak-ng -D -z -v en-us -s 175 -p 50 --stdout "[['mu:v]]" > /tmp/espeak-check.wav
+file /tmp/espeak-check.wav
+```
+
+Do not claim audible vocal output until the session has no
+`synthesis_failed` warnings. The complete Task 10 evidence and remaining
+blockers are recorded in `rap-acceptance-report-2026-08-09.md`.

@@ -1,6 +1,86 @@
 # Real-Time Rap Prototype Acceptance Report
 
-Date: 2026-08-09
+Original symbolic acceptance date: 2026-08-09
+
+## Task 10 Audio Extension (2026-08-14)
+
+This appendix is the acceptance record for the split Mac/H200 audio-demo
+documentation. It does not replace the historical symbolic evidence below. All
+new results were collected on macOS 14.6.1 (23G93), arm64, Python 3.10.18, from
+`feature/real_rap` at `eb0cabce15585e1ecb7ed2a6bdaf20813ba8eca4`.
+
+### Automated Evidence
+
+```text
+Command: uv run pytest tests/ -q --tb=no
+Result: 1140 passed, 4 skipped, 1 warning in 33.15s
+```
+
+The suite includes audio coordinator/playback, WAV sink, failure/fallback, and
+Start/Stop/Reset lifecycle coverage. This is automated coverage, not a claim
+about a physical audio device.
+
+### Local Real Runs
+
+All paths below are ignored local artifacts under
+`logs/rap/task10-20260814/`; they were not committed.
+
+| Run | Command shape | Artifact | Observed result |
+| --- | --- | --- | --- |
+| Device-free phrase bank | `phrase_bank --audio-output wav --tempo 60 --candidate-count 12 --lookahead-bars 3 --max-bars 4 --no-web` | `rap-20260814T152209Z-3f1a2554` | 4 completed bars, 768,000 frames, 0 underruns, 4 commits at 250 ms slack; `mixed.wav` is 48 kHz stereo IEEE float32 (format tag 3), 6,144,000 data bytes. |
+| CoreAudio smoke | `phrase_bank --audio-output composite --max-bars 1 --no-web` | `coreaudio-composite/rap-20260814T153505Z-e3c8eba7` | 1 completed bar, 192,000 frames, 0 underruns, and no device-failure event. This proves callback startup/completion, not speaker audibility or latency. |
+| Failure fallback | `scripted_failure --audio-output wav --max-bars 2 --no-web` | `scripted-failure/rap-20260814T153521Z-7f5350b7` | 2/2 frozen fallback bars completed, 384,000 frames, 0 underruns; the recorded generator error was retained. |
+
+For the four-bar device-free run, `events.jsonl` contained 36 emitted
+syllables and zero nonzero `software_error_samples`; its four committed frame
+counts were all 192,000. The WAV frame count equals the `summary.json`
+completed-frame total. Derived artifacts were regenerated with
+`uv run python scripts/summarize_rap_session.py <session-dir>`.
+
+The eSpeak vocal path is **not accepted** on this Mac. All 63 vocal syllables
+in the phrase-bank run recorded `synthesis_failed`; drums made the WAV nonempty
+but audible speech was not established. Direct eSpeak output was valid 16-bit
+mono PCM at 22,050 Hz but carried a streaming header whose advertised frame
+count was 1,073,739,776. The current decoder trusts that count and rejects the
+payload. This is a local implementation/environment blocker, not a successful
+vocal acceptance result.
+
+Physical speaker latency was not measured. The evidence establishes software
+sample placement, callback progress where used, and artifact integrity only.
+
+### Remote Real Attempt
+
+The H200 check used `Andrew.Yang@masdar`. `nvidia-smi` showed GPUs 1 and 2
+occupied; GPU 0 was empty, so a single bounded Qwen server was assigned to GPU
+0 on loopback port 18001. The first launch failed before serving because
+FlashInfer could not find `ninja` in non-interactive `PATH`. The corrected
+launch prefixed the existing StreamMUSE environment `bin` directory, became
+healthy, and was then tunneled to Mac port 18001.
+
+Two reduced three-bar Mac sessions ran through that tunnel with candidate counts
+8 and 12:
+
+```text
+logs/rap/task10-20260814/remote-candidates-8/rap-20260814T153206Z-59a8efcd
+logs/rap/task10-20260814/remote-candidates-12/rap-20260814T153229Z-37a6b0b4
+```
+
+Both sessions completed with deterministic fallbacks, but each recorded two
+`generation_error` batches with zero candidates, zero reported latency, and an
+empty error string. The temporary vLLM log contained no chat-completion request
+line for those batches. Therefore 12-candidate plausibility, remote latency,
+and audio-commit latency are **not measured/accepted**; the remaining blocker
+is the Mac client/tunnel request path, not H200 GPU availability. The tunnel was
+closed, and only the server PID started for this task (`1381284`) was signaled.
+Verification afterwards showed GPU 0 at 0 MiB/0% and port 18001 unbound.
+
+### Compatibility And Scope
+
+The accepted phrase-bank `wav` run and the scripted-failure `wav` run are the
+bounded executable smokes for fallback/audio behavior. The static planner and
+legacy text-only checks remain part of the final Task 10 compatibility gate.
+No H200-hosted audio, browser-owned audio, extra website controls, or physical
+speaker-latency result is claimed here.
 
 ## Scope and Revision
 

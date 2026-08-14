@@ -91,6 +91,15 @@ logs/YYYY-MM-DD/session_HHMMSS/
 
 `combined.mid` contains `Melody` and `Accompaniment` tracks. With `--enable-metronome`, it also contains a `Metronome` drum track. With `--count-in-beats`, count-in clicks are recorded at the beginning of the MIDI file.
 
+### Realtime Rap Audio Demo
+
+The optional rap demo is a split deployment: the H200 runs vLLM text
+generation only, while the Mac owns eSpeak, drums, playback, IEEE-float WAV
+recording, and the local web monitor. The reproducible setup, device-free WAV
+fallback, Start/Stop/Reset contract, legacy text-only website workflow, and
+current acceptance limitations are in
+[`docs/developer-guide/rap-demo-quickstart.md`](docs/developer-guide/rap-demo-quickstart.md).
+
 ## Documentation
 
 Start from [`docs/index.md`](docs/index.md). Key pages:
@@ -100,6 +109,7 @@ Start from [`docs/index.md`](docs/index.md). Key pages:
 - [`docs/user-guide/running-realtime.md`](docs/user-guide/running-realtime.md)
 - [`docs/user-guide/music-injection.md`](docs/user-guide/music-injection.md)
 - [`docs/architecture/application/service.md`](docs/architecture/application/service.md)
+- [`docs/developer-guide/rap-demo-quickstart.md`](docs/developer-guide/rap-demo-quickstart.md)
 
 ## Dataset / Training Notes
 
