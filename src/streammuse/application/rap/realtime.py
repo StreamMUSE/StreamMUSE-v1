@@ -199,12 +199,12 @@ class RollingRapController:
             payload = {
                 "word": item.syllable.word,
                 "label": item.syllable.label,
-                "stressed": item.syllable.stressed,
+                "stress": item.syllable.stress,
                 "beat": item.slot.beat,
-                "tick_in_beat": item.slot.tick_in_beat,
+                "subdivision": item.slot.tick_in_beat,
                 "planned_monotonic": planned,
                 "actual_monotonic": actual,
-                "jitter_ms": (actual - planned) * 1000.0,
+                "observation_delay_ms": (actual - planned) * 1000.0,
             }
             self._event(RapEventType.SYLLABLE_EMITTED, bar=item.slot.bar, tick=tick, payload=payload)
             if self._emit is not None:
@@ -248,8 +248,8 @@ class RollingRapController:
             if audio_coordinator is not None:
                 audio_coordinator.close()
 
-    def request_stop(self, *, successor_bar: int) -> None:
-        """Freeze audio planning at one restart-safe immutable successor bar."""
+    def request_stop(self, *, successor_bar: int | None) -> None:
+        """Freeze audio planning, optionally retaining one restart-safe successor."""
 
         with self._lifecycle_lock:
             with self._lock:
@@ -257,9 +257,9 @@ class RollingRapController:
                     raise RuntimeError("stop control is available only for audio-controlled sessions")
                 if self._closed or not self._started or self._stopping:
                     return
-                if successor_bar < 0:
+                if successor_bar is not None and successor_bar < 0:
                     raise ValueError("stop requires a non-negative successor bar")
-                if successor_bar not in self._bars:
+                if successor_bar is not None and successor_bar not in self._bars:
                     highest_reserved = max(self._bars, default=-1)
                     if successor_bar != highest_reserved + 1:
                         raise ValueError("stop requires the next reserved successor bar")
@@ -335,6 +335,8 @@ class RollingRapController:
                     raise RuntimeError("audio resume is available only for audio-controlled sessions")
                 if self._closed or not self._started:
                     raise RuntimeError("cannot resume an inactive audio controller")
+                if self._stopping and self._stop_successor_bar is None:
+                    raise RuntimeError("terminal audio stop requires reset before resume")
                 is_stop_successor = self._stopping and bar == self._stop_successor_bar
                 if bar not in self._audio_committed_bars and not is_stop_successor:
                     raise ValueError("audio resume requires an already committed bar")
@@ -355,7 +357,8 @@ class RollingRapController:
                 if self._closed or not self._started or not self._stopping:
                     raise RuntimeError("audio controller is not stopped for resume")
                 successor = self._stop_successor_bar
-                assert successor is not None
+                if successor is None:
+                    raise RuntimeError("terminal audio stop requires reset before resume")
                 self._bars = {bar: plan for bar, plan in self._bars.items() if bar <= successor}
                 self._audio_committed_bars.intersection_update({successor})
                 self._audio_primary_plans.clear()
@@ -616,7 +619,10 @@ class RollingRapController:
     def _drain_audio_primary_result(self) -> None:
         assert self._audio_coordinator is not None
         for bar, primary_plan in tuple(self._audio_primary_plans.items()):
-            prepared = self._audio_coordinator.poll_primary(bar)
+            prepared = self._audio_coordinator.poll_primary(
+                bar,
+                deadline_monotonic=self._audio_commit_deadline(bar),
+            )
             if prepared is None:
                 continue
             target = self._bars.get(bar)
@@ -659,13 +665,19 @@ class RollingRapController:
         assert self._audio_coordinator is not None
         if bar_index in self._audio_committed_bars or bar_index not in self._bars:
             return None
-        prepared = self._audio_coordinator.commit(bar_index)
+        deadline_monotonic = self._audio_commit_deadline(bar_index)
+        prepared = self._audio_coordinator.commit(bar_index, deadline_monotonic=deadline_monotonic)
+        committed_monotonic = self._clock()
         primary_plan = self._audio_primary_plans.pop(bar_index, None)
         target = self._bars[bar_index]
         if primary_plan is not None and prepared.source == primary_plan.source and not target.frozen:
             self._apply_primary_plan(target, primary_plan, candidate_id=None, total_score=None)
         self._audio_committed_bars.add(bar_index)
-        deadline_slack_ms = self._tempo.tick_to_seconds(1) * 1000.0
+        deadline_slack_ms = (
+            None
+            if deadline_monotonic is None
+            else (deadline_monotonic - committed_monotonic) * 1000.0
+        )
         self._event(
             RapEventType.BAR_AUDIO_COMMITTED,
             bar=bar_index,
@@ -681,6 +693,12 @@ class RollingRapController:
             },
         )
         return prepared
+
+    def _audio_commit_deadline(self, bar_index: int) -> float | None:
+        if bar_index <= 0 or self._clock_origin is None:
+            return None
+        deadline_tick = bar_index * self._tempo.ticks_per_bar - 1
+        return self._clock_origin + self._tempo.tick_to_seconds(deadline_tick)
 
     def _notify_audio_committed(self, prepared: PreparedRapBar | None, epoch: int | None) -> None:
         if prepared is None or epoch is None:

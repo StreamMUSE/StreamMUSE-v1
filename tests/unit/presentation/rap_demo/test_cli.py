@@ -107,6 +107,26 @@ def test_cli_rejects_nonfinite_numeric_settings(tmp_path: Path, arguments: tuple
         build_demo(args)
 
 
+def test_audio_cli_rejects_non_48khz_before_constructing_audio_dependencies(tmp_path: Path) -> None:
+    class FailIfCalledAudioFactories:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"audio factory should not be used: {name}")
+
+    args = build_parser().parse_args(
+        [
+            "--audio-output",
+            "wav",
+            "--sample-rate",
+            "44100",
+            "--log-dir",
+            str(tmp_path),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="48,000 Hz"):
+        build_demo(args, audio_factories=FailIfCalledAudioFactories())
+
+
 def test_text_build_uses_existing_tick_loop_and_no_audio_dependencies(tmp_path: Path) -> None:
     class FailIfCalledAudioFactories:
         def __getattr__(self, name: str):

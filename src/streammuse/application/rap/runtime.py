@@ -164,6 +164,7 @@ class RapAudioDemoDependencies:
     websocket_queue: Any | None = None
     configured_max_bars: int = 0
     _closed: bool = field(default=False, init=False)
+    _restart_requires_reset: bool = field(default=False, init=False)
     _lifecycle_lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -181,12 +182,18 @@ class RapAudioDemoDependencies:
     def control_state(self) -> PlaybackState:
         return self.playback.state
 
+    @property
+    def restart_requires_reset(self) -> bool:
+        return self._restart_requires_reset
+
     def start(self) -> None:
         """Start audio playback and block until a requested or automatic stop."""
 
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("rap audio runtime is closed")
+            if self._restart_requires_reset:
+                raise RuntimeError("reset is required before restarting a completed finite scenario")
             if self.playback.state not in (PlaybackState.STOPPED, PlaybackState.PRIMING):
                 return
             payload = _thaw_metadata(self.session_metadata)
@@ -222,14 +229,25 @@ class RapAudioDemoDependencies:
         """Request a stop that the playback service quantizes to the current bar."""
 
         with self._lifecycle_lock:
-            if self._closed:
-                return
-            if self.playback.state not in (PlaybackState.PRIMING, PlaybackState.RUNNING):
-                return
-            successor_bar = self.playback.request_stop()
-            if successor_bar is None:
-                successor_bar = self.playback.stop_successor_bar
-            self.controller.request_stop(successor_bar=successor_bar)
+            self._request_stop_locked()
+
+    def _request_stop_locked(self) -> None:
+        if self._closed:
+            return
+        if self.playback.state not in (PlaybackState.PRIMING, PlaybackState.RUNNING):
+            return
+        successor_bar = self.playback.request_stop()
+        if successor_bar is None:
+            successor_bar = self.playback.stop_successor_bar
+        scenario = getattr(self.controller, "scenario", None)
+        terminal = (
+            scenario is not None
+            and not scenario.loop
+            and successor_bar >= scenario.total_bars
+        )
+        self.controller.request_stop(successor_bar=None if terminal else successor_bar)
+        if terminal:
+            self._restart_requires_reset = True
 
     def reset(self) -> None:
         """Discard stopped session state so the next start begins at bar zero."""
@@ -239,10 +257,14 @@ class RapAudioDemoDependencies:
                 raise RuntimeError("rap audio runtime is closed")
             if self.playback.state != PlaybackState.STOPPED:
                 raise RuntimeError("rap audio runtime can reset only while stopped")
+            quiesce = getattr(self.playback, "quiesce_for_reset", None)
+            if callable(quiesce):
+                quiesce()
             coordinator_epoch = self.controller.reset()
             if not isinstance(coordinator_epoch, int) or isinstance(coordinator_epoch, bool):
                 raise RuntimeError("audio controller reset did not establish a coordinator epoch")
             self.playback.reset(coordinator_epoch=coordinator_epoch)
+            self._restart_requires_reset = False
 
     def close(self) -> None:
         """Permanently close audio, planning, publication, and recording once."""

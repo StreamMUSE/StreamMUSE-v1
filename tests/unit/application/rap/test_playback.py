@@ -174,6 +174,19 @@ class FakeRapAudioSink:
         self.publish(AudioPlaybackNoticeKind.STOPPED)
 
 
+class ImmediateStartNoticeSink(FakeRapAudioSink):
+    def start(self) -> None:
+        super().start()
+        self.publish(AudioPlaybackNoticeKind.BAR_STARTED, bar=0)
+
+
+class FailingStartSink(FakeRapAudioSink):
+    def start(self) -> bool:
+        self.start_calls += 1
+        self.publish(AudioPlaybackNoticeKind.DEVICE_FAILED, message="device open failed")
+        return False
+
+
 class SnapshotToArmRaceSink(FakeRapAudioSink):
     """Activate the successor while atomically arming the stop boundary."""
 
@@ -419,6 +432,39 @@ def test_playback_notice_exports_authoritative_sink_queue_and_buffer_duration() 
         "buffered_seconds": 4.0,
         "message": "test",
     }
+
+
+def test_successful_start_preserves_an_immediate_bar_started_notice() -> None:
+    sink = ImmediateStartNoticeSink()
+    publisher = RecordingPublisher()
+    service = ManualPlaybackService(tempo=tempo(), sink=sink, publisher=publisher, on_tick=lambda _: None)
+    service.prime(prepared_bar(bar=0))
+
+    service.start()
+    service.poll()
+
+    assert [event.event_type for event in publisher.events] == [
+        RapEventType.SESSION_STARTED,
+        RapEventType.BAR_PLAYBACK_STARTED,
+    ]
+    service.close()
+
+
+def test_failed_sink_start_reports_failure_without_entering_running_state() -> None:
+    sink = FailingStartSink()
+    publisher = RecordingPublisher()
+    service = RapPlaybackService(tempo=tempo(), sink=sink, publisher=publisher, on_tick=lambda _: None)
+    service.prime(prepared_bar(bar=0))
+
+    with pytest.raises(RuntimeError, match="audio sink failed to start: device open failed"):
+        service.start()
+
+    assert service.state == PlaybackState.STOPPED
+    assert sink.state == PlaybackState.STOPPED
+    assert [event.event_type for event in publisher.events] == [
+        RapEventType.AUDIO_DEVICE_FAILED,
+        RapEventType.SESSION_STOPPED,
+    ]
 
 
 def test_enqueue_primes_first_bar_and_rejects_later_first_bar() -> None:

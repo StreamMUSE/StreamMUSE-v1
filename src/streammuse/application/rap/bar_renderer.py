@@ -20,6 +20,9 @@ from streammuse.application.rap.audio_service import DrumRenderer, SpeechSynthes
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.domain.rap import (
     AudioFormat,
+    AudioWarning,
+    AudioWarningCode,
+    AudioWarningSeverity,
     PcmAudio,
     PreparedRapBar,
     SyllablePlacementDiagnostic,
@@ -105,7 +108,10 @@ class DeterministicRapBarRenderer:
                 context=FitContext(plan.bar, item.slot.slot_index, item.syllable.word),
                 max_compression=self.max_compression,
             )
-            mix_at(mixed, fitted.audio, target_sample, _VOCAL_GAIN)
+            rendered_frames = min(fitted.audio.frame_count, frames - target_sample)
+            cropped_frames = fitted.audio.frame_count - rendered_frames
+            rendered_audio = _head(fitted.audio, rendered_frames)
+            mix_at(mixed, rendered_audio, target_sample, _VOCAL_GAIN)
             diagnostics.append(
                 SyllablePlacementDiagnostic(
                     bar=plan.bar,
@@ -121,10 +127,27 @@ class DeterministicRapBarRenderer:
                     software_error_samples=0,
                     renderer_phonemes=rendered.renderer_phonemes,
                     synthesis_latency_ms=rendered.synthesis_latency_ms,
+                    rendered_frames=rendered_frames,
+                    cropped_frames=cropped_frames,
                 )
             )
             warnings.extend(rendered.warnings)
             warnings.extend(fitted.warnings)
+            if cropped_frames:
+                warnings.append(
+                    AudioWarning(
+                        code=AudioWarningCode.FORCED_BAR_FIT,
+                        severity=AudioWarningSeverity.WARNING,
+                        message="Syllable tail cropped at the bar boundary",
+                        bar=plan.bar,
+                        slot_index=item.slot.slot_index,
+                        word=item.syllable.word,
+                        available_ms=(frames - target_sample) / self._audio_format.sample_rate_hz * 1000.0,
+                        rendered_ms=rendered_frames / self._audio_format.sample_rate_hz * 1000.0,
+                        compression_ratio=fitted.compression_ratio,
+                        action="crop_at_bar_boundary",
+                    )
+                )
 
         drum_audio = self._drums.render(plan.template, self._tempo, self._audio_format, plan.bar)
         _require_matching_format(drum_audio, self._audio_format)
@@ -155,6 +178,13 @@ def _to_stereo_format(audio: PcmAudio, audio_format: AudioFormat) -> PcmAudio:
     if samples.shape[1] != audio_format.channels:
         raise ValueError("speech synthesis channel count must be mono or match the output")
     return PcmAudio(audio_format, samples.shape[0], samples.astype(np.float32, copy=False).tobytes())
+
+
+def _head(audio: PcmAudio, frame_count: int) -> PcmAudio:
+    if frame_count == audio.frame_count:
+        return audio
+    bytes_per_frame = audio.format.channels * audio.format.sample_width_bytes
+    return PcmAudio(audio.format, frame_count, audio.data[: frame_count * bytes_per_frame])
 
 
 def _validate_format(audio_format: AudioFormat) -> None:

@@ -131,6 +131,11 @@ class _MonitorLifecycle:
     def start_control(self) -> dict[str, str]:
         self._require_control("start")
         with self._control_lock:
+            if getattr(self.runtime, "restart_requires_reset", False):
+                raise HTTPException(
+                    status_code=409,
+                    detail="runtime reset is required before restarting the completed finite scenario",
+                )
             if self._control_starting or self._runtime_state() != "stopped":
                 raise HTTPException(status_code=409, detail="runtime cannot start from its current state")
             if not self._start_runtime_thread_locked():

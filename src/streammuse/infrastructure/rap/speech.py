@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
+from math import isfinite
 import re
 import struct
 import subprocess
 from time import perf_counter
+from threading import Lock
 from typing import Protocol
 
 import numpy as np
@@ -43,8 +46,23 @@ class CommandRunner(Protocol):
 
 
 class _SubprocessCommandRunner:
+    def __init__(self, *, timeout_s: float, max_output_bytes: int) -> None:
+        self._timeout_s = timeout_s
+        self._max_output_bytes = max_output_bytes
+
     def run(self, command: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=self._timeout_s,
+        )
+        stdout = result.stdout or b""
+        stderr = result.stderr or b""
+        if len(stdout) > self._max_output_bytes or len(stderr) > self._max_output_bytes:
+            return subprocess.CompletedProcess(command, 1, b"", b"eSpeak output exceeded configured limit")
+        return result
 
 
 @dataclass(frozen=True)
@@ -75,10 +93,29 @@ def arpabet_syllable_to_espeak(phonemes: tuple[str, ...]) -> tuple[str, ...]:
 class EspeakPhonemeSynthesizer(SpeechSynthesizer):
     """Render CMUdict syllables first, with best-effort eSpeak fallbacks."""
 
-    def __init__(self, command: str = "espeak-ng", runner: CommandRunner | None = None) -> None:
+    def __init__(
+        self,
+        command: str = "espeak-ng",
+        runner: CommandRunner | None = None,
+        *,
+        cache_size: int = 256,
+        command_timeout_s: float = 2.0,
+        max_output_bytes: int = 16 * 1024 * 1024,
+    ) -> None:
+        if not isinstance(cache_size, int) or isinstance(cache_size, bool) or cache_size <= 0:
+            raise ValueError("cache_size must be a positive integer")
+        if not isfinite(command_timeout_s) or command_timeout_s <= 0:
+            raise ValueError("command_timeout_s must be positive and finite")
+        if not isinstance(max_output_bytes, int) or isinstance(max_output_bytes, bool) or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
         self._command = command
-        self._runner = runner or _SubprocessCommandRunner()
-        self._pcm_cache: dict[_RenderKey, PcmAudio] = {}
+        self._runner = runner or _SubprocessCommandRunner(
+            timeout_s=command_timeout_s,
+            max_output_bytes=max_output_bytes,
+        )
+        self._cache_size = cache_size
+        self._cache_lock = Lock()
+        self._pcm_cache: OrderedDict[_RenderKey, PcmAudio] = OrderedDict()
 
     def synthesize(self, request: SyllableRenderRequest) -> RenderedSyllable:
         started = perf_counter()
@@ -136,7 +173,7 @@ class EspeakPhonemeSynthesizer(SpeechSynthesizer):
     def _g2p_tokens(self, word: str, voice: str) -> tuple[str, ...]:
         try:
             result = self._runner.run((self._command, "-q", "-x", "--sep=_", "-v", voice, word))
-        except OSError:
+        except (OSError, subprocess.SubprocessError):
             return ()
         if result.returncode != 0:
             return ()
@@ -144,9 +181,11 @@ class EspeakPhonemeSynthesizer(SpeechSynthesizer):
 
     def _render(self, request: SyllableRenderRequest, render_mode: str, render_text: str) -> PcmAudio | None:
         key = _RenderKey(request.voice, request.speed_wpm, request.pitch, render_mode, render_text)
-        cached = self._pcm_cache.get(key)
-        if cached is not None:
-            return cached
+        with self._cache_lock:
+            cached = self._pcm_cache.get(key)
+            if cached is not None:
+                self._pcm_cache.move_to_end(key)
+                return cached
         if render_mode == "phonemes":
             rendered_input = f"[[{render_text}]]"
         else:
@@ -166,7 +205,7 @@ class EspeakPhonemeSynthesizer(SpeechSynthesizer):
         )
         try:
             result = self._runner.run(command)
-        except OSError:
+        except (OSError, subprocess.SubprocessError):
             return None
         if result.returncode != 0:
             return None
@@ -174,7 +213,11 @@ class EspeakPhonemeSynthesizer(SpeechSynthesizer):
             decoded = _decode_mono_float32_wav(result.stdout)
         except (EOFError, ValueError):
             return None
-        self._pcm_cache[key] = decoded
+        with self._cache_lock:
+            self._pcm_cache[key] = decoded
+            self._pcm_cache.move_to_end(key)
+            while len(self._pcm_cache) > self._cache_size:
+                self._pcm_cache.popitem(last=False)
         return decoded
 
     @staticmethod

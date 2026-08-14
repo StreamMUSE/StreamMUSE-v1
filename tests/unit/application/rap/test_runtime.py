@@ -559,10 +559,76 @@ def test_runtime_reset_ignores_blocked_old_epoch_audio_events_in_monitor_and_ter
         current_state = monitor.snapshot()
         assert current_state["latencies"]["synthesis_latency_ms"]["total"] == 7.0
         assert current_state["audio_warnings"][-1]["word"] == "current"
-        assert terminal.state.audio["state"] == "rendering"
+        assert terminal.state.audio["state"] == "stopped"
+        assert terminal.state.audio["render_state"] == "rendering"
         assert terminal.state.audio_warnings[-1]["word"] == "current"
     finally:
         release_old_worker.set()
+        worker.join(timeout=1.0)
+        dependencies.close()
+
+
+def test_runtime_reset_quiesces_old_tick_delivery_before_controller_epoch_reset(tmp_path) -> None:
+    old_tick_finished = Event()
+    quiesce_entered = Event()
+    allow_old_tick_to_finish = Event()
+    controller_reset = Event()
+    order: list[str] = []
+
+    class Controller:
+        def reset(self) -> int:
+            order.append("controller_reset")
+            assert old_tick_finished.is_set()
+            controller_reset.set()
+            return 1
+
+        def close(self) -> None:
+            return None
+
+    class Playback:
+        state = PlaybackState.STOPPED
+
+        def quiesce_for_reset(self) -> None:
+            order.append("playback_quiesce")
+            quiesce_entered.set()
+            assert allow_old_tick_to_finish.wait(timeout=1.0)
+            old_tick_finished.set()
+
+        def reset(self, *, coordinator_epoch: int) -> None:
+            order.append("playback_reset")
+            assert coordinator_epoch == 1
+
+        def close(self) -> None:
+            self.state = PlaybackState.CLOSED
+
+    class Coordinator:
+        def close(self) -> None:
+            return None
+
+    class Dispatcher:
+        def flush_and_close(self) -> None:
+            return None
+
+    dependencies = RapAudioDemoDependencies(
+        tempo=Tempo(60.0, 4, 4),
+        controller=Controller(),
+        coordinator=Coordinator(),
+        playback=Playback(),
+        publisher=object(),
+        dispatcher=Dispatcher(),
+        session_dir=tmp_path,
+    )
+    worker = Thread(target=dependencies.reset)
+    worker.start()
+    try:
+        assert quiesce_entered.wait(timeout=1.0)
+        assert not controller_reset.is_set()
+        allow_old_tick_to_finish.set()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
+        assert order == ["playback_quiesce", "controller_reset", "playback_reset"]
+    finally:
+        allow_old_tick_to_finish.set()
         worker.join(timeout=1.0)
         dependencies.close()
 

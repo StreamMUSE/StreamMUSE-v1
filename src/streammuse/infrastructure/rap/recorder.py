@@ -51,7 +51,7 @@ _BAR_FIELDS = (
     "deadline_slack_ms",
     "generator_error",
     "emitted_syllables",
-    "mean_emission_jitter_ms",
+    "mean_syllable_observation_delay_ms",
 )
 
 
@@ -321,8 +321,11 @@ def derive_summary(
         "latencies": {
             "generation_latency_ms": _distribution(_payload_numbers(batches.values(), "latency_ms")),
             "deadline_slack_ms": _distribution(_payload_numbers(batches.values(), "deadline_slack_ms")),
-            "emission_jitter_ms": _distribution(
-                _payload_numbers((event for event in event_list if event.event_type == RapEventType.SYLLABLE_EMITTED), "jitter_ms")
+            "syllable_observation_delay_ms": _distribution(
+                _payload_numbers(
+                    (event for event in event_list if event.event_type == RapEventType.SYLLABLE_EMITTED),
+                    "observation_delay_ms",
+                )
             ),
             "synthesis_latency_ms": _distribution(_payload_numbers(audio_events, "synthesis_latency_ms")),
             "bar_render_latency_ms": _distribution(_payload_numbers(audio_events, "render_latency_ms")),
@@ -431,21 +434,25 @@ def derive_bar_rows(events: Iterable[RapEvent]) -> list[dict[str, Any]]:
             if isinstance(error_type, str) and error_type:
                 row["generator_error"] = error_type
         elif event.event_type == RapEventType.SYLLABLE_EMITTED:
-            jitter = _number_or_none(payload.get("jitter_ms"))
-            if jitter is not None:
-                row["_jitters"].append(jitter)
+            observation_delay = _number_or_none(payload.get("observation_delay_ms"))
+            if observation_delay is not None:
+                row["_observation_delays"].append(observation_delay)
             row["emitted_syllables"] += 1
 
     result: list[dict[str, Any]] = []
     for bar in sorted(bars):
         row = bars[bar]
-        jitters = row.pop("_jitters")
+        observation_delays = row.pop("_observation_delays")
         declared_count = row.pop("_declared_candidate_count")
         evaluated_count = row.pop("_evaluated_candidate_count")
         if declared_count is not None and evaluated_count > declared_count:
             raise ValueError(f"candidate count contradiction for bar {bar}")
         row["candidate_count"] = declared_count if declared_count is not None else evaluated_count
-        row["mean_emission_jitter_ms"] = sum(jitters) / len(jitters) if jitters else None
+        row["mean_syllable_observation_delay_ms"] = (
+            sum(observation_delays) / len(observation_delays)
+            if observation_delays
+            else None
+        )
         result.append(row)
     return result
 
@@ -1086,8 +1093,8 @@ def _empty_bar_row(bar: int) -> dict[str, Any]:
         "deadline_slack_ms": None,
         "generator_error": None,
         "emitted_syllables": 0,
-        "mean_emission_jitter_ms": None,
+        "mean_syllable_observation_delay_ms": None,
         "_declared_candidate_count": None,
         "_evaluated_candidate_count": 0,
-        "_jitters": [],
+        "_observation_delays": [],
     }

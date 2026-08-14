@@ -138,7 +138,7 @@ def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
         _event(6, RapEventType.BAR_FROZEN, bar=2, tick=64, request_id="r2", payload={"text": "space line", "fallback": True, "fallback_reason": "deadline_miss"}),
         _event(7, RapEventType.FALLBACK_ACTIVATED, bar=2, request_id="r2", payload={"fallback_reason": "deadline_miss"}),
         _event(8, RapEventType.TICK, bar=2, tick=65),
-        _event(9, RapEventType.SYLLABLE_EMITTED, bar=2, tick=65, payload={"label": "space", "jitter_ms": 0.25}),
+        _event(9, RapEventType.SYLLABLE_EMITTED, bar=2, tick=65, payload={"label": "space", "observation_delay_ms": 0.25}),
         _event(10, RapEventType.SESSION_STOPPED),
     )
     for event in events:
@@ -158,7 +158,9 @@ def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
     assert snapshot["latest_batch"]["raw_response"] == "raw line"
     assert snapshot["candidates"]["c1"]["valid"] is True
     assert snapshot["frozen_bars"]["2"]["text"] == "space line"
-    assert snapshot["emitted_syllables"] == [{"bar": 2, "tick": 65, "label": "space", "jitter_ms": 0.25}]
+    assert snapshot["emitted_syllables"] == [
+        {"bar": 2, "tick": 65, "label": "space", "observation_delay_ms": 0.25}
+    ]
     assert snapshot["latencies"]["generation_latency_ms"] == {"count": 1, "total": 12.5, "min": 12.5, "max": 12.5}
     assert snapshot["fallbacks"] == {"count": 1, "by_reason": {"deadline_miss": 1}}
 
@@ -209,8 +211,8 @@ def test_state_projector_cumulative_metrics_match_recorder_derivation() -> None:
         ),
         _event(9, RapEventType.GENERATION_FAILED, bar=1, request_id="r1", payload={"error_type": "generation_error"}),
         _event(10, RapEventType.BAR_FROZEN, bar=1, request_id="r1", payload={"text": "orbit now returns", "fallback": True}),
-        _event(11, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"jitter_ms": 1.0}),
-        _event(12, RapEventType.SYLLABLE_EMITTED, bar=1, tick=16, payload={"jitter_ms": 3.0}),
+        _event(11, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"observation_delay_ms": 1.0}),
+        _event(12, RapEventType.SYLLABLE_EMITTED, bar=1, tick=16, payload={"observation_delay_ms": 3.0}),
     )
     projector = RapStateProjector(max_recent_bars=1, max_emitted_syllables=1, max_candidates=1, max_recent_events=1)
     for event in events:
@@ -342,7 +344,7 @@ def test_state_projector_retains_terminal_dashboard_state_across_freeze_and_reco
             RapEventType.SYLLABLE_EMITTED,
             bar=0,
             tick=4,
-            payload={"label": "selected", "stressed": True, "jitter_ms": 0.25},
+            payload={"label": "selected", "stress": 1, "subdivision": 0, "observation_delay_ms": 0.25},
         )
     )
     projector.apply(
@@ -365,8 +367,9 @@ def test_state_projector_retains_terminal_dashboard_state_across_freeze_and_reco
         "bar": 0,
         "tick": 4,
         "label": "selected",
-        "stressed": True,
-        "jitter_ms": 0.25,
+        "stress": 1,
+        "subdivision": 0,
+        "observation_delay_ms": 0.25,
     }
     assert snapshot["last_error"]["event_type"] == "generation_failed"
     assert snapshot["last_error"]["payload"]["error_message"] == "model missed deadline"
@@ -436,6 +439,8 @@ def test_state_projector_tracks_audio_state_warnings_and_latency_aggregates() ->
     assert state["audio"] == {
         "state": "running",
         "current_bar": 2,
+        "render_state": "committed",
+        "render_bar": 2,
         "queue_depth": 3,
         "buffered_seconds": 12.0,
         "underruns": 1,
@@ -447,6 +452,24 @@ def test_state_projector_tracks_audio_state_warnings_and_latency_aggregates() ->
     assert state["latencies"]["synthesis_latency_ms"]["count"] == 1
     assert state["latencies"]["bar_render_latency_ms"]["max"] == 48.0
     assert state["latencies"]["audio_commit_slack_ms"]["total"] == 250.0
+
+
+def test_future_render_events_do_not_overwrite_authoritative_playback_lifecycle() -> None:
+    projector = RapStateProjector()
+    for event in (
+        _event(1, RapEventType.SESSION_STARTED, payload={"playback_state": "running"}),
+        _event(2, RapEventType.BAR_PLAYBACK_STARTED, bar=1, payload={"absolute_frame": 192_000}),
+        _event(3, RapEventType.AUDIO_RENDER_COMPLETED, bar=4, payload={"render_latency_ms": 12.0}),
+        _event(4, RapEventType.BAR_AUDIO_READY, bar=4, payload={}),
+        _event(5, RapEventType.BAR_AUDIO_COMMITTED, bar=3, payload={"deadline_slack_ms": 40.0}),
+    ):
+        projector.apply(event)
+
+    audio = projector.snapshot()["audio"]
+    assert audio["state"] == "running"
+    assert audio["current_bar"] == 1
+    assert audio["render_state"] == "committed"
+    assert audio["render_bar"] == 3
 
 
 def test_state_projector_bounds_audio_warnings_and_resets_audio_state() -> None:
@@ -470,6 +493,8 @@ def test_state_projector_bounds_audio_warnings_and_resets_audio_state() -> None:
     assert state["audio_warnings"] == []
     assert state["audio"]["state"] == "stopped"
     assert state["audio"]["current_bar"] is None
+    assert state["audio"]["render_state"] == "idle"
+    assert state["audio"]["render_bar"] is None
 
 
 def test_session_reset_clears_the_entire_projected_research_epoch() -> None:
@@ -481,7 +506,7 @@ def test_session_reset_clears_the_entire_projected_research_epoch() -> None:
         _event(4, RapEventType.CANDIDATE_BATCH_RECEIVED, bar=0, request_id="r0", payload={"candidate_count": 1, "latency_ms": 10.0}),
         _event(5, RapEventType.CANDIDATE_EVALUATED, bar=0, request_id="r0", payload={"candidate_id": "c0", "valid": True}),
         _event(6, RapEventType.FALLBACK_ACTIVATED, bar=0, payload={"fallback_reason": "deadline_miss"}),
-        _event(7, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"label": "orbit", "jitter_ms": 1.0}),
+        _event(7, RapEventType.SYLLABLE_EMITTED, bar=0, tick=0, payload={"label": "orbit", "observation_delay_ms": 1.0}),
         _event(8, RapEventType.AUDIO_RENDER_COMPLETED, bar=0, payload={"synthesis_latency_ms": 4.0, "render_latency_ms": 8.0}),
         _event(9, RapEventType.PRONUNCIATION_FALLBACK, bar=0, payload={"word": "orbit"}),
         _event(10, RapEventType.GENERATION_FAILED, bar=0, request_id="r0", payload={"error_message": "late"}),
@@ -527,3 +552,22 @@ def test_render_latency_uses_only_render_completed_for_one_real_bar_sequence() -
         "min": 48.0,
         "max": 48.0,
     }
+
+
+def test_syllable_observation_delay_is_not_projected_as_physical_jitter() -> None:
+    projector = RapStateProjector()
+    projector.apply(
+        _event(
+            1,
+            RapEventType.SYLLABLE_EMITTED,
+            bar=0,
+            tick=2,
+            payload={"stress": 1, "subdivision": 2, "observation_delay_ms": 12.5},
+        )
+    )
+
+    state = projector.snapshot()
+    assert state["current_syllable"]["stress"] == 1
+    assert state["current_syllable"]["subdivision"] == 2
+    assert state["latencies"]["syllable_observation_delay_ms"]["total"] == 12.5
+    assert "emission_jitter_ms" not in state["latencies"]

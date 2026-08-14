@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from streammuse.domain.rap import AudioWarningCode, SyllableRenderRequest
+from streammuse.infrastructure.rap import speech as speech_module
 from streammuse.infrastructure.rap.speech import EspeakPhonemeSynthesizer, arpabet_syllable_to_espeak
 
 
@@ -242,6 +243,43 @@ def test_identical_phoneme_requests_use_cached_pcm() -> None:
     synthesizer.synthesize(request)
 
     assert runner.wav_command_count == 1
+
+
+def test_espeak_pcm_cache_is_bounded_lru() -> None:
+    runner = FakeEspeakRunner(wav_bytes=wav_bytes(frames=240))
+    synthesizer = EspeakPhonemeSynthesizer(command="espeak-ng", runner=runner, cache_size=2)
+    first = cmu_request(("M", "UW1", "V"))
+    second = cmu_request(("S", "IH1", "T"))
+    third = cmu_request(("TH", "R", "UW2"))
+
+    synthesizer.synthesize(first)
+    synthesizer.synthesize(second)
+    synthesizer.synthesize(first)
+    synthesizer.synthesize(third)
+    synthesizer.synthesize(second)
+
+    assert runner.wav_command_count == 4
+
+
+def test_default_espeak_runner_bounds_timeout_and_stdout(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 0, wav_bytes(frames=240), b"")
+
+    monkeypatch.setattr(speech_module.subprocess, "run", run)
+    synthesizer = EspeakPhonemeSynthesizer(
+        command="espeak-ng",
+        command_timeout_s=0.25,
+        max_output_bytes=64,
+    )
+
+    result = synthesizer.synthesize(cmu_request(("M", "UW1", "V")))
+
+    assert calls[0]["timeout"] == 0.25
+    assert result.pronunciation_source == "synthesis_failed"
+    assert result.audio.frame_count == 0
 
 
 def test_failed_commands_return_empty_pcm_and_warnings() -> None:

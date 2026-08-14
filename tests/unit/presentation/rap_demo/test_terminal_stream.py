@@ -125,7 +125,11 @@ def test_stream_groups_events_by_bar_and_phase_without_ansi() -> None:
         ),
         _event(6, RapEventType.BAR_FROZEN, {"source": "local_chat", "text": "Galaxies dance in a cosmic fight"}),
         _event(7, RapEventType.TICK, {"beat": 0, "tick_in_beat": 0}),
-        _event(8, RapEventType.SYLLABLE_EMITTED, {"label": "Gal", "stressed": True, "jitter_ms": 0.2}),
+        _event(
+            8,
+            RapEventType.SYLLABLE_EMITTED,
+            {"label": "Gal", "stress": 1, "subdivision": 0, "observation_delay_ms": 0.2},
+        ),
         _event(9, RapEventType.FALLBACK_ACTIVATED, {"fallback_reason": "no_valid_candidate"}),
         _event(
             10,

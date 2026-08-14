@@ -166,3 +166,26 @@ def test_bar_renderer_passes_its_configured_compression_cap_to_syllable_fitting(
     prepared = renderer.render(planned_bar_with_slots(bar=0, ticks=(0, 4)))
 
     assert prepared.diagnostics[0].compression_ratio == 3.0
+
+
+def test_nonfinal_tail_cropped_at_bar_boundary_has_truthful_warning_and_lengths() -> None:
+    renderer = DeterministicRapBarRenderer(
+        tempo=Tempo(60.0, 4, 4),
+        audio_format=AudioFormat(48_000, 2),
+        synthesizer=ImpulseSpeechSynthesizer(frames=100_000, sustained=True),
+        drums=SilentDrumRenderer(),
+    )
+
+    prepared = renderer.render(planned_bar_with_slots(bar=0, ticks=(14, 15)))
+
+    first = prepared.diagnostics[0]
+    crop_warning = next(
+        warning
+        for warning in prepared.warnings
+        if warning.slot_index == first.slot_index and warning.action == "crop_at_bar_boundary"
+    )
+    assert first.fitted_frames == 50_000
+    assert first.rendered_frames == 24_000
+    assert first.cropped_frames == 26_000
+    assert crop_warning.code == AudioWarningCode.FORCED_BAR_FIT
+    assert crop_warning.rendered_ms == 500.0

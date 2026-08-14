@@ -182,6 +182,14 @@ class StopDuringAcquisitionSink(SoundDeviceAudioSink):
         return bar
 
 
+class ManuallyAdvancedTimedAudioSink(TimedAudioSink):
+    """Drive the real timed starvation logic without wall-clock sleeps."""
+
+    def advance(self, frames: int) -> None:
+        with self._lock:
+            self._advance_locked(frames)
+
+
 def stereo_format(sample_rate_hz: int = 48_000) -> AudioFormat:
     return AudioFormat(sample_rate_hz=sample_rate_hz, channels=2)
 
@@ -362,6 +370,23 @@ def test_float32_wav_sink_writes_ieee_float_header_and_exact_pcm(tmp_path: Path)
     assert payload == bar.audio.data
 
 
+def test_float32_wav_is_header_patched_and_flushed_after_each_completed_bar(tmp_path: Path) -> None:
+    path = tmp_path / "readable-while-open.wav"
+    sink = Float32WavAudioSink(path, stereo_format())
+    bar = prepared_bar(bar=0, frames=8, value=0.25)
+    try:
+        sink.enqueue(bar)
+        sink.mark_completed(bar)
+
+        header, payload = read_float_wav(path)
+
+        assert header[1] == 36 + len(bar.audio.data)
+        assert header[12] == len(bar.audio.data)
+        assert payload == bar.audio.data
+    finally:
+        sink.close()
+
+
 def test_composite_commits_only_completed_bar_bytes_on_stop(tmp_path: Path) -> None:
     stream_factory = FakeOutputStreamFactory(block_frames=8)
     live = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
@@ -380,6 +405,36 @@ def test_composite_commits_only_completed_bar_bytes_on_stop(tmp_path: Path) -> N
     _, payload = read_float_wav(tmp_path / "session.wav")
     assert payload == first.audio.data
     assert composite.snapshot().last_completed_bar == 0
+
+
+def test_composite_stop_start_continuation_preserves_completed_wav_prefix(tmp_path: Path) -> None:
+    path = tmp_path / "continued.wav"
+    stream_factory = FakeOutputStreamFactory(block_frames=4)
+    live = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    composite = CompositeAudioSink(live, Float32WavAudioSink(path, stereo_format()))
+    first = prepared_bar(bar=0, frames=4, value=0.25)
+    second = prepared_bar(bar=1, frames=4, value=0.5)
+    try:
+        composite.enqueue(first)
+        composite.start()
+        stream_factory.render_frames(1)
+        composite.request_stop_after_bar()
+        stream_factory.render_frames(3)
+        composite.drain_notices()
+
+        composite.discard_pending()
+        composite.enqueue(second)
+        composite.start()
+        stream_factory.render_frames(1)
+        composite.request_stop_after_bar()
+        stream_factory.render_frames(3)
+        composite.drain_notices()
+    finally:
+        composite.close()
+
+    header, payload = read_float_wav(path)
+    assert header[12] == len(first.audio.data) + len(second.audio.data)
+    assert payload == first.audio.data + second.audio.data
 
 
 def test_wav_recorder_reset_replaces_the_previous_audio_epoch(tmp_path: Path) -> None:
@@ -501,6 +556,35 @@ def test_timed_sink_stop_before_clock_advances_does_not_start_a_queued_bar() -> 
         sink.close()
 
 
+def test_timed_starvation_counts_once_and_wav_records_absolute_silence_gap(tmp_path: Path) -> None:
+    audio_format = stereo_format(sample_rate_hz=100)
+    timed = ManuallyAdvancedTimedAudioSink(
+        audio_format=audio_format,
+        poll_interval_seconds=60.0,
+        clock=lambda: 0.0,
+    )
+    path = tmp_path / "starvation-gap.wav"
+    composite = CompositeAudioSink(timed, Float32WavAudioSink(path, audio_format))
+    bar = prepared_bar(bar=0, frames=4, value=0.5, audio_format=audio_format)
+    try:
+        composite.start()
+        timed.advance(6)
+        timed.advance(2)
+        composite.enqueue(bar)
+        timed.advance(4)
+        notices = composite.drain_notices()
+
+        assert timed.snapshot().underrun_count == 1
+        assert [notice.kind for notice in notices].count(AudioPlaybackNoticeKind.UNDERRUN) == 1
+    finally:
+        composite.close()
+
+    header, payload = read_float_wav(path)
+    leading_gap = bytes(8 * audio_format.channels * audio_format.sample_width_bytes)
+    assert header[12] == len(leading_gap) + len(bar.audio.data)
+    assert payload == leading_gap + bar.audio.data
+
+
 def test_sounddevice_factory_failure_publishes_device_failed_notice() -> None:
     failure = RuntimeError("no output device")
 
@@ -552,6 +636,36 @@ def test_sounddevice_stream_start_failure_publishes_device_failed_notice() -> No
     notices = sink.drain_notices()
     assert [notice.kind for notice in notices] == [AudioPlaybackNoticeKind.DEVICE_FAILED]
     assert notices[0].message == str(failure)
+
+
+def test_composite_device_start_failure_falls_back_to_timed_recording_coherently(tmp_path: Path) -> None:
+    failure = RuntimeError("stream start failed")
+
+    def failing_factory(*, audio_format: AudioFormat, callback):
+        raise failure
+
+    audio_format = stereo_format()
+    live = SoundDeviceAudioSink(audio_format=audio_format, stream_factory=failing_factory)
+    fallback = NullAudioSink(audio_format=audio_format)
+    path = tmp_path / "fallback.wav"
+    composite = CompositeAudioSink(
+        live,
+        Float32WavAudioSink(path, audio_format),
+        fallback=fallback,
+    )
+    bar = prepared_bar(bar=0, frames=4, value=0.25, audio_format=audio_format)
+    composite.enqueue(bar)
+    try:
+        composite.start()
+
+        assert composite.snapshot().state == PlaybackState.RUNNING
+        assert fallback.complete_next() is bar
+        notices = composite.drain_notices()
+        assert AudioPlaybackNoticeKind.DEVICE_FAILED in [notice.kind for notice in notices]
+    finally:
+        composite.close()
+
+    assert read_float_wav(path)[1] == bar.audio.data
 
 
 def test_closed_sounddevice_sink_remains_terminal_after_start_and_enqueue_attempts() -> None:

@@ -225,7 +225,12 @@ def projected_state() -> TerminalRapViewState:
             },
         ),
         _event(11, RapEventType.TICK, {"beat": 0, "tick_in_beat": 2}, tick=18),
-        _event(12, RapEventType.SYLLABLE_EMITTED, {"label": "ax", "stressed": False, "jitter_ms": 0.2}, tick=18),
+        _event(
+            12,
+            RapEventType.SYLLABLE_EMITTED,
+            {"label": "ax", "stress": 0, "subdivision": 2, "observation_delay_ms": 0.2},
+            tick=18,
+        ),
     )
     for event in events:
         projector.apply(event)

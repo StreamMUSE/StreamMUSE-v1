@@ -79,12 +79,11 @@ class RapAudioFactories:
         if output == "live":
             return SoundDeviceAudioSink(audio_format=audio_format, device=audio_device)
         recorder = Float32WavAudioSink(audio_file, audio_format)
-        primary = (
-            TimedAudioSink(audio_format=audio_format)
-            if output == "wav"
-            else SoundDeviceAudioSink(audio_format=audio_format, device=audio_device)
-        )
-        return CompositeAudioSink(primary, recorder)
+        if output == "wav":
+            return CompositeAudioSink(TimedAudioSink(audio_format=audio_format), recorder)
+        primary = SoundDeviceAudioSink(audio_format=audio_format, device=audio_device)
+        fallback = TimedAudioSink(audio_format=audio_format)
+        return CompositeAudioSink(primary, recorder, fallback=fallback)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -419,6 +418,8 @@ def _validate_audio_options(args: argparse.Namespace, *, require_external: bool)
         raise ValueError("tempo must be positive")
     if not isfinite(args.sample_rate) or args.sample_rate <= 0:
         raise ValueError("sample-rate must be positive")
+    if args.audio_output != "none" and args.sample_rate != 48_000:
+        raise ValueError("realtime rap audio requires a 48,000 Hz sample rate")
     if not 80 <= args.voice_speed <= 450:
         raise ValueError("voice-speed must be between 80 and 450")
     if not 0 <= args.voice_pitch <= 99:
@@ -472,7 +473,7 @@ def _build_generator(args: argparse.Namespace):
             timeout_s=args.timeout_s,
         )
     )
-    return LocalChatCandidateGenerator(client), client.stop_accepting_and_abort, client.close
+    return LocalChatCandidateGenerator(client), client.abort, client.close
 
 
 def _build_manifest(args: argparse.Namespace, scenario, tempo: Tempo) -> dict[str, object]:

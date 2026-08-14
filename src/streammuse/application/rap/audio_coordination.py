@@ -5,7 +5,8 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import RLock
-from typing import Literal
+import time
+from typing import Callable, Literal
 
 from streammuse.application.rap.audio_service import RapBarRenderer
 from streammuse.application.rap.monitoring import RapEventPublisher
@@ -23,9 +24,16 @@ class _RenderWork:
 class BarAudioCoordinator:
     """Render fallback audio first and commit one immutable bar per index."""
 
-    def __init__(self, renderer: RapBarRenderer, *, publisher: RapEventPublisher | None) -> None:
+    def __init__(
+        self,
+        renderer: RapBarRenderer,
+        *,
+        publisher: RapEventPublisher | None,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._renderer = renderer
         self._publisher = publisher
+        self._monotonic = monotonic
         # Reserve one of the coordinator's two workers for fallback audio.
         # Primary renders may accumulate across lookahead bars, but they must
         # never consume the capacity needed to keep the safe path gap-free.
@@ -40,6 +48,7 @@ class BarAudioCoordinator:
         self._primary_work: dict[int, _RenderWork] = {}
         self._primary_futures: dict[int, Future[PreparedRapBar]] = {}
         self._primary_results: dict[int, PreparedRapBar] = {}
+        self._primary_completed_monotonic: dict[int, float] = {}
         self._primary_polled: set[int] = set()
         self._committed: dict[int, PreparedRapBar] = {}
 
@@ -74,22 +83,23 @@ class BarAudioCoordinator:
             work = _RenderWork(plan=plan, role="primary", epoch=self._epoch)
             self._primary_work[plan.bar] = work
             self._primary_results.pop(plan.bar, None)
+            self._primary_completed_monotonic.pop(plan.bar, None)
             self._primary_polled.discard(plan.bar)
             self._primary_futures[plan.bar] = self._primary_executor.submit(self._render, work)
 
-    def poll_primary(self, bar: int) -> PreparedRapBar | None:
+    def poll_primary(self, bar: int, *, deadline_monotonic: float | None = None) -> PreparedRapBar | None:
         """Return a completed, uncommitted primary result at most once."""
 
         with self._lock:
             if bar in self._committed or bar in self._primary_polled:
                 return None
             result = self._primary_results.get(bar)
-            if result is None:
+            if result is None or not self._primary_met_deadline_locked(bar, deadline_monotonic):
                 return None
             self._primary_polled.add(bar)
             return result
 
-    def commit(self, bar: int) -> PreparedRapBar:
+    def commit(self, bar: int, *, deadline_monotonic: float | None = None) -> PreparedRapBar:
         """Atomically prefer ready primary audio, otherwise wait only for fallback."""
 
         with self._lock:
@@ -102,7 +112,7 @@ class BarAudioCoordinator:
             if fallback_work is None or fallback_future is None:
                 raise ValueError("commit requires a reserved fallback")
             primary = self._primary_results.get(bar)
-            if primary is not None:
+            if primary is not None and self._primary_met_deadline_locked(bar, deadline_monotonic):
                 return self._commit_locked(bar, primary)
 
         # Deliberately wait only for the safe fallback. A primary completion is
@@ -116,7 +126,7 @@ class BarAudioCoordinator:
             if self._fallback_work.get(bar) is not fallback_work:
                 raise RuntimeError("fallback audio was reset before commitment")
             primary = self._primary_results.get(bar)
-            if primary is not None:
+            if primary is not None and self._primary_met_deadline_locked(bar, deadline_monotonic):
                 return self._commit_locked(bar, primary)
             fallback = self._fallback_results.get(bar)
             if fallback is None:
@@ -134,11 +144,17 @@ class BarAudioCoordinator:
         for future in futures:
             future.cancel()
 
-    def pause(self, successor_bar: int) -> None:
+    def pause(self, successor_bar: int | None) -> None:
         """Cancel future planning work while retaining one restart-safe fallback."""
 
         with self._lock:
             self._require_open()
+            if successor_bar is None:
+                futures = tuple(self._fallback_futures.values()) + tuple(self._primary_futures.values())
+                self._clear_locked()
+                for future in futures:
+                    future.cancel()
+                return
             successor = self._committed.get(successor_bar)
             fallback_work = self._fallback_work.get(successor_bar)
             fallback_future = self._fallback_futures.get(successor_bar)
@@ -205,8 +221,9 @@ class BarAudioCoordinator:
             )
             raise
 
+        completed_monotonic = self._monotonic()
         with self._lock:
-            accepted = self._accept_result_locked(work, prepared)
+            accepted = self._accept_result_locked(work, prepared, completed_monotonic)
         payload = self._audio_payload(prepared, role=work.role, accepted=accepted, coordinator_epoch=work.epoch)
         self._event(RapEventType.AUDIO_RENDER_COMPLETED, bar=prepared.bar, payload=payload)
         if accepted:
@@ -215,7 +232,12 @@ class BarAudioCoordinator:
                 self._publish_warning(prepared, warning, coordinator_epoch=work.epoch)
         return prepared
 
-    def _accept_result_locked(self, work: _RenderWork, prepared: PreparedRapBar) -> bool:
+    def _accept_result_locked(
+        self,
+        work: _RenderWork,
+        prepared: PreparedRapBar,
+        completed_monotonic: float,
+    ) -> bool:
         if self._closed or work.epoch != self._epoch or prepared.bar in self._committed:
             return False
         if work.role == "fallback":
@@ -226,12 +248,20 @@ class BarAudioCoordinator:
         if self._primary_work.get(prepared.bar) is not work:
             return False
         self._primary_results[prepared.bar] = prepared
+        self._primary_completed_monotonic[prepared.bar] = completed_monotonic
         return True
+
+    def _primary_met_deadline_locked(self, bar: int, deadline_monotonic: float | None) -> bool:
+        if deadline_monotonic is None:
+            return True
+        completed = self._primary_completed_monotonic.get(bar)
+        return completed is not None and completed <= deadline_monotonic
 
     def _commit_locked(self, bar: int, prepared: PreparedRapBar) -> PreparedRapBar:
         self._committed[bar] = prepared
         self._fallback_results.pop(bar, None)
         self._primary_results.pop(bar, None)
+        self._primary_completed_monotonic.pop(bar, None)
         self._fallback_work.pop(bar, None)
         self._primary_work.pop(bar, None)
         self._fallback_futures.pop(bar, None)
@@ -246,6 +276,7 @@ class BarAudioCoordinator:
         self._primary_work.clear()
         self._primary_futures.clear()
         self._primary_results.clear()
+        self._primary_completed_monotonic.clear()
         self._primary_polled.clear()
         self._committed.clear()
 
@@ -305,6 +336,11 @@ class BarAudioCoordinator:
             "vocal_syllable_count": len(prepared.diagnostics),
             "vocal_source_frames": sum(item.source_frames for item in prepared.diagnostics),
             "vocal_fitted_frames": sum(item.fitted_frames for item in prepared.diagnostics),
+            "vocal_rendered_frames": sum(
+                item.fitted_frames if item.rendered_frames is None else item.rendered_frames
+                for item in prepared.diagnostics
+            ),
+            "vocal_cropped_frames": sum(item.cropped_frames for item in prepared.diagnostics),
             "pronunciation_sources": pronunciation_sources,
             "frame_count": prepared.audio.frame_count,
             "warnings": [warning.code.value for warning in prepared.warnings],

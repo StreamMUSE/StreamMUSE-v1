@@ -128,6 +128,8 @@ class TerminalRapStateProjector:
         self._audio: dict[str, Any] = {
             "state": "disabled",
             "current_bar": None,
+            "render_state": "idle",
+            "render_bar": None,
             "queue_depth": 0,
             "buffered_seconds": 0.0,
             "underruns": 0,
@@ -158,8 +160,13 @@ class TerminalRapStateProjector:
                 self._session_metadata = _freeze({**self._session_metadata, **event.payload})
                 self._stopped = False
                 self._update_audio(event)
+                playback_state = event.payload.get("playback_state")
+                if playback_state in {"priming", "running"}:
+                    self._audio["state"] = playback_state
             elif kind == RapEventType.SESSION_STOPPED:
                 self._stopped = True
+                if self._audio["state"] != "disabled":
+                    self._audio["state"] = "stopped"
             elif kind == RapEventType.BAR_RESERVED:
                 self._update_bar(event, frozen=False, ignore_if_frozen=True)
             elif kind == RapEventType.BAR_PLANNING_STARTED:
@@ -189,11 +196,11 @@ class TerminalRapStateProjector:
             elif kind == RapEventType.SYLLABLE_EMITTED:
                 self._current_syllable = _freeze({"bar": event.bar, "tick": event.tick, **event.payload})
             elif kind == RapEventType.AUDIO_RENDER_COMPLETED:
-                self._update_audio(event, state="rendering")
+                self._update_audio_render(event, state="rendering")
             elif kind == RapEventType.BAR_AUDIO_READY:
-                self._update_audio(event, state="ready")
+                self._update_audio_render(event, state="ready")
             elif kind == RapEventType.BAR_AUDIO_COMMITTED:
-                self._update_audio(event, state="priming")
+                self._update_audio_render(event, state="committed")
             elif kind in (RapEventType.BAR_PLAYBACK_STARTED, RapEventType.BAR_PLAYBACK_COMPLETED):
                 self._update_audio(event, state="running")
             elif kind == RapEventType.STOP_REQUESTED:
@@ -282,10 +289,16 @@ class TerminalRapStateProjector:
             coordinator_epoch=self._coordinator_epoch,
         )
 
-    def _update_audio(self, event: RapEvent, *, state: str | None = None) -> None:
+    def _update_audio(
+        self,
+        event: RapEvent,
+        *,
+        state: str | None = None,
+        update_current_bar: bool = True,
+    ) -> None:
         if state is not None:
             self._audio["state"] = state
-        if event.bar is not None:
+        if update_current_bar and event.bar is not None:
             self._audio["current_bar"] = event.bar
         for key in ("queue_depth", "buffered_seconds", "absolute_frame"):
             value = event.payload.get(key)
@@ -309,6 +322,12 @@ class TerminalRapStateProjector:
             if isinstance(artifacts, Mapping) and isinstance(artifacts.get("wav"), str):
                 self._audio["recording_path"] = artifacts["wav"]
 
+    def _update_audio_render(self, event: RapEvent, *, state: str) -> None:
+        self._update_audio(event, update_current_bar=False)
+        self._audio["render_state"] = state
+        if event.bar is not None:
+            self._audio["render_bar"] = event.bar
+
     def _remember_audio_warning(self, event: RapEvent) -> None:
         self._audio_warnings.append(_freeze({"bar": event.bar, "tick": event.tick, "type": event.event_type.value, **event.payload}))
 
@@ -329,6 +348,8 @@ class TerminalRapStateProjector:
         self._audio = {
             "state": "stopped",
             "current_bar": None,
+            "render_state": "idle",
+            "render_bar": None,
             "queue_depth": 0,
             "buffered_seconds": 0.0,
             "underruns": 0,

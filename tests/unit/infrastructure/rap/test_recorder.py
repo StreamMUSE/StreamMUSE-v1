@@ -57,8 +57,8 @@ def _scripted_session_events() -> tuple[RapEvent, ...]:
         _event(9, RapEventType.GENERATION_FAILED, bar=1, request_id="r1", payload={"error_type": "generation_error"}),
         _event(10, RapEventType.BAR_FROZEN, bar=1, request_id="r1", payload={"text": "line now again", "source": "local_chat", "fallback": True, "fallback_reason": "deadline_miss"}),
         _event(11, RapEventType.FALLBACK_ACTIVATED, bar=1, request_id="r1", payload={"fallback_reason": "deadline_miss"}),
-        _event(12, RapEventType.SYLLABLE_EMITTED, bar=0, tick=1, payload={"label": "clean", "jitter_ms": 1.0}),
-        _event(13, RapEventType.SYLLABLE_EMITTED, bar=1, tick=17, payload={"label": "fallback", "jitter_ms": -2.0}),
+        _event(12, RapEventType.SYLLABLE_EMITTED, bar=0, tick=1, payload={"label": "clean", "observation_delay_ms": 1.0}),
+        _event(13, RapEventType.SYLLABLE_EMITTED, bar=1, tick=17, payload={"label": "fallback", "observation_delay_ms": -2.0}),
     )
 
 
@@ -132,10 +132,10 @@ def test_summary_uses_explicit_ratio_denominators_and_null_empty_observations() 
         "pronunciation_fallback": {"numerator": 2, "denominator": 3, "rate": 2 / 3},
         "repetition": {"numerator": 1, "denominator": 4, "rate": 0.25},
     }
-    assert {key: summary["latencies"][key] for key in ("generation_latency_ms", "deadline_slack_ms", "emission_jitter_ms")} == {
+    assert {key: summary["latencies"][key] for key in ("generation_latency_ms", "deadline_slack_ms", "syllable_observation_delay_ms")} == {
         "generation_latency_ms": {"count": 2, "p50": 15.0, "p95": 19.5, "max": 20.0},
         "deadline_slack_ms": {"count": 2, "p50": 30.0, "p95": 48.0, "max": 50.0},
-        "emission_jitter_ms": {"count": 2, "p50": -0.5, "p95": 0.8499999999999996, "max": 1.0},
+        "syllable_observation_delay_ms": {"count": 2, "p50": -0.5, "p95": 0.8499999999999996, "max": 1.0},
     }
     for key in ("synthesis_latency_ms", "bar_render_latency_ms", "audio_commit_slack_ms"):
         assert summary["latencies"][key] == {"count": 0, "p50": None, "p95": None, "max": None}
@@ -242,7 +242,7 @@ def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:
             "deadline_slack_ms": 50.0,
             "generator_error": None,
             "emitted_syllables": 1,
-            "mean_emission_jitter_ms": 1.0,
+            "mean_syllable_observation_delay_ms": 1.0,
         },
         {
             "bar": 1,
@@ -259,7 +259,7 @@ def test_bar_rows_are_deterministic_and_written_as_csv(tmp_path: Path) -> None:
             "deadline_slack_ms": 10.0,
             "generator_error": "generation_error",
             "emitted_syllables": 1,
-            "mean_emission_jitter_ms": -2.0,
+            "mean_syllable_observation_delay_ms": -2.0,
         },
     ]
 

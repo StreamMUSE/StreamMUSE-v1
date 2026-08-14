@@ -294,7 +294,7 @@ Raw H200 evidence is under
 ## Remaining Research Work
 
 - Connect live keyboard/drum rhythm and changing tempo to flow-template choice.
-- Add beat-aware speech or singing synthesis and scheduled audio playback.
+- Improve vocal naturalness beyond the shipped beat-aware eSpeak synthesis and scheduled 48 kHz playback path.
 - Expand beyond the three built-in nine-slot templates using the sampled MCFlow
   catalog and evaluate how template diversity affects generated delivery.
 - Evaluate lyrical quality, perceived flow, topic adherence, and fallback

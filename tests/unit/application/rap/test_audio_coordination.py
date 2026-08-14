@@ -183,6 +183,35 @@ def test_committed_bar_rejects_late_primary_audio() -> None:
         coordinator.close()
 
 
+def test_primary_audio_completed_after_absolute_deadline_cannot_beat_ready_fallback() -> None:
+    now = [0.0]
+    renderer = ControlledBarRenderer()
+    publisher = RecordingPublisher()
+    coordinator = BarAudioCoordinator(renderer, publisher=publisher, monotonic=lambda: now[0])
+    fallback = planned_bar(bar=3, source="prevalidated_fallback")
+    primary = planned_bar(bar=3, source="local_chat")
+    try:
+        coordinator.reserve_fallback(fallback)
+        renderer.wait_started(fallback)
+        now[0] = 9.0
+        renderer.complete(fallback)
+        _wait_for_render_completion(publisher, role="fallback")
+
+        coordinator.submit_primary(primary)
+        renderer.wait_started(primary)
+        now[0] = 10.001
+        renderer.complete(primary)
+        assert _wait_for_primary(coordinator, 3).source == "local_chat"
+
+        committed = coordinator.commit(3, deadline_monotonic=10.0)
+
+        assert committed.source == "prevalidated_fallback"
+    finally:
+        renderer.complete(fallback)
+        renderer.complete(primary)
+        coordinator.close()
+
+
 def test_reset_cancels_uncommitted_work_and_close_is_permanent() -> None:
     renderer = ControlledBarRenderer()
     coordinator = BarAudioCoordinator(renderer, publisher=RecordingPublisher())
@@ -402,6 +431,18 @@ def _wait_for_primary(coordinator: BarAudioCoordinator, bar: int) -> PreparedRap
             return result
         sleep(0.005)
     raise AssertionError("primary audio did not become ready")
+
+
+def _wait_for_render_completion(publisher: RecordingPublisher, *, role: str) -> None:
+    deadline = monotonic() + 1.0
+    while monotonic() < deadline:
+        if any(
+            event_type == RapEventType.AUDIO_RENDER_COMPLETED and payload.get("role") == role
+            for event_type, _bar, payload in publisher.events
+        ):
+            return
+        sleep(0.001)
+    raise AssertionError(f"{role} render did not complete")
 
 
 def _wait_for_event_count(publisher: RecordingPublisher, *, bar: int, count: int) -> None:

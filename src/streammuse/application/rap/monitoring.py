@@ -237,7 +237,7 @@ class _CumulativeResearchMetrics:
         self._latencies: dict[str, list[float]] = {
             "generation_latency_ms": [],
             "deadline_slack_ms": [],
-            "emission_jitter_ms": [],
+            "syllable_observation_delay_ms": [],
             "synthesis_latency_ms": [],
             "bar_render_latency_ms": [],
             "audio_commit_slack_ms": [],
@@ -287,7 +287,10 @@ class _CumulativeResearchMetrics:
                 self._fallback_bars += 1
             self._remember_repetition(payload.get("text"))
         elif event.event_type == RapEventType.SYLLABLE_EMITTED:
-            self._remember_number(payload.get("jitter_ms"), "emission_jitter_ms")
+            self._remember_number(
+                payload.get("observation_delay_ms"),
+                "syllable_observation_delay_ms",
+            )
         elif event.event_type == RapEventType.AUDIO_RENDER_COMPLETED:
             self._remember_number(payload.get("synthesis_latency_ms"), "synthesis_latency_ms")
             self._remember_number(payload.get("render_latency_ms"), "bar_render_latency_ms")
@@ -410,7 +413,7 @@ class RapStateProjector:
             "latencies": {
                 "generation_latency_ms": self._aggregate(),
                 "deadline_slack_ms": self._aggregate(),
-                "emission_jitter_ms": self._aggregate(),
+                "syllable_observation_delay_ms": self._aggregate(),
                 "synthesis_latency_ms": self._aggregate(),
                 "bar_render_latency_ms": self._aggregate(),
                 "audio_commit_slack_ms": self._aggregate(),
@@ -418,6 +421,8 @@ class RapStateProjector:
             "audio": {
                 "state": "disabled",
                 "current_bar": None,
+                "render_state": "idle",
+                "render_bar": None,
                 "queue_depth": 0,
                 "buffered_seconds": 0.0,
                 "underruns": 0,
@@ -513,15 +518,19 @@ class RapStateProjector:
                 self._state["current_syllable"] = syllable
                 self._state["emitted_syllables"].append(syllable)
                 del self._state["emitted_syllables"][:-self._max_emitted_syllables]
-                self._add_payload_number(event.payload, "jitter_ms", "emission_jitter_ms")
+                self._add_payload_number(
+                    event.payload,
+                    "observation_delay_ms",
+                    "syllable_observation_delay_ms",
+                )
             elif event.event_type == RapEventType.AUDIO_RENDER_COMPLETED:
-                self._update_audio(event, state="rendering")
+                self._update_audio_render(event, state="rendering")
                 self._add_payload_number(event.payload, "synthesis_latency_ms", "synthesis_latency_ms")
                 self._add_payload_number(event.payload, "render_latency_ms", "bar_render_latency_ms")
             elif event.event_type == RapEventType.BAR_AUDIO_READY:
-                self._update_audio(event, state="ready")
+                self._update_audio_render(event, state="ready")
             elif event.event_type == RapEventType.BAR_AUDIO_COMMITTED:
-                self._update_audio(event, state="priming")
+                self._update_audio_render(event, state="committed")
                 self._add_payload_number(event.payload, "deadline_slack_ms", "audio_commit_slack_ms")
             elif event.event_type == RapEventType.BAR_PLAYBACK_STARTED:
                 self._update_audio(event, state="running")
@@ -552,6 +561,12 @@ class RapStateProjector:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return deepcopy(self._state)
+
+    def _update_audio_render(self, event: RapEvent, *, state: str) -> None:
+        self._update_audio(event, update_current_bar=False)
+        self._state["audio"]["render_state"] = state
+        if event.bar is not None:
+            self._state["audio"]["render_bar"] = event.bar
 
     @staticmethod
     def _aggregate() -> dict[str, int | float | None]:
@@ -640,12 +655,18 @@ class RapStateProjector:
         aggregate["min"] = value if aggregate["min"] is None else min(aggregate["min"], value)
         aggregate["max"] = value if aggregate["max"] is None else max(aggregate["max"], value)
 
-    def _update_audio(self, event: RapEvent, *, state: str | None = None) -> None:
+    def _update_audio(
+        self,
+        event: RapEvent,
+        *,
+        state: str | None = None,
+        update_current_bar: bool = True,
+    ) -> None:
         audio = self._state["audio"]
         payload = event.payload
         if state is not None:
             audio["state"] = state
-        if event.bar is not None:
+        if update_current_bar and event.bar is not None:
             audio["current_bar"] = event.bar
         for key in ("queue_depth", "buffered_seconds", "absolute_frame"):
             value = payload.get(key)
@@ -707,7 +728,7 @@ class RapStateProjector:
                 "latencies": {
                     "generation_latency_ms": self._aggregate(),
                     "deadline_slack_ms": self._aggregate(),
-                    "emission_jitter_ms": self._aggregate(),
+                    "syllable_observation_delay_ms": self._aggregate(),
                     "synthesis_latency_ms": self._aggregate(),
                     "bar_render_latency_ms": self._aggregate(),
                     "audio_commit_slack_ms": self._aggregate(),
@@ -715,6 +736,8 @@ class RapStateProjector:
                 "audio": {
                     "state": "stopped",
                     "current_bar": None,
+                    "render_state": "idle",
+                    "render_bar": None,
                     "queue_depth": 0,
                     "buffered_seconds": 0.0,
                     "underruns": 0,

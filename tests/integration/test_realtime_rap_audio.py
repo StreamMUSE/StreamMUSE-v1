@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import struct
 from collections import deque
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from threading import Event, Thread
 from time import sleep
+
+import httpx
+import pytest
 
 from streammuse.application.rap.audio_coordination import BarAudioCoordinator
 from streammuse.application.rap.audio_rendering import bar_start_frame
@@ -31,6 +34,7 @@ from streammuse.domain.rap import (
     PreparedRapBar,
     RenderedSyllable,
     RapEventType,
+    RapScenario,
     ScoreWeights,
 )
 from streammuse.domain.timing import Tempo
@@ -41,6 +45,8 @@ from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 from streammuse.infrastructure.rap.recorder import RapSessionRecorder, build_session_manifest, read_events
 from streammuse.infrastructure.rap.scenarios import default_scenario
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
+from streammuse.infrastructure.inference.local_chat_client import LocalChatModelClient, LocalChatModelClientConfig
+from streammuse.presentation.rap_demo import cli as rap_demo_cli
 
 
 class ManualAudioSink:
@@ -110,6 +116,17 @@ class ManualAudioSink:
                 self._notice(AudioPlaybackNoticeKind.STOPPED, None, "playback stopped")
 
     def reset(self) -> None:
+        self._queued.clear()
+        self._active = None
+        self._last_completed_bar = None
+        self._frame_in_bar = 0
+        self._absolute_frame = 0
+        self._stop_requested = False
+        if self._state != PlaybackState.CLOSED:
+            self._state = PlaybackState.STOPPED
+        self._notices = SimpleQueue()
+
+    def discard_pending(self) -> None:
         self._queued.clear()
         self._active = None
         self._last_completed_bar = None
@@ -472,6 +489,110 @@ def test_stop_arms_sink_while_successor_fallback_is_blocked_then_restarts(tmp_pa
     assert not [event for event in events if event.event_type == RapEventType.AUDIO_UNDERRUN]
 
 
+def test_real_local_chat_client_abort_is_restartable_across_audio_stop(monkeypatch) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "space lights"}}]})
+
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(model="test"),
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(rap_demo_cli, "LocalChatModelClient", lambda _config: client)
+    args = rap_demo_cli.build_parser().parse_args(["--generator", "local_chat"])
+    _generator, stop_primary, close_primary = rap_demo_cli._build_generator(args)
+    assert stop_primary is not None and close_primary is not None
+    try:
+        stop_primary()
+        response = client.generate([{"role": "user", "content": "resume"}])
+    finally:
+        close_primary()
+
+    assert response.text == "space lights"
+    assert len(requests) == 1
+
+
+def test_immediate_start_stop_start_before_bar_zero_replays_bar_zero(tmp_path: Path) -> None:
+    dependencies, manual = _build_audio_runtime(
+        tmp_path,
+        scenario=default_scenario(),
+        configured_max_bars=0,
+        planning_bar_limit=None,
+    )
+    first_run = Thread(target=dependencies.start)
+    second_run = Thread(target=dependencies.start)
+    bar_frames = bar_start_frame(1, dependencies.tempo, AudioFormat())
+    try:
+        first_run.start()
+        _wait_for_playback_state(dependencies, PlaybackState.RUNNING)
+        dependencies.request_stop()
+        dependencies.playback.poll()
+        first_run.join(timeout=1.0)
+        assert not first_run.is_alive()
+        assert manual.completed == []
+
+        second_run.start()
+        _wait_for_playback_state(dependencies, PlaybackState.RUNNING)
+        manual.advance(bar_frames)
+        dependencies.playback.poll()
+        dependencies.request_stop()
+        dependencies.playback.poll()
+        second_run.join(timeout=1.0)
+        assert not second_run.is_alive()
+        assert [bar.bar for bar in manual.completed] == [0]
+    finally:
+        dependencies.close()
+        first_run.join(timeout=1.0)
+        second_run.join(timeout=1.0)
+
+
+def test_finite_non_looping_scenario_stops_terminally_and_requires_reset_to_restart(tmp_path: Path) -> None:
+    base = default_scenario()
+    finite = RapScenario(
+        scenario_id="finite-audio",
+        tempo_bpm=60.0,
+        segments=(replace(base.segments[0], start_bar=0, bars=1),),
+        loop=False,
+    )
+    dependencies, manual = _build_audio_runtime(
+        tmp_path,
+        scenario=finite,
+        configured_max_bars=1,
+        planning_bar_limit=1,
+    )
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            dependencies.start()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = Thread(target=run)
+    bar_frames = bar_start_frame(1, dependencies.tempo, AudioFormat())
+    try:
+        worker.start()
+        _wait_for_playback_state(dependencies, PlaybackState.RUNNING)
+        manual.advance(bar_frames)
+        dependencies.playback.poll()
+        worker.join(timeout=1.0)
+
+        assert not worker.is_alive()
+        assert errors == []
+        assert [bar.bar for bar in manual.completed] == [0]
+        assert dependencies.control_state == PlaybackState.STOPPED
+        with pytest.raises(RuntimeError, match="reset.*finite scenario"):
+            dependencies.start()
+
+        dependencies.reset()
+        assert dependencies.control_state == PlaybackState.STOPPED
+    finally:
+        dependencies.close()
+        worker.join(timeout=1.0)
+
+
 def test_rolling_audio_runs_without_gap_when_generator_is_late(tmp_path: Path) -> None:
     tempo = Tempo(60.0, 4, 4)
     audio_format = AudioFormat()
@@ -551,3 +672,71 @@ def test_rolling_audio_runs_without_gap_when_generator_is_late(tmp_path: Path) -
     assert summary["audio"]["completed_bars"] == 100
     assert summary["audio"]["underruns"] == 0
     assert output_path.is_file()
+
+
+def _build_audio_runtime(
+    tmp_path: Path,
+    *,
+    scenario: RapScenario,
+    configured_max_bars: int,
+    planning_bar_limit: int | None,
+) -> tuple[RapAudioDemoDependencies, ManualAudioSink]:
+    tempo = Tempo(60.0, 4, 4)
+    audio_format = AudioFormat()
+    analyzer = CmuProsodyAnalyzer()
+    publisher = RapEventPublisher(f"integration-{scenario.scenario_id}")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=())
+    dispatcher.start()
+    manual = ManualAudioSink(audio_format)
+    renderer = DeterministicRapBarRenderer(
+        tempo=tempo,
+        audio_format=audio_format,
+        synthesizer=FakeSpeech(),
+        drums=ProceduralBoomBapRenderer(seed=7),
+    )
+    coordinator = BarAudioCoordinator(renderer, publisher=publisher)
+    controller: RollingRapController
+    playback = RapPlaybackService(
+        tempo=tempo,
+        sink=manual,
+        publisher=publisher,
+        on_tick=lambda tick: controller.on_tick(tick),
+    )
+    controller = RollingRapController(
+        tempo=tempo,
+        scenario=scenario,
+        templates=BUILTIN_TEMPLATES,
+        fallback_catalog=PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer),
+        analyzer=analyzer,
+        weights=ScoreWeights(),
+        publisher=publisher,
+        primary_generator=None,
+        candidate_count=12,
+        lookahead_bars=3,
+        minimum_score=0.55,
+        seed=7,
+        planning_bar_limit=planning_bar_limit,
+        audio_coordinator=coordinator,
+        on_audio_committed=playback.enqueue,
+    )
+    return (
+        RapAudioDemoDependencies(
+            tempo=tempo,
+            controller=controller,
+            coordinator=coordinator,
+            playback=playback,
+            publisher=publisher,
+            dispatcher=dispatcher,
+            session_dir=tmp_path,
+            configured_max_bars=configured_max_bars,
+        ),
+        manual,
+    )
+
+
+def _wait_for_playback_state(dependencies: RapAudioDemoDependencies, state: PlaybackState) -> None:
+    for _ in range(200):
+        if dependencies.control_state == state:
+            return
+        sleep(0.005)
+    raise AssertionError(f"playback did not reach {state.value}")

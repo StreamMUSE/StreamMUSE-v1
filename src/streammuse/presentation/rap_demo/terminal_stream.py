@@ -130,8 +130,9 @@ class StructuredStreamRenderer:
                 )
         elif kind == RapEventType.SYLLABLE_EMITTED:
             self._write(
-                f"{prefix('PLAY')} syllable label={_quoted(payload.get('label'))} stressed={_value(payload.get('stressed'))} "
-                f"jitter_ms={_number(payload.get('jitter_ms'), digits=3)}"
+                f"{prefix('PLAY')} syllable label={_quoted(payload.get('label'))} stress={_value(payload.get('stress'))} "
+                f"subdivision={_ordinal(payload.get('subdivision'))} "
+                f"observation_delay_ms={_number(payload.get('observation_delay_ms'), digits=3)}"
             )
         elif kind == RapEventType.AUDIO_RENDER_COMPLETED:
             self._write(

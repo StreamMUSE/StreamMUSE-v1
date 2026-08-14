@@ -104,12 +104,12 @@ class SoundDeviceAudioSink:
         self._stop_requested = False
         self._epoch = 0
 
-    def start(self) -> None:
+    def start(self) -> bool:
         with self._state_lock:
             if self._state == PlaybackState.CLOSED:
                 raise RuntimeError("audio sink is closed")
             if self._state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
-                return
+                return True
         stream: OutputStream | None = None
         start_epoch = 0
         try:
@@ -117,7 +117,7 @@ class SoundDeviceAudioSink:
                 if self._state == PlaybackState.CLOSED:
                     raise RuntimeError("audio sink is closed")
                 if self._state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
-                    return
+                    return True
                 start_epoch = self._epoch
                 if self._stream is None:
                     if self._stream_factory is None:
@@ -141,14 +141,14 @@ class SoundDeviceAudioSink:
                 if start_epoch != self._epoch:
                     if self._stream is stream:
                         self._stream = None
-                    return
+                    return False
                 self._stream = None
                 self._active = None
                 self._frame_in_bar = 0
                 self._state = PlaybackState.STOPPED
                 self._stop_requested = False
             self._publish(AudioPlaybackNoticeKind.DEVICE_FAILED, None, str(error))
-            return
+            return False
 
         with self._state_lock:
             cancelled = start_epoch != self._epoch or self._state not in (
@@ -160,6 +160,7 @@ class SoundDeviceAudioSink:
             with self._state_lock:
                 if self._stream is stream:
                     self._stream = None
+        return not cancelled
 
     def enqueue(self, bar: PreparedRapBar) -> None:
         self._validate_bar(bar)
@@ -204,6 +205,25 @@ class SoundDeviceAudioSink:
             self._queued.clear()
         if stream is not None:
             self._stop_and_close_stream(stream)
+
+    def discard_pending(self) -> None:
+        """Clear one stopped playback epoch without destroying the device stream."""
+
+        with self._state_lock:
+            if self._state == PlaybackState.CLOSED:
+                raise RuntimeError("audio sink is closed")
+            self._epoch += 1
+            self._active = None
+            self._last_completed_bar = None
+            self._frame_in_bar = 0
+            self._absolute_frame = 0
+            self._underrun_count = 0
+            self._queue_underrun_active = False
+            self._stop_requested = False
+            self._state = PlaybackState.STOPPED
+            self._notices = SimpleQueue()
+        with self._queue_lock:
+            self._queued.clear()
 
     def snapshot(self) -> AudioPlaybackSnapshot:
         with self._state_lock:
@@ -404,11 +424,18 @@ class Float32WavAudioSink:
         self._path = Path(path)
         self._audio_format = audio_format
         self._queued: deque[PreparedRapBar] = deque()
+        self._start_frames: dict[int, int] = {}
         self._data_bytes = 0
         self._closed = False
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self._path.open("w+b")
         self._write_header()
+        self._file.flush()
+
+    @property
+    def frame_count(self) -> int:
+        bytes_per_frame = self._audio_format.channels * self._audio_format.sample_width_bytes
+        return self._data_bytes // bytes_per_frame
 
     def start(self) -> None:
         self._ensure_open()
@@ -420,6 +447,14 @@ class Float32WavAudioSink:
 
     def request_stop_after_bar(self) -> None:
         self._ensure_open()
+        self._sync_header()
+
+    def mark_started(self, bar: PreparedRapBar, absolute_frame: int) -> None:
+        self._ensure_open()
+        self._validate_bar(bar)
+        if absolute_frame < 0:
+            raise ValueError("absolute_frame must not be negative")
+        self._start_frames[bar.bar] = absolute_frame
 
     def mark_completed(self, bar: PreparedRapBar) -> None:
         self._ensure_open()
@@ -428,17 +463,30 @@ class Float32WavAudioSink:
         expected = self._queued.popleft()
         if expected != bar:
             raise ValueError("completed bar does not match the queued recorder bar")
+        start_frame = self._start_frames.pop(bar.bar, self.frame_count)
+        gap_frames = max(0, start_frame - self.frame_count)
         self._file.seek(44 + self._data_bytes)
+        self._write_silence(gap_frames)
         self._file.write(bar.audio.data)
-        self._data_bytes += len(bar.audio.data)
+        bytes_per_frame = self._audio_format.channels * self._audio_format.sample_width_bytes
+        self._data_bytes += gap_frames * bytes_per_frame + len(bar.audio.data)
+        self._sync_header()
+
+    def discard_pending(self) -> None:
+        self._ensure_open()
+        self._queued.clear()
+        self._start_frames.clear()
+        self._sync_header()
 
     def reset(self) -> None:
         self._ensure_open()
         self._queued.clear()
+        self._start_frames.clear()
         self._data_bytes = 0
         self._file.seek(0)
         self._file.truncate(0)
         self._write_header()
+        self._file.flush()
 
     def close(self) -> None:
         if self._closed:
@@ -472,6 +520,18 @@ class Float32WavAudioSink:
         self._file.seek(0)
         self._file.write(header)
 
+    def _sync_header(self) -> None:
+        self._write_header()
+        self._file.flush()
+
+    def _write_silence(self, frames: int) -> None:
+        remaining = frames * self._audio_format.channels * self._audio_format.sample_width_bytes
+        chunk = bytes(1024 * 1024)
+        while remaining:
+            count = min(remaining, len(chunk))
+            self._file.write(chunk[:count])
+            remaining -= count
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("WAV sink is closed")
@@ -484,15 +544,35 @@ class Float32WavAudioSink:
 class CompositeAudioSink:
     """Primary sink plus a recorder committed by primary completion notices."""
 
-    def __init__(self, primary: SoundDeviceAudioSink | "TimedAudioSink" | "NullAudioSink", recorder: Float32WavAudioSink) -> None:
+    def __init__(
+        self,
+        primary: SoundDeviceAudioSink | "TimedAudioSink" | "NullAudioSink",
+        recorder: Float32WavAudioSink,
+        *,
+        fallback: SoundDeviceAudioSink | "TimedAudioSink" | "NullAudioSink" | None = None,
+    ) -> None:
         self._primary = primary
+        self._fallback = fallback
         self._recorder = recorder
         self._bars_by_number: dict[int, PreparedRapBar] = {}
+        self._bar_start_frames: dict[int, int] = {}
         self._retained_notices: deque[AudioPlaybackNotice] = deque()
+        self._recording_origin_frame = 0
 
-    def start(self) -> None:
+    def start(self) -> bool:
         self._primary.start()
+        self._retain_primary_notices()
+        snapshot = self._primary.snapshot()
+        if snapshot.state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED) and self._fallback is not None:
+            failed_primary = self._primary
+            self._primary = self._fallback
+            self._fallback = None
+            failed_primary.close()
+            for bar in self._bars_by_number.values():
+                self._primary.enqueue(bar)
+            self._primary.start()
         self._recorder.start()
+        return self._primary.snapshot().state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED)
 
     def enqueue(self, bar: PreparedRapBar) -> None:
         self._bars_by_number[bar.bar] = bar
@@ -509,7 +589,18 @@ class CompositeAudioSink:
         self._primary.reset()
         self._recorder.reset()
         self._bars_by_number.clear()
+        self._bar_start_frames.clear()
+        self._recording_origin_frame = 0
         self._retained_notices.clear()
+
+    def discard_pending(self) -> None:
+        self._retain_primary_notices()
+        self._primary.discard_pending()
+        self._recorder.discard_pending()
+        self._bars_by_number.clear()
+        self._bar_start_frames.clear()
+        self._retained_notices.clear()
+        self._recording_origin_frame = self._recorder.frame_count
 
     def snapshot(self) -> AudioPlaybackSnapshot:
         return self._primary.snapshot()
@@ -533,11 +624,21 @@ class CompositeAudioSink:
 
     def _commit_completed_bars(self, notices: tuple[AudioPlaybackNotice, ...]) -> None:
         for notice in notices:
-            if notice.kind != AudioPlaybackNoticeKind.BAR_COMPLETED or notice.bar is None:
+            if notice.bar is None:
+                continue
+            if notice.kind == AudioPlaybackNoticeKind.BAR_STARTED:
+                bar = self._bars_by_number.get(notice.bar)
+                if bar is not None:
+                    start_frame = self._recording_origin_frame + notice.absolute_frame
+                    self._bar_start_frames[notice.bar] = start_frame
+                    self._recorder.mark_started(bar, start_frame)
+                continue
+            if notice.kind != AudioPlaybackNoticeKind.BAR_COMPLETED:
                 continue
             bar = self._bars_by_number.pop(notice.bar, None)
             if bar is not None:
                 self._recorder.mark_completed(bar)
+            self._bar_start_frames.pop(notice.bar, None)
 
 
 class NullAudioSink:
@@ -600,6 +701,16 @@ class NullAudioSink:
         self._stop_requested = False
         if self._state != PlaybackState.CLOSED:
             self._state = PlaybackState.STOPPED
+        self._notices = SimpleQueue()
+
+    def discard_pending(self) -> None:
+        if self._state == PlaybackState.CLOSED:
+            raise RuntimeError("audio sink is closed")
+        self._queued.clear()
+        self._absolute_frame = 0
+        self._last_completed_bar = None
+        self._stop_requested = False
+        self._state = PlaybackState.STOPPED
         self._notices = SimpleQueue()
 
     def snapshot(self) -> AudioPlaybackSnapshot:
@@ -670,6 +781,8 @@ class TimedAudioSink:
         self._absolute_frame = 0
         self._fractional_frames = 0.0
         self._last_clock = 0.0
+        self._underrun_count = 0
+        self._queue_underrun_active = False
         self._stop_requested = False
         self._thread: Thread | None = None
 
@@ -716,9 +829,28 @@ class TimedAudioSink:
             self._frame_in_bar = 0
             self._absolute_frame = 0
             self._fractional_frames = 0.0
+            self._underrun_count = 0
+            self._queue_underrun_active = False
             self._stop_requested = False
             if self._state != PlaybackState.CLOSED:
                 self._state = PlaybackState.STOPPED
+            self._notices = SimpleQueue()
+        self._wake.set()
+
+    def discard_pending(self) -> None:
+        with self._lock:
+            if self._state == PlaybackState.CLOSED:
+                raise RuntimeError("audio sink is closed")
+            self._queued.clear()
+            self._active = None
+            self._last_completed_bar = None
+            self._frame_in_bar = 0
+            self._absolute_frame = 0
+            self._fractional_frames = 0.0
+            self._underrun_count = 0
+            self._queue_underrun_active = False
+            self._stop_requested = False
+            self._state = PlaybackState.STOPPED
             self._notices = SimpleQueue()
         self._wake.set()
 
@@ -734,7 +866,7 @@ class TimedAudioSink:
             frame_in_bar=self._frame_in_bar,
             absolute_frame=self._absolute_frame,
             queue_depth=len(self._queued),
-            underrun_count=0,
+            underrun_count=self._underrun_count,
             buffered_seconds=_buffered_seconds(self._active, self._frame_in_bar, self._queued),
         )
 
@@ -781,10 +913,19 @@ class TimedAudioSink:
                     self._finish_stop_locked()
                     return
                 if not self._queued:
+                    if not self._queue_underrun_active:
+                        self._queue_underrun_active = True
+                        self._underrun_count += 1
+                        self._publish_locked(
+                            AudioPlaybackNoticeKind.UNDERRUN,
+                            None,
+                            "prepared bar queue empty",
+                        )
                     self._absolute_frame += remaining
                     return
                 self._active = self._queued.popleft()
                 self._frame_in_bar = 0
+                self._queue_underrun_active = False
                 self._publish_locked(AudioPlaybackNoticeKind.BAR_STARTED, self._active.bar, "bar playback started")
 
             active = self._active

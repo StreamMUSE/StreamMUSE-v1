@@ -120,3 +120,20 @@ def test_projector_ignores_malformed_structured_values_without_losing_raw_trace(
     assert state.latest_request.flow is None
     assert state.latest_batch.prompt == ({"role": "system"},)
     assert state.recent_events[-1].payload["prompt"][1] == "not-a-mapping"
+
+
+def test_audio_render_pipeline_does_not_replace_terminal_playback_lifecycle_state() -> None:
+    projector = TerminalRapStateProjector()
+    for event in (
+        _event(1, RapEventType.SESSION_STARTED, {"playback_state": "running"}, bar=None),
+        _event(2, RapEventType.BAR_PLAYBACK_STARTED, {"absolute_frame": 192_000}, bar=1),
+        _event(3, RapEventType.AUDIO_RENDER_COMPLETED, {"render_latency_ms": 12.0}, bar=4),
+        _event(4, RapEventType.BAR_AUDIO_READY, {}, bar=4),
+        _event(5, RapEventType.BAR_AUDIO_COMMITTED, {"deadline_slack_ms": 40.0}, bar=3),
+    ):
+        projector.apply(event)
+
+    assert projector.state.audio["state"] == "running"
+    assert projector.state.audio["current_bar"] == 1
+    assert projector.state.audio["render_state"] == "committed"
+    assert projector.state.audio["render_bar"] == 3

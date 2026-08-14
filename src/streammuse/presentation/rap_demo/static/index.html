@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>StreamMUSE Rap Lab</title>
     <link rel="stylesheet" href="/static/css/rap-demo.css?v=20260809-4">
-    <script src="/static/js/rap-demo.js?v=20260809-4" defer></script>
+    <script src="/static/js/rap-demo-state.js?v=20260815-1" defer></script>
+    <script src="/static/js/rap-demo.js?v=20260815-1" defer></script>
   </head>
   <body>
     <header class="app-header">
@@ -65,7 +66,7 @@
             <div class="syllable-readout">
               <span>Now</span>
               <strong id="current-syllable">--</strong>
-              <small id="current-syllable-detail">beat -- · stress -- · jitter --</small>
+              <small id="current-syllable-detail">beat -- · stress -- · observation delay --</small>
             </div>
           </div>
 
@@ -242,7 +243,7 @@
         <div><span>Pronunciation fallback</span><strong id="pronunciation-rate">0.0%</strong></div>
         <div><span>Generation p50</span><strong id="generation-p50">--</strong></div>
         <div><span>Generation p95</span><strong id="generation-p95">--</strong></div>
-        <div><span>Emission jitter p95</span><strong id="jitter-p95">--</strong></div>
+        <div><span>Observation delay p95</span><strong id="observation-p95">--</strong></div>
       </section>
 
       <div class="evidence-grid">

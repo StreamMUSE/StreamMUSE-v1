@@ -227,16 +227,18 @@ function renderCurrentSyllable(snapshot, current) {
   const syllable = projected && projected.bar === current.bar ? projected : event ? { ...event, ...payload(event) } : null;
   setText("current-syllable", syllable && (syllable.label || syllable.word));
   if (!syllable) {
-    setText("current-syllable-detail", "beat -- · stress -- · jitter --");
+    setText("current-syllable-detail", "beat -- · stress -- · observation delay --");
     return;
   }
   const beat = integer(syllable.beat ?? current.beat);
-  const subdivision = integer(syllable.tick_in_beat ?? current.tickInBeat);
-  const stressed = syllable.stressed === true ? "yes" : syllable.stressed === false ? "no" : "--";
-  const jitter = number(syllable.jitter_ms) === null ? "--" : milliseconds(syllable.jitter_ms, 2);
+  const subdivision = integer(syllable.subdivision ?? current.tickInBeat);
+  const stress = integer(syllable.stress);
+  const observationDelay = number(syllable.observation_delay_ms) === null
+    ? "--"
+    : milliseconds(syllable.observation_delay_ms, 2);
   setText(
     "current-syllable-detail",
-    `beat ${beat === null ? "--" : beat + 1}.${subdivision === null ? "--" : subdivision + 1} · stress ${stressed} · jitter ${jitter}`,
+    `beat ${beat === null ? "--" : beat + 1}.${subdivision === null ? "--" : subdivision + 1} · stress ${stress ?? "--"} · observation delay ${observationDelay}`,
   );
 }
 
@@ -542,7 +544,7 @@ function renderMetrics(snapshot) {
   const candidateValidity = metrics.candidate_validity || {};
   const latencies = research.latencies || {};
   const generation = latencies.generation_latency_ms || {};
-  const jitter = latencies.emission_jitter_ms || {};
+  const observationDelay = latencies.syllable_observation_delay_ms || {};
   setText("candidate-yield", `${candidateValidity.numerator ?? 0} / ${candidateValidity.denominator ?? 0}`);
   setText("fallback-rate", metricPercentage(metrics.fallback));
   setText("deadline-rate", metricPercentage(metrics.deadline_miss));
@@ -550,7 +552,7 @@ function renderMetrics(snapshot) {
   setText("pronunciation-rate", metricPercentage(metrics.pronunciation_fallback));
   setText("generation-p50", number(generation.p50) === null ? null : milliseconds(generation.p50));
   setText("generation-p95", number(generation.p95) === null ? null : milliseconds(generation.p95));
-  setText("jitter-p95", number(jitter.p95) === null ? null : milliseconds(jitter.p95, 2));
+  setText("observation-p95", number(observationDelay.p95) === null ? null : milliseconds(observationDelay.p95, 2));
 }
 
 function renderAudio(snapshot) {
@@ -690,7 +692,7 @@ function eventDetail(event) {
   } else if (type === "tick") {
     add("beat", integer(data.beat) === null ? null : data.beat + 1); add("subdivision", integer(data.tick_in_beat) === null ? null : data.tick_in_beat + 1); add("absolute", event.tick);
   } else if (type === "syllable_emitted") {
-    add("label", data.label); add("stressed", data.stressed); add("jitter_ms", number(data.jitter_ms) === null ? null : fixed(data.jitter_ms));
+    add("label", data.label); add("stress", data.stress); add("observation_delay_ms", number(data.observation_delay_ms) === null ? null : fixed(data.observation_delay_ms));
   } else {
     for (const key of Object.keys(data).slice(0, 5)) add(key, data[key]);
   }
@@ -821,10 +823,7 @@ function connect() {
       monitor.snapshot = message.payload;
       monitor.events = Array.isArray(message.payload.recent_events) ? message.payload.recent_events.slice(-240) : [];
     } else if (message.type === "event" && message.payload) {
-      const sequence = message.payload.sequence;
-      const duplicate = sequence !== null && sequence !== undefined && monitor.events.some((event) => event && event.sequence === sequence);
-      if (!duplicate) monitor.events.push(message.payload);
-      if (monitor.events.length > 240) monitor.events.splice(0, monitor.events.length - 240);
+      monitor.events = window.StreamMuseRapState.reduceEventCache(monitor.events, message.payload, 240);
       scheduleSnapshotRefresh();
     }
     render();

@@ -8,6 +8,7 @@ from threading import Event, Thread, current_thread
 from time import monotonic
 
 import httpx
+import pytest
 
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
 from streammuse.application.rap.realtime import RollingRapController
@@ -20,6 +21,7 @@ from streammuse.domain.rap import (
     FlowTemplate,
     PcmAudio,
     PreparedRapBar,
+    RapEventType,
     RapScenario,
     ScenarioSegment,
     ScoreWeights,
@@ -239,6 +241,7 @@ class RecordingAudioCoordinator:
         self.paused_successors: list[int] = []
         self.fallback_reservations = 0
         self.primary_submissions = 0
+        self.commit_deadlines: list[float | None] = []
 
     def reserve_fallback(self, plan) -> None:
         self.fallback_reservations += 1
@@ -248,7 +251,7 @@ class RecordingAudioCoordinator:
         self.primary_submissions += 1
         self.primaries[plan.bar] = plan
 
-    def poll_primary(self, bar: int):
+    def poll_primary(self, bar: int, *, deadline_monotonic: float | None = None):
         if bar in self.polled:
             return None
         result = self.ready.get(bar)
@@ -256,7 +259,8 @@ class RecordingAudioCoordinator:
             self.polled.add(bar)
         return result
 
-    def commit(self, bar: int):
+    def commit(self, bar: int, *, deadline_monotonic: float | None = None):
+        self.commit_deadlines.append(deadline_monotonic)
         selected = self.ready.get(bar)
         plan = self.primaries[bar] if selected is not None else self.fallbacks[bar]
         prepared = selected or _prepared_audio_bar(plan)
@@ -420,12 +424,33 @@ def test_audio_controller_replaces_text_only_after_primary_audio_is_ready() -> N
     assert [bar.source for bar in audio.committed] == ["prevalidated_fallback", "local_chat"]
 
 
+def test_audio_commit_uses_absolute_deadline_and_reports_measured_negative_slack() -> None:
+    now = [100.0]
+    audio = RecordingAudioCoordinator()
+    controller, _emitted, events, dispatcher = _controller(
+        audio_coordinator=audio,
+        monotonic_clock=lambda: now[0],
+    )
+    controller.start()
+    controller.on_tick(0)
+
+    now[0] = 101.9
+    controller.on_tick(15)
+    _finish(controller, dispatcher)
+
+    committed = _payload_for_bar(events, "bar_audio_committed", 1)
+    assert audio.commit_deadlines[-1] == pytest.approx(101.875)
+    assert committed["deadline_slack_ms"] == pytest.approx(-25.0)
+
+
 def test_audio_controller_commits_target_bar_one_tick_before_its_boundary() -> None:
     audio = RecordingAudioCoordinator()
     committed = []
+    now = [100.0]
     controller, _emitted, events, dispatcher = _controller(
         audio_coordinator=audio,
         on_audio_committed=committed.append,
+        monotonic_clock=lambda: now[0],
     )
     controller.start()
     controller.on_tick(14)
@@ -841,6 +866,21 @@ def test_slow_generation_never_blocks_tick_path() -> None:
     _finish(controller, dispatcher)
     assert elapsed < 0.1
     assert [item.slot.tick for item in emitted] == [0]
+
+
+def test_text_syllable_events_use_canonical_observation_telemetry() -> None:
+    controller, _emitted, events, dispatcher = _controller()
+    controller.start()
+    controller.on_tick(0)
+    _finish(controller, dispatcher)
+
+    payload = next(event.payload for event in events if event.event_type == RapEventType.SYLLABLE_EMITTED)
+    assert payload["stress"] == 1
+    assert payload["subdivision"] == 0
+    assert isinstance(payload["observation_delay_ms"], float)
+    assert "stressed" not in payload
+    assert "tick_in_beat" not in payload
+    assert "jitter_ms" not in payload
 
 
 def test_close_waits_for_inflight_planner_before_closing_primary_client() -> None:

@@ -110,6 +110,8 @@ class SyllablePlacementDiagnostic:
     software_error_samples: int = 0
     renderer_phonemes: tuple[str, ...] = ()
     synthesis_latency_ms: float = 0.0
+    rendered_frames: int | None = None
+    cropped_frames: int = 0
 
 
 @dataclass(frozen=True)

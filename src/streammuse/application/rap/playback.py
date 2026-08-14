@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from threading import Event, Lock, RLock, Thread, current_thread, get_ident
+from threading import Event, RLock, Thread, current_thread, get_ident
 import time
 from typing import Callable
 
@@ -51,7 +51,7 @@ class RapPlaybackService:
         # reenter lifecycle methods without seeing a split state/event pair.
         self._lifecycle_dispatch_lock = RLock()
         self._lock = RLock()
-        self._poll_lock = Lock()
+        self._poll_lock = RLock()
         self._dispatch_owner: int | None = None
         self._deferred_joins: list[Thread] = []
         self._sink_closed = False
@@ -100,7 +100,34 @@ class RapPlaybackService:
                     raise RuntimeError("playback requires at least one queued bar")
                 epoch = self._epoch
 
-            self._sink.start()
+            started = self._sink.start()
+            if started is False:
+                start_notices = self._sink.drain_notices()
+                with self._lock:
+                    if epoch != self._epoch or self._state == PlaybackState.CLOSED:
+                        return
+                    self._state = PlaybackState.STOPPED
+                for notice in start_notices:
+                    event_type = _NOTICE_EVENTS.get(notice.kind)
+                    if event_type is not None:
+                        self._emit_notice(
+                            event_type,
+                            notice,
+                            self._sample_origin_frame + notice.absolute_frame,
+                        )
+                self._emit(
+                    RapEventType.SESSION_STOPPED,
+                    payload={"playback_state": PlaybackState.STOPPED.value},
+                )
+                message = next(
+                    (
+                        notice.message
+                        for notice in start_notices
+                        if notice.kind == AudioPlaybackNoticeKind.DEVICE_FAILED
+                    ),
+                    "audio sink did not enter a running state",
+                )
+                raise RuntimeError(f"audio sink failed to start: {message}")
 
             with self._lock:
                 if epoch != self._epoch or self._state == PlaybackState.CLOSED:
@@ -138,13 +165,12 @@ class RapPlaybackService:
                     successor_bar = self._stop_successor_bar_locked(None)
                     self._stop_observer_locked()
                     self._epoch += 1
-                    # Task 5 reset is local and has no publication callback. Keep
-                    # the lifecycle lock until it has discarded the primed bytes.
-                    self._sink.reset()
+                    # Keep the lifecycle lock until the primed bytes are discarded.
+                    self._discard_pending_sink()
                     self._prepared.clear()
                     self._current_tick = None
                     self._emitted_syllables.clear()
-                    self._next_start_bar = 0
+                    self._next_start_bar = successor_bar
                     self._sample_origin_frame = 0
                     self._state = PlaybackState.STOPPED
                 else:
@@ -154,15 +180,25 @@ class RapPlaybackService:
             self._emit(RapEventType.STOP_REQUESTED, payload={"playback_state": PlaybackState.STOP_REQUESTED.value})
         return successor_bar
 
+    def quiesce_for_reset(self) -> None:
+        """Fence all old-epoch poll effects before controller state is reset."""
+
+        with self._poll_lock:
+            with self._lifecycle_dispatch_lock:
+                with self._lock:
+                    self._require_state(PlaybackState.STOPPED)
+                    self._epoch += 1
+                    observer = self._stop_observer_locked()
+        self._join(observer)
+
     def reset(self, *, coordinator_epoch: int | None = None) -> None:
         with self._lifecycle_dispatch_lock:
             with self._lock:
                 self._require_state(PlaybackState.STOPPED)
                 self._epoch += 1
                 observer = self._stop_observer_locked()
-                # Task 5 reset is local and has no publication callback. Keep the
-                # lifecycle lock until it has discarded old queue contents so a
-                # concurrent prime cannot enqueue work that this reset erases.
+                # Keep the lifecycle lock until old queue contents are discarded
+                # so a concurrent prime cannot enqueue work this reset erases.
                 self._sink.reset()
                 self._prepared.clear()
                 self._current_tick = None
@@ -339,22 +375,31 @@ class RapPlaybackService:
             return snapshot.current_bar + 1
         if snapshot is not None and snapshot.last_completed_bar is not None:
             return snapshot.last_completed_bar + 1
+        if snapshot is not None:
+            return self._next_start_bar
         if self._current_tick is None:
-            return self._next_start_bar + 1
+            return self._next_start_bar
         return self._current_tick // self._tempo.ticks_per_bar + 1
 
     def _prime_locked(self, bar: PreparedRapBar) -> None:
         if bar.bar != self._next_start_bar:
             raise ValueError(f"prime requires prepared bar {self._next_start_bar}")
-        if bar.bar > 0:
-            # Task 5 intentionally retains bars queued after a bar-quantized
-            # stop. A continuation must start from one known complete bar.
-            self._sink.reset()
+        if self._prepared or bar.bar > 0:
+            # A continuation starts from one known complete bar while durable
+            # recording remains in the same session artifact.
+            self._discard_pending_sink()
             self._prepared.clear()
             self._sample_origin_frame = bar_start_frame(bar.bar, self._tempo, bar.audio.format)
             self._current_tick = bar.bar * self._tempo.ticks_per_bar - 1
         self._enqueue_locked(bar)
         self._state = PlaybackState.PRIMING
+
+    def _discard_pending_sink(self) -> None:
+        discard = getattr(self._sink, "discard_pending", None)
+        if callable(discard):
+            discard()
+        else:
+            self._sink.reset()
 
     def _dispatch_effects(self, epoch: int, effects: list[Callable[[], None]]) -> None:
         owner = get_ident()
