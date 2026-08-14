@@ -35,6 +35,7 @@ class FittedSyllable:
 
 def bar_start_frame(bar: int, tempo: Tempo, audio_format: AudioFormat) -> int:
     _validate_bar(bar)
+    _require_float32_format(audio_format)
     absolute_tick = bar * tempo.ticks_per_bar
     return round(tempo.tick_to_seconds(absolute_tick) * audio_format.sample_rate_hz)
 
@@ -59,6 +60,7 @@ def tick_frame_in_bar(
 
 def trim_silence(audio: PcmAudio, threshold_dbfs: float, padding_ms: float) -> PcmAudio:
     """Trim quiet leading/trailing frames while retaining bounded padding."""
+    _require_float32_format(audio.format)
     if padding_ms < 0:
         raise ValueError("padding_ms must be nonnegative")
     samples = _samples_from_audio(audio)
@@ -80,6 +82,7 @@ def fit_syllable(
     final_in_bar: bool,
     context: FitContext,
 ) -> FittedSyllable:
+    _require_float32_format(audio.format)
     if available_frames < 1:
         raise ValueError("available_frames must be positive")
     source_frames = audio.frame_count
@@ -135,7 +138,11 @@ def mix_at(destination: np.ndarray, source: PcmAudio | np.ndarray, onset_frame: 
     """Add source samples into destination at an absolute frame onset."""
     if onset_frame < 0:
         raise ValueError("onset_frame must be nonnegative")
-    source_samples = _samples_from_audio(source) if isinstance(source, PcmAudio) else _normalise_samples(source)
+    if isinstance(source, PcmAudio):
+        _require_float32_format(source.format)
+        source_samples = _samples_from_audio(source)
+    else:
+        source_samples = _normalise_samples(source)
     destination_samples = _normalise_samples(destination)
     if destination_samples.shape[1] != source_samples.shape[1]:
         raise ValueError("destination and source channel counts must match")
@@ -157,6 +164,11 @@ def limit_peak(samples: np.ndarray, peak: float = 0.95) -> np.ndarray:
 def _validate_bar(bar: int) -> None:
     if bar < 0:
         raise ValueError("bar must be nonnegative")
+
+
+def _require_float32_format(audio_format: AudioFormat) -> None:
+    if audio_format.sample_width_bytes != 4:
+        raise ValueError("audio rendering requires float32 PCM (sample_width_bytes=4)")
 
 
 def _normalise_samples(samples: np.ndarray) -> np.ndarray:

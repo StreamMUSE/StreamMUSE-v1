@@ -50,6 +50,23 @@ def test_timing_rejects_negative_positions_and_out_of_bar_ticks() -> None:
         tick_frame_in_bar(0, tempo.ticks_per_bar, tempo, audio_format)
 
 
+def test_timing_rejects_non_float32_audio_format() -> None:
+    with pytest.raises(ValueError, match="float32"):
+        bar_start_frame(0, Tempo(120.0, 4, 4), AudioFormat(sample_width_bytes=2))
+
+
+def test_pcm_audio_boundaries_reject_non_float32_audio() -> None:
+    audio = PcmAudio(AudioFormat(channels=1, sample_width_bytes=2), 2, bytes(4))
+    context = FitContext(bar=0, slot_index=0, word="width")
+
+    with pytest.raises(ValueError, match="float32"):
+        trim_silence(audio, threshold_dbfs=-45.0, padding_ms=5.0)
+    with pytest.raises(ValueError, match="float32"):
+        fit_syllable(audio, available_frames=2, final_in_bar=False, context=context)
+    with pytest.raises(ValueError, match="float32"):
+        mix_at(np.zeros((2, 1), dtype=np.float32), audio, onset_frame=0, gain=1.0)
+
+
 def test_fit_syllable_leaves_audio_unchanged_when_it_fits() -> None:
     source = mono_pcm(frames=300)
     context = FitContext(bar=1, slot_index=2, word="fits")
