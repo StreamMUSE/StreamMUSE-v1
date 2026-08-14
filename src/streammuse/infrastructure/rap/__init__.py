@@ -10,6 +10,7 @@ from streammuse.infrastructure.rap.recorder import (
     derive_summary,
     validate_session_manifest,
 )
+from streammuse.infrastructure.rap.speech import CommandRunner, EspeakPhonemeSynthesizer, arpabet_syllable_to_espeak
 
 __all__ = [
     "LocalChatCandidateGenerator",
@@ -22,4 +23,7 @@ __all__ = [
     "derive_bar_rows",
     "derive_summary",
     "validate_session_manifest",
+    "CommandRunner",
+    "EspeakPhonemeSynthesizer",
+    "arpabet_syllable_to_espeak",
 ]

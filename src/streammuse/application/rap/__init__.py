@@ -16,6 +16,7 @@ from streammuse.application.rap.audio_rendering import (
     tick_frame_in_bar,
     trim_silence,
 )
+from streammuse.application.rap.audio_service import DrumRenderer, RapAudioSink, RapBarRenderer, SpeechSynthesizer
 
 __all__ = [
     "RollingRapController",
@@ -39,4 +40,8 @@ __all__ = [
     "mix_at",
     "tick_frame_in_bar",
     "trim_silence",
+    "DrumRenderer",
+    "RapAudioSink",
+    "RapBarRenderer",
+    "SpeechSynthesizer",
 ]
