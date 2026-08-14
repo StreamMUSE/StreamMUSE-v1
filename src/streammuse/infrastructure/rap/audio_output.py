@@ -175,7 +175,7 @@ class SoundDeviceAudioSink:
         with self._queue_lock:
             self._queued.clear()
         if stream is not None:
-            stream.stop()
+            self._stop_and_close_stream(stream)
 
     def snapshot(self) -> AudioPlaybackSnapshot:
         with self._state_lock:

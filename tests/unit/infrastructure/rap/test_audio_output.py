@@ -149,6 +149,16 @@ class ActiveOutputStream(FakeOutputStream):
         self.active = False
 
 
+class ActiveOutputStreamFactory:
+    def __init__(self) -> None:
+        self.streams: list[ActiveOutputStream] = []
+
+    def __call__(self, *, audio_format: AudioFormat, callback) -> ActiveOutputStream:
+        stream = ActiveOutputStream(callback, block_frames=4)
+        self.streams.append(stream)
+        return stream
+
+
 class StartABARaceFactory:
     def __init__(self) -> None:
         self.first: BlockingStartStream | None = None
@@ -593,3 +603,22 @@ def test_reset_then_start_b_keeps_b_active_after_stale_start_a_returns() -> None
     finally:
         stream_factory.first.allow_start.set()
         start_a.join(timeout=1.0)
+
+
+def test_running_reset_closes_detached_stream_before_starting_new_stream() -> None:
+    stream_factory = ActiveOutputStreamFactory()
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    sink.start()
+    first = stream_factory.streams[0]
+
+    sink.reset()
+
+    assert first.stop_calls == 1
+    assert first.closed
+    assert not first.active
+
+    sink.start()
+
+    assert len(stream_factory.streams) == 2
+    assert stream_factory.streams[1].active
+    assert sink.snapshot().state == PlaybackState.RUNNING
