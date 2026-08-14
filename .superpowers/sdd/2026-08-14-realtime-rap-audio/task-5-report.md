@@ -142,3 +142,37 @@ git diff --check
 ## Fix Round 2 Commit
 
 - `12bd2046 fix: guard rap audio sink lifecycle`
+
+## Fix Round 3
+
+The final `start()` transition race was addressed without beginning Task 6.
+
+- `SoundDeviceAudioSink.start()` captures the lifecycle epoch before stream
+  construction and checks it again after `stream.start()` returns. If reset,
+  close, or a stop transition canceled that generation while start was in
+  flight, the sink immediately stops and closes the physical stream without
+  changing the newer logical state.
+- Device start failures still publish `DEVICE_FAILED` for the active lifecycle,
+  including after a completed reset. Failures belonging to a canceled reset are
+  suppressed, and a concurrent close remains terminal rather than being
+  overwritten.
+- Deterministic fake streams block inside `start()` while close or reset
+  completes. Tests verify that releasing the start leaves the stream inactive
+  and closed with the expected `CLOSED` or `STOPPED` snapshot.
+
+## Fix Round 3 Verification
+
+```text
+uv run pytest tests/unit/infrastructure/rap/test_audio_output.py -q
+20 passed in 0.49s
+
+uv run pytest tests/unit/domain/rap tests/unit/application/rap tests/unit/infrastructure/rap tests/unit/presentation/rap_demo -q
+408 passed in 1.98s
+
+git diff --check
+(no output)
+```
+
+## Fix Round 3 Commit
+
+- `81fd1a4c fix: cancel stale rap audio stream starts`
