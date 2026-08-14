@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from threading import RLock
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.monitoring import RapEventPublisher
@@ -30,6 +30,10 @@ from streammuse.domain.rap import (
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
 from streammuse.infrastructure.rap.templates import TemplateCatalog
+
+if TYPE_CHECKING:
+    from streammuse.application.rap.audio_coordination import BarAudioCoordinator
+    from streammuse.domain.rap import PreparedRapBar
 
 
 @dataclass
@@ -77,6 +81,8 @@ class RollingRapController:
         emit: Callable[[ScheduledSyllable], None] | None = None,
         stop_primary: Callable[[], None] | None = None,
         close_primary: Callable[[], None] | None = None,
+        audio_coordinator: BarAudioCoordinator | None = None,
+        on_audio_committed: Callable[[PreparedRapBar], None] | None = None,
         executor: Executor | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -102,6 +108,8 @@ class RollingRapController:
         self._emit = emit
         self._stop_primary = stop_primary
         self._close_primary = close_primary
+        self._audio_coordinator = audio_coordinator
+        self._on_audio_committed = on_audio_committed
         self._executor = executor or (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="streammuse-rap-planner")
             if primary_generator is not None
@@ -115,6 +123,8 @@ class RollingRapController:
         self._future: Future[_PlanningResult] | None = None
         self._future_bar: int | None = None
         self._next_primary_bar = 1
+        self._audio_primary_plans: dict[int, PlannedRapBar] = {}
+        self._audio_committed_bars: set[int] = set()
         self._last_tick = -1
         self._clock_origin: float | None = None
         self._started = False
@@ -131,6 +141,8 @@ class RollingRapController:
             self._started = True
             startup_last_bar = self._bounded_last_bar(self._lookahead_bars - 1)
             self._reserve_through(startup_last_bar)
+            if self._audio_coordinator is not None:
+                self._commit_audio_bar(0, tick=None)
             self._submit_next_primary(current_bar=0)
 
     def on_tick(self, tick: int) -> None:
@@ -144,13 +156,19 @@ class RollingRapController:
             current_bar = tick // self._tempo.ticks_per_bar
             self._reserve_through(self._planning_ceiling(current_bar))
             self._drain_primary_result()
+            if self._audio_coordinator is not None:
+                self._drain_audio_primary_result()
+                if tick % self._tempo.ticks_per_bar == self._tempo.ticks_per_bar - 1:
+                    self._commit_audio_bar(current_bar + 1, tick=tick)
             if tick % self._tempo.ticks_per_bar == 0:
                 self._freeze(current_bar, tick)
             self._submit_next_primary(current_bar=current_bar)
             beat = (tick % self._tempo.ticks_per_bar) // self._tempo.ticks_per_beat
             tick_in_beat = tick % self._tempo.ticks_per_beat
             self._event(RapEventType.TICK, bar=current_bar, tick=tick, payload={"beat": beat, "tick_in_beat": tick_in_beat})
-            scheduled = tuple(item for item in self._bars[current_bar].scheduled if item.slot.tick == tick)
+            scheduled = () if self._audio_coordinator is not None else tuple(
+                item for item in self._bars[current_bar].scheduled if item.slot.tick == tick
+            )
             assert not scheduled or self._bars[current_bar].frozen
 
         for item in scheduled:
@@ -182,6 +200,7 @@ class RollingRapController:
             executor = self._executor
             stop_primary = self._stop_primary
             close_primary = self._close_primary
+            audio_coordinator = self._audio_coordinator
         if future is not None:
             future.cancel()
         if stop_primary is not None:
@@ -202,6 +221,33 @@ class RollingRapController:
                     RapEventType.GENERATION_FAILED,
                     payload={"error_type": "close_error", "error_message": str(exc)},
                 )
+        if audio_coordinator is not None:
+            audio_coordinator.close()
+
+    def reset(self) -> None:
+        """Clear an audio-controlled planning session after playback has stopped."""
+
+        with self._lock:
+            if self._audio_coordinator is None:
+                raise RuntimeError("reset is available only for audio-controlled sessions")
+            if self._closed:
+                raise RuntimeError("cannot reset a closed controller")
+            future = self._future
+            self._future = None
+            self._future_bar = None
+            self._bars.clear()
+            self._frozen_history.clear()
+            self._rhyme_anchors.clear()
+            self._audio_primary_plans.clear()
+            self._audio_committed_bars.clear()
+            self._next_primary_bar = 1
+            self._last_tick = -1
+            self._clock_origin = None
+            self._started = False
+            audio_coordinator = self._audio_coordinator
+        if future is not None:
+            future.cancel()
+        audio_coordinator.reset()
 
     def bar_for(self, index: int) -> PlannedRapBar:
         with self._lock:
@@ -238,6 +284,8 @@ class RollingRapController:
                 source=fallback.source,
                 fallback_reason=reason,
             )
+            if self._audio_coordinator is not None:
+                self._audio_coordinator.reserve_fallback(replace(self._bars[bar]))
             self._event(
                 RapEventType.BAR_RESERVED,
                 bar=bar,
@@ -425,34 +473,95 @@ class RollingRapController:
             reason = result.selection.fallback_reason or "no_valid_candidate"
             target.fallback_reason = "no_valid_candidate" if reason == "no_valid_candidates" else reason
             return
+        primary_plan = replace(
+            target,
+            analysis=selected.analysis,
+            scheduled=selected.scheduled,
+            text=selected.text,
+            source=batch.source,
+            fallback_reason=None,
+        )
+        if self._audio_coordinator is not None:
+            self._audio_primary_plans[target_bar] = primary_plan
+            self._audio_coordinator.submit_primary(replace(primary_plan))
+            return
+        self._apply_primary_plan(target, primary_plan, selected.candidate_id, selected.total_score)
+
+    def _drain_audio_primary_result(self) -> None:
+        assert self._audio_coordinator is not None
+        for bar, primary_plan in tuple(self._audio_primary_plans.items()):
+            prepared = self._audio_coordinator.poll_primary(bar)
+            if prepared is None:
+                continue
+            target = self._bars.get(bar)
+            if target is not None and not target.frozen and prepared.source == primary_plan.source:
+                self._apply_primary_plan(target, primary_plan, candidate_id=None, total_score=None)
+            self._audio_primary_plans.pop(bar, None)
+
+    def _apply_primary_plan(
+        self,
+        target: PlannedRapBar,
+        primary_plan: PlannedRapBar,
+        candidate_id: str | None,
+        total_score: float | None,
+    ) -> None:
         previous_source = target.source
-        target.analysis = selected.analysis
-        target.scheduled = selected.scheduled
-        target.text = selected.text
-        target.source = batch.source
-        target.fallback_reason = None
+        target.analysis = primary_plan.analysis
+        target.scheduled = primary_plan.scheduled
+        target.text = primary_plan.text
+        target.source = primary_plan.source
+        target.fallback_reason = primary_plan.fallback_reason
         self._event(
             RapEventType.BAR_REPLACED,
-            bar=target_bar,
+            bar=target.bar,
             tick=self._last_tick,
-            request_id=result.request.request_id,
+            request_id=target.request_id,
             payload={
                 "previous_source": previous_source,
-                "source": batch.source,
-                "text": selected.text,
-                "candidate_id": selected.candidate_id,
-                "total_score": selected.total_score,
+                "source": target.source,
+                "text": target.text,
+                "candidate_id": candidate_id,
+                "total_score": total_score,
                 "flow": flow_template_payload(target.template),
-                "scheduled_syllables": scheduled_syllables_payload(selected.scheduled, bar=target_bar),
+                "scheduled_syllables": scheduled_syllables_payload(target.scheduled, bar=target.bar),
                 "fallback": False,
                 "fallback_reason": None,
             },
         )
 
+    def _commit_audio_bar(self, bar_index: int, *, tick: int | None) -> None:
+        assert self._audio_coordinator is not None
+        if bar_index in self._audio_committed_bars or bar_index not in self._bars:
+            return
+        prepared = self._audio_coordinator.commit(bar_index)
+        primary_plan = self._audio_primary_plans.pop(bar_index, None)
+        target = self._bars[bar_index]
+        if primary_plan is not None and prepared.source == primary_plan.source and not target.frozen:
+            self._apply_primary_plan(target, primary_plan, candidate_id=None, total_score=None)
+        self._audio_committed_bars.add(bar_index)
+        deadline_slack_ms = self._tempo.tick_to_seconds(1) * 1000.0
+        self._event(
+            RapEventType.BAR_AUDIO_COMMITTED,
+            bar=bar_index,
+            tick=tick,
+            request_id=target.request_id,
+            payload={
+                "source": prepared.source,
+                "warnings": [warning.code.value for warning in prepared.warnings],
+                "render_latency_ms": prepared.render_latency_ms,
+                "frame_count": prepared.audio.frame_count,
+                "deadline_slack_ms": deadline_slack_ms,
+            },
+        )
+        if self._on_audio_committed is not None:
+            self._on_audio_committed(prepared)
+
     def _freeze(self, bar_index: int, tick: int) -> None:
         bar = self._bars[bar_index]
         if bar.frozen:
             return
+        if self._audio_coordinator is not None:
+            assert bar_index in self._audio_committed_bars
         if bar.source == "prevalidated_fallback" and bar.fallback_reason == "generation_pending":
             bar.fallback_reason = "deadline_miss"
         bar.frozen = True

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from threading import Event, Thread
+from time import monotonic, sleep
 
 import pytest
 
@@ -180,6 +181,18 @@ class BlockingSnapshotSink(FakeRapAudioSink):
         return super().snapshot()
 
 
+class BlockingCloseSink(FakeRapAudioSink):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_entered = Event()
+        self.allow_close = Event()
+
+    def close(self) -> None:
+        self.close_entered.set()
+        assert self.allow_close.wait(timeout=1.0)
+        super().close()
+
+
 class BlockingResetSink(FakeRapAudioSink):
     def __init__(self) -> None:
         super().__init__()
@@ -268,6 +281,14 @@ class StartMarkerPlaybackService(RapPlaybackService):
     def _observe(self, epoch: int, stop: Event) -> None:
         self.observer_started.set()
         stop.wait(timeout=1.0)
+
+
+class ShortJoinPlaybackService(RapPlaybackService):
+    """Keep the pre-fix deadlock test bounded while retaining the join ordering."""
+
+    @staticmethod
+    def _join(observer: Thread | None, timeout: float | None = None) -> None:
+        RapPlaybackService._join(observer, 0.05)
 
 
 def tempo() -> Tempo:
@@ -699,6 +720,45 @@ def test_close_is_idempotent_and_waits_for_its_observer() -> None:
     assert service.state == PlaybackState.CLOSED
     assert observer is not None
     assert not observer.is_alive()
+    assert sink.close_calls == 1
+
+
+def test_external_close_releases_lifecycle_gate_before_waiting_for_observer_callback() -> None:
+    sink = BlockingCloseSink()
+    callback_entered = Event()
+    allow_lifecycle_call = Event()
+    callback_returned = Event()
+    holder: dict[str, RapPlaybackService] = {}
+
+    def on_tick(_: int) -> None:
+        callback_entered.set()
+        assert allow_lifecycle_call.wait(timeout=1.0)
+        holder["service"].request_stop()
+        callback_returned.set()
+
+    service = ShortJoinPlaybackService(tempo=tempo(), sink=sink, publisher=None, on_tick=on_tick)
+    holder["service"] = service
+    service.prime(prepared_bar(bar=0))
+    service.start()
+    sink.set_absolute_frame(1)
+    assert callback_entered.wait(timeout=1.0)
+
+    closer = Thread(target=service.close)
+    closer.start()
+    deadline = monotonic() + 1.0
+    while service.state != PlaybackState.CLOSED and monotonic() < deadline:
+        sleep(0.005)
+    assert service.state == PlaybackState.CLOSED
+    allow_lifecycle_call.set()
+    assert sink.close_entered.wait(timeout=1.0)
+    try:
+        assert callback_returned.wait(timeout=0.2)
+    finally:
+        sink.allow_close.set()
+        closer.join(timeout=1.0)
+
+    assert not closer.is_alive()
+    assert service.state == PlaybackState.CLOSED
     assert sink.close_calls == 1
 
 

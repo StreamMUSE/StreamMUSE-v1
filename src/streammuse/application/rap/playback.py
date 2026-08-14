@@ -180,10 +180,13 @@ class RapPlaybackService:
                     self._deferred_joins.append(observer)
                 close_sink = not self._sink_closed
                 self._sink_closed = True
-            if not defer_join:
-                self._join(observer)
-            if close_sink:
-                self._sink.close()
+        # An observer callback can be blocked on the lifecycle gate while it
+        # requests stop/reset/start. Release the irreversible CLOSED state
+        # before joining it so that callback observes CLOSED and exits.
+        if not defer_join:
+            self._join(observer)
+        if close_sink:
+            self._sink.close()
 
     def poll(self) -> None:
         """Observe current sink state explicitly for deterministic callers and tests."""

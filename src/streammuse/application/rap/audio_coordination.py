@@ -1,0 +1,255 @@
+"""Fallback-first rendering and immutable prepared-bar commitment."""
+
+from __future__ import annotations
+
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from threading import RLock
+from typing import Literal
+
+from streammuse.application.rap.audio_service import RapBarRenderer
+from streammuse.application.rap.monitoring import RapEventPublisher
+from streammuse.application.rap.realtime import PlannedRapBar
+from streammuse.domain.rap import AudioWarning, AudioWarningCode, PreparedRapBar, RapEventType
+
+
+@dataclass(frozen=True)
+class _RenderWork:
+    plan: PlannedRapBar
+    role: Literal["fallback", "primary"]
+    epoch: int
+
+
+class BarAudioCoordinator:
+    """Render fallback audio first and commit one immutable bar per index."""
+
+    def __init__(self, renderer: RapBarRenderer, *, publisher: RapEventPublisher | None) -> None:
+        self._renderer = renderer
+        self._publisher = publisher
+        # Reserve one of the coordinator's two workers for fallback audio.
+        # Primary renders may accumulate across lookahead bars, but they must
+        # never consume the capacity needed to keep the safe path gap-free.
+        self._fallback_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="streammuse-rap-fallback")
+        self._primary_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="streammuse-rap-primary")
+        self._lock = RLock()
+        self._epoch = 0
+        self._closed = False
+        self._fallback_work: dict[int, _RenderWork] = {}
+        self._fallback_futures: dict[int, Future[PreparedRapBar]] = {}
+        self._fallback_results: dict[int, PreparedRapBar] = {}
+        self._primary_work: dict[int, _RenderWork] = {}
+        self._primary_futures: dict[int, Future[PreparedRapBar]] = {}
+        self._primary_results: dict[int, PreparedRapBar] = {}
+        self._primary_polled: set[int] = set()
+        self._committed: dict[int, PreparedRapBar] = {}
+
+    def reserve_fallback(self, plan: PlannedRapBar) -> None:
+        """Start one fallback render for a bar; duplicate reservations are no-ops."""
+
+        with self._lock:
+            self._require_open()
+            if plan.bar in self._committed or plan.bar in self._fallback_work:
+                return
+            work = _RenderWork(plan=plan, role="fallback", epoch=self._epoch)
+            self._fallback_work[plan.bar] = work
+            self._fallback_futures[plan.bar] = self._fallback_executor.submit(self._render, work)
+
+    def submit_primary(self, plan: PlannedRapBar) -> None:
+        """Render the latest selected primary while the fallback remains active."""
+
+        with self._lock:
+            self._require_open()
+            if plan.bar in self._committed:
+                return
+            if plan.bar not in self._fallback_work:
+                raise ValueError("primary audio requires a reserved fallback")
+            previous = self._primary_futures.get(plan.bar)
+            if previous is not None:
+                previous.cancel()
+            work = _RenderWork(plan=plan, role="primary", epoch=self._epoch)
+            self._primary_work[plan.bar] = work
+            self._primary_results.pop(plan.bar, None)
+            self._primary_polled.discard(plan.bar)
+            self._primary_futures[plan.bar] = self._primary_executor.submit(self._render, work)
+
+    def poll_primary(self, bar: int) -> PreparedRapBar | None:
+        """Return a completed, uncommitted primary result at most once."""
+
+        with self._lock:
+            if bar in self._committed or bar in self._primary_polled:
+                return None
+            result = self._primary_results.get(bar)
+            if result is None:
+                return None
+            self._primary_polled.add(bar)
+            return result
+
+    def commit(self, bar: int) -> PreparedRapBar:
+        """Atomically prefer ready primary audio, otherwise wait only for fallback."""
+
+        with self._lock:
+            self._require_open()
+            committed = self._committed.get(bar)
+            if committed is not None:
+                return committed
+            fallback_work = self._fallback_work.get(bar)
+            fallback_future = self._fallback_futures.get(bar)
+            if fallback_work is None or fallback_future is None:
+                raise ValueError("commit requires a reserved fallback")
+            primary = self._primary_results.get(bar)
+            if primary is not None:
+                return self._commit_locked(bar, primary)
+
+        # Deliberately wait only for the safe fallback. A primary completion is
+        # checked again below before immutable commitment.
+        fallback_future.result()
+        with self._lock:
+            self._require_open()
+            committed = self._committed.get(bar)
+            if committed is not None:
+                return committed
+            if self._fallback_work.get(bar) is not fallback_work:
+                raise RuntimeError("fallback audio was reset before commitment")
+            primary = self._primary_results.get(bar)
+            if primary is not None:
+                return self._commit_locked(bar, primary)
+            fallback = self._fallback_results.get(bar)
+            if fallback is None:
+                raise RuntimeError("fallback rendering completed without an audio result")
+            return self._commit_locked(bar, fallback)
+
+    def reset(self) -> None:
+        """Cancel uncommitted work and allow a fresh audio-controlled session."""
+
+        with self._lock:
+            self._require_open()
+            self._epoch += 1
+            futures = tuple(self._fallback_futures.values()) + tuple(self._primary_futures.values())
+            self._clear_locked()
+        for future in futures:
+            future.cancel()
+
+    def close(self) -> None:
+        """Permanently prevent new work and release the coordinator executor."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._epoch += 1
+            futures = tuple(self._fallback_futures.values()) + tuple(self._primary_futures.values())
+            self._clear_locked()
+        for future in futures:
+            future.cancel()
+        self._fallback_executor.shutdown(wait=True, cancel_futures=True)
+        self._primary_executor.shutdown(wait=True, cancel_futures=True)
+
+    def _render(self, work: _RenderWork) -> PreparedRapBar:
+        self._event(
+            RapEventType.AUDIO_RENDER_STARTED,
+            bar=work.plan.bar,
+            payload={"source": work.plan.source, "role": work.role, "text": work.plan.text},
+        )
+        try:
+            prepared = self._renderer.render(work.plan)
+        except Exception as exc:
+            self._event(
+                RapEventType.AUDIO_RENDER_COMPLETED,
+                bar=work.plan.bar,
+                payload={
+                    "source": work.plan.source,
+                    "role": work.role,
+                    "ready": False,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
+            raise
+
+        with self._lock:
+            accepted = self._accept_result_locked(work, prepared)
+        payload = self._audio_payload(prepared, role=work.role, accepted=accepted)
+        self._event(RapEventType.AUDIO_RENDER_COMPLETED, bar=prepared.bar, payload=payload)
+        if accepted:
+            self._event(RapEventType.BAR_AUDIO_READY, bar=prepared.bar, payload=payload)
+            for warning in prepared.warnings:
+                self._publish_warning(prepared.bar, warning)
+        return prepared
+
+    def _accept_result_locked(self, work: _RenderWork, prepared: PreparedRapBar) -> bool:
+        if self._closed or work.epoch != self._epoch or prepared.bar in self._committed:
+            return False
+        if work.role == "fallback":
+            if self._fallback_work.get(prepared.bar) is not work:
+                return False
+            self._fallback_results[prepared.bar] = prepared
+            return True
+        if self._primary_work.get(prepared.bar) is not work:
+            return False
+        self._primary_results[prepared.bar] = prepared
+        return True
+
+    def _commit_locked(self, bar: int, prepared: PreparedRapBar) -> PreparedRapBar:
+        self._committed[bar] = prepared
+        self._fallback_results.pop(bar, None)
+        self._primary_results.pop(bar, None)
+        self._fallback_work.pop(bar, None)
+        self._primary_work.pop(bar, None)
+        self._fallback_futures.pop(bar, None)
+        self._primary_futures.pop(bar, None)
+        self._primary_polled.add(bar)
+        return prepared
+
+    def _clear_locked(self) -> None:
+        self._fallback_work.clear()
+        self._fallback_futures.clear()
+        self._fallback_results.clear()
+        self._primary_work.clear()
+        self._primary_futures.clear()
+        self._primary_results.clear()
+        self._primary_polled.clear()
+        self._committed.clear()
+
+    def _publish_warning(self, bar: int, warning: AudioWarning) -> None:
+        event_type = {
+            AudioWarningCode.PRONUNCIATION_FALLBACK: RapEventType.PRONUNCIATION_FALLBACK,
+            AudioWarningCode.TIMING_PRESSURE: RapEventType.TIMING_PRESSURE,
+        }.get(warning.code)
+        if event_type is None:
+            return
+        self._event(
+            event_type,
+            bar=bar,
+            payload={
+                "code": warning.code.value,
+                "severity": warning.severity.value,
+                "message": warning.message,
+                "slot_index": warning.slot_index,
+                "word": warning.word,
+                "available_ms": warning.available_ms,
+                "rendered_ms": warning.rendered_ms,
+                "compression_ratio": warning.compression_ratio,
+                "overlap_ms": warning.overlap_ms,
+                "action": warning.action,
+            },
+        )
+
+    @staticmethod
+    def _audio_payload(prepared: PreparedRapBar, *, role: str, accepted: bool) -> dict[str, object]:
+        return {
+            "source": prepared.source,
+            "role": role,
+            "text": prepared.text,
+            "render_latency_ms": prepared.render_latency_ms,
+            "frame_count": prepared.audio.frame_count,
+            "warnings": [warning.code.value for warning in prepared.warnings],
+            "accepted": accepted,
+        }
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("audio coordinator is closed")
+
+    def _event(self, event_type: RapEventType, **kwargs: object) -> None:
+        if self._publisher is not None:
+            self._publisher.emit(event_type, **kwargs)

@@ -12,11 +12,14 @@ import httpx
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
 from streammuse.application.rap.realtime import RollingRapController
 from streammuse.domain.rap import (
+    AudioFormat,
     CandidateBatch,
     CandidateRequest,
     FlowProvenance,
     FlowSlot,
     FlowTemplate,
+    PcmAudio,
+    PreparedRapBar,
     RapScenario,
     ScenarioSegment,
     ScoreWeights,
@@ -171,6 +174,8 @@ def _controller(
     analyzer=None,
     stop_primary=None,
     close_primary=None,
+    audio_coordinator=None,
+    on_audio_committed=None,
 ):
     analyzer = analyzer or CmuProsodyAnalyzer()
     scenario = _scenario()
@@ -181,6 +186,10 @@ def _controller(
     dispatcher.start()
     emitted = []
     kwargs = {"stop_primary": stop_primary} if stop_primary is not None else {}
+    if audio_coordinator is not None:
+        kwargs["audio_coordinator"] = audio_coordinator
+    if on_audio_committed is not None:
+        kwargs["on_audio_committed"] = on_audio_committed
     controller = RollingRapController(
         tempo=Tempo(120.0, 4, 4),
         scenario=scenario,
@@ -215,6 +224,66 @@ def _types(events) -> list[str]:
 
 def _payload_for_bar(events, event_type: str, bar: int):
     return next(event.payload for event in events if event.event_type.value == event_type and event.bar == bar)
+
+
+class RecordingAudioCoordinator:
+    def __init__(self) -> None:
+        self.fallbacks = {}
+        self.primaries = {}
+        self.ready = {}
+        self.polled = set()
+        self.committed = []
+        self.closed = False
+        self.reset_calls = 0
+
+    def reserve_fallback(self, plan) -> None:
+        self.fallbacks.setdefault(plan.bar, plan)
+
+    def submit_primary(self, plan) -> None:
+        self.primaries[plan.bar] = plan
+
+    def poll_primary(self, bar: int):
+        if bar in self.polled:
+            return None
+        result = self.ready.get(bar)
+        if result is not None:
+            self.polled.add(bar)
+        return result
+
+    def commit(self, bar: int):
+        selected = self.ready.get(bar)
+        plan = self.primaries[bar] if selected is not None else self.fallbacks[bar]
+        prepared = selected or _prepared_audio_bar(plan)
+        self.committed.append(prepared)
+        return prepared
+
+    def complete_primary(self, bar: int) -> None:
+        self.ready[bar] = _prepared_audio_bar(self.primaries[bar])
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+        self.fallbacks.clear()
+        self.primaries.clear()
+        self.ready.clear()
+        self.polled.clear()
+        self.committed.clear()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _prepared_audio_bar(plan) -> PreparedRapBar:
+    return PreparedRapBar(
+        bar=plan.bar,
+        text=plan.text,
+        source=plan.source,
+        fallback_reason=plan.fallback_reason,
+        scheduled=plan.scheduled,
+        audio=PcmAudio(AudioFormat(), 16, bytes(16 * 2 * 4)),
+        diagnostics=(),
+        warnings=(),
+        render_latency_ms=8.0,
+    )
 
 
 def test_start_reserves_prevalidated_fallback_through_lookahead() -> None:
@@ -259,6 +328,85 @@ def test_valid_primary_replaces_only_unfrozen_reservation_and_logs_components() 
     assert evaluated.payload["selected"] is True
     assert evaluated.payload["components"]
     assert evaluated.payload["word_analysis_sources"] == [{"word": "space", "source": "cmudict_first_pronunciation"}]
+
+
+def test_text_controller_still_replaces_candidate_without_audio_coordinator() -> None:
+    executor = ManualExecutor()
+    controller, _emitted, _events, dispatcher = _controller(primary=FixedGenerator(), executor=executor)
+    controller.start()
+    executor.complete()
+    controller.on_tick(0)
+    _finish(controller, dispatcher)
+
+    assert controller.bar_for(1).source == "local_chat"
+
+
+def test_audio_controller_replaces_text_only_after_primary_audio_is_ready() -> None:
+    executor = ManualExecutor()
+    audio = RecordingAudioCoordinator()
+    controller, emitted, events, dispatcher = _controller(
+        primary=FixedGenerator(),
+        executor=executor,
+        audio_coordinator=audio,
+    )
+    controller.start()
+    executor.complete()
+    controller.on_tick(0)
+    assert controller.bar_for(1).source == "prevalidated_fallback"
+
+    audio.complete_primary(1)
+    controller.on_tick(1)
+    controller.on_tick(15)
+    _finish(controller, dispatcher)
+
+    assert controller.bar_for(1).source == "local_chat"
+    assert "bar_replaced" in _types(events)
+    assert emitted == []
+    assert [bar.source for bar in audio.committed] == ["prevalidated_fallback", "local_chat"]
+
+
+def test_audio_controller_commits_target_bar_one_tick_before_its_boundary() -> None:
+    audio = RecordingAudioCoordinator()
+    committed = []
+    controller, _emitted, events, dispatcher = _controller(
+        audio_coordinator=audio,
+        on_audio_committed=committed.append,
+    )
+    controller.start()
+    controller.on_tick(14)
+    assert [bar.bar for bar in committed] == [0]
+
+    controller.on_tick(15)
+    _finish(controller, dispatcher)
+
+    assert [bar.bar for bar in committed] == [0, 1]
+    event = _payload_for_bar(events, "bar_audio_committed", 1)
+    assert event == {
+        "source": "prevalidated_fallback",
+        "warnings": [],
+        "render_latency_ms": 8.0,
+        "frame_count": 16,
+        "deadline_slack_ms": 125.0,
+    }
+
+
+def test_audio_controller_reset_discards_uncommitted_state_without_closing_dependencies() -> None:
+    executor = ManualExecutor()
+    audio = RecordingAudioCoordinator()
+    controller, _emitted, _events, dispatcher = _controller(
+        primary=FixedGenerator(),
+        executor=executor,
+        audio_coordinator=audio,
+    )
+    controller.start()
+
+    controller.reset()
+
+    assert audio.reset_calls == 1
+    assert audio.closed is False
+    assert controller.bar_state(0) == "unreserved"
+    controller.start()
+    _finish(controller, dispatcher)
 
 
 def test_controller_events_include_structured_request_flow_and_alignment() -> None:
