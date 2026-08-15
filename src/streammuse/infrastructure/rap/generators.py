@@ -178,7 +178,10 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
     return (
         {
             "role": "system",
-            "content": "Write concise, clean rap lyric candidates. Return only one candidate per line.",
+            "content": (
+                "You are a meticulous rap lyric writer and pronunciation-aware prosody checker. "
+                "Follow the output contract exactly."
+            ),
         },
         {
             "role": "user",
@@ -188,7 +191,10 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
                 f"{request.topic!r}. Each line must contain exactly {request.required_syllables} spoken "
                 "syllables and be suitable for a four-four beat. Place naturally stressed syllables near "
                 "stronger flow slots, close the phrase at the final slot, and return plain lyric lines without "
-                "syllable markup, labels, or numbering. "
+                "syllable markup, labels, or numbering. Work internally in two stages: draft extra lines, then "
+                "count every line using normal American spoken pronunciation. Silently discard or rewrite every "
+                f"line that is not exactly {request.required_syllables} syllables. Output only the checked lines. "
+                "Contractions count as spoken; do not rely on spelling to count syllables. "
                 f"\n{flow}\n"
                 f"Recent frozen lines:\n{history}\nDeterministic variation seed: {request.seed}."
             ),

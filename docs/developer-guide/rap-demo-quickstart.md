@@ -95,8 +95,9 @@ uv run streammuse-rap-demo \
   --model qwen-rap \
   --audio-output composite \
   --tempo 60 \
-  --candidate-count 12 \
+  --candidate-count 36 \
   --lookahead-bars 3 \
+  --minimum-score 0.30 \
   --max-bars 0 \
   --terminal-layout split \
   --terminal-detail full \

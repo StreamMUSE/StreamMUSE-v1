@@ -155,6 +155,22 @@ def test_local_chat_prompt_contains_actual_flow_not_only_template_id() -> None:
     assert "plain lyric lines without syllable markup" in user
 
 
+def test_local_chat_prompt_requires_internal_drafting_and_spoken_count_verification() -> None:
+    client = FakeClient("one line")
+
+    LocalChatCandidateGenerator(client).generate(request_for_bar())
+
+    prompt = client.calls[0][0][0]
+    assert "pronunciation-aware prosody checker" in prompt[0]["content"]
+    user = prompt[1]["content"]
+    draft = user.index("draft extra lines")
+    spoken_count = user.index("count every line using normal American spoken pronunciation")
+    reject = user.index("Silently discard or rewrite every line")
+    contractions = user.index("Contractions count as spoken")
+    spelling = user.index("do not rely on spelling")
+    assert draft < spoken_count < reject < contractions < spelling
+
+
 def test_local_chat_error_returns_explicit_empty_batch_without_phrase_bank_fallback() -> None:
     batch = LocalChatCandidateGenerator(FailingClient()).generate(request_for_bar())
 
