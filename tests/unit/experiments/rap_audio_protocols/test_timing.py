@@ -314,6 +314,32 @@ def test_fastpitch_phone_plan_recovers_multisyllabic_beyond_monotonically() -> N
     assert plan.grapheme_fallback_words == ("beyond",)
 
 
+def test_fastpitch_phone_plan_splits_ruins_vowel_run_for_two_requested_syllables() -> None:
+    request = _request_with_replaced_word(
+        _request(),
+        "rocket",
+        "ruins",
+        (("R", "UW1"), ("AH0", "N", "Z")),
+    )
+    tokenizer_labels = _tokenizer_labels(request, overrides={"ruins": tuple("ruins")})
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    ruins_syllable_indices = tuple(
+        index for index, syllable in enumerate(request.syllables) if syllable.word == "ruins"
+    )
+    assert tuple(plan.syllable_phone_groups[index] for index in ruins_syllable_indices) == (
+        ("r", "u"),
+        ("i", "n", "s"),
+    )
+    assert tuple(plan.syllable_label_indices[index] for index in ruins_syllable_indices) == (
+        (1, 3),
+        (5, 7, 9),
+    )
+    assert plan.grapheme_fallback_words == ("ruins",)
+    assert plan.grapheme_split_words == ("ruins",)
+
+
 def test_fastpitch_phone_plan_collapses_contiguous_ai_to_one_vowel_nucleus() -> None:
     request = _request_with_replaced_word(_request(), "blasts", "ai", (("EY1",),))
     tokenizer_labels = _tokenizer_labels(request, overrides={"ai": ("a", "i")})
@@ -327,6 +353,7 @@ def test_fastpitch_phone_plan_collapses_contiguous_ai_to_one_vowel_nucleus() -> 
     )
     assert ai_group == ("a", "i")
     assert plan.grapheme_fallback_words == ("ai",)
+    assert plan.grapheme_split_words == ()
 
 
 def test_fastpitch_phone_plan_rejects_graphemes_with_too_few_vowel_nuclei() -> None:

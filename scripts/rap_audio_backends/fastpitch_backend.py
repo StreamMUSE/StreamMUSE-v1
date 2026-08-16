@@ -102,6 +102,10 @@ class FastPitchRenderPlan:
         return self.phone_plan.grapheme_fallback_words
 
     @property
+    def grapheme_split_words(self) -> tuple[str, ...]:
+        return self.phone_plan.grapheme_split_words
+
+    @property
     def pronunciation_fallback_words(self) -> tuple[str, ...]:
         return self.phone_plan.pronunciation_fallback_words
 
@@ -706,6 +710,7 @@ def _timing_plan_payload(plan: FastPitchPhonePlan | FastPitchRenderPlan) -> dict
         "anchor_error_frames": list(plan.anchor_error_frames),
         "compressed_consonant_regions": list(plan.compressed_consonant_regions),
         "grapheme_fallback_words": list(plan.grapheme_fallback_words),
+        "grapheme_split_words": list(plan.grapheme_split_words),
         "pronunciation_fallback_words": list(plan.pronunciation_fallback_words),
     }
 
@@ -726,6 +731,7 @@ def _error_payload(
         "anchor_error_frames": list(plan.anchor_error_frames) if plan is not None else [],
         "compressed_consonant_regions": list(plan.compressed_consonant_regions) if plan is not None else [],
         "grapheme_fallback_words": list(plan.grapheme_fallback_words) if plan is not None else [],
+        "grapheme_split_words": list(plan.grapheme_split_words) if plan is not None else [],
         "pronunciation_fallback_words": list(plan.pronunciation_fallback_words) if plan is not None else [],
     }
     return canonical_json_dumps(payload)
@@ -740,6 +746,7 @@ def _progress_line(
     duration_frames = sum(plan.duration_frames) if plan is not None else 0
     max_anchor_error = max((abs(value) for value in (plan.anchor_error_frames if plan is not None else ())), default=0)
     grapheme_fallback_words = ",".join(plan.grapheme_fallback_words) if plan is not None else ""
+    grapheme_split_words = ",".join(plan.grapheme_split_words) if plan is not None else ""
     pronunciation_fallback_words = ",".join(plan.pronunciation_fallback_words) if plan is not None else ""
     return (
         f"protocol={record.protocol_id.value} song_id={record.song_id} chunk_index={record.chunk_index} "
@@ -748,6 +755,7 @@ def _progress_line(
         f"tokenizer_labels={len(plan.tokenizer_labels) if plan is not None else 0} "
         f"max_anchor_error_frames={max_anchor_error} "
         f"grapheme_fallback_words={grapheme_fallback_words or 'none'} "
+        f"grapheme_split_words={grapheme_split_words or 'none'} "
         f"pronunciation_fallback_words={pronunciation_fallback_words or 'none'} "
         f"output_path={record.output_path}"
     )

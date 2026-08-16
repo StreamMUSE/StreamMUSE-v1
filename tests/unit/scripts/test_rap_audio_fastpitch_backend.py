@@ -462,7 +462,14 @@ def test_render_pending_requests_skips_only_complete_matching_record(tmp_path: P
 
 @pytest.mark.parametrize(
     "stale_sidecar",
-    ["missing", "corrupt_json", "request_mismatch", "invalid_plan_shape", "missing_pronunciation_diagnostic"],
+    [
+        "missing",
+        "corrupt_json",
+        "request_mismatch",
+        "invalid_plan_shape",
+        "missing_pronunciation_diagnostic",
+        "missing_grapheme_split_diagnostic",
+    ],
 )
 def test_render_pending_requests_rerenders_success_with_invalid_timing_sidecar(
     tmp_path: Path,
@@ -506,6 +513,8 @@ def test_render_pending_requests_rerenders_success_with_invalid_timing_sidecar(
             sidecar["request_sha256"] = "0" * 64
         elif stale_sidecar == "missing_pronunciation_diagnostic":
             sidecar.pop("pronunciation_fallback_words", None)
+        elif stale_sidecar == "missing_grapheme_split_diagnostic":
+            sidecar.pop("grapheme_split_words", None)
         else:
             sidecar["syllable_label_indices"] = sidecar["syllable_label_indices"][:-1]
         sidecar_path.write_text(json.dumps(sidecar) + "\n", encoding="utf-8")
@@ -576,6 +585,7 @@ def test_render_pending_requests_rerenders_canonical_sidecar_with_runtime_tokeni
             "anchor_error_frames": list(altered_plan.anchor_error_frames),
             "compressed_consonant_regions": list(altered_plan.compressed_consonant_regions),
             "grapheme_fallback_words": list(altered_plan.grapheme_fallback_words),
+            "grapheme_split_words": list(altered_plan.grapheme_split_words),
             "pronunciation_fallback_words": list(altered_plan.pronunciation_fallback_words),
         }
     )
@@ -692,6 +702,7 @@ def test_grapheme_fallback_writes_auditable_timing_sidecar_and_progress(tmp_path
         "anchor_error_frames",
         "compressed_consonant_regions",
         "grapheme_fallback_words",
+        "grapheme_split_words",
         "pronunciation_fallback_words",
     }
     assert sidecar["schema_version"] == 1
@@ -709,6 +720,7 @@ def test_grapheme_fallback_writes_auditable_timing_sidecar_and_progress(tmp_path
     assert sidecar["anchor_error_frames"] == list(expected_plan.anchor_error_frames)
     assert sidecar["compressed_consonant_regions"] == list(expected_plan.compressed_consonant_regions)
     assert sidecar["grapheme_fallback_words"] == list(expected_plan.grapheme_fallback_words)
+    assert sidecar["grapheme_split_words"] == list(expected_plan.grapheme_split_words)
     assert sidecar["pronunciation_fallback_words"] == list(expected_plan.pronunciation_fallback_words)
     assert sum(sidecar["duration_frames"]) == round(request.duration_seconds * 22050 / 256)
     assert all(
@@ -719,7 +731,47 @@ def test_grapheme_fallback_writes_auditable_timing_sidecar_and_progress(tmp_path
         )
     )
     assert "grapheme_fallback_words=where" in progress.getvalue()
+    assert "grapheme_split_words=none" in progress.getvalue()
     assert "pronunciation_fallback_words=none" in progress.getvalue()
+
+
+def test_grapheme_split_writes_auditable_timing_sidecar_and_progress(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_grapheme_split_sidecar")
+    request = _request_with_replaced_word(
+        _fixture_request(),
+        "rocket",
+        "ruins",
+        (("R", "UW1"), ("AH0", "N", "Z")),
+    )
+    labels = _tokenizer_labels(request, overrides={"ruins": tuple("ruins")})
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={request.text: labels}),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    request_path = tmp_path / "requests.jsonl"
+    output_path = tmp_path / "chunks" / request.song_id / "chunk-000.wav"
+    progress = io.StringIO()
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    records = module.render_pending_requests(
+        request_path=request_path,
+        record_path=tmp_path / "records.jsonl",
+        output_dir=tmp_path / "chunks",
+        runtime=runtime,
+        progress_stream=progress,
+    )
+
+    sidecar = json.loads(output_path.with_suffix(".timing.json").read_text(encoding="utf-8"))
+    assert records[0].success is True
+    assert sidecar["syllable_phone_groups"][:2] == [["r", "u"], ["i", "n", "s"]]
+    assert sidecar["grapheme_fallback_words"] == ["ruins"]
+    assert sidecar["grapheme_split_words"] == ["ruins"]
+    assert sidecar["pronunciation_fallback_words"] == []
+    assert "grapheme_split_words=ruins" in progress.getvalue()
 
 
 def test_pronunciation_fallback_writes_auditable_timing_sidecar_and_progress(tmp_path: Path) -> None:
@@ -795,9 +847,51 @@ def test_grapheme_fallback_is_reported_for_failed_render_without_success_sidecar
     error = json.loads(str(records[0].error))
     assert records[0].success is False
     assert error["grapheme_fallback_words"] == ["where"]
+    assert error["grapheme_split_words"] == []
     assert error["pronunciation_fallback_words"] == []
     assert "grapheme_fallback_words=where" in progress.getvalue()
+    assert "grapheme_split_words=none" in progress.getvalue()
     assert "pronunciation_fallback_words=none" in progress.getvalue()
+    assert not output_path.with_suffix(".timing.json").exists()
+
+
+def test_grapheme_split_is_reported_for_failed_render_without_success_sidecar(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_grapheme_split_failure")
+    request = _request_with_replaced_word(
+        _fixture_request(),
+        "rocket",
+        "ruins",
+        (("R", "UW1"), ("AH0", "N", "Z")),
+    )
+    labels = _tokenizer_labels(request, overrides={"ruins": tuple("ruins")})
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={request.text: labels}, failures_remaining=1),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    request_path = tmp_path / "requests.jsonl"
+    output_path = tmp_path / "chunks" / request.song_id / "chunk-000.wav"
+    progress = io.StringIO()
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    records = module.render_pending_requests(
+        request_path=request_path,
+        record_path=tmp_path / "records.jsonl",
+        output_dir=tmp_path / "chunks",
+        runtime=runtime,
+        max_attempts=1,
+        progress_stream=progress,
+    )
+
+    error = json.loads(str(records[0].error))
+    assert records[0].success is False
+    assert error["grapheme_fallback_words"] == ["ruins"]
+    assert error["grapheme_split_words"] == ["ruins"]
+    assert error["pronunciation_fallback_words"] == []
+    assert "grapheme_split_words=ruins" in progress.getvalue()
     assert not output_path.with_suffix(".timing.json").exists()
 
 
@@ -830,6 +924,7 @@ def test_pronunciation_fallback_is_reported_for_failed_render_without_success_si
     error = json.loads(str(records[0].error))
     assert records[0].success is False
     assert error["grapheme_fallback_words"] == []
+    assert error["grapheme_split_words"] == []
     assert error["pronunciation_fallback_words"] == ["bots"]
     assert "pronunciation_fallback_words=bots" in progress.getvalue()
     assert not output_path.with_suffix(".timing.json").exists()

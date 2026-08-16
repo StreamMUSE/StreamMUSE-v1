@@ -70,6 +70,7 @@ class FastPitchPhonePlan:
     anchor_error_frames: tuple[int, ...]
     compressed_consonant_regions: tuple[int, ...]
     grapheme_fallback_words: tuple[str, ...]
+    grapheme_split_words: tuple[str, ...]
     pronunciation_fallback_words: tuple[str, ...]
 
 
@@ -131,6 +132,7 @@ def build_fastpitch_phone_plan(
         syllable_phone_groups,
         syllable_label_indices,
         grapheme_fallback_words,
+        grapheme_split_words,
         pronunciation_fallback_words,
     ) = _resolve_syllable_phone_groups(request, tokenizer_labels)
     spoken_label_indices = tuple(index for group in syllable_label_indices for index in group)
@@ -187,6 +189,7 @@ def build_fastpitch_phone_plan(
         anchor_error_frames=tuple(anchor_error_frames),
         compressed_consonant_regions=tuple(dict.fromkeys(compressed_consonant_regions)),
         grapheme_fallback_words=grapheme_fallback_words,
+        grapheme_split_words=grapheme_split_words,
         pronunciation_fallback_words=pronunciation_fallback_words,
     )
 
@@ -228,6 +231,7 @@ def _resolve_syllable_phone_groups(
     tuple[tuple[int, ...], ...],
     tuple[str, ...],
     tuple[str, ...],
+    tuple[str, ...],
 ]:
     words = _word_spans(request)
     tokenizer_words = _tokenizer_word_groups(tokenizer_labels)
@@ -237,22 +241,30 @@ def _resolve_syllable_phone_groups(
     syllable_phone_groups: list[tuple[str, ...]] = []
     syllable_label_indices: list[tuple[int, ...]] = []
     grapheme_fallback_words: list[str] = []
+    grapheme_split_words: list[str] = []
     pronunciation_fallback_words: list[str] = []
     for word_span, tokenizer_word in zip(words, tokenizer_words):
         word_syllables = request.syllables[word_span.start_syllable_index : word_span.end_syllable_index + 1]
-        phone_groups, label_groups, used_grapheme_fallback, used_pronunciation_fallback = _resolve_word_phone_groups(
-            word_span.word, word_syllables, tokenizer_word
-        )
+        (
+            phone_groups,
+            label_groups,
+            used_grapheme_fallback,
+            used_grapheme_split,
+            used_pronunciation_fallback,
+        ) = _resolve_word_phone_groups(word_span.word, word_syllables, tokenizer_word)
         syllable_phone_groups.extend(phone_groups)
         syllable_label_indices.extend(label_groups)
         if used_grapheme_fallback:
             grapheme_fallback_words.append(word_span.word)
+        if used_grapheme_split:
+            grapheme_split_words.append(word_span.word)
         if used_pronunciation_fallback:
             pronunciation_fallback_words.append(word_span.word)
     return (
         tuple(syllable_phone_groups),
         tuple(syllable_label_indices),
         tuple(grapheme_fallback_words),
+        tuple(grapheme_split_words),
         tuple(pronunciation_fallback_words),
     )
 
@@ -283,7 +295,7 @@ def _resolve_word_phone_groups(
     word: str,
     syllables: tuple[SyllableTarget, ...],
     tokenizer_word: _TokenizerWordGroup,
-) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], bool, bool]:
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], bool, bool, bool]:
     lexical_groups = tuple(syllable.phonemes for syllable in syllables)
     lexical_phones_populated = all(lexical_groups)
     if lexical_phones_populated:
@@ -295,15 +307,17 @@ def _resolve_word_phone_groups(
                 end = start + len(group)
                 label_groups.append(tokenizer_word.label_indices[start:end])
                 start = end
-            return lexical_groups, tuple(label_groups), False, False
+            return lexical_groups, tuple(label_groups), False, False, False
 
         if _is_pronunciation_fallback_word(tokenizer_word.labels, len(syllables)):
             phone_groups, label_groups = _recover_syllable_phone_groups(word, len(syllables), tokenizer_word)
-            return phone_groups, label_groups, False, True
+            return phone_groups, label_groups, False, False, True
 
     if _is_grapheme_word(tokenizer_word.labels):
-        phone_groups, label_groups = _recover_grapheme_syllable_groups(word, len(syllables), tokenizer_word)
-        return phone_groups, label_groups, True, False
+        phone_groups, label_groups, used_grapheme_split = _recover_grapheme_syllable_groups(
+            word, len(syllables), tokenizer_word
+        )
+        return phone_groups, label_groups, True, used_grapheme_split, False
 
     if lexical_phones_populated:
         raise ValueError("tokenizer labels do not align with lexical phones")
@@ -311,7 +325,7 @@ def _resolve_word_phone_groups(
     if any(lexical_groups):
         raise ValueError(f"cannot recover syllable phone groups for partially populated word {word!r}")
     phone_groups, label_groups = _recover_syllable_phone_groups(word, len(syllables), tokenizer_word)
-    return phone_groups, label_groups, False, False
+    return phone_groups, label_groups, False, False, False
 
 
 def _is_grapheme_word(labels: tuple[str, ...]) -> bool:
@@ -345,7 +359,7 @@ def _recover_grapheme_syllable_groups(
     word: str,
     syllable_count: int,
     tokenizer_word: _TokenizerWordGroup,
-) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...]]:
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], bool]:
     nuclei: list[tuple[int, int]] = []
     index = 0
     while index < len(tokenizer_word.labels):
@@ -357,8 +371,20 @@ def _recover_grapheme_syllable_groups(
             index += 1
         nuclei.append((start, index))
 
+    used_grapheme_split = False
     if len(nuclei) < syllable_count:
-        raise ValueError(f"cannot recover grapheme syllable groups for word {word!r}")
+        splits_needed = syllable_count - len(nuclei)
+        if sum(end - start for start, end in nuclei) < syllable_count:
+            raise ValueError(f"cannot recover grapheme syllable groups for word {word!r}")
+
+        expanded_nuclei: list[tuple[int, int]] = []
+        for start, end in nuclei:
+            split_count = min(splits_needed, end - start - 1)
+            expanded_nuclei.extend((index, index + 1) for index in range(start, start + split_count))
+            expanded_nuclei.append((start + split_count, end))
+            splits_needed -= split_count
+        nuclei = expanded_nuclei
+        used_grapheme_split = True
 
     phone_groups: list[tuple[str, ...]] = []
     label_groups: list[tuple[int, ...]] = []
@@ -368,7 +394,7 @@ def _recover_grapheme_syllable_groups(
         phone_groups.append(tokenizer_word.labels[start:end])
         label_groups.append(tokenizer_word.label_indices[start:end])
         start = end
-    return tuple(phone_groups), tuple(label_groups)
+    return tuple(phone_groups), tuple(label_groups), used_grapheme_split
 
 
 def _recover_syllable_phone_groups(
