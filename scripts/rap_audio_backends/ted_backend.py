@@ -430,6 +430,9 @@ def _ensure_inference_config(ledger_path: Path, inference_method: str) -> None:
             raise ValueError(f"inference config conflicts at {config_path}")
         return
 
+    if _ledger_has_nonempty_rows(ledger_path):
+        raise ValueError(f"cannot create inference config for non-empty ledger without config: {ledger_path}")
+
     config_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -450,6 +453,13 @@ def _ensure_inference_config(ledger_path: Path, inference_method: str) -> None:
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def _ledger_has_nonempty_rows(ledger_path: Path) -> bool:
+    if not ledger_path.exists():
+        return False
+    with ledger_path.open("r", encoding="utf-8") as handle:
+        return any(line.strip() for line in handle)
 
 
 def _inference_config_payload(inference_method: str) -> dict[str, Any]:

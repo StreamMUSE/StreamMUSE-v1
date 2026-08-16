@@ -17,7 +17,7 @@ from streammuse.experiments.rap_audio_protocols.artifacts import (
     chunk_record_is_complete,
     read_chunk_record_index,
 )
-from streammuse.experiments.rap_audio_protocols.contracts import ProtocolId
+from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId
 from streammuse.experiments.rap_audio_protocols.corpus import load_song_corpus
 from streammuse.experiments.rap_audio_protocols.timing import TimedTextSegment, build_ted_segments
 
@@ -461,6 +461,47 @@ def test_render_pending_requests_keeps_matching_inference_config_and_rejects_con
     with pytest.raises(ValueError, match="inference config conflicts"):
         backend.render_pending_requests(**kwargs, inference_method="max_head")
     assert len(model.calls) == 1
+
+
+def test_render_pending_requests_rejects_successful_legacy_ledger_without_inference_config(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _request()
+    model = _FakeIndexTTS2()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "song" / "render_chunks.jsonl"
+    output_path = tmp_path / "chunks" / request.song_id / "chunk-000.wav"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    output_path.parent.mkdir(parents=True)
+    wavfile.write(output_path, 22_050, np.ones(128, dtype=np.int16))
+    legacy_record = ChunkRenderRecord(
+        protocol_id=ProtocolId.TED_LOCAL,
+        song_id=request.song_id,
+        chunk_index=request.chunk_index,
+        request_sha256=request.sha256,
+        success=True,
+        output_path=str(output_path),
+        output_sha256=backend.file_sha256(output_path),
+        source_chunk_sha256=None,
+        sample_rate_hz=22_050,
+        attempts=1,
+        error=None,
+    )
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(json.dumps(legacy_record.to_payload()) + "\n", encoding="utf-8")
+    original_ledger = record_path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="non-empty ledger"):
+        backend.render_pending_requests(
+            request_path=request_path,
+            record_path=record_path,
+            output_dir=tmp_path / "chunks",
+            reference_wav_path=tmp_path / "reference.wav",
+            ted_model=model,
+        )
+
+    assert not record_path.with_name("inference_config.json").exists()
+    assert record_path.read_text(encoding="utf-8") == original_ledger
+    assert model.calls == []
 
 
 def test_create_ted_model_uses_exact_checkout_and_restores_cached_modules(tmp_path: Path) -> None:
