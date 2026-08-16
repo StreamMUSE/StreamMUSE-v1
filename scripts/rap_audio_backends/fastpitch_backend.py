@@ -251,7 +251,7 @@ def build_render_plan(*, request: TwoBarRenderRequest, runtime: FastPitchBackend
     if hasattr(tokens, "to"):
         tokens = tokens.to(runtime.device)
     token_ids = list(tokens[0].tolist())
-    tokenizer_labels = tuple(runtime.fastpitch.vocab.ids_to_tokens(token_ids))
+    tokenizer_labels = _token_ids_to_labels(runtime.fastpitch.vocab, token_ids)
     phone_plan = build_fastpitch_phone_plan(request, tokenizer_labels)
     duration_tensor = runtime.torch_module.tensor(
         [list(phone_plan.duration_frames)],
@@ -266,6 +266,22 @@ def build_render_plan(*, request: TwoBarRenderRequest, runtime: FastPitchBackend
         phone_plan=phone_plan,
         duration_tensor=duration_tensor,
     )
+
+
+def _token_ids_to_labels(vocab: Any, token_ids: Sequence[int]) -> tuple[str, ...]:
+    ids_to_tokens = getattr(vocab, "ids_to_tokens", None)
+    if callable(ids_to_tokens):
+        return tuple(ids_to_tokens(token_ids))
+
+    id_to_token = getattr(vocab, "_id2token", None)
+    if id_to_token is not None:
+        return tuple(id_to_token[token_id] for token_id in token_ids)
+
+    tokens = getattr(vocab, "tokens", None)
+    if tokens is not None:
+        return tuple(tokens[token_id] for token_id in token_ids)
+
+    raise AttributeError("FastPitch vocabulary does not expose token ID labels")
 
 
 def render_request(

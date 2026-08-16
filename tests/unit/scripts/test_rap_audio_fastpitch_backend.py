@@ -10,7 +10,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
 import pytest
@@ -139,6 +139,14 @@ class FakeVocab:
         return tuple(self._labels_by_id[index] for index in ids)
 
 
+class FakeNeMo27Vocab:
+    """Matches the NeMo 2.7.3 EnglishPhonemesTokenizer vocabulary surface."""
+
+    def __init__(self, labels_by_id: dict[int, str]) -> None:
+        self.tokens = tuple(labels_by_id[index] for index in sorted(labels_by_id))
+        self._id2token = dict(labels_by_id)
+
+
 class FakeFastPitch:
     def __init__(
         self,
@@ -146,6 +154,7 @@ class FakeFastPitch:
         labels_by_text: dict[str, tuple[str, ...]],
         failures_remaining: int = 0,
         reject_pitch_energy: bool = False,
+        vocab_factory: Callable[[dict[int, str]], object] = FakeVocab,
     ) -> None:
         self.labels_by_text = dict(labels_by_text)
         self.failures_remaining = failures_remaining
@@ -155,13 +164,14 @@ class FakeFastPitch:
         self.generate_spectrogram_calls = 0
         self.to_calls: list[str] = []
         self.eval_called = False
-        self.vocab = FakeVocab({})
+        self.vocab_factory = vocab_factory
+        self.vocab = vocab_factory({})
 
     def parse(self, text: str) -> FakeTensor:
         self.parse_calls.append(text)
         labels = self.labels_by_text[text]
         ids = list(range(len(labels)))
-        self.vocab = FakeVocab(dict(enumerate(labels)))
+        self.vocab = self.vocab_factory(dict(enumerate(labels)))
         return FakeTensor([ids])
 
     def generate_spectrogram(self, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -458,6 +468,28 @@ def test_build_render_plan_uses_tokenizer_derived_oov_recovery_from_timing_api()
     assert plan.duration_tensor.shape == plan.tokens.shape
     assert sum(plan.duration_frames) == round(request.duration_seconds * 22050 / 256)
     assert len(plan.anchor_error_frames) == len(request.syllables)
+
+
+def test_build_render_plan_supports_nemo_27_vocab_without_ids_to_tokens() -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_nemo_27_vocab")
+    request = _fixture_request()
+    labels = _tokenizer_labels(request)
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(
+            labels_by_text={request.text: labels},
+            vocab_factory=FakeNeMo27Vocab,
+        ),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+
+    plan = module.build_render_plan(request=request, runtime=runtime)
+
+    assert plan.tokenizer_labels == labels
+    assert plan.duration_tensor.shape == plan.tokens.shape
 
 
 def test_runtime_sample_rate_controls_successful_wav_and_record(tmp_path: Path) -> None:
