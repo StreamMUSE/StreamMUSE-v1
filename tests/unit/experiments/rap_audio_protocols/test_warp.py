@@ -8,9 +8,12 @@ import pytest
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget
 from streammuse.experiments.rap_audio_protocols.warp import (
     PhoneInterval,
+    WordInterval,
     is_arpabet_vowel,
     match_vowel_anchors,
+    match_vowel_anchors_with_word_fallback,
     parse_textgrid_phone_intervals,
+    parse_textgrid_word_intervals,
     piecewise_pitch_preserving_warp,
 )
 
@@ -101,6 +104,49 @@ def test_parse_textgrid_phone_intervals_reads_only_long_form_phones_tier() -> No
     assert intervals[1].end_seconds == pytest.approx(0.18)
 
 
+def test_parse_textgrid_word_intervals_reads_long_form_words_tier() -> None:
+    text = """
+    File type = "ooTextFile"
+    Object class = "TextGrid"
+
+    xmin = 0
+    xmax = 0.42
+    tiers? <exists>
+    size = 2
+    item []:
+        item [1]:
+            class = "IntervalTier"
+            name = "words"
+            xmin = 0
+            xmax = 0.42
+            intervals: size = 2
+            intervals [1]:
+                xmin = 0.00
+                xmax = 0.18
+                text = "lift"
+            intervals [2]:
+                xmin = 0.18
+                xmax = 0.42
+                text = "off"
+        item [2]:
+            class = "IntervalTier"
+            name = "phones"
+            xmin = 0
+            xmax = 0.42
+            intervals: size = 1
+            intervals [1]:
+                xmin = 0.00
+                xmax = 0.42
+                text = "spn"
+    """
+
+    intervals = parse_textgrid_word_intervals(text)
+
+    assert [interval.word for interval in intervals] == ["lift", "off"]
+    assert intervals[1].start_seconds == pytest.approx(0.18)
+    assert intervals[1].end_seconds == pytest.approx(0.42)
+
+
 def test_parse_textgrid_phone_intervals_supports_short_form_praat_textgrid() -> None:
     text = '''
     File type = "ooTextFile short"
@@ -156,6 +202,28 @@ def test_match_vowel_anchors_rejects_source_target_count_mismatches() -> None:
 
     with pytest.raises(ValueError, match="aligned vowel count"):
         match_vowel_anchors(intervals, syllables, sample_rate_hz=1_000)
+
+
+def test_word_tier_fallback_rejects_non_monotonic_source_anchors() -> None:
+    syllables = (
+        _syllable("beat", ("B", "IY1", "T"), target_seconds=0.20),
+        _syllable("flow", ("F", "L", "OW1"), target_seconds=0.40),
+    )
+
+    with pytest.raises(ValueError, match="non-monotonic source anchors"):
+        match_vowel_anchors_with_word_fallback(
+            (
+                PhoneInterval(start_seconds=0.50, end_seconds=0.70, phone="spn"),
+                PhoneInterval(start_seconds=0.10, end_seconds=0.30, phone="spn"),
+            ),
+            (
+                WordInterval(start_seconds=0.50, end_seconds=0.70, word="beat"),
+                WordInterval(start_seconds=0.10, end_seconds=0.30, word="flow"),
+            ),
+            syllables,
+            sample_rate_hz=1_000,
+            request_words=("beat", "flow"),
+        )
 
 
 def test_piecewise_pitch_preserving_warp_rejects_non_monotonic_anchor_targets() -> None:

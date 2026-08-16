@@ -48,6 +48,11 @@ _PHONE_SUFFIX_RE = re.compile(r"\d+$")
 
 
 StretchRegionFn = Callable[[np.ndarray, int, int], np.ndarray]
+WORD_TIER_FALLBACK_PREFIX = "WORD_TIER_FALLBACK:"
+
+
+class PhoneVowelMismatchError(ValueError):
+    """Strict phone-tier vowels do not match the planned syllables."""
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,23 @@ class PhoneInterval:
             raise ValueError("phone intervals must have positive duration")
         if not self.phone:
             raise ValueError("phone intervals must not be empty")
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.end_seconds - self.start_seconds
+
+
+@dataclass(frozen=True)
+class WordInterval:
+    start_seconds: float
+    end_seconds: float
+    word: str
+
+    def __post_init__(self) -> None:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("word intervals must have positive duration")
+        if not self.word:
+            raise ValueError("word intervals must not be empty")
 
     @property
     def duration_seconds(self) -> float:
@@ -156,6 +178,20 @@ def load_textgrid_phone_intervals(path: Path | str) -> tuple[PhoneInterval, ...]
     return parse_textgrid_phone_intervals(Path(path).read_text(encoding="utf-8"))
 
 
+def parse_textgrid_word_intervals(text: str) -> tuple[WordInterval, ...]:
+    if _LONG_TIER_RE.search(text):
+        intervals = _parse_long_textgrid_word_intervals(text)
+    else:
+        intervals = _parse_short_textgrid_word_intervals(text)
+    if not intervals:
+        raise ValueError("no word intervals found in TextGrid")
+    return intervals
+
+
+def load_textgrid_word_intervals(path: Path | str) -> tuple[WordInterval, ...]:
+    return parse_textgrid_word_intervals(Path(path).read_text(encoding="utf-8"))
+
+
 def match_vowel_anchors(
     phone_intervals: Sequence[PhoneInterval],
     syllables: Sequence[SyllableTarget],
@@ -167,30 +203,85 @@ def match_vowel_anchors(
     source_vowels = tuple(interval for interval in phone_intervals if is_arpabet_vowel(interval.phone))
     planned_vowels = tuple((_primary_vowel_phone(syllable), syllable) for syllable in syllables)
     if len(source_vowels) != len(planned_vowels):
-        raise ValueError(
+        raise PhoneVowelMismatchError(
             f"aligned vowel count mismatch: expected {len(planned_vowels)}, got {len(source_vowels)}"
         )
 
     anchors = []
     for index, (source, (planned_phone, syllable)) in enumerate(zip(source_vowels, planned_vowels)):
         if _normalise_phone(planned_phone) != _normalise_phone(source.phone):
-            raise ValueError(
+            raise PhoneVowelMismatchError(
                 "strict vowel-anchor matching failed "
                 f"at syllable {index}: expected {planned_phone}, got {source.phone}"
             )
-        source_seconds = source.start_seconds + min(0.030, 0.25 * source.duration_seconds)
         anchors.append(
-            VowelAnchor(
-                word=syllable.word,
-                index_in_word=syllable.index_in_word,
+            _phone_vowel_anchor(
+                source,
                 planned_phone=planned_phone,
-                aligned_phone=source.phone,
-                source_seconds=source_seconds,
-                target_seconds=syllable.target_seconds,
-                source_sample=round(source_seconds * sample_rate_hz),
-                target_sample=round(syllable.target_seconds * sample_rate_hz),
+                syllable=syllable,
+                sample_rate_hz=sample_rate_hz,
             )
         )
+    return tuple(anchors)
+
+
+def match_vowel_anchors_with_word_fallback(
+    phone_intervals: Sequence[PhoneInterval],
+    word_intervals: Sequence[WordInterval],
+    syllables: Sequence[SyllableTarget],
+    *,
+    sample_rate_hz: int,
+    request_words: Sequence[str] | None = None,
+) -> tuple[VowelAnchor, ...]:
+    if sample_rate_hz <= 0:
+        raise ValueError("sample_rate_hz must be positive")
+    syllable_groups = _group_syllables_by_word(syllables)
+    if request_words is not None:
+        _validate_request_word_sequence(request_words, syllable_groups)
+    matched_words = _match_word_intervals(syllable_groups, word_intervals)
+
+    anchors: list[VowelAnchor] = []
+    for syllable_group, word_interval in zip(syllable_groups, matched_words):
+        planned_vowels = tuple((_primary_vowel_phone(syllable), syllable) for syllable in syllable_group)
+        aligned_vowels = tuple(
+            interval
+            for interval in phone_intervals
+            if is_arpabet_vowel(interval.phone) and _phone_belongs_to_word(interval, word_interval)
+        )
+        phones_match = len(aligned_vowels) == len(planned_vowels) and all(
+            _normalise_phone(source.phone) == _normalise_phone(planned_phone)
+            for source, (planned_phone, _) in zip(aligned_vowels, planned_vowels)
+        )
+        if phones_match:
+            anchors.extend(
+                _phone_vowel_anchor(
+                    source,
+                    planned_phone=planned_phone,
+                    syllable=syllable,
+                    sample_rate_hz=sample_rate_hz,
+                )
+                for source, (planned_phone, syllable) in zip(aligned_vowels, planned_vowels)
+            )
+            continue
+
+        for index, (planned_phone, syllable) in enumerate(planned_vowels):
+            source_seconds = word_interval.start_seconds + (
+                word_interval.duration_seconds * (index + 1) / (len(planned_vowels) + 1)
+            )
+            anchors.append(
+                VowelAnchor(
+                    word=syllable.word,
+                    index_in_word=syllable.index_in_word,
+                    planned_phone=planned_phone,
+                    aligned_phone=f"{WORD_TIER_FALLBACK_PREFIX}{word_interval.word}",
+                    source_seconds=source_seconds,
+                    target_seconds=syllable.target_seconds,
+                    source_sample=round(source_seconds * sample_rate_hz),
+                    target_sample=round(syllable.target_seconds * sample_rate_hz),
+                )
+            )
+
+    _validate_fallback_anchor_monotonicity(anchors)
     return tuple(anchors)
 
 
@@ -304,6 +395,18 @@ def _preserve_boundary_sample(left_sample: np.float32, right_sample: np.float32)
 
 
 def _parse_long_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...]:
+    return _phone_intervals_from_values(_parse_long_textgrid_interval_values(text, tier_name="phones"))
+
+
+def _parse_long_textgrid_word_intervals(text: str) -> tuple[WordInterval, ...]:
+    return _word_intervals_from_values(_parse_long_textgrid_interval_values(text, tier_name="words"))
+
+
+def _parse_long_textgrid_interval_values(
+    text: str,
+    *,
+    tier_name: str,
+) -> tuple[tuple[str, str, str], ...]:
     tier_matches = tuple(_LONG_TIER_RE.finditer(text))
     for index, tier_match in enumerate(tier_matches):
         end = tier_matches[index + 1].start() if index + 1 < len(tier_matches) else len(text)
@@ -313,14 +416,26 @@ def _parse_long_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...]
         if class_match is None or name_match is None:
             continue
         tier_class = _decode_praat_string(class_match.group(1))
-        tier_name = _decode_praat_string(name_match.group(1))
-        if tier_class != "IntervalTier" or tier_name.casefold() != "phones":
+        parsed_tier_name = _decode_praat_string(name_match.group(1))
+        if tier_class != "IntervalTier" or parsed_tier_name.casefold() != tier_name.casefold():
             continue
-        return _phone_intervals_from_values(_LONG_INTERVAL_RE.findall(tier))
-    raise ValueError("phones IntervalTier not found in TextGrid")
+        return tuple(_LONG_INTERVAL_RE.findall(tier))
+    raise ValueError(f"{tier_name} IntervalTier not found in TextGrid")
 
 
 def _parse_short_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...]:
+    return _phone_intervals_from_values(_parse_short_textgrid_interval_values(text, tier_name="phones"))
+
+
+def _parse_short_textgrid_word_intervals(text: str) -> tuple[WordInterval, ...]:
+    return _word_intervals_from_values(_parse_short_textgrid_interval_values(text, tier_name="words"))
+
+
+def _parse_short_textgrid_interval_values(
+    text: str,
+    *,
+    tier_name: str,
+) -> tuple[tuple[str, str, str], ...]:
     values = [line.strip() for line in text.lstrip("\ufeff").splitlines() if line.strip()]
     try:
         cursor = values.index("<exists>") + 1
@@ -330,16 +445,16 @@ def _parse_short_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...
     def take() -> str:
         nonlocal cursor
         if cursor >= len(values):
-            raise ValueError("short TextGrid ended before the phones tier was complete")
+            raise ValueError(f"short TextGrid ended before the {tier_name} tier was complete")
         value = values[cursor]
         cursor += 1
         return value
 
     tier_count = _parse_short_count(take(), field_name="tier count")
-    phone_values: list[tuple[str, str, str]] | None = None
+    tier_values: list[tuple[str, str, str]] | None = None
     for _ in range(tier_count):
         tier_class = _parse_short_string(take())
-        tier_name = _parse_short_string(take())
+        parsed_tier_name = _parse_short_string(take())
         _parse_short_number(take(), field_name="tier xmin")
         _parse_short_number(take(), field_name="tier xmax")
         entry_count = _parse_short_count(take(), field_name="tier entry count")
@@ -347,17 +462,17 @@ def _parse_short_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...
             entries = []
             for _ in range(entry_count):
                 entries.append((take(), take(), _parse_short_string(take())))
-            if tier_name.casefold() == "phones":
-                phone_values = entries
+            if parsed_tier_name.casefold() == tier_name.casefold():
+                tier_values = entries
         elif tier_class == "TextTier":
             for _ in range(entry_count):
                 take()
                 _parse_short_string(take())
         else:
             raise ValueError(f"unsupported short TextGrid tier class: {tier_class}")
-    if phone_values is None:
-        raise ValueError("phones IntervalTier not found in TextGrid")
-    return _phone_intervals_from_values(phone_values)
+    if tier_values is None:
+        raise ValueError(f"{tier_name} IntervalTier not found in TextGrid")
+    return tuple(tier_values)
 
 
 def _phone_intervals_from_values(
@@ -373,6 +488,24 @@ def _phone_intervals_from_values(
                 start_seconds=float(start_seconds),
                 end_seconds=float(end_seconds),
                 phone=label,
+            )
+        )
+    return tuple(intervals)
+
+
+def _word_intervals_from_values(
+    values: Sequence[tuple[str, str, str]],
+) -> tuple[WordInterval, ...]:
+    intervals = []
+    for start_seconds, end_seconds, raw_word in values:
+        label = _decode_praat_string(raw_word).strip()
+        if not label:
+            continue
+        intervals.append(
+            WordInterval(
+                start_seconds=float(start_seconds),
+                end_seconds=float(end_seconds),
+                word=label,
             )
         )
     return tuple(intervals)
@@ -456,6 +589,127 @@ def _validate_region_lengths(
             raise ValueError("source region shorter than 10 ms is impossible to warp explicitly")
         if (target_end - target_start) < minimum_region_samples:
             raise ValueError("target region shorter than 10 ms is impossible to warp explicitly")
+
+
+def _phone_vowel_anchor(
+    source: PhoneInterval,
+    *,
+    planned_phone: str,
+    syllable: SyllableTarget,
+    sample_rate_hz: int,
+) -> VowelAnchor:
+    source_seconds = source.start_seconds + min(0.030, 0.25 * source.duration_seconds)
+    return VowelAnchor(
+        word=syllable.word,
+        index_in_word=syllable.index_in_word,
+        planned_phone=planned_phone,
+        aligned_phone=source.phone,
+        source_seconds=source_seconds,
+        target_seconds=syllable.target_seconds,
+        source_sample=round(source_seconds * sample_rate_hz),
+        target_sample=round(syllable.target_seconds * sample_rate_hz),
+    )
+
+
+def _group_syllables_by_word(
+    syllables: Sequence[SyllableTarget],
+) -> tuple[tuple[SyllableTarget, ...], ...]:
+    groups: list[tuple[SyllableTarget, ...]] = []
+    current: list[SyllableTarget] = []
+    for syllable in syllables:
+        if syllable.index_in_word == 0:
+            if current:
+                groups.append(tuple(current))
+            current = [syllable]
+            continue
+        if (
+            not current
+            or syllable.word != current[0].word
+            or syllable.index_in_word != len(current)
+        ):
+            raise ValueError("request syllables cannot be grouped into monotonic words")
+        current.append(syllable)
+    if current:
+        groups.append(tuple(current))
+    if not groups:
+        raise ValueError("word-tier fallback requires planned syllables")
+    return tuple(groups)
+
+
+def _match_word_intervals(
+    syllable_groups: Sequence[Sequence[SyllableTarget]],
+    word_intervals: Sequence[WordInterval],
+) -> tuple[WordInterval, ...]:
+    matched: list[WordInterval] = []
+    aligned_index = 0
+    for request_index, group in enumerate(syllable_groups):
+        expected = _normalise_word(group[0].word)
+        if not expected:
+            raise ValueError(f"request word {group[0].word!r} cannot be normalized for matching")
+        while aligned_index < len(word_intervals):
+            candidate = word_intervals[aligned_index]
+            aligned_index += 1
+            if _normalise_word(candidate.word) == expected:
+                matched.append(candidate)
+                break
+            if _word_interval_is_ignorable(candidate):
+                continue
+            raise ValueError(
+                "word-tier sequence mismatch "
+                f"at request word {request_index}: expected {group[0].word!r}, got {candidate.word!r}"
+            )
+        else:
+            raise ValueError(
+                "word-tier sequence mismatch "
+                f"at request word {request_index}: expected {group[0].word!r}, reached end of tier"
+            )
+
+    unexpected = next(
+        (interval for interval in word_intervals[aligned_index:] if not _word_interval_is_ignorable(interval)),
+        None,
+    )
+    if unexpected is not None:
+        raise ValueError(f"word-tier sequence has unexpected trailing word {unexpected.word!r}")
+    return tuple(matched)
+
+
+def _validate_request_word_sequence(
+    request_words: Sequence[str],
+    syllable_groups: Sequence[Sequence[SyllableTarget]],
+) -> None:
+    if len(request_words) != len(syllable_groups):
+        raise ValueError(
+            "request word sequence does not match planned syllable groups: "
+            f"expected {len(syllable_groups)} words, got {len(request_words)}"
+        )
+    for index, (request_word, group) in enumerate(zip(request_words, syllable_groups)):
+        if _normalise_word(request_word) != _normalise_word(group[0].word):
+            raise ValueError(
+                "request word sequence does not match planned syllable groups "
+                f"at word {index}: request has {request_word!r}, syllables have {group[0].word!r}"
+            )
+
+
+def _normalise_word(word: str) -> str:
+    return "".join(character for character in word.casefold() if character.isalnum())
+
+
+def _word_interval_is_ignorable(interval: WordInterval) -> bool:
+    return interval.word.strip().casefold() in {"<eps>", "sil", "sp"}
+
+
+def _phone_belongs_to_word(phone: PhoneInterval, word: WordInterval) -> bool:
+    midpoint = (phone.start_seconds + phone.end_seconds) / 2
+    return word.start_seconds <= midpoint <= word.end_seconds
+
+
+def _validate_fallback_anchor_monotonicity(anchors: Sequence[VowelAnchor]) -> None:
+    source_samples = tuple(anchor.source_sample for anchor in anchors)
+    target_samples = tuple(anchor.target_sample for anchor in anchors)
+    if any(right <= left for left, right in zip(source_samples, source_samples[1:])):
+        raise ValueError("word-tier fallback produced non-monotonic source anchors")
+    if any(right <= left for left, right in zip(target_samples, target_samples[1:])):
+        raise ValueError("word-tier fallback produced non-monotonic target anchors")
 
 
 def _normalise_phone(phone: str) -> str:
