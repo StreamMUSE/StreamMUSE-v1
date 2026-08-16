@@ -587,6 +587,10 @@ mkdir -p "${target}/usr/bin" "${target}/usr/lib/x86_64-linux-gnu"
 if [[ "${deb}" == *rubberband-cli* ]]; then
   cat > "${target}/usr/bin/rubberband" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${LD_LIBRARY_PATH}" != "${EXPECTED_ALIGN_LIB}:"* ]]; then
+  printf 'expected ALIGN_ENV/lib first, got %s\\n' "${LD_LIBRARY_PATH}" >&2
+  exit 9
+fi
 printf 'rubberband 3.3.0\n'
 EOF
   chmod +x "${target}/usr/bin/rubberband"
@@ -664,6 +668,7 @@ fi
             "MOSS_PYTHON_BIN": "/usr/bin/python3.12",
             "PYTHON310_BIN": "/data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron/bin/python",
             "CONDA_BIN": str(fake_bin / "conda"),
+            "EXPECTED_ALIGN_LIB": str(env_root / "align" / "lib"),
         }
     )
 
@@ -683,6 +688,7 @@ fi
     assert manifest["packages"]["nemo_toolkit"] == {"package_version": "2.7.3", "source_tag": "v2.7.3"}
     assert manifest["packages"]["montreal_forced_aligner"] == {"package_version": "3.4.1", "source_tag": "v3.4.1"}
     assert manifest["packages"]["faster_whisper"] == {"package_version": "1.2.1"}
+    assert manifest["packages"]["pronouncing"] == {"package_version": "0.3.0"}
     assert manifest["packages"]["ffmpeg"] == {
         "package_version": "7.1.1",
         "resolved_version": "ffmpeg version 7.1.1 test-build",
@@ -718,10 +724,18 @@ fi
     assert f"uv pip install --python {env_root / 'moss' / 'bin' / 'python'} faster-whisper==1.2.1" in commands
     assert f"UV_PROJECT_ENVIRONMENT={env_root / 'ted'} uv sync --all-extras" in commands
     assert "torch==2.9.1+cu128 torchaudio==2.9.1+cu128 nemo_toolkit[tts]==2.7.3" in commands
+    for env_name in ("moss", "ted", "nemo", "align"):
+        assert f"uv pip install --python {env_root / env_name / 'bin' / 'python'} pronouncing==0.3.0" in commands
     assert "conda create --yes --prefix" in commands
     assert "python=3.10 montreal-forced-aligner=3.4.1" in commands
     assert "conda create --yes --prefix" in commands
-    assert "ffmpeg=7.1.1 fftw libsamplerate libsndfile" in commands
+    assert (
+        f"conda create --yes --prefix {env_root / 'ffmpeg7'} --channel conda-forge ffmpeg=7.1.1"
+        in commands
+    )
+    assert "fftw" not in commands
+    assert "libsamplerate" not in commands
+    assert "libsndfile" not in commands
     assert "apt download rubberband-cli=3.3.0+dfsg-2build1 librubberband2=3.3.0+dfsg-2build1" in commands
     assert "dpkg-deb -x" in commands
     assert f"hf download OpenMOSS-Team/MOSS-TTS-v1.5 --revision {moss_snapshot}" in commands

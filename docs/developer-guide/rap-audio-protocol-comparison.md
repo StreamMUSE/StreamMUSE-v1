@@ -55,6 +55,7 @@ The default pins are:
 | Rubber Band CLI/runtime | Ubuntu `rubberband-cli=3.3.0+dfsg-2build1` and `librubberband2=3.3.0+dfsg-2build1` debs |
 | PyTorch/Torchaudio | `2.9.1+cu128` |
 | faster-whisper | `1.2.1` |
+| pronouncing | `0.3.0` in MOSS, TED, NeMo, and alignment |
 
 MOSS is installed with Python 3.12 using PyPI and the CUDA 12.8 wheel index,
 `--index-strategy unsafe-best-match`, and the editable
@@ -63,17 +64,19 @@ MOSS is installed with Python 3.12 using PyPI and the CUDA 12.8 wheel index,
 CUDA 12.8 Torch/Torchaudio wheels, and `nemo_toolkit[tts]==2.7.3`. Alignment is
 a conda-forge prefix containing MFA 3.4.1. That MFA solve constrains its own
 FFmpeg to 2.8, which is not suitable for TorchCodec. The setup therefore
-creates a separate conda-forge `ffmpeg7` prefix with FFmpeg 7.1.1 and its
-runtime libraries.
+creates a separate conda-forge `ffmpeg7` prefix with only FFmpeg 7.1.1 for
+TorchCodec. It pins `pronouncing==0.3.0` in the MOSS, TED, NeMo, and alignment
+Python prefixes because each backend imports StreamMUSE through `PYTHONPATH`.
 
 Rubber Band is not requested from conda or pip. The configured conda-forge
 channels do not provide the required package under that name. Without `sudo`,
 the setup runs `apt download` for the pinned Ubuntu `rubberband-cli` and
 `librubberband2` debs, then extracts them under the asset root with
 `dpkg-deb -x`. It executes the extracted `rubberband --version` with the local
-Rubber Band and FFmpeg-prefix library directories and records the actual
-binary path and resolved version. It likewise executes and records the
-isolated `ffmpeg -version` result.
+alignment-prefix library directory first, followed by the extracted Rubber
+Band and FFmpeg-prefix library directories, and records the actual binary path
+and resolved version. It likewise executes the isolated `ffmpeg -version` and
+records its result.
 
 The setup reuses the shared Hugging Face cache. It requests and verifies the
 exact MOSS and IndexTTS-2 revisions even when those snapshots are already
@@ -273,7 +276,7 @@ Run MFA plus the aligned-MOSS warp against the exact MOSS source hash:
 ```bash
 export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 export PATH="$RUBBERBAND_ROOT/usr/bin:$FFMPEG7_ENV/bin:$ALIGN_ENV/bin:$PATH"
-export LD_LIBRARY_PATH="$RUBBERBAND_ROOT/usr/lib/x86_64-linux-gnu:$FFMPEG7_ENV/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$ALIGN_ENV/lib:$RUBBERBAND_ROOT/usr/lib/x86_64-linux-gnu:$FFMPEG7_ENV/lib:${LD_LIBRARY_PATH:-}"
 "$ALIGN_ENV/bin/python" <<'PY'
 import os
 from pathlib import Path
@@ -396,7 +399,7 @@ immediately, and safely skips already verified aligned outputs:
 ```bash
 export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 export PATH="$RUBBERBAND_ROOT/usr/bin:$FFMPEG7_ENV/bin:$ALIGN_ENV/bin:$PATH"
-export LD_LIBRARY_PATH="$RUBBERBAND_ROOT/usr/lib/x86_64-linux-gnu:$FFMPEG7_ENV/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$ALIGN_ENV/lib:$RUBBERBAND_ROOT/usr/lib/x86_64-linux-gnu:$FFMPEG7_ENV/lib:${LD_LIBRARY_PATH:-}"
 "$ALIGN_ENV/bin/python" <<'PY'
 import os
 import tempfile

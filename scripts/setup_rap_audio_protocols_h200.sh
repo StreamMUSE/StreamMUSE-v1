@@ -43,6 +43,7 @@ RUBBERBAND_APT_VERSION="${RUBBERBAND_APT_VERSION:-3.3.0+dfsg-2build1}"
 TORCH_VERSION="${TORCH_VERSION:-2.9.1+cu128}"
 TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-2.9.1+cu128}"
 FASTER_WHISPER_VERSION="${FASTER_WHISPER_VERSION:-1.2.1}"
+PRONOUNCING_VERSION="${PRONOUNCING_VERSION:-0.3.0}"
 
 MOSS_ENV="${ENV_ROOT}/moss"
 TED_ENV="${ENV_ROOT}/ted"
@@ -126,12 +127,14 @@ git -C "${TED_CHECKOUT}" lfs pull
   --index-strategy unsafe-best-match \
   -e "${MOSS_CHECKOUT}[torch-runtime]"
 "${UV_BIN}" pip install --python "${MOSS_ENV}/bin/python" "faster-whisper==${FASTER_WHISPER_VERSION}"
+"${UV_BIN}" pip install --python "${MOSS_ENV}/bin/python" "pronouncing==${PRONOUNCING_VERSION}"
 
 "${UV_BIN}" venv --python "${PYTHON310_BIN}" "${TED_ENV}"
 (
   cd "${TED_CHECKOUT}"
   UV_PROJECT_ENVIRONMENT="${TED_ENV}" "${UV_BIN}" sync --all-extras
 )
+"${UV_BIN}" pip install --python "${TED_ENV}/bin/python" "pronouncing==${PRONOUNCING_VERSION}"
 
 "${UV_BIN}" venv --python "${PYTHON310_BIN}" "${NEMO_ENV}"
 "${UV_BIN}" pip install \
@@ -142,6 +145,7 @@ git -C "${TED_CHECKOUT}" lfs pull
   "torch==${TORCH_VERSION}" \
   "torchaudio==${TORCHAUDIO_VERSION}" \
   "nemo_toolkit[tts]==${NEMO_VERSION}"
+"${UV_BIN}" pip install --python "${NEMO_ENV}/bin/python" "pronouncing==${PRONOUNCING_VERSION}"
 
 if [ -d "${ALIGN_ENV}/conda-meta" ]; then
   conda_action=install
@@ -151,6 +155,7 @@ fi
 "${CONDA_BIN}" "${conda_action}" --yes --prefix "${ALIGN_ENV}" --channel conda-forge \
   "python=3.10" \
   "montreal-forced-aligner=${MFA_VERSION}"
+"${UV_BIN}" pip install --python "${ALIGN_ENV}/bin/python" "pronouncing==${PRONOUNCING_VERSION}"
 
 if [ -d "${FFMPEG7_ENV}/conda-meta" ]; then
   conda_action=install
@@ -158,10 +163,7 @@ else
   conda_action=create
 fi
 "${CONDA_BIN}" "${conda_action}" --yes --prefix "${FFMPEG7_ENV}" --channel conda-forge \
-  "ffmpeg=${FFMPEG7_VERSION}" \
-  fftw \
-  libsamplerate \
-  libsndfile
+  "ffmpeg=${FFMPEG7_VERSION}"
 
 if [ ! -x "${RUBBERBAND_BIN}" ]; then
   if ! command -v apt >/dev/null 2>&1; then
@@ -215,7 +217,7 @@ esac
 
 RUBBERBAND_RESOLVED_VERSION="$(
   PATH="${FFMPEG7_ENV}/bin:${PATH}" \
-  LD_LIBRARY_PATH="${RUBBERBAND_LIB_DIR}:${FFMPEG7_ENV}/lib:${LD_LIBRARY_PATH:-}" \
+  LD_LIBRARY_PATH="${ALIGN_ENV}/lib:${RUBBERBAND_LIB_DIR}:${FFMPEG7_ENV}/lib:${LD_LIBRARY_PATH:-}" \
     "${RUBBERBAND_BIN}" --version
 )"
 RUBBERBAND_RESOLVED_VERSION="${RUBBERBAND_RESOLVED_VERSION%%$'\n'*}"
@@ -307,7 +309,7 @@ export INDEXTTS_MODEL_ID INDEXTTS_MODEL_REVISION INDEXTTS_SNAPSHOT_PATH
 export NEMO_SOURCE_TAG NEMO_VERSION NEMO_RUNTIME_JSON MFA_SOURCE_TAG MFA_VERSION MFA_RESOLVED_VERSION
 export FFMPEG7_VERSION FFMPEG7_ENV FFMPEG7_RESOLVED_VERSION
 export RUBBERBAND_APT_VERSION RUBBERBAND_BIN RUBBERBAND_LIB_DIR RUBBERBAND_RESOLVED_VERSION
-export FASTER_WHISPER_VERSION
+export FASTER_WHISPER_VERSION PRONOUNCING_VERSION
 export TED_REFERENCE_RELATIVE_PATH TED_REFERENCE_SOURCE TED_REFERENCE_COPY
 
 "${PYTHON_BIN}" <<'PY'
@@ -389,6 +391,9 @@ payload = {
         },
         "faster_whisper": {
             "package_version": os.environ["FASTER_WHISPER_VERSION"],
+        },
+        "pronouncing": {
+            "package_version": os.environ["PRONOUNCING_VERSION"],
         },
         "ffmpeg": {
             "package_version": os.environ["FFMPEG7_VERSION"],
