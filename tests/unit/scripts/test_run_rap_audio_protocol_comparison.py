@@ -79,6 +79,12 @@ def _write_chunk_wav(path: Path, *, frame_count: int = CHUNK_FRAME_COUNT) -> Non
     wavfile.write(path, 48_000, np.full(frame_count, 0.25, dtype=np.float32))
 
 
+def _write_package_mix(output_dir: Path, *, song_id: str, protocol_id: str) -> None:
+    mix_path = output_dir / protocol_id / song_id / "mix.wav"
+    mix_path.parent.mkdir(parents=True, exist_ok=True)
+    mix_path.write_bytes(b"RIFF-test-package-wave")
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body, encoding="utf-8")
@@ -365,6 +371,119 @@ def test_evaluate_is_lazy_and_package_writes_blinded_outputs(
     assert (output_dir / "listening.html").is_file()
     assert (output_dir / "COMPARISON.md").is_file()
     assert (output_dir / "package_audit.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("filters", "missing_count", "selected_song", "selected_protocol"),
+    (
+        ((), 11, None, None),
+        (("--song", "01_space_exploration"), 3, "01_space_exploration", None),
+        (("--protocol", ProtocolId.MOSS_GLOBAL.value), 2, None, ProtocolId.MOSS_GLOBAL.value),
+    ),
+)
+def test_package_rejects_any_partial_selected_matrix(
+    load_script,
+    tmp_path: Path,
+    filters: tuple[str, ...],
+    missing_count: int,
+    selected_song: str | None,
+    selected_protocol: str | None,
+) -> None:
+    module = load_script("run_rap_audio_protocol_comparison")
+    output_dir = tmp_path / "campaign"
+    _write_package_mix(
+        output_dir,
+        song_id="01_space_exploration",
+        protocol_id=ProtocolId.MOSS_GLOBAL.value,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=rf"package stage requires complete selected matrix: missing {missing_count} mix\.wav files",
+    ):
+        module.main(
+            [
+                "--source-album",
+                str(tmp_path / "source-album"),
+                "--output-dir",
+                str(output_dir),
+                "--stage",
+                "package",
+                *filters,
+            ]
+        )
+
+    assert not (output_dir / "blind_map.json").exists()
+    assert not (output_dir / "listening.html").exists()
+    error = json.loads((output_dir / "campaign_errors.jsonl").read_text(encoding="utf-8"))
+    assert error["stage"] == "package"
+    assert error["song_id"] == selected_song
+    assert error["protocol_id"] == selected_protocol
+
+
+@pytest.mark.parametrize(
+    ("filters", "song_ids", "protocol_ids", "expected_audio_count"),
+    (
+        (
+            ("--song", "01_space_exploration"),
+            ("01_space_exploration",),
+            tuple(protocol.value for protocol in ProtocolId),
+            4,
+        ),
+        (
+            ("--protocol", ProtocolId.MOSS_GLOBAL.value),
+            (
+                "01_space_exploration",
+                "02_deep_ocean",
+                "03_artificial_intelligence",
+            ),
+            (ProtocolId.MOSS_GLOBAL.value,),
+            3,
+        ),
+        (
+            (
+                "--song",
+                "01_space_exploration",
+                "--protocol",
+                ProtocolId.MOSS_GLOBAL.value,
+            ),
+            ("01_space_exploration",),
+            (ProtocolId.MOSS_GLOBAL.value,),
+            1,
+        ),
+    ),
+)
+def test_package_preserves_complete_explicit_selection_matrix(
+    load_script,
+    tmp_path: Path,
+    filters: tuple[str, ...],
+    song_ids: tuple[str, ...],
+    protocol_ids: tuple[str, ...],
+    expected_audio_count: int,
+) -> None:
+    module = load_script("run_rap_audio_protocol_comparison")
+    output_dir = tmp_path / "campaign"
+    for song_id in song_ids:
+        for protocol_id in protocol_ids:
+            _write_package_mix(output_dir, song_id=song_id, protocol_id=protocol_id)
+
+    assert module.main(
+        [
+            "--source-album",
+            str(tmp_path / "source-album"),
+            "--output-dir",
+            str(output_dir),
+            "--stage",
+            "package",
+            *filters,
+        ]
+    ) == 0
+
+    audit = json.loads((output_dir / "package_audit.json").read_text(encoding="utf-8"))
+    blind_map = json.loads((output_dir / "blind_map.json").read_text(encoding="utf-8"))
+    assert audit["audio_file_count"] == expected_audio_count
+    assert set(blind_map) == set(song_ids)
+    assert all(len(mapping) == len(protocol_ids) for mapping in blind_map.values())
 
 
 def test_h200_setup_is_idempotent_and_records_pinned_environments_models_and_reference(tmp_path: Path) -> None:

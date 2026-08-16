@@ -272,14 +272,31 @@ def evaluate_campaign(
 
 
 def package_campaign(args: argparse.Namespace) -> None:
+    selected_songs = _selected_songs(args.song)
+    selected_protocols = _selected_protocols(args.protocol)
+    selected_matrix = tuple(
+        (song_id, protocol_name)
+        for song_id in selected_songs
+        for protocol_name in selected_protocols
+    )
+    missing_mixes = tuple(
+        args.output_dir / protocol_name / song_id / "mix.wav"
+        for song_id, protocol_name in selected_matrix
+        if not (args.output_dir / protocol_name / song_id / "mix.wav").is_file()
+    )
+    if missing_mixes:
+        missing_paths = ", ".join(str(path.relative_to(args.output_dir)) for path in missing_mixes)
+        raise ValueError(
+            "package stage requires complete selected matrix: "
+            f"missing {len(missing_mixes)} mix.wav files: {missing_paths}"
+        )
+
     assets = []
     comparison_rows = []
-    for song_id in _selected_songs(args.song):
-        for protocol_name in _selected_protocols(args.protocol):
+    for song_id in selected_songs:
+        for protocol_name in selected_protocols:
             protocol_root = args.output_dir / protocol_name / song_id
             mix_path = protocol_root / "mix.wav"
-            if not mix_path.exists():
-                continue
             assets.append(
                 ListeningAsset(
                     song_id=song_id,
@@ -311,8 +328,6 @@ def package_campaign(args: argparse.Namespace) -> None:
                 status="ready",
                 mix_sha256=comparison_rows[-1]["mix_sha256"],
             )
-    if not assets:
-        raise ValueError("package stage requires at least one assembled mix.wav")
     outputs = write_listening_package(output_dir=args.output_dir, assets=assets)
     (args.output_dir / "COMPARISON.md").write_text(_render_comparison_markdown(comparison_rows), encoding="utf-8")
     # write_listening_package already writes the audit file; keep the returned paths live for callers
