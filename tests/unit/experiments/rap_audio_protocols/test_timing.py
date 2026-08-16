@@ -193,13 +193,78 @@ def test_fastpitch_phone_plan_ignores_nemo_punctuation_and_padded_spaces() -> No
     assert sum(plan.duration_frames) == TOTAL_FRAMES
 
 
-def test_fastpitch_phone_plan_rejects_phone_token_mismatches() -> None:
+def test_fastpitch_phone_plan_rejects_invalid_arpabet_phone_token_mismatches() -> None:
     request = _request()
     tokenizer_labels = list(_tokenizer_labels(request))
-    tokenizer_labels[tokenizer_labels.index("AE1")] = "AE0"
+    tokenizer_labels[tokenizer_labels.index("AE1")] = "AE"
 
     with pytest.raises(ValueError, match="tokenizer labels do not align"):
         build_fastpitch_phone_plan(request, tuple(tokenizer_labels))
+
+
+def test_fastpitch_phone_plan_recovers_two_syllable_secrets_pronunciation_alternative() -> None:
+    request = _request_with_replaced_word(
+        _request(),
+        "rocket",
+        "secrets",
+        (("S", "IY1"), ("K", "R", "AH0", "T", "S")),
+    )
+    tokenizer_labels = _tokenizer_labels(
+        request,
+        overrides={"secrets": ("S", "IY1", "K", "R", "IH0", "T", "S")},
+    )
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    secrets_groups = tuple(
+        plan.syllable_phone_groups[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "secrets"
+    )
+    assert secrets_groups == (("S", "IY1"), ("K", "R", "IH0", "T", "S"))
+    assert plan.pronunciation_fallback_words == ("secrets",)
+    assert plan.grapheme_fallback_words == ()
+
+
+def test_fastpitch_phone_plan_recovers_single_syllable_bots_pronunciation_alternative() -> None:
+    request = _request_with_replaced_word(_request(), "blasts", "bots", (("B", "AO1", "T", "S"),))
+    tokenizer_labels = _tokenizer_labels(
+        request,
+        overrides={"bots": ("B", "AA1", "T", "Z")},
+    )
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    bots_group = next(
+        plan.syllable_phone_groups[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "bots"
+    )
+    assert bots_group == ("B", "AA1", "T", "Z")
+    assert plan.pronunciation_fallback_words == ("bots",)
+    assert plan.grapheme_fallback_words == ()
+
+
+@pytest.mark.parametrize(
+    "tokenizer_phones",
+    [
+        ("S", "IY1", "K", "r", "IH0", "T", "S"),
+        ("S", "IY1", "K", "R", "T", "S"),
+    ],
+)
+def test_fastpitch_phone_plan_rejects_unsafe_pronunciation_alternatives(
+    tokenizer_phones: tuple[str, ...],
+) -> None:
+    request = _request_with_replaced_word(
+        _request(),
+        "rocket",
+        "secrets",
+        (("S", "IY1"), ("K", "R", "AH0", "T", "S")),
+    )
+    tokenizer_labels = _tokenizer_labels(request, overrides={"secrets": tokenizer_phones})
+
+    with pytest.raises(ValueError, match="tokenizer labels do not align"):
+        build_fastpitch_phone_plan(request, tokenizer_labels)
 
 
 def test_fastpitch_phone_plan_recovers_single_syllable_where_from_graphemes() -> None:

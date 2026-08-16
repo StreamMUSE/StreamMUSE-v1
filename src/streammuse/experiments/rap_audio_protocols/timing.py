@@ -18,6 +18,38 @@ _PUNCTUATION_LABELS = frozenset(string.punctuation)
 _WORD_BOUNDARY_PUNCTUATION_LABELS = _PUNCTUATION_LABELS - {"'"}
 _GRAPHEME_VOWELS = frozenset("aeiouy")
 _CORE_GRAPHEME_VOWELS = _GRAPHEME_VOWELS - {"y"}
+_ARPABET_VOWELS = frozenset(
+    {"AA", "AE", "AH", "AO", "AW", "AY", "EH", "ER", "EY", "IH", "IY", "OW", "OY", "UH", "UW"}
+)
+_ARPABET_CONSONANTS = frozenset(
+    {
+        "B",
+        "CH",
+        "D",
+        "DH",
+        "F",
+        "G",
+        "HH",
+        "JH",
+        "K",
+        "L",
+        "M",
+        "N",
+        "NG",
+        "P",
+        "R",
+        "S",
+        "SH",
+        "T",
+        "TH",
+        "V",
+        "W",
+        "Y",
+        "Z",
+        "ZH",
+    }
+)
+_ARPABET_PHONE_PATTERN = re.compile(r"([A-Z]+)([012])?")
 _WORD_PATTERN = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
 
 
@@ -38,6 +70,7 @@ class FastPitchPhonePlan:
     anchor_error_frames: tuple[int, ...]
     compressed_consonant_regions: tuple[int, ...]
     grapheme_fallback_words: tuple[str, ...]
+    pronunciation_fallback_words: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -94,9 +127,12 @@ def build_fastpitch_phone_plan(
     request: TwoBarRenderRequest, tokenizer_labels: tuple[str, ...]
 ) -> FastPitchPhonePlan:
     """Align tokenizer labels to lexical phones and assign per-label mel durations."""
-    syllable_phone_groups, syllable_label_indices, grapheme_fallback_words = _resolve_syllable_phone_groups(
-        request, tokenizer_labels
-    )
+    (
+        syllable_phone_groups,
+        syllable_label_indices,
+        grapheme_fallback_words,
+        pronunciation_fallback_words,
+    ) = _resolve_syllable_phone_groups(request, tokenizer_labels)
     spoken_label_indices = tuple(index for group in syllable_label_indices for index in group)
 
     duration_frames = [0] * len(tokenizer_labels)
@@ -151,6 +187,7 @@ def build_fastpitch_phone_plan(
         anchor_error_frames=tuple(anchor_error_frames),
         compressed_consonant_regions=tuple(dict.fromkeys(compressed_consonant_regions)),
         grapheme_fallback_words=grapheme_fallback_words,
+        pronunciation_fallback_words=pronunciation_fallback_words,
     )
 
 
@@ -186,7 +223,12 @@ def _is_grapheme_vowel(labels: tuple[str, ...], index: int) -> bool:
 
 def _resolve_syllable_phone_groups(
     request: TwoBarRenderRequest, tokenizer_labels: tuple[str, ...]
-) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], tuple[str, ...]]:
+) -> tuple[
+    tuple[tuple[str, ...], ...],
+    tuple[tuple[int, ...], ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
     words = _word_spans(request)
     tokenizer_words = _tokenizer_word_groups(tokenizer_labels)
     if len(tokenizer_words) != len(words):
@@ -195,16 +237,24 @@ def _resolve_syllable_phone_groups(
     syllable_phone_groups: list[tuple[str, ...]] = []
     syllable_label_indices: list[tuple[int, ...]] = []
     grapheme_fallback_words: list[str] = []
+    pronunciation_fallback_words: list[str] = []
     for word_span, tokenizer_word in zip(words, tokenizer_words):
         word_syllables = request.syllables[word_span.start_syllable_index : word_span.end_syllable_index + 1]
-        phone_groups, label_groups, used_grapheme_fallback = _resolve_word_phone_groups(
+        phone_groups, label_groups, used_grapheme_fallback, used_pronunciation_fallback = _resolve_word_phone_groups(
             word_span.word, word_syllables, tokenizer_word
         )
         syllable_phone_groups.extend(phone_groups)
         syllable_label_indices.extend(label_groups)
         if used_grapheme_fallback:
             grapheme_fallback_words.append(word_span.word)
-    return tuple(syllable_phone_groups), tuple(syllable_label_indices), tuple(grapheme_fallback_words)
+        if used_pronunciation_fallback:
+            pronunciation_fallback_words.append(word_span.word)
+    return (
+        tuple(syllable_phone_groups),
+        tuple(syllable_label_indices),
+        tuple(grapheme_fallback_words),
+        tuple(pronunciation_fallback_words),
+    )
 
 
 def _tokenizer_word_groups(tokenizer_labels: tuple[str, ...]) -> tuple[_TokenizerWordGroup, ...]:
@@ -233,9 +283,10 @@ def _resolve_word_phone_groups(
     word: str,
     syllables: tuple[SyllableTarget, ...],
     tokenizer_word: _TokenizerWordGroup,
-) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], bool]:
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], bool, bool]:
     lexical_groups = tuple(syllable.phonemes for syllable in syllables)
-    if all(lexical_groups):
+    lexical_phones_populated = all(lexical_groups)
+    if lexical_phones_populated:
         expected = tuple(phone for group in lexical_groups for phone in group)
         if tokenizer_word.labels == expected:
             label_groups: list[tuple[int, ...]] = []
@@ -244,25 +295,50 @@ def _resolve_word_phone_groups(
                 end = start + len(group)
                 label_groups.append(tokenizer_word.label_indices[start:end])
                 start = end
-            return lexical_groups, tuple(label_groups), False
+            return lexical_groups, tuple(label_groups), False, False
+
+        if _is_pronunciation_fallback_word(tokenizer_word.labels, len(syllables)):
+            phone_groups, label_groups = _recover_syllable_phone_groups(word, len(syllables), tokenizer_word)
+            return phone_groups, label_groups, False, True
 
     if _is_grapheme_word(tokenizer_word.labels):
         phone_groups, label_groups = _recover_grapheme_syllable_groups(word, len(syllables), tokenizer_word)
-        return phone_groups, label_groups, True
+        return phone_groups, label_groups, True, False
 
-    if all(lexical_groups):
+    if lexical_phones_populated:
         raise ValueError("tokenizer labels do not align with lexical phones")
 
     if any(lexical_groups):
         raise ValueError(f"cannot recover syllable phone groups for partially populated word {word!r}")
     phone_groups, label_groups = _recover_syllable_phone_groups(word, len(syllables), tokenizer_word)
-    return phone_groups, label_groups, False
+    return phone_groups, label_groups, False, False
 
 
 def _is_grapheme_word(labels: tuple[str, ...]) -> bool:
     return bool(labels) and all(
         len(label) == 1 and label.isascii() and label.islower() and label.isalpha() for label in labels
     )
+
+
+def _is_pronunciation_fallback_word(labels: tuple[str, ...], syllable_count: int) -> bool:
+    if not labels or not all(_is_arpabet_phone_label(label) for label in labels):
+        return False
+    return sum(_is_stress_marked_arpabet_vowel(label) for label in labels) == syllable_count
+
+
+def _is_arpabet_phone_label(label: str) -> bool:
+    match = _ARPABET_PHONE_PATTERN.fullmatch(label)
+    if match is None:
+        return False
+    base_phone, stress = match.groups()
+    if base_phone in _ARPABET_VOWELS:
+        return stress is not None
+    return base_phone in _ARPABET_CONSONANTS and stress is None
+
+
+def _is_stress_marked_arpabet_vowel(label: str) -> bool:
+    match = _ARPABET_PHONE_PATTERN.fullmatch(label)
+    return match is not None and match.group(1) in _ARPABET_VOWELS and match.group(2) is not None
 
 
 def _recover_grapheme_syllable_groups(
