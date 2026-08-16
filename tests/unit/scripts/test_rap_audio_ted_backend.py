@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -12,7 +13,11 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
-from streammuse.experiments.rap_audio_protocols.artifacts import read_chunk_record_index
+from streammuse.experiments.rap_audio_protocols.artifacts import (
+    chunk_record_is_complete,
+    read_chunk_record_index,
+)
+from streammuse.experiments.rap_audio_protocols.contracts import ProtocolId
 from streammuse.experiments.rap_audio_protocols.corpus import load_song_corpus
 from streammuse.experiments.rap_audio_protocols.timing import TimedTextSegment, build_ted_segments
 
@@ -54,6 +59,13 @@ class _FakeIndexTTS2:
             raise RuntimeError("simulated TED failure")
         output_path = Path(str(kwargs["output_path"]))
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        wavfile.write(output_path, 22_050, np.ones(128, dtype=np.int16))
+
+
+class _ParentCheckingIndexTTS2:
+    def infer(self, **kwargs: object) -> None:
+        output_path = Path(str(kwargs["output_path"]))
+        assert output_path.parent.is_dir()
         wavfile.write(output_path, 22_050, np.ones(128, dtype=np.int16))
 
 
@@ -128,6 +140,21 @@ def test_render_request_rejects_segment_count_mismatch_before_model_invocation(t
     assert model.calls == []
 
 
+def test_render_request_creates_output_parent_before_inference(tmp_path: Path) -> None:
+    backend = _load_backend()
+    output_path = tmp_path / "missing" / "parents" / "chunk.wav"
+
+    record = backend.render_request(
+        request=_request(),
+        ted_model=_ParentCheckingIndexTTS2(),
+        reference_wav_path=tmp_path / "reference.wav",
+        output_path=output_path,
+    )
+
+    assert record.success is True
+    assert output_path.is_file()
+
+
 def test_render_pending_requests_retries_and_logs_silence_after_bounded_failures(tmp_path: Path) -> None:
     backend = _load_backend()
     request = _request()
@@ -164,6 +191,65 @@ def test_render_pending_requests_retries_and_logs_silence_after_bounded_failures
     stored = read_chunk_record_index(record_path)[(record.protocol_id, request.song_id, request.chunk_index)]
     assert stored.success is False
     assert stored.output_sha256 == record.output_sha256
+
+
+@pytest.mark.parametrize("stale_kind", ["missing_wav", "changed_wav", "changed_request"])
+def test_render_pending_requests_replaces_incomplete_record_without_duplicate_ledger_rows(
+    tmp_path: Path,
+    stale_kind: str,
+) -> None:
+    backend = _load_backend()
+    original_request = _request()
+    current_request = original_request
+    model = _FakeIndexTTS2()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "records.jsonl"
+    output_dir = tmp_path / "chunks"
+    output_path = output_dir / original_request.song_id / "chunk-000.wav"
+    request_path.write_text(json.dumps(original_request.to_payload()) + "\n", encoding="utf-8")
+
+    first_records = backend.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        reference_wav_path=tmp_path / "reference.wav",
+        ted_model=model,
+    )
+    assert len(first_records) == 1
+
+    if stale_kind == "missing_wav":
+        output_path.unlink()
+    elif stale_kind == "changed_wav":
+        wavfile.write(output_path, 22_050, np.full(128, 2, dtype=np.int16))
+    else:
+        current_request = replace(
+            original_request,
+            start_bar=original_request.start_bar + 2,
+            end_bar=original_request.end_bar + 2,
+        )
+        request_path.write_text(json.dumps(current_request.to_payload()) + "\n", encoding="utf-8")
+
+    second_records = backend.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        reference_wav_path=tmp_path / "reference.wav",
+        ted_model=model,
+    )
+
+    assert len(second_records) == 1
+    assert len(model.calls) == 2
+    assert len(record_path.read_text(encoding="utf-8").splitlines()) == 1
+    stored = read_chunk_record_index(record_path)[
+        (ProtocolId.TED_LOCAL, current_request.song_id, current_request.chunk_index)
+    ]
+    assert stored.request_sha256 == current_request.sha256
+    assert chunk_record_is_complete(
+        record_path,
+        output_path,
+        request=current_request,
+        protocol_id=ProtocolId.TED_LOCAL,
+    )
 
 
 def test_main_uses_explicit_paths_and_fake_indextts2_factory(tmp_path: Path) -> None:
@@ -206,3 +292,102 @@ def test_main_uses_explicit_paths_and_fake_indextts2_factory(tmp_path: Path) -> 
     assert exit_code == 0
     assert len(created_models) == 1
     assert len(created_models[0].calls) == 1
+
+
+def test_main_rerenders_prior_failure_and_reports_failure_again(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "records.jsonl"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    created_models: list[_FakeIndexTTS2] = []
+
+    def failing_factory(**_: Path) -> _FakeIndexTTS2:
+        model = _FakeIndexTTS2()
+        model.failures_remaining = 1
+        created_models.append(model)
+        return model
+
+    argv = [
+        "--requests-jsonl",
+        str(request_path),
+        "--records-jsonl",
+        str(record_path),
+        "--output-dir",
+        str(tmp_path / "chunks"),
+        "--reference-wav",
+        str(tmp_path / "reference.wav"),
+        "--ted-checkout",
+        str(tmp_path / "TED-TTS"),
+        "--model-dir",
+        str(tmp_path / "checkpoints"),
+        "--cfg-path",
+        str(tmp_path / "checkpoints" / "config.yaml"),
+        "--max-attempts",
+        "1",
+    ]
+
+    assert backend.main(argv, ted_model_factory=failing_factory) == 1
+    assert backend.main(argv, ted_model_factory=failing_factory) == 1
+    assert [len(model.calls) for model in created_models] == [1, 1]
+    assert len(record_path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_create_ted_model_uses_exact_checkout_and_restores_cached_modules(tmp_path: Path) -> None:
+    backend = _load_backend()
+    checkout = tmp_path / "requested-checkout"
+    package = checkout / "indextts"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "checkout_marker.py").write_text("TAG = 'requested'\n", encoding="utf-8")
+    (package / "infer_v2.py").write_text(
+        "from indextts.checkout_marker import TAG\n"
+        "class IndexTTS2:\n"
+        "    def __init__(self, *, model_dir, cfg_path, is_fp16):\n"
+        "        self.tag = TAG\n"
+        "        self.model_dir = model_dir\n"
+        "        self.cfg_path = cfg_path\n"
+        "        self.is_fp16 = is_fp16\n",
+        encoding="utf-8",
+    )
+
+    cached_package = ModuleType("indextts")
+    cached_package.__path__ = [str(tmp_path / "cached-checkout" / "indextts")]  # type: ignore[attr-defined]
+    cached_infer = ModuleType("indextts.infer_v2")
+
+    class CachedIndexTTS2:
+        tag = "cached"
+
+    cached_infer.IndexTTS2 = CachedIndexTTS2  # type: ignore[attr-defined]
+    original_path = list(sys.path)
+    original_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "indextts" or name.startswith("indextts.")
+    }
+    try:
+        for name in tuple(original_modules):
+            sys.modules.pop(name, None)
+        sys.modules["indextts"] = cached_package
+        sys.modules["indextts.infer_v2"] = cached_infer
+
+        model = backend.create_ted_model(
+            model_dir=tmp_path / "model",
+            cfg_path=tmp_path / "model" / "config.yaml",
+            ted_checkout=checkout,
+        )
+
+        assert model.tag == "requested"
+        assert model.model_dir == str(tmp_path / "model")
+        assert model.cfg_path == str(tmp_path / "model" / "config.yaml")
+        assert model.is_fp16 is True
+        assert sys.path == original_path
+        assert sys.modules["indextts"] is cached_package
+        assert sys.modules["indextts.infer_v2"] is cached_infer
+        assert "indextts.checkout_marker" not in sys.modules
+    finally:
+        for name in tuple(sys.modules):
+            if name == "indextts" or name.startswith("indextts."):
+                sys.modules.pop(name, None)
+        sys.modules.update(original_modules)
+        sys.path[:] = original_path

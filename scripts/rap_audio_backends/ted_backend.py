@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -13,6 +16,7 @@ from scipy.io import wavfile
 
 from streammuse.experiments.rap_audio_protocols.artifacts import (
     append_chunk_record,
+    chunk_record_is_complete,
     file_sha256,
     read_chunk_record_index,
 )
@@ -102,15 +106,38 @@ def create_ted_model(*, model_dir: Path, cfg_path: Path, ted_checkout: Path) -> 
 
 def _load_indextts2_class(ted_checkout: Path) -> type[Any]:
     checkout = Path(ted_checkout).resolve()
-    sys.path.insert(0, str(checkout))
+    original_path = list(sys.path)
+    cached_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "indextts" or name.startswith("indextts.")
+    }
     try:
-        from indextts.infer_v2 import IndexTTS2
+        for name in cached_modules:
+            sys.modules.pop(name, None)
+        sys.path.insert(0, str(checkout))
+        importlib.invalidate_caches()
+        infer_module = importlib.import_module("indextts.infer_v2")
+        module_path = getattr(infer_module, "__file__", None)
+        if module_path is None or not _path_is_within(Path(module_path), checkout):
+            raise ImportError(f"indextts.infer_v2 was not loaded from TED checkout: {checkout}")
+        index_tts2_class = getattr(infer_module, "IndexTTS2")
     finally:
-        try:
-            sys.path.remove(str(checkout))
-        except ValueError:
-            pass
-    return IndexTTS2
+        for name in tuple(sys.modules):
+            if name == "indextts" or name.startswith("indextts."):
+                sys.modules.pop(name, None)
+        sys.modules.update(cached_modules)
+        sys.path[:] = original_path
+        importlib.invalidate_caches()
+    return index_tts2_class
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def load_requests(path: Path | str) -> tuple[TwoBarRenderRequest, ...]:
@@ -140,17 +167,20 @@ def render_pending_requests(
         raise ValueError("max_attempts must be positive")
 
     requests = load_requests(request_path)
-    existing = read_chunk_record_index(record_path)
     records: list[ChunkRenderRecord] = []
     output_root = Path(output_dir)
     reference = Path(reference_wav_path)
     ledger_path = Path(record_path)
 
     for request in requests:
-        key = (ProtocolId.TED_LOCAL, request.song_id, request.chunk_index)
-        if key in existing:
-            continue
         output_path = output_root / request.song_id / f"chunk-{request.chunk_index:03d}.wav"
+        if chunk_record_is_complete(
+            ledger_path,
+            output_path,
+            request=request,
+            protocol_id=ProtocolId.TED_LOCAL,
+        ):
+            continue
         record = _render_with_retries(
             request=request,
             ted_model=ted_model,
@@ -159,10 +189,41 @@ def render_pending_requests(
             max_attempts=max_attempts,
             segment_builder=segment_builder,
         )
-        append_chunk_record(ledger_path, record)
+        _store_chunk_record(ledger_path, record)
         records.append(record)
         print(_progress_line(record))
     return tuple(records)
+
+
+def _store_chunk_record(path: Path, record: ChunkRenderRecord) -> None:
+    existing = read_chunk_record_index(path)
+    key = (record.protocol_id, record.song_id, record.chunk_index)
+    if key not in existing:
+        append_chunk_record(path, record)
+        return
+
+    existing[key] = record
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            for item in existing.values():
+                handle.write(canonical_json_dumps(item.to_payload()))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def render_request(
@@ -179,6 +240,7 @@ def render_request(
         output_path=output_path,
         segment_builder=segment_builder,
     )
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     ted_model.infer(**infer_kwargs)
     metadata = validate_wav_metadata(output_path, expected_sample_rate_hz=TED_SAMPLE_RATE_HZ, expected_channels=1)
     return ChunkRenderRecord(
@@ -260,6 +322,7 @@ def _render_with_retries(
 ) -> ChunkRenderRecord:
     last_error: Exception | None = None
     last_infer_kwargs: dict[str, Any] | None = None
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     for attempt in range(1, max_attempts + 1):
         try:
