@@ -119,12 +119,20 @@ def _write_source_wav(path: Path, *, sample_rate_hz: int = 1_000) -> tuple[np.nd
     return samples, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_textgrid(path: Path, *, missing_last_vowel: bool = False) -> None:
+def _write_textgrid(
+    path: Path,
+    *,
+    missing_last_vowel: bool = False,
+    first_vowel_interval: tuple[float, float] | None = None,
+) -> None:
     intervals = []
     interval_count = 18 - int(missing_last_vowel)
     for index in range(interval_count):
-        start = 0.10 + (index * 0.25)
-        end = start + 0.04
+        if index == 0 and first_vowel_interval is not None:
+            start, end = first_vowel_interval
+        else:
+            start = 0.10 + (index * 0.25)
+            end = start + 0.04
         intervals.append(
             f"""
             intervals [{index + 1}]:
@@ -410,9 +418,11 @@ def test_render_aligned_chunk_propagates_source_sha_and_logged_stretch_ratios(tm
     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
     assert result.fallback_count == 0
     assert result.boundary_adjustment_count == 0
+    assert result.source_boundary_adjustment_count == 0
     assert result.diagnostics_path == diagnostics_path
     assert diagnostics["fallback_count"] == 0
     assert diagnostics["boundary_adjustment_count"] == 0
+    assert diagnostics["source_boundary_adjustment_count"] == 0
     assert all(not anchor["aligned_phone"].startswith("WORD_TIER_FALLBACK:") for anchor in diagnostics["anchor_map"])
 
 
@@ -769,6 +779,61 @@ def test_render_aligned_chunk_clamps_tick_zero_target_and_audits_adjustment(tmp_
     assert diagnostics["anchor_map"][1]["boundary_adjusted"] is False
 
 
+def test_render_aligned_chunk_clamps_early_source_anchor_and_audits_adjustment(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    syllables = list(request.syllables)
+    syllables[0] = replace(syllables[0], target_seconds=0.0)
+    request = replace(request, syllables=tuple(syllables))
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(
+        source_wav,
+        1_000,
+        np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32),
+    )
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_textgrid(textgrid_path, first_vowel_interval=(0.005, 0.015))
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert result.record.success
+    assert result.boundary_adjustment_count == 1
+    assert result.source_boundary_adjustment_count == 1
+    assert result.anchor_map[0].requested_source_seconds == pytest.approx(0.0075)
+    assert result.anchor_map[0].source_seconds == pytest.approx(0.010)
+    assert result.anchor_map[0].requested_source_sample == 8
+    assert result.anchor_map[0].source_sample == 10
+    assert result.anchor_map[0].source_boundary_adjusted
+    assert result.anchor_map[1].requested_source_seconds == pytest.approx(0.360)
+    assert result.anchor_map[1].source_seconds == pytest.approx(0.360)
+    assert result.anchor_map[1].requested_source_sample == 360
+    assert result.anchor_map[1].source_sample == 360
+    assert not result.anchor_map[1].source_boundary_adjusted
+
+    diagnostics = json.loads(
+        output_wav.with_suffix(output_wav.suffix + ".alignment.json").read_text(encoding="utf-8")
+    )
+    first_diagnostic = diagnostics["anchor_map"][0]
+    assert diagnostics["boundary_adjustment_count"] == 1
+    assert diagnostics["source_boundary_adjustment_count"] == 1
+    assert first_diagnostic["requested_source_seconds"] == pytest.approx(0.0075)
+    assert first_diagnostic["effective_source_seconds"] == pytest.approx(0.010)
+    assert first_diagnostic["requested_source_sample"] == 8
+    assert first_diagnostic["effective_source_sample"] == 10
+    assert first_diagnostic["source_boundary_adjusted"] is True
+
+
 def test_render_aligned_chunk_fails_closed_when_boundary_clamp_collides(tmp_path: Path) -> None:
     backend = _load_backend()
     request = _liftoff_request(first_target_seconds=0.0)
@@ -912,6 +977,7 @@ def test_render_aligned_chunk_returns_explicit_failure_for_missing_vowel_anchor(
     assert diagnostics["stretch_ratios"] == []
     assert diagnostics["fallback_count"] == 0
     assert diagnostics["boundary_adjustment_count"] == 0
+    assert diagnostics["source_boundary_adjustment_count"] == 0
     assert "aligned vowel count" in diagnostics["error"]
 
     ledger_path = tmp_path / "records.jsonl"

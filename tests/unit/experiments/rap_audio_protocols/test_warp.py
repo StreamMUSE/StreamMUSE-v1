@@ -363,6 +363,102 @@ def test_piecewise_pitch_preserving_warp_rejects_regions_shorter_than_ten_ms() -
         )
 
 
+def test_piecewise_warp_clamps_only_source_anchors_inside_boundary_margins() -> None:
+    matched = match_vowel_anchors(
+        (
+            PhoneInterval(start_seconds=0.005, end_seconds=0.015, phone="IY1"),
+            PhoneInterval(start_seconds=0.500, end_seconds=0.540, phone="OW1"),
+            PhoneInterval(start_seconds=0.990, end_seconds=1.000, phone="AA1"),
+        ),
+        (
+            _syllable("ai's", ("IY1",), target_seconds=0.010),
+            _syllable("signal", ("S", "OW1", "G"), target_seconds=0.500),
+            _syllable("cogs", ("AA1",), target_seconds=0.980),
+        ),
+        sample_rate_hz=1_000,
+    )
+
+    warped = piecewise_pitch_preserving_warp(
+        np.zeros(1_000, dtype=np.float32),
+        sample_rate_hz=1_000,
+        anchors=matched,
+        target_frame_count=1_000,
+        stretch_region=_impulse_stretcher,
+        crossfade_seconds=0.0,
+        source_sha256="d" * 64,
+    )
+
+    first, middle, last = warped.anchor_map
+    assert first.requested_source_seconds == pytest.approx(0.0075)
+    assert first.source_seconds == pytest.approx(0.010)
+    assert first.requested_source_sample == 8
+    assert first.source_sample == 10
+    assert first.source_boundary_adjusted
+    assert middle.requested_source_seconds == pytest.approx(0.510)
+    assert middle.source_seconds == pytest.approx(0.510)
+    assert middle.requested_source_sample == 510
+    assert middle.source_sample == 510
+    assert not middle.source_boundary_adjusted
+    assert last.requested_source_seconds == pytest.approx(0.9925)
+    assert last.source_seconds == pytest.approx(0.989)
+    assert last.requested_source_sample == 992
+    assert last.source_sample == 989
+    assert last.source_boundary_adjusted
+
+
+def test_piecewise_warp_rejects_source_boundary_adjustment_collision() -> None:
+    matched = match_vowel_anchors(
+        (
+            PhoneInterval(start_seconds=0.0050, end_seconds=0.0150, phone="IY1"),
+            PhoneInterval(start_seconds=0.0075, end_seconds=0.0175, phone="OW1"),
+        ),
+        (
+            _syllable("ai's", ("IY1",), target_seconds=0.020),
+            _syllable("signal", ("OW1",), target_seconds=0.050),
+        ),
+        sample_rate_hz=1_000,
+    )
+
+    with pytest.raises(ValueError, match="source boundary adjustment collides"):
+        piecewise_pitch_preserving_warp(
+            np.zeros(1_000, dtype=np.float32),
+            sample_rate_hz=1_000,
+            anchors=matched,
+            target_frame_count=1_000,
+            stretch_region=_impulse_stretcher,
+            crossfade_seconds=0.0,
+            source_sha256="e" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    "phone_interval",
+    (
+        PhoneInterval(start_seconds=-0.020, end_seconds=0.020, phone="IY1"),
+        PhoneInterval(start_seconds=0.995, end_seconds=1.015, phone="IY1"),
+    ),
+)
+def test_piecewise_warp_rejects_out_of_range_source_anchors(
+    phone_interval: PhoneInterval,
+) -> None:
+    matched = match_vowel_anchors(
+        (phone_interval,),
+        (_syllable("ai's", ("IY1",), target_seconds=0.020),),
+        sample_rate_hz=1_000,
+    )
+
+    with pytest.raises(ValueError, match="source anchor lies outside the source audio"):
+        piecewise_pitch_preserving_warp(
+            np.zeros(1_000, dtype=np.float32),
+            sample_rate_hz=1_000,
+            anchors=matched,
+            target_frame_count=1_000,
+            stretch_region=_impulse_stretcher,
+            crossfade_seconds=0.0,
+            source_sha256="f" * 64,
+        )
+
+
 def test_piecewise_pitch_preserving_warp_hits_target_anchors_and_keeps_exact_frame_count() -> None:
     sample_rate_hz = 1_000
     samples = np.zeros(1_000, dtype=np.float32)

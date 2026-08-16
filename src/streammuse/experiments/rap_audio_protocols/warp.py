@@ -109,11 +109,14 @@ class VowelAnchor:
     index_in_word: int
     planned_phone: str
     aligned_phone: str
+    requested_source_seconds: float
     source_seconds: float
     requested_target_seconds: float
     target_seconds: float
+    requested_source_sample: int
     source_sample: int
     target_sample: int
+    source_boundary_adjusted: bool
     boundary_adjusted: bool
 
 
@@ -300,11 +303,14 @@ def match_vowel_anchors_with_word_fallback(
                     index_in_word=syllable.index_in_word,
                     planned_phone=planned_phone,
                     aligned_phone=f"{WORD_TIER_FALLBACK_PREFIX}{word_interval.word}",
+                    requested_source_seconds=source_seconds,
                     source_seconds=source_seconds,
                     requested_target_seconds=syllable.target_seconds,
                     target_seconds=syllable.target_seconds,
+                    requested_source_sample=round(source_seconds * sample_rate_hz),
                     source_sample=round(source_seconds * sample_rate_hz),
                     target_sample=round(syllable.target_seconds * sample_rate_hz),
+                    source_boundary_adjusted=False,
                     boundary_adjusted=False,
                 )
             )
@@ -341,17 +347,22 @@ def piecewise_pitch_preserving_warp(
     mono = np.asarray(samples, dtype=np.float32).reshape(-1)
     if len(mono) == 0:
         raise ValueError("samples must not be empty")
+    effective_anchors = _apply_source_boundary_policy(
+        anchors,
+        sample_rate_hz=sample_rate_hz,
+        source_frame_count=len(mono),
+    )
     stretcher = stretch_region or RubberBandStretcher()
 
     _validate_anchor_monotonicity(
-        tuple(anchor.source_sample for anchor in anchors),
-        tuple(anchor.target_sample for anchor in anchors),
+        tuple(anchor.source_sample for anchor in effective_anchors),
+        tuple(anchor.target_sample for anchor in effective_anchors),
         len(mono),
         target_frame_count,
     )
     source_points, target_points = _build_control_points(
-        tuple(anchor.source_sample for anchor in anchors),
-        tuple(anchor.target_sample for anchor in anchors),
+        tuple(anchor.source_sample for anchor in effective_anchors),
+        tuple(anchor.target_sample for anchor in effective_anchors),
         len(mono),
         target_frame_count,
     )
@@ -392,7 +403,7 @@ def piecewise_pitch_preserving_warp(
         samples=warped,
         sample_rate_hz=sample_rate_hz,
         source_sha256=source_sha256,
-        anchor_map=tuple(anchors),
+        anchor_map=effective_anchors,
         stretch_regions=tuple(diagnostics),
     )
 
@@ -671,13 +682,67 @@ def _phone_vowel_anchor(
         index_in_word=syllable.index_in_word,
         planned_phone=planned_phone,
         aligned_phone=source.phone,
+        requested_source_seconds=source_seconds,
         source_seconds=source_seconds,
         requested_target_seconds=syllable.target_seconds,
         target_seconds=syllable.target_seconds,
+        requested_source_sample=round(source_seconds * sample_rate_hz),
         source_sample=round(source_seconds * sample_rate_hz),
         target_sample=round(syllable.target_seconds * sample_rate_hz),
+        source_boundary_adjusted=False,
         boundary_adjusted=False,
     )
+
+
+def _apply_source_boundary_policy(
+    anchors: Sequence[VowelAnchor],
+    *,
+    sample_rate_hz: int,
+    source_frame_count: int,
+) -> tuple[VowelAnchor, ...]:
+    margin_samples = max(1, round(MIN_WARP_REGION_SECONDS * sample_rate_hz))
+    first_interior_sample = margin_samples
+    last_interior_sample = (source_frame_count - 1) - margin_samples
+    if first_interior_sample >= last_interior_sample:
+        raise ValueError("source audio is too short for the source anchor boundary margin")
+
+    adjusted: list[VowelAnchor] = []
+    last_anchor_index = len(anchors) - 1
+    for index, anchor in enumerate(anchors):
+        requested_seconds = anchor.requested_source_seconds
+        requested_sample = anchor.requested_source_sample
+        if (
+            requested_seconds < 0
+            or requested_sample < 0
+            or requested_sample >= source_frame_count
+        ):
+            raise ValueError(
+                "source anchor lies outside the source audio: "
+                f"requested {requested_seconds:.9f}s/sample {requested_sample} "
+                f"for {source_frame_count} frames"
+            )
+        if index == 0 and requested_sample < first_interior_sample:
+            effective_sample = first_interior_sample
+        elif index == last_anchor_index and requested_sample > last_interior_sample:
+            effective_sample = last_interior_sample
+        else:
+            adjusted.append(anchor)
+            continue
+        adjusted.append(
+            replace(
+                anchor,
+                source_seconds=effective_sample / sample_rate_hz,
+                source_sample=effective_sample,
+                source_boundary_adjusted=True,
+            )
+        )
+
+    if any(anchor.source_boundary_adjusted for anchor in adjusted) and any(
+        right.source_sample <= left.source_sample
+        for left, right in zip(adjusted, adjusted[1:])
+    ):
+        raise ValueError("source boundary adjustment collides with an adjacent anchor")
+    return tuple(adjusted)
 
 
 def _apply_target_boundary_policy(

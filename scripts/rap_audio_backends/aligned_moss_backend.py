@@ -60,6 +60,7 @@ class AlignedChunkRenderResult:
     stretch_ratios: tuple[float, ...]
     fallback_count: int
     boundary_adjustment_count: int
+    source_boundary_adjustment_count: int
     output_wav_path: Path | None
     diagnostics_path: Path | None
 
@@ -214,6 +215,9 @@ def render_aligned_chunk(
             for anchor in warped.anchor_map
         )
         boundary_adjustment_count = sum(anchor.boundary_adjusted for anchor in warped.anchor_map)
+        source_boundary_adjustment_count = sum(
+            anchor.source_boundary_adjusted for anchor in warped.anchor_map
+        )
         record = ChunkRenderRecord(
             protocol_id=ProtocolId.MOSS_ALIGNED,
             song_id=request.song_id,
@@ -238,6 +242,7 @@ def render_aligned_chunk(
                 "stretch_ratios": list(stretch_ratios),
                 "fallback_count": fallback_count,
                 "boundary_adjustment_count": boundary_adjustment_count,
+                "source_boundary_adjustment_count": source_boundary_adjustment_count,
                 "error": None,
             },
         )
@@ -247,6 +252,7 @@ def render_aligned_chunk(
             stretch_ratios=stretch_ratios,
             fallback_count=fallback_count,
             boundary_adjustment_count=boundary_adjustment_count,
+            source_boundary_adjustment_count=source_boundary_adjustment_count,
             output_wav_path=output_path,
             diagnostics_path=diagnostics_path,
         )
@@ -281,6 +287,7 @@ def render_aligned_chunk(
                             "stretch_ratios": [],
                             "fallback_count": 0,
                             "boundary_adjustment_count": 0,
+                            "source_boundary_adjustment_count": 0,
                             "error": error,
                         },
                     )
@@ -306,6 +313,7 @@ def render_aligned_chunk(
             stretch_ratios=(),
             fallback_count=0,
             boundary_adjustment_count=0,
+            source_boundary_adjustment_count=0,
             output_wav_path=failed_output_path,
             diagnostics_path=failed_diagnostics_path,
         )
@@ -375,5 +383,7 @@ def _write_atomic_alignment_diagnostics(path: Path, payload: dict[str, Any]) -> 
 
 def _anchor_diagnostic_payload(anchor: VowelAnchor) -> dict[str, Any]:
     payload = asdict(anchor)
+    payload["effective_source_seconds"] = anchor.source_seconds
+    payload["effective_source_sample"] = anchor.source_sample
     payload["effective_target_seconds"] = anchor.target_seconds
     return payload
