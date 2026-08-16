@@ -11,7 +11,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from streammuse.experiments.rap_audio_protocols.artifacts import (
     append_chunk_record,

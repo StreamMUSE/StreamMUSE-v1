@@ -4,8 +4,6 @@ import importlib
 import json
 from pathlib import Path
 
-import pytest
-
 from streammuse.experiments.rap_audio_protocols.contracts import ProtocolId
 
 

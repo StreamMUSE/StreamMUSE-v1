@@ -13,14 +13,12 @@ from typing import Any, Callable, Sequence
 import numpy as np
 from scipy.io import wavfile
 
-from streammuse.domain.rap import AudioFormat, PcmAudio
+from streammuse.domain.rap import PcmAudio
 from streammuse.experiments.rap_audio_protocols.artifacts import build_protocol_artifact_manifest, file_sha256
 from streammuse.experiments.rap_audio_protocols.audio import (
-    CHUNK_FRAME_COUNT,
     SONG_FRAME_COUNT,
     TARGET_SAMPLE_RATE_HZ,
     TARGET_STEREO_FORMAT,
-    TARGET_VOCAL_FORMAT,
     assemble_vocal_stem,
     mix_stems,
     render_common_drums,
