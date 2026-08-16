@@ -502,20 +502,21 @@ def regularize_anchor_targets(
         difference_matrix[row, row - 1] = -1.0
         difference_matrix[row, row] = 1.0
     difference_matrix[-1, -1] = -1.0
-    lower = np.array(lower_gaps, copy=True)
-    upper = np.array(upper_gaps, copy=True)
-    lower[-1] -= target_end
-    upper[-1] -= target_end
+    lower = np.asarray(lower_gaps / target_end, dtype=np.float64)
+    upper = np.asarray(upper_gaps / target_end, dtype=np.float64)
+    lower[-1] -= 1.0
+    upper[-1] -= 1.0
 
-    requested = np.asarray(
+    requested_samples = np.asarray(
         [round(anchor.requested_target_seconds * sample_rate_hz) for anchor in effective_anchors],
         dtype=np.float64,
     )
+    requested = requested_samples / target_end
     weights = np.asarray(
         [1.0 + stress_priority * syllable.target_stress for syllable in syllables],
         dtype=np.float64,
     )
-    initial = source_points[1:-1] * (target_end / (source_frame_count - 1))
+    initial = source_points[1:-1] / (source_frame_count - 1)
 
     def objective(values: np.ndarray) -> float:
         return float(np.sum(weights * np.square(values - requested)))
@@ -529,16 +530,16 @@ def regularize_anchor_targets(
         jac=gradient,
         method="SLSQP",
         bounds=Bounds(
-            np.ones(anchor_count, dtype=np.float64),
-            np.full(anchor_count, target_end - 1, dtype=np.float64),
+            np.full(anchor_count, 1.0 / target_end, dtype=np.float64),
+            np.full(anchor_count, (target_end - 1) / target_end, dtype=np.float64),
         ),
         constraints=(LinearConstraint(difference_matrix, lower, upper),),
-        options={"ftol": 1e-9, "maxiter": 500},
+        options={"ftol": 1e-12, "maxiter": 500},
     )
     if not result.success:
         raise ValueError(f"target-anchor regularization failed: {result.message}")
 
-    target_samples = np.rint(result.x).astype(int)
+    target_samples = np.rint(result.x * target_end).astype(int)
     regularized = tuple(
         replace(
             anchor,

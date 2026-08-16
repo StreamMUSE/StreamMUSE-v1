@@ -789,3 +789,93 @@ def test_regularize_anchor_targets_prioritises_high_stress_timing() -> None:
         stress_weighted[1].target_sample - requested_target_sample
     )
     assert weighted_drift <= unweighted_drift
+
+
+def test_regularize_anchor_targets_handles_real_24khz_chunk_scale() -> None:
+    source_samples = (
+        960,
+        5_340,
+        9_600,
+        17_220,
+        22_560,
+        34_560,
+        39_120,
+        48_720,
+        56_400,
+        78_720,
+        86_280,
+        93_660,
+        96_000,
+        102_000,
+        108_420,
+        113_360,
+        116_800,
+        122_160,
+    )
+    target_samples = (
+        0,
+        4_000,
+        16_000,
+        24_000,
+        28_000,
+        36_000,
+        44_000,
+        48_000,
+        56_000,
+        64_000,
+        72_000,
+        76_000,
+        84_000,
+        92_000,
+        96_000,
+        104_000,
+        116_000,
+        124_000,
+    )
+    stresses = (1.0, 0.2, 0.8, 0.2, 0.6, 0.9, 0.2, 0.7, 0.9, 1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9)
+    syllables = tuple(
+        replace(
+            _syllable(
+                f"word{index}",
+                ("AA1",),
+                target_seconds=target_sample / 24_000,
+            ),
+            target_stress=stress,
+        )
+        for index, (target_sample, stress) in enumerate(zip(target_samples, stresses))
+    )
+    anchors = match_vowel_anchors(
+        tuple(
+            PhoneInterval(
+                start_seconds=(source_sample / 24_000) - 0.010,
+                end_seconds=(source_sample / 24_000) + 0.030,
+                phone="AA1",
+            )
+            for source_sample in source_samples
+        ),
+        syllables,
+        sample_rate_hz=24_000,
+        target_duration_seconds=128_000 / 24_000,
+    )
+
+    regularized = regularize_anchor_targets(
+        anchors,
+        syllables,
+        sample_rate_hz=24_000,
+        source_frame_count=130_560,
+        target_frame_count=128_000,
+    )
+
+    source_points = (0, *(anchor.source_sample for anchor in regularized), 130_559)
+    target_points = (0, *(anchor.target_sample for anchor in regularized), 127_999)
+    ratios = tuple(
+        (target_end - target_start) / (source_end - source_start)
+        for source_start, source_end, target_start, target_end in zip(
+            source_points,
+            source_points[1:],
+            target_points,
+            target_points[1:],
+        )
+    )
+    assert min(ratios) >= 0.5 - 0.001
+    assert max(ratios) <= 2.0 + 0.001
