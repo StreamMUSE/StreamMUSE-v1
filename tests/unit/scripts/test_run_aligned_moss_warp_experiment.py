@@ -79,3 +79,23 @@ def test_resample_mono_converts_48khz_drums_to_24khz_vocals() -> None:
     assert len(resampled) == 24_000
     assert resampled.dtype == np.float32
     assert np.sqrt(np.mean(np.square(resampled))) == pytest.approx(1 / np.sqrt(2), rel=0.01)
+
+
+def test_merge_asr_metrics_updates_each_render_by_stable_key() -> None:
+    script = _load_script()
+    rows = (
+        {"song_id": "song", "chunk_index": 0, "mode": "baseline", "signal": {}},
+        {"song_id": "song", "chunk_index": 0, "mode": "r3", "signal": {}},
+    )
+    asr_by_key = {
+        ("song", 0, "baseline"): {"word_error_rate": 0.5},
+        ("song", 0, "r3"): {"word_error_rate": 0.25},
+    }
+
+    merged = script.merge_asr_metrics(rows, asr_by_key)
+
+    assert [row["asr"]["word_error_rate"] for row in merged] == [0.5, 0.25]
+    assert "asr" not in rows[0]
+
+    with pytest.raises(ValueError, match="missing ASR"):
+        script.merge_asr_metrics(rows, {("song", 0, "baseline"): {"word_error_rate": 0.5}})

@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--median-count", type=int, default=3)
     parser.add_argument("--worst-count", type=int, default=6)
     parser.add_argument("--evaluate-asr", action="store_true")
+    parser.add_argument("--asr-only", action="store_true")
     parser.add_argument("--whisper-model", default="large-v3")
     parser.add_argument("--whisper-device", default="cuda")
     parser.add_argument("--whisper-compute-type", default="float16")
@@ -77,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.asr_only:
+        evaluate_existing_asr(args)
+        return 0
     backend = _load_backend_module()
     candidates = discover_candidates(args.input_dir)
     selected = select_chunks(
@@ -345,25 +349,93 @@ def evaluate_render(
         ),
     }
     if transcribe is not None:
-        recognized = tuple(transcribe(vocal_path))
-        counts = compute_word_error_counts(
-            normalize_words(request.text),
-            tuple(
-                word
-                for word in (normalize_word(item.text) for item in recognized)
-                if word
-            ),
-        )
-        timing_errors = estimate_syllable_timing_error_ms(request, recognized)
-        result["asr"] = {
-            **counts,
-            "transcript": " ".join(item.text.strip() for item in recognized),
-            "timing_error_ms_mean_absolute": (
-                float(np.mean(np.abs(timing_errors))) if timing_errors else None
-            ),
-            "timing_error_count": len(timing_errors),
-        }
+        result["asr"] = evaluate_asr_metrics(request, tuple(transcribe(vocal_path)))
     return result
+
+
+def evaluate_existing_asr(args: argparse.Namespace) -> None:
+    manifest_path = args.output_dir / "manifest.json"
+    metrics_path = args.output_dir / "metrics.json"
+    manifest = _load_json(manifest_path)
+    metrics_payload = _load_json(metrics_path)
+    artifacts = tuple(manifest.get("artifacts", ()))
+    if not artifacts:
+        raise ValueError("ASR-only evaluation requires a completed artifact manifest")
+    requests = _load_requests_by_song_ids(
+        args.input_dir,
+        tuple(sorted({str(item["song_id"]) for item in artifacts})),
+    )
+    transcribe = build_faster_whisper_transcriber(
+        model_size=args.whisper_model,
+        device=args.whisper_device,
+        compute_type=args.whisper_compute_type,
+    )
+    asr_by_key = {}
+    for ordinal, artifact in enumerate(artifacts, start=1):
+        key = (
+            str(artifact["song_id"]),
+            int(artifact["chunk_index"]),
+            str(artifact["mode"]),
+        )
+        vocal_path = args.output_dir / str(artifact["vocal_path"])
+        recognized = tuple(transcribe(vocal_path))
+        asr_by_key[key] = evaluate_asr_metrics(requests[key[:2]], recognized)
+        print(
+            f"ASR count={ordinal}/{len(artifacts)} song={key[0]} chunk={key[1]} mode={key[2]}",
+            flush=True,
+        )
+    rows = merge_asr_metrics(tuple(metrics_payload["rows"]), asr_by_key)
+    _write_json(
+        metrics_path,
+        {
+            "rows": rows,
+            "aggregate_by_mode": aggregate_metrics(rows),
+        },
+    )
+    manifest["asr_enabled"] = True
+    manifest["asr_config"] = {
+        "model": args.whisper_model,
+        "device": args.whisper_device,
+        "compute_type": args.whisper_compute_type,
+    }
+    _write_json(manifest_path, manifest)
+    print(f"ASR_COMPLETE output={args.output_dir.resolve()}", flush=True)
+
+
+def evaluate_asr_metrics(
+    request: TwoBarRenderRequest,
+    recognized: Sequence[Any],
+) -> dict[str, Any]:
+    counts = compute_word_error_counts(
+        normalize_words(request.text),
+        tuple(
+            word
+            for word in (normalize_word(item.text) for item in recognized)
+            if word
+        ),
+    )
+    timing_errors = estimate_syllable_timing_error_ms(request, recognized)
+    return {
+        **counts,
+        "transcript": " ".join(item.text.strip() for item in recognized),
+        "timing_error_ms_mean_absolute": (
+            float(np.mean(np.abs(timing_errors))) if timing_errors else None
+        ),
+        "timing_error_count": len(timing_errors),
+    }
+
+
+def merge_asr_metrics(
+    rows: Sequence[dict[str, Any]],
+    asr_by_key: dict[tuple[str, int, str], dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    merged = []
+    for row in rows:
+        key = (str(row["song_id"]), int(row["chunk_index"]), str(row["mode"]))
+        if key not in asr_by_key:
+            raise ValueError(f"missing ASR metrics for {key}")
+        merged.append({**row, "asr": asr_by_key[key]})
+    return tuple(merged)
 
 
 def aggregate_metrics(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -401,6 +473,13 @@ def _load_selected_requests(
     selected: Sequence[SelectedChunk],
 ) -> dict[tuple[str, int], TwoBarRenderRequest]:
     song_ids = sorted({item.candidate.song_id for item in selected})
+    return _load_requests_by_song_ids(input_dir, song_ids)
+
+
+def _load_requests_by_song_ids(
+    input_dir: Path,
+    song_ids: Sequence[str],
+) -> dict[tuple[str, int], TwoBarRenderRequest]:
     requests = {}
     for song_id in song_ids:
         request_path = input_dir / "common" / song_id / "requests.jsonl"
