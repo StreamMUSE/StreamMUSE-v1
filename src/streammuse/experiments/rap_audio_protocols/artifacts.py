@@ -92,7 +92,7 @@ def chunk_record_is_complete(
         return False
     if record.request_sha256 != request.sha256:
         return False
-    if record.source_chunk_sha256 is not None and not _is_sha256_hex(record.source_chunk_sha256):
+    if not _source_chunk_sha256_is_valid(record):
         return False
     if Path(record.output_path or "").resolve() != wav.resolve():
         return False
@@ -247,6 +247,12 @@ def _validate_chunk_records(
     for record in chunk_records:
         if record.protocol_id != protocol_id:
             raise ValueError("chunk record protocol mismatch")
+        if not _source_chunk_sha256_is_valid(record):
+            raise ValueError(
+                "moss_aligned chunk records require a nonempty valid source_chunk_sha256"
+                if record.protocol_id == ProtocolId.MOSS_ALIGNED
+                else "source_chunk_sha256 must be a 64-character lowercase SHA-256 hex digest"
+            )
         request = request_by_chunk.get(record.chunk_index)
         if request is None or record.song_id != request.song_id or record.request_sha256 != request.sha256:
             raise ValueError("chunk records must match the request set exactly")
@@ -265,3 +271,10 @@ def _normalise_optional_sha256(value: Any, *, field_name: str) -> str | None:
 
 def _is_sha256_hex(value: str) -> bool:
     return re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _source_chunk_sha256_is_valid(record: ChunkRenderRecord) -> bool:
+    source_sha = record.source_chunk_sha256
+    if source_sha in (None, ""):
+        return record.protocol_id != ProtocolId.MOSS_ALIGNED
+    return isinstance(source_sha, str) and _is_sha256_hex(source_sha)

@@ -162,6 +162,126 @@ def test_chunk_record_is_complete_allows_missing_source_hash_for_native_protocol
     assert chunk_record_is_complete(ledger_path, wav_path, request=request, protocol_id=ProtocolId.MOSS_GLOBAL)
 
 
+def test_chunk_record_is_complete_rejects_missing_source_hash_for_moss_aligned(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "records.jsonl"
+    wav_path = tmp_path / "chunk.wav"
+    request = _request(0)
+    audio = render_common_drums((request,), song_index=2, allow_smoke_test=True)
+    write_listening_wav(wav_path, audio)
+    append_chunk_record(
+        ledger_path,
+        ChunkRenderRecord(
+            protocol_id=ProtocolId.MOSS_ALIGNED,
+            song_id=request.song_id,
+            chunk_index=request.chunk_index,
+            request_sha256=request.sha256,
+            success=True,
+            output_path=str(wav_path),
+            output_sha256="",
+            source_chunk_sha256=None,
+            sample_rate_hz=48_000,
+            attempts=1,
+        ),
+    )
+
+    assert not chunk_record_is_complete(
+        ledger_path,
+        wav_path,
+        request=request,
+        protocol_id=ProtocolId.MOSS_ALIGNED,
+    )
+
+
+def test_chunk_record_is_complete_accepts_valid_source_hash_for_moss_aligned(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "records.jsonl"
+    wav_path = tmp_path / "chunk.wav"
+    request = _request(0)
+    audio = render_common_drums((request,), song_index=3, allow_smoke_test=True)
+    write_listening_wav(wav_path, audio)
+    append_chunk_record(
+        ledger_path,
+        ChunkRenderRecord(
+            protocol_id=ProtocolId.MOSS_ALIGNED,
+            song_id=request.song_id,
+            chunk_index=request.chunk_index,
+            request_sha256=request.sha256,
+            success=True,
+            output_path=str(wav_path),
+            output_sha256="",
+            source_chunk_sha256="b" * 64,
+            sample_rate_hz=48_000,
+            attempts=1,
+        ),
+    )
+
+    assert chunk_record_is_complete(
+        ledger_path,
+        wav_path,
+        request=request,
+        protocol_id=ProtocolId.MOSS_ALIGNED,
+    )
+
+
+@pytest.mark.parametrize("source_chunk_sha256", [None, "", "not-a-sha256"])
+def test_manifest_rejects_missing_or_invalid_source_hash_for_moss_aligned(
+    tmp_path: Path,
+    source_chunk_sha256: str | None,
+) -> None:
+    request = _request(0)
+    drums_path = tmp_path / "drums.wav"
+    vocal_path = tmp_path / "vocals.wav"
+    mix_path = tmp_path / "mix.wav"
+    _write_listening_wav(drums_path, frames=CHUNK_FRAME_COUNT, channels=2)
+    _write_listening_wav(vocal_path, frames=CHUNK_FRAME_COUNT, channels=1)
+    _write_listening_wav(mix_path, frames=CHUNK_FRAME_COUNT, channels=2)
+
+    with pytest.raises(ValueError, match="source_chunk_sha256"):
+        build_protocol_artifact_manifest(
+            ProtocolId.MOSS_ALIGNED,
+            requests=(request,),
+            chunk_records=(
+                _record(
+                    request=request,
+                    protocol_id=ProtocolId.MOSS_ALIGNED,
+                    source_chunk_sha256=source_chunk_sha256,
+                ),
+            ),
+            vocal_stem_path=vocal_path,
+            drums_path=drums_path,
+            mix_path=mix_path,
+            allow_smoke_test=True,
+        )
+
+
+def test_manifest_accepts_valid_source_hash_for_moss_aligned(tmp_path: Path) -> None:
+    request = _request(0)
+    drums_path = tmp_path / "drums.wav"
+    vocal_path = tmp_path / "vocals.wav"
+    mix_path = tmp_path / "mix.wav"
+    source_hash = "c" * 64
+    _write_listening_wav(drums_path, frames=CHUNK_FRAME_COUNT, channels=2)
+    _write_listening_wav(vocal_path, frames=CHUNK_FRAME_COUNT, channels=1)
+    _write_listening_wav(mix_path, frames=CHUNK_FRAME_COUNT, channels=2)
+
+    manifest = build_protocol_artifact_manifest(
+        ProtocolId.MOSS_ALIGNED,
+        requests=(request,),
+        chunk_records=(
+            _record(
+                request=request,
+                protocol_id=ProtocolId.MOSS_ALIGNED,
+                source_chunk_sha256=source_hash,
+            ),
+        ),
+        vocal_stem_path=vocal_path,
+        drums_path=drums_path,
+        mix_path=mix_path,
+        allow_smoke_test=True,
+    )
+
+    assert manifest["source_chunks"][0]["source_chunk_sha256"] == source_hash
+
+
 def test_build_protocol_artifact_manifest_rejects_chunk_records_from_other_protocols(tmp_path: Path) -> None:
     request = _request(0)
     drums_path = tmp_path / "drums.wav"
