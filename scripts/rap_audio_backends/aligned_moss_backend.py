@@ -6,7 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -297,10 +297,14 @@ def render_aligned_chunk(
             selected_mode is AlignedWarpMode.CONTINUOUS_ONSET_CONSTRAINED_R3_STRESS
         )
         if stress_applied:
+            stress_syllables = tuple(
+                replace(syllable, target_seconds=anchor.target_seconds)
+                for syllable, anchor in zip(request.syllables, warped.anchor_map)
+            )
             stress_result = apply_stress_envelope(
                 rendered_samples,
                 sample_rate_hz=sample_rate_hz,
-                syllables=request.syllables,
+                syllables=stress_syllables,
             )
             rendered_samples = stress_result.samples
             peak_limited = stress_result.peak_limited
@@ -313,6 +317,10 @@ def render_aligned_chunk(
                 "output_rms": stress_result.output_rms,
                 "peak_limited": stress_result.peak_limited,
                 "syllable_gain_db": list(stress_result.syllable_gain_db),
+                "target_seconds": [item.target_seconds for item in stress_syllables],
+                "requested_target_seconds": [
+                    item.target_seconds for item in request.syllables
+                ],
             }
         _write_native_float32_wav(output_path, sample_rate_hz, rendered_samples)
         stretch_ratios = tuple(region.stretch_ratio for region in warped.stretch_regions)

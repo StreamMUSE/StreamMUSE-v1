@@ -479,6 +479,12 @@ def test_render_aligned_chunk_supports_auditable_constrained_onset_stress_mode(
     assert all(anchor.anchor_kind == "syllable_onset" for anchor in result.anchor_map)
     assert diagnostics["mode"] == "continuous_onset_constrained_r3_stress"
     assert diagnostics["stress"]["applied"] is True
+    assert diagnostics["stress"]["target_seconds"] == pytest.approx(
+        [anchor.target_seconds for anchor in result.anchor_map]
+    )
+    assert diagnostics["stress"]["requested_target_seconds"] == pytest.approx(
+        [syllable.target_seconds for syllable in request.syllables]
+    )
     assert diagnostics["timing_regularization"]["applied"] is True
     assert len(diagnostics["timing_regularization"]["target_drift_seconds"]) == 18
 
