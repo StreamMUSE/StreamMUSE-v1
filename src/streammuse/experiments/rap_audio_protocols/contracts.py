@@ -14,6 +14,9 @@ from streammuse.domain.timing import Tempo
 def _json_default(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
+    to_payload = getattr(value, "to_payload", None)
+    if callable(to_payload):
+        return to_payload()
     if is_dataclass(value):
         return asdict(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")

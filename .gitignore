@@ -91,3 +91,4 @@ node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 .superpowers/brainstorm/
+.superpowers/sdd/

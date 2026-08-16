@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from streammuse.domain.timing import Tempo
-from streammuse.experiments.rap_audio_protocols import ProtocolId, SongCorpus, load_song_corpus
+from streammuse.experiments.rap_audio_protocols import ProtocolId, SongCorpus, load_song_corpus, sha256_hex
 
 
 FIXTURE_PATH = Path("tests/fixtures/rap_audio_protocols/two_bar_records.jsonl")
@@ -58,6 +58,7 @@ def test_load_song_corpus_builds_one_backend_neutral_two_bar_request() -> None:
     canonical = request.canonical_json_bytes()
     assert canonical == request.canonical_json_bytes()
     assert request.sha256 == hashlib.sha256(canonical).hexdigest()
+    assert sha256_hex(request) == request.sha256
 
 
 def test_load_song_corpus_rejects_noncontiguous_bars(tmp_path: Path) -> None:
