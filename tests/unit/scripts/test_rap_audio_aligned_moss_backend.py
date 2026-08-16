@@ -641,6 +641,60 @@ def test_render_aligned_chunk_fails_closed_when_boundary_clamp_collides(tmp_path
     assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
 
 
+def test_render_aligned_chunk_fails_closed_for_negative_target_time(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _liftoff_request(first_target_seconds=-0.100)
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(source_wav, 1_000, np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32))
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_liftoff_textgrid(textgrid_path)
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert not result.record.success
+    assert "target anchor lies outside the target audio" in (result.record.error or "")
+    assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
+
+
+def test_render_aligned_chunk_fails_closed_for_target_beyond_duration(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _liftoff_request()
+    syllables = list(request.syllables)
+    syllables[-1] = replace(
+        syllables[-1],
+        target_seconds=request.duration_seconds + 0.100,
+    )
+    request = replace(request, syllables=tuple(syllables))
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(source_wav, 1_000, np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32))
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_liftoff_textgrid(textgrid_path)
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert not result.record.success
+    assert "target anchor lies outside the target audio" in (result.record.error or "")
+    assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
+
+
 def test_render_aligned_chunk_fails_closed_when_request_word_sequence_cannot_match(tmp_path: Path) -> None:
     backend = _load_backend()
     request = _liftoff_request()

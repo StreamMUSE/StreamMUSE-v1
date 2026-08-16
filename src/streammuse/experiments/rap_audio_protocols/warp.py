@@ -692,9 +692,14 @@ def _apply_target_boundary_policy(
     adjusted: list[VowelAnchor] = []
     for anchor in anchors:
         requested_seconds = anchor.requested_target_seconds
-        if requested_seconds <= 0:
+        if requested_seconds < 0 or requested_seconds > target_duration_seconds:
+            raise ValueError(
+                "target anchor lies outside the target audio: "
+                f"requested {requested_seconds:.9f}s for duration {target_duration_seconds:.9f}s"
+            )
+        if requested_seconds == 0:
             effective_sample = first_interior_sample
-        elif requested_seconds >= target_duration_seconds:
+        elif requested_seconds == target_duration_seconds:
             effective_sample = last_interior_sample
         else:
             adjusted.append(anchor)
