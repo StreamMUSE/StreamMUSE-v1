@@ -236,6 +236,11 @@ PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT" HF_HOME="$HF_HOME" "$MOSS_ENV/bin/python"
 
 Run TED:
 
+TED defaults to `hmm`. On the observed H200 FP16 run, HMM alignment produced
+`cannot convert float NaN to integer`; `max_head` completed as a fallback. This
+is an explicit alignment ablation, not an equivalent HMM condition, and its
+selection is recorded beside each TED ledger in `inference_config.json`.
+
 ```bash
 PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT" HF_HOME="$HF_HOME" "$TED_ENV/bin/python" \
   "$REPO_ROOT/scripts/rap_audio_backends/ted_backend.py" \
@@ -245,7 +250,8 @@ PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT" HF_HOME="$HF_HOME" "$TED_ENV/bin/python" 
   --reference-wav "$TED_REFERENCE" \
   --ted-checkout "$CHECKOUT_ROOT/ted" \
   --model-dir "$INDEXTTS_SNAPSHOT" \
-  --cfg-path "$INDEXTTS_SNAPSHOT/config.yaml"
+  --cfg-path "$INDEXTTS_SNAPSHOT/config.yaml" \
+  --inference-method max_head
 ```
 
 Run NeMo FastPitch:
@@ -356,7 +362,8 @@ for SONG in $SONGS; do
     --reference-wav "$TED_REFERENCE" \
     --ted-checkout "$CHECKOUT_ROOT/ted" \
     --model-dir "$INDEXTTS_SNAPSHOT" \
-    --cfg-path "$INDEXTTS_SNAPSHOT/config.yaml"
+    --cfg-path "$INDEXTTS_SNAPSHOT/config.yaml" \
+    --inference-method max_head
 done
 ```
 

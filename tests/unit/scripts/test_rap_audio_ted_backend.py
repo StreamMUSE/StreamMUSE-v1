@@ -62,6 +62,22 @@ class _FakeIndexTTS2:
         wavfile.write(output_path, 22_050, np.ones(128, dtype=np.int16))
 
 
+class _H200CompatibilityIndexTTS2:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def infer(self, **kwargs: object) -> None:
+        self.calls.append(kwargs)
+        method = kwargs["method"]
+        if method == "hmm":
+            raise ValueError("cannot convert float NaN to integer")
+        if method != "max_head":
+            raise ValueError(f"unsupported test method: {method}")
+        output_path = Path(str(kwargs["output_path"]))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        wavfile.write(output_path, 22_050, np.ones(128, dtype=np.int16))
+
+
 class _ParentCheckingIndexTTS2:
     def infer(self, **kwargs: object) -> None:
         output_path = Path(str(kwargs["output_path"]))
@@ -112,7 +128,7 @@ def test_render_pending_requests_invokes_ted_with_exact_local_duration_arguments
         "repetition_penalty": 10.0,
         "length_penalty": 0.0,
         "max_mel_tokens": 850,
-        "method": "max_head",
+        "method": "hmm",
     }
     stored = read_chunk_record_index(record_path)[(records[0].protocol_id, request.song_id, request.chunk_index)]
     assert stored.success is True
@@ -183,7 +199,7 @@ def test_render_pending_requests_retries_and_logs_silence_after_bounded_failures
     assert record.output_sha256
     assert record.sample_rate_hz == 22_050
     diagnostic = json.loads(str(record.error))
-    assert diagnostic["infer_kwargs"]["method"] == "max_head"
+    assert diagnostic["infer_kwargs"]["method"] == "hmm"
 
     sample_rate_hz, samples = wavfile.read(Path(record.output_path))
     assert sample_rate_hz == 22_050
@@ -333,6 +349,118 @@ def test_main_rerenders_prior_failure_and_reports_failure_again(tmp_path: Path) 
     assert backend.main(argv, ted_model_factory=failing_factory) == 1
     assert [len(model.calls) for model in created_models] == [1, 1]
     assert len(record_path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_main_h200_max_head_override_recovers_from_hmm_nan_failure_and_records_selection(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    request_path = tmp_path / "requests.jsonl"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    created_models: list[_H200CompatibilityIndexTTS2] = []
+
+    def factory(**_: Path) -> _H200CompatibilityIndexTTS2:
+        model = _H200CompatibilityIndexTTS2()
+        created_models.append(model)
+        return model
+
+    common_argv = [
+        "--requests-jsonl",
+        str(request_path),
+        "--reference-wav",
+        str(tmp_path / "reference.wav"),
+        "--ted-checkout",
+        str(tmp_path / "TED-TTS"),
+        "--model-dir",
+        str(tmp_path / "checkpoints"),
+        "--cfg-path",
+        str(tmp_path / "checkpoints" / "config.yaml"),
+        "--max-attempts",
+        "1",
+    ]
+    hmm_root = tmp_path / "hmm"
+
+    assert backend.main(
+        [
+            *common_argv,
+            "--records-jsonl",
+            str(hmm_root / "render_chunks.jsonl"),
+            "--output-dir",
+            str(hmm_root),
+        ],
+        ted_model_factory=factory,
+    ) == 1
+
+    hmm_record = next(iter(read_chunk_record_index(hmm_root / "render_chunks.jsonl").values()))
+    assert "cannot convert float NaN to integer" in str(hmm_record.error)
+    assert created_models[0].calls[0]["method"] == "hmm"
+    assert "inference_method=hmm" in capsys.readouterr().out
+
+    max_head_root = tmp_path / "max-head"
+    assert backend.main(
+        [
+            *common_argv,
+            "--records-jsonl",
+            str(max_head_root / "render_chunks.jsonl"),
+            "--output-dir",
+            str(max_head_root),
+            "--inference-method",
+            "max_head",
+        ],
+        ted_model_factory=factory,
+    ) == 0
+
+    max_head_record = next(iter(read_chunk_record_index(max_head_root / "render_chunks.jsonl").values()))
+    assert max_head_record.success is True
+    assert created_models[1].calls[0]["method"] == "max_head"
+    assert "inference_method=max_head" in capsys.readouterr().out
+    assert json.loads((max_head_root / "inference_config.json").read_text(encoding="utf-8")) == {
+        "determinism_note": "use_random=False does not guarantee determinism because TED still samples",
+        "duration_mode": "both",
+        "generation_settings": {
+            "do_sample": True,
+            "emo_alpha": 0,
+            "length_penalty": 0.0,
+            "max_mel_tokens": 850,
+            "num_beams": 3,
+            "repetition_penalty": 10.0,
+            "temperature": 0.8,
+            "top_k": 30,
+            "top_p": 0.8,
+            "use_emo_text": True,
+            "use_random": False,
+            "verbose": True,
+        },
+        "method": "max_head",
+    }
+
+
+def test_render_pending_requests_keeps_matching_inference_config_and_rejects_conflicts(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _request()
+    model = _FakeIndexTTS2()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "song" / "render_chunks.jsonl"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    kwargs = {
+        "request_path": request_path,
+        "record_path": record_path,
+        "output_dir": tmp_path / "chunks",
+        "reference_wav_path": tmp_path / "reference.wav",
+        "ted_model": model,
+    }
+
+    backend.render_pending_requests(**kwargs)
+    config_path = record_path.with_name("inference_config.json")
+    original_config = config_path.read_text(encoding="utf-8")
+
+    assert backend.render_pending_requests(**kwargs) == ()
+    assert config_path.read_text(encoding="utf-8") == original_config
+    with pytest.raises(ValueError, match="inference config conflicts"):
+        backend.render_pending_requests(**kwargs, inference_method="max_head")
+    assert len(model.calls) == 1
 
 
 def test_create_ted_model_uses_exact_checkout_and_restores_cached_modules(tmp_path: Path) -> None:

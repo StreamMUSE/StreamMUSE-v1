@@ -33,10 +33,26 @@ from streammuse.experiments.rap_audio_protocols.timing import TimedTextSegment, 
 
 TED_SAMPLE_RATE_HZ = 22_050
 TED_DURATION_TOKEN_SECONDS = 0.02
-TED_INFERENCE_METHOD = "max_head"
+TED_INFERENCE_METHODS = ("hmm", "max_head")
+DEFAULT_TED_INFERENCE_METHOD = "hmm"
+TED_DURATION_MODE = "both"
 TED_SEGMENT_DESCRIPTION = "clear, confident, rhythmic spoken rap with restrained melody"
 TED_DETERMINISM_NOTE = "use_random=False does not guarantee determinism because TED still samples"
 DEFAULT_MAX_ATTEMPTS = 3
+TED_FIXED_GENERATION_SETTINGS = {
+    "emo_alpha": 0,
+    "use_emo_text": True,
+    "verbose": True,
+    "use_random": False,
+    "do_sample": True,
+    "top_p": 0.8,
+    "top_k": 30,
+    "temperature": 0.8,
+    "num_beams": 3,
+    "repetition_penalty": 10.0,
+    "length_penalty": 0.0,
+    "max_mel_tokens": 850,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--cfg-path", required=True, type=Path)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
+    parser.add_argument(
+        "--inference-method",
+        choices=TED_INFERENCE_METHODS,
+        default=DEFAULT_TED_INFERENCE_METHOD,
+    )
     return parser
 
 
@@ -88,6 +109,7 @@ def main(
             reference_wav_path=args.reference_wav,
             ted_model=ted_model,
             max_attempts=args.max_attempts,
+            inference_method=args.inference_method,
         )
     except Exception as exc:
         print(f"error: TED backend failed: {exc}", file=sys.stderr)
@@ -162,16 +184,18 @@ def render_pending_requests(
     reference_wav_path: Path | str,
     ted_model: Any,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    inference_method: str = DEFAULT_TED_INFERENCE_METHOD,
     segment_builder: Callable[[TwoBarRenderRequest], tuple[TimedTextSegment, ...]] = build_ted_segments,
 ) -> tuple[ChunkRenderRecord, ...]:
     if max_attempts <= 0:
         raise ValueError("max_attempts must be positive")
 
-    requests = load_requests(request_path)
     records: list[ChunkRenderRecord] = []
     output_root = Path(output_dir)
     reference = Path(reference_wav_path)
     ledger_path = Path(record_path)
+    _ensure_inference_config(ledger_path, inference_method)
+    requests = load_requests(request_path)
 
     for request in requests:
         output_path = output_root / request.song_id / f"chunk-{request.chunk_index:03d}.wav"
@@ -188,11 +212,12 @@ def render_pending_requests(
             reference_wav_path=reference,
             output_path=output_path,
             max_attempts=max_attempts,
+            inference_method=inference_method,
             segment_builder=segment_builder,
         )
         _store_chunk_record(ledger_path, record)
         records.append(record)
-        print(_progress_line(record))
+        print(_progress_line(record, inference_method=inference_method))
     return tuple(records)
 
 
@@ -233,12 +258,14 @@ def render_request(
     ted_model: Any,
     reference_wav_path: Path | str,
     output_path: Path | str,
+    inference_method: str = DEFAULT_TED_INFERENCE_METHOD,
     segment_builder: Callable[[TwoBarRenderRequest], tuple[TimedTextSegment, ...]] = build_ted_segments,
 ) -> ChunkRenderRecord:
     infer_kwargs = build_infer_kwargs(
         request=request,
         reference_wav_path=reference_wav_path,
         output_path=output_path,
+        inference_method=inference_method,
         segment_builder=segment_builder,
     )
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -264,8 +291,10 @@ def build_infer_kwargs(
     request: TwoBarRenderRequest,
     reference_wav_path: Path | str,
     output_path: Path | str,
+    inference_method: str = DEFAULT_TED_INFERENCE_METHOD,
     segment_builder: Callable[[TwoBarRenderRequest], tuple[TimedTextSegment, ...]] = build_ted_segments,
 ) -> dict[str, Any]:
+    _validate_inference_method(inference_method)
     segments = tuple(segment_builder(request))
     if not segments:
         raise ValueError("TED requests require at least one segment")
@@ -289,22 +318,11 @@ def build_infer_kwargs(
         "text": text,
         "output_path": str(Path(output_path)),
         "emo_audio_prompt": None,
-        "emo_alpha": 0,
-        "use_emo_text": True,
         "emo_text": emo_text,
         "target_duration_tokens": duration_tokens,
-        "duration_mode": "both",
-        "verbose": True,
-        "use_random": False,
-        "do_sample": True,
-        "top_p": 0.8,
-        "top_k": 30,
-        "temperature": 0.8,
-        "num_beams": 3,
-        "repetition_penalty": 10.0,
-        "length_penalty": 0.0,
-        "max_mel_tokens": 850,
-        "method": TED_INFERENCE_METHOD,
+        "duration_mode": TED_DURATION_MODE,
+        **TED_FIXED_GENERATION_SETTINGS,
+        "method": inference_method,
     }
 
 
@@ -319,6 +337,7 @@ def _render_with_retries(
     reference_wav_path: Path,
     output_path: Path,
     max_attempts: int,
+    inference_method: str,
     segment_builder: Callable[[TwoBarRenderRequest], tuple[TimedTextSegment, ...]],
 ) -> ChunkRenderRecord:
     last_error: Exception | None = None
@@ -331,6 +350,7 @@ def _render_with_retries(
                 request=request,
                 reference_wav_path=reference_wav_path,
                 output_path=output_path,
+                inference_method=inference_method,
                 segment_builder=segment_builder,
             )
             last_infer_kwargs = infer_kwargs
@@ -389,12 +409,62 @@ def _error_payload(
     return canonical_json_dumps(payload)
 
 
-def _progress_line(record: ChunkRenderRecord) -> str:
+def _progress_line(record: ChunkRenderRecord, *, inference_method: str) -> str:
     return (
         f"protocol={record.protocol_id.value} song_id={record.song_id} chunk_index={record.chunk_index} "
         f"success={int(record.success)} attempts={record.attempts} sample_rate_hz={record.sample_rate_hz} "
-        f"output_path={record.output_path} determinism_note={TED_DETERMINISM_NOTE}"
+        f"output_path={record.output_path} inference_method={inference_method} "
+        f"determinism_note={TED_DETERMINISM_NOTE}"
     )
+
+
+def _ensure_inference_config(ledger_path: Path, inference_method: str) -> None:
+    payload = _inference_config_payload(inference_method)
+    config_path = ledger_path.with_name("inference_config.json")
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"inference config conflicts at {config_path}") from exc
+        if existing != payload:
+            raise ValueError(f"inference config conflicts at {config_path}")
+        return
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=config_path.parent,
+            prefix=f".{config_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(canonical_json_dumps(payload))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, config_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _inference_config_payload(inference_method: str) -> dict[str, Any]:
+    _validate_inference_method(inference_method)
+    return {
+        "method": inference_method,
+        "duration_mode": TED_DURATION_MODE,
+        "determinism_note": TED_DETERMINISM_NOTE,
+        "generation_settings": dict(TED_FIXED_GENERATION_SETTINGS),
+    }
+
+
+def _validate_inference_method(inference_method: str) -> None:
+    if inference_method not in TED_INFERENCE_METHODS:
+        raise ValueError(f"unsupported TED inference method: {inference_method}")
 
 
 def _request_from_payload(payload: dict[str, Any]) -> TwoBarRenderRequest:
