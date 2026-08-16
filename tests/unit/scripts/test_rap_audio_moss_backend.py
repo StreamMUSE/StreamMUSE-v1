@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import ANY
 
@@ -319,6 +321,114 @@ def test_render_requests_uses_documented_prompt_generation_args_and_manifest(tmp
     assert record_index[(ProtocolId.MOSS_GLOBAL, request.song_id, request.chunk_index)].output_sha256 == records[0].output_sha256
 
 
+def test_render_requests_persists_fingerprinted_default_config_before_generation(tmp_path: Path) -> None:
+    module = _load_module("scripts.rap_audio_backends.moss_backend_config_before_render")
+    request = _request(0)
+    ledger_path = tmp_path / "render_chunks.jsonl"
+    config_path = tmp_path / "campaign_manifest.json"
+
+    class ConfigCheckingModel(FakeModel):
+        def generate(self, **kwargs):
+            assert config_path.is_file()
+            return super().generate(**kwargs)
+
+    module.render_requests(
+        requests=(request,),
+        output_dir=tmp_path / "chunks",
+        record_path=ledger_path,
+        reference_wav=tmp_path / "reference.wav",
+        runtime=_runtime(module, model=ConfigCheckingModel()),
+    )
+
+    manifest = json.loads(config_path.read_text(encoding="utf-8"))
+    fingerprint = manifest.pop("configuration_sha256")
+    assert manifest["schema_version"] == 1
+    assert fingerprint == hashlib.sha256(module.canonical_json_dumps(manifest).encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("changed_config", ["model_id", "reference_wav", "generation_kwargs"])
+def test_render_requests_refuses_changed_resume_config_without_overwriting_manifest(
+    tmp_path: Path,
+    changed_config: str,
+) -> None:
+    module = _load_module(f"scripts.rap_audio_backends.moss_backend_config_conflict_{changed_config}")
+    request = _request(0)
+    ledger_path = tmp_path / "render_chunks.jsonl"
+    manifest_path = tmp_path / "campaign_manifest.json"
+    reference_wav = tmp_path / "reference.wav"
+
+    module.render_requests(
+        requests=(request,),
+        output_dir=tmp_path / "chunks",
+        record_path=ledger_path,
+        reference_wav=reference_wav,
+        runtime=_runtime(module),
+        campaign_manifest_path=manifest_path,
+    )
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+    original_ledger = ledger_path.read_text(encoding="utf-8")
+    resumed_model = FakeModel()
+    resumed_runtime = _runtime(module, model=resumed_model)
+    resumed_reference = reference_wav
+    if changed_config == "model_id":
+        resumed_runtime = replace(resumed_runtime, model_id="OpenMOSS-Team/MOSS-TTS-v2")
+    elif changed_config == "reference_wav":
+        resumed_reference = tmp_path / "different-reference.wav"
+    else:
+        module.GENERATION_KWARGS = {**module.GENERATION_KWARGS, "audio_top_k": 26}
+
+    with pytest.raises(ValueError, match="campaign manifest conflicts"):
+        module.render_requests(
+            requests=(request,),
+            output_dir=tmp_path / "chunks",
+            record_path=ledger_path,
+            reference_wav=resumed_reference,
+            runtime=resumed_runtime,
+            campaign_manifest_path=manifest_path,
+        )
+
+    assert resumed_model.generate_calls == []
+    assert manifest_path.read_text(encoding="utf-8") == original_manifest
+    assert ledger_path.read_text(encoding="utf-8") == original_ledger
+
+
+def test_render_requests_upgrades_matching_legacy_manifest_before_resume(tmp_path: Path) -> None:
+    module = _load_module("scripts.rap_audio_backends.moss_backend_legacy_manifest")
+    request = _request(0)
+    ledger_path = tmp_path / "render_chunks.jsonl"
+    manifest_path = tmp_path / "campaign_manifest.json"
+    runtime = _runtime(module)
+
+    first = module.render_requests(
+        requests=(request,),
+        output_dir=tmp_path / "chunks",
+        record_path=ledger_path,
+        reference_wav=tmp_path / "reference.wav",
+        runtime=runtime,
+        campaign_manifest_path=manifest_path,
+    )
+    legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    legacy_manifest.pop("configuration_sha256")
+    legacy_manifest.pop("schema_version")
+    manifest_path.write_text(json.dumps(legacy_manifest, indent=2, sort_keys=True), encoding="utf-8")
+    resumed_model = FakeModel()
+
+    resumed = module.render_requests(
+        requests=(request,),
+        output_dir=tmp_path / "chunks",
+        record_path=ledger_path,
+        reference_wav=tmp_path / "reference.wav",
+        runtime=replace(runtime, model=resumed_model),
+        campaign_manifest_path=manifest_path,
+    )
+
+    migrated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert resumed == first
+    assert resumed_model.generate_calls == []
+    assert migrated["schema_version"] == 1
+    assert "configuration_sha256" in migrated
+
+
 def test_render_requests_retries_with_same_identity_and_best_effort_seeding(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     module = _load_module("scripts.rap_audio_backends.moss_backend_retry")
     request = _request(0)
@@ -359,6 +469,32 @@ def test_render_requests_retries_with_same_identity_and_best_effort_seeding(tmp_
     output = capsys.readouterr().out.lower()
     assert "official deterministic seeding is unsupported" in output
     assert "attempt=2/2" in output
+
+
+def test_render_requests_records_exact_length_silence_and_error_after_bounded_failures(tmp_path: Path) -> None:
+    module = _load_module("scripts.rap_audio_backends.moss_backend_failure_silence")
+    request = _request(0)
+    output_path = tmp_path / "chunks" / request.song_id / "chunk-000.wav"
+
+    records = module.render_requests(
+        requests=(request,),
+        output_dir=tmp_path / "chunks",
+        record_path=tmp_path / "render_chunks.jsonl",
+        reference_wav=tmp_path / "reference.wav",
+        runtime=_runtime(module, model=FakeModel(failures_before_success=1)),
+        max_retries=1,
+    )
+
+    record = records[0]
+    sample_rate_hz, samples = wavfile.read(output_path)
+    assert record.success is False
+    assert record.output_path == str(output_path)
+    assert record.output_sha256 == file_sha256(output_path)
+    assert record.sample_rate_hz == 24_000
+    assert record.error == "synthetic generate failure 1"
+    assert sample_rate_hz == 24_000
+    assert samples.shape == (round(request.duration_seconds * 24_000),)
+    assert np.count_nonzero(samples) == 0
 
 
 @pytest.mark.parametrize("stale_kind", ["failed", "missing_wav", "request_mismatch", "hash_mismatch"])

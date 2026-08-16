@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import inspect
 import json
@@ -39,6 +40,7 @@ HIFIGAN_MODEL_ID = "tts_en_hifigan"
 FASTPITCH_SAMPLE_RATE_HZ = 22_050
 TIMING_SIDECAR_SCHEMA_VERSION = 1
 DEFAULT_MAX_ATTEMPTS = 3
+INFERENCE_CONFIG_SCHEMA_VERSION = 1
 PROSODY_MODE_DURATION_ONLY = "duration-only"
 PROSODY_MODE_SMOKE_VALIDATED = "smoke-validated"
 PROSODY_MODES = (PROSODY_MODE_DURATION_ONLY, PROSODY_MODE_SMOKE_VALIDATED)
@@ -240,9 +242,15 @@ def render_pending_requests(
         requests = tuple(request for request in requests if request.song_id == selected_song_id)
 
     active_runtime = runtime if runtime is not None else create_runtime()
-    existing = read_chunk_record_index(record_path)
     output_root = Path(output_dir)
     ledger_path = Path(record_path)
+    existing = read_chunk_record_index(ledger_path)
+    _ensure_inference_config(
+        ledger_path,
+        runtime=active_runtime,
+        prosody_mode=prosody_mode,
+        max_attempts=max_attempts,
+    )
     stream = progress_stream if progress_stream is not None else sys.stdout
     records: list[ChunkRenderRecord] = []
 
@@ -264,6 +272,109 @@ def render_pending_requests(
         existing[key] = record
         records.append(record)
     return tuple(records)
+
+
+def _ensure_inference_config(
+    ledger_path: Path,
+    *,
+    runtime: FastPitchBackendRuntime,
+    prosody_mode: str,
+    max_attempts: int,
+) -> None:
+    expected = _inference_config_payload(
+        runtime=runtime,
+        prosody_mode=prosody_mode,
+        max_attempts=max_attempts,
+    )
+    config_path = ledger_path.with_name("inference_config.json")
+    has_resumable_outputs = _ledger_has_resumable_outputs(existing=read_chunk_record_index(ledger_path))
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            if has_resumable_outputs:
+                raise ValueError(f"inference config conflicts at {config_path}") from exc
+        else:
+            if existing == expected:
+                return
+            if has_resumable_outputs:
+                raise ValueError(f"inference config conflicts at {config_path}")
+    elif has_resumable_outputs:
+        raise ValueError(
+            f"cannot create inference config for non-empty ledger with resumable outputs: {ledger_path}"
+        )
+
+    _atomic_write_json(config_path, expected)
+
+
+def _inference_config_payload(
+    *,
+    runtime: FastPitchBackendRuntime,
+    prosody_mode: str,
+    max_attempts: int,
+) -> dict[str, Any]:
+    payload = {
+        "schema_version": INFERENCE_CONFIG_SCHEMA_VERSION,
+        "protocol_id": ProtocolId.FASTPITCH_PHONEME.value,
+        "models": {
+            "fastpitch": runtime.fastpitch_model_id,
+            "hifigan": runtime.hifigan_model_id,
+        },
+        "device": runtime.device,
+        "sample_rate_hz": runtime.sample_rate_hz,
+        "prosody_mode": prosody_mode,
+        "max_attempts": max_attempts,
+        "synthesis_settings": {
+            "explicit_durations": True,
+            "pace": 1.0,
+            "speaker": None,
+            "timing_sidecar_schema_version": TIMING_SIDECAR_SCHEMA_VERSION,
+        },
+    }
+    payload["configuration_sha256"] = hashlib.sha256(
+        canonical_json_dumps(payload).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def _ledger_has_resumable_outputs(
+    *,
+    existing: dict[tuple[ProtocolId, str, int], ChunkRenderRecord],
+) -> bool:
+    for record in existing.values():
+        if not record.success or record.output_path is None or record.output_sha256 is None:
+            continue
+        output_path = Path(record.output_path)
+        try:
+            if output_path.is_file() and file_sha256(output_path) == record.output_sha256:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(canonical_json_dumps(payload))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def build_render_plan(*, request: TwoBarRenderRequest, runtime: FastPitchBackendRuntime) -> FastPitchRenderPlan:

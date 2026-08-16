@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import sys
@@ -300,6 +301,161 @@ def test_default_render_uses_parse_ids_to_tokens_and_duration_only_direct_forwar
 
     stored = read_chunk_record_index(record_path)[(record.protocol_id, request.song_id, request.chunk_index)]
     assert stored.output_sha256 == record.output_sha256
+
+
+def test_render_pending_requests_persists_fingerprinted_config_before_synthesis(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_config_before_render")
+    request = _fixture_request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "campaign" / "records.jsonl"
+    config_path = record_path.with_name("inference_config.json")
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    class ConfigCheckingFastPitch(FakeFastPitch):
+        def __call__(self, **kwargs: object):
+            assert config_path.is_file()
+            return super().__call__(**kwargs)
+
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=ConfigCheckingFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id="custom-fastpitch.nemo",
+        hifigan_model_id="custom-hifigan.nemo",
+    )
+    module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=tmp_path / "chunks",
+        runtime=runtime,
+        prosody_mode="smoke-validated",
+    )
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    fingerprint = config.pop("configuration_sha256")
+    assert config == {
+        "schema_version": 1,
+        "protocol_id": "fastpitch_phoneme",
+        "models": {
+            "fastpitch": "custom-fastpitch.nemo",
+            "hifigan": "custom-hifigan.nemo",
+        },
+        "device": "cuda:0",
+        "sample_rate_hz": 22_050,
+        "prosody_mode": "smoke-validated",
+        "max_attempts": 3,
+        "synthesis_settings": {
+            "explicit_durations": True,
+            "pace": 1.0,
+            "speaker": None,
+            "timing_sidecar_schema_version": 1,
+        },
+    }
+    assert fingerprint == hashlib.sha256(module.canonical_json_dumps(config).encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "changed_config",
+    ["fastpitch_model", "hifigan_model", "prosody_mode", "max_attempts"],
+)
+def test_render_pending_requests_refuses_changed_run_config_without_mutation(
+    tmp_path: Path,
+    changed_config: str,
+) -> None:
+    module = _load_backend(f"scripts.rap_audio_backends.fastpitch_backend_config_conflict_{changed_config}")
+    request = _fixture_request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "campaign" / "records.jsonl"
+    output_dir = tmp_path / "chunks"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    def make_runtime():
+        return module.FastPitchBackendRuntime(
+            fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}),
+            hifigan=FakeHiFiGan(),
+            torch_module=FakeTorch(),
+            device="cuda:0",
+            fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+            hifigan_model_id=module.HIFIGAN_MODEL_ID,
+        )
+
+    module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=make_runtime(),
+    )
+    config_path = record_path.with_name("inference_config.json")
+    original_config = config_path.read_text(encoding="utf-8")
+    original_ledger = record_path.read_text(encoding="utf-8")
+    resumed_runtime = make_runtime()
+    resumed_kwargs = {
+        "request_path": request_path,
+        "record_path": record_path,
+        "output_dir": output_dir,
+        "runtime": resumed_runtime,
+    }
+    if changed_config == "fastpitch_model":
+        resumed_runtime = replace(resumed_runtime, fastpitch_model_id="different-fastpitch.nemo")
+        resumed_kwargs["runtime"] = resumed_runtime
+    elif changed_config == "hifigan_model":
+        resumed_runtime = replace(resumed_runtime, hifigan_model_id="different-hifigan.nemo")
+        resumed_kwargs["runtime"] = resumed_runtime
+    elif changed_config == "prosody_mode":
+        resumed_kwargs["prosody_mode"] = "smoke-validated"
+    else:
+        resumed_kwargs["max_attempts"] = 4
+
+    with pytest.raises(ValueError, match="inference config conflicts"):
+        module.render_pending_requests(**resumed_kwargs)
+
+    assert resumed_runtime.fastpitch.parse_calls == []
+    assert resumed_runtime.fastpitch.calls == []
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert record_path.read_text(encoding="utf-8") == original_ledger
+
+
+def test_render_pending_requests_rejects_legacy_success_without_run_config(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_legacy_config")
+    request = _fixture_request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "campaign" / "records.jsonl"
+    output_dir = tmp_path / "chunks"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    def make_runtime():
+        return module.FastPitchBackendRuntime(
+            fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}),
+            hifigan=FakeHiFiGan(),
+            torch_module=FakeTorch(),
+            device="cuda:0",
+            fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+            hifigan_model_id=module.HIFIGAN_MODEL_ID,
+        )
+
+    module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=make_runtime(),
+    )
+    record_path.with_name("inference_config.json").unlink()
+    original_ledger = record_path.read_text(encoding="utf-8")
+    resumed_runtime = make_runtime()
+
+    with pytest.raises(ValueError, match="non-empty ledger"):
+        module.render_pending_requests(
+            request_path=request_path,
+            record_path=record_path,
+            output_dir=output_dir,
+            runtime=resumed_runtime,
+        )
+
+    assert resumed_runtime.fastpitch.parse_calls == []
+    assert resumed_runtime.fastpitch.calls == []
+    assert record_path.read_text(encoding="utf-8") == original_ledger
+    assert not record_path.with_name("inference_config.json").exists()
 
 
 def test_smoke_validated_prosody_opt_in_preserves_duration_only_version_guard(tmp_path: Path) -> None:

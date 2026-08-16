@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -39,6 +40,7 @@ TED_DURATION_MODE = "both"
 TED_SEGMENT_DESCRIPTION = "clear, confident, rhythmic spoken rap with restrained melody"
 TED_DETERMINISM_NOTE = "use_random=False does not guarantee determinism because TED still samples"
 DEFAULT_MAX_ATTEMPTS = 3
+INFERENCE_CONFIG_SCHEMA_VERSION = 1
 TED_FIXED_GENERATION_SETTINGS = {
     "emo_alpha": 0,
     "use_emo_text": True,
@@ -110,6 +112,9 @@ def main(
             ted_model=ted_model,
             max_attempts=args.max_attempts,
             inference_method=args.inference_method,
+            model_dir=args.model_dir,
+            cfg_path=args.cfg_path,
+            ted_checkout=args.ted_checkout,
         )
     except Exception as exc:
         print(f"error: TED backend failed: {exc}", file=sys.stderr)
@@ -185,6 +190,9 @@ def render_pending_requests(
     ted_model: Any,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     inference_method: str = DEFAULT_TED_INFERENCE_METHOD,
+    model_dir: Path | str | None = None,
+    cfg_path: Path | str | None = None,
+    ted_checkout: Path | str | None = None,
     segment_builder: Callable[[TwoBarRenderRequest], tuple[TimedTextSegment, ...]] = build_ted_segments,
 ) -> tuple[ChunkRenderRecord, ...]:
     if max_attempts <= 0:
@@ -194,7 +202,15 @@ def render_pending_requests(
     output_root = Path(output_dir)
     reference = Path(reference_wav_path)
     ledger_path = Path(record_path)
-    _ensure_inference_config(ledger_path, inference_method)
+    _ensure_inference_config(
+        ledger_path,
+        inference_method,
+        reference_wav_path=reference,
+        model_dir=model_dir,
+        cfg_path=cfg_path,
+        ted_checkout=ted_checkout,
+        max_attempts=max_attempts,
+    )
     requests = load_requests(request_path)
 
     for request in requests:
@@ -418,21 +434,49 @@ def _progress_line(record: ChunkRenderRecord, *, inference_method: str) -> str:
     )
 
 
-def _ensure_inference_config(ledger_path: Path, inference_method: str) -> None:
-    payload = _inference_config_payload(inference_method)
+def _ensure_inference_config(
+    ledger_path: Path,
+    inference_method: str,
+    *,
+    reference_wav_path: Path | str,
+    model_dir: Path | str | None,
+    cfg_path: Path | str | None,
+    ted_checkout: Path | str | None,
+    max_attempts: int,
+) -> None:
+    payload = _inference_config_payload(
+        inference_method,
+        reference_wav_path=reference_wav_path,
+        model_dir=model_dir,
+        cfg_path=cfg_path,
+        ted_checkout=ted_checkout,
+        max_attempts=max_attempts,
+    )
     config_path = ledger_path.with_name("inference_config.json")
+    has_resumable_outputs = _ledger_has_resumable_outputs(ledger_path)
     if config_path.exists():
         try:
             existing = json.loads(config_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"inference config conflicts at {config_path}") from exc
-        if existing != payload:
-            raise ValueError(f"inference config conflicts at {config_path}")
-        return
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            if has_resumable_outputs:
+                raise ValueError(f"inference config conflicts at {config_path}") from exc
+        else:
+            if existing == payload:
+                return
+            if existing == _legacy_inference_config_payload(inference_method):
+                if has_resumable_outputs:
+                    raise ValueError(f"inference config conflicts at {config_path}")
+            elif has_resumable_outputs:
+                raise ValueError(f"inference config conflicts at {config_path}")
+    elif has_resumable_outputs:
+        raise ValueError(
+            f"cannot create inference config for non-empty ledger with resumable outputs: {ledger_path}"
+        )
 
-    if _ledger_has_nonempty_rows(ledger_path):
-        raise ValueError(f"cannot create inference config for non-empty ledger without config: {ledger_path}")
+    _atomic_write_json(config_path, payload)
 
+
+def _atomic_write_json(config_path: Path, payload: dict[str, Any]) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -455,21 +499,65 @@ def _ensure_inference_config(ledger_path: Path, inference_method: str) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
-def _ledger_has_nonempty_rows(ledger_path: Path) -> bool:
-    if not ledger_path.exists():
-        return False
-    with ledger_path.open("r", encoding="utf-8") as handle:
-        return any(line.strip() for line in handle)
+def _ledger_has_resumable_outputs(ledger_path: Path) -> bool:
+    for record in read_chunk_record_index(ledger_path).values():
+        if not record.success or record.output_path is None or record.output_sha256 is None:
+            continue
+        output_path = Path(record.output_path)
+        try:
+            if output_path.is_file() and file_sha256(output_path) == record.output_sha256:
+                return True
+        except OSError:
+            continue
+    return False
 
 
-def _inference_config_payload(inference_method: str) -> dict[str, Any]:
+def _inference_config_payload(
+    inference_method: str,
+    *,
+    reference_wav_path: Path | str,
+    model_dir: Path | str | None,
+    cfg_path: Path | str | None,
+    ted_checkout: Path | str | None,
+    max_attempts: int,
+) -> dict[str, Any]:
     _validate_inference_method(inference_method)
+    payload = {
+        "schema_version": INFERENCE_CONFIG_SCHEMA_VERSION,
+        "protocol_id": ProtocolId.TED_LOCAL.value,
+        "model": {
+            "model_dir": _optional_path_string(model_dir),
+            "cfg_path": _optional_path_string(cfg_path),
+            "ted_checkout": _optional_path_string(ted_checkout),
+            "is_fp16": True,
+        },
+        "reference_wav": str(Path(reference_wav_path)),
+        "sample_rate_hz": TED_SAMPLE_RATE_HZ,
+        "max_attempts": max_attempts,
+        "method": inference_method,
+        "duration_mode": TED_DURATION_MODE,
+        "duration_token_seconds": TED_DURATION_TOKEN_SECONDS,
+        "segment_description": TED_SEGMENT_DESCRIPTION,
+        "determinism_note": TED_DETERMINISM_NOTE,
+        "generation_settings": dict(TED_FIXED_GENERATION_SETTINGS),
+    }
+    payload["configuration_sha256"] = hashlib.sha256(
+        canonical_json_dumps(payload).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def _legacy_inference_config_payload(inference_method: str) -> dict[str, Any]:
     return {
         "method": inference_method,
         "duration_mode": TED_DURATION_MODE,
         "determinism_note": TED_DETERMINISM_NOTE,
         "generation_settings": dict(TED_FIXED_GENERATION_SETTINGS),
     }
+
+
+def _optional_path_string(path: Path | str | None) -> str | None:
+    return None if path is None else str(Path(path))
 
 
 def _validate_inference_method(inference_method: str) -> None:

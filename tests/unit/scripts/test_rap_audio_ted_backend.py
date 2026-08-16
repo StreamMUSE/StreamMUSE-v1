@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from dataclasses import replace
@@ -416,9 +417,24 @@ def test_main_h200_max_head_override_recovers_from_hmm_nan_failure_and_records_s
     assert max_head_record.success is True
     assert created_models[1].calls[0]["method"] == "max_head"
     assert "inference_method=max_head" in capsys.readouterr().out
-    assert json.loads((max_head_root / "inference_config.json").read_text(encoding="utf-8")) == {
+    config = json.loads((max_head_root / "inference_config.json").read_text(encoding="utf-8"))
+    fingerprint = config.pop("configuration_sha256")
+    assert config == {
+        "schema_version": 1,
+        "protocol_id": "ted_local",
+        "model": {
+            "cfg_path": str(tmp_path / "checkpoints" / "config.yaml"),
+            "is_fp16": True,
+            "model_dir": str(tmp_path / "checkpoints"),
+            "ted_checkout": str(tmp_path / "TED-TTS"),
+        },
+        "reference_wav": str(tmp_path / "reference.wav"),
+        "sample_rate_hz": 22_050,
+        "max_attempts": 1,
         "determinism_note": "use_random=False does not guarantee determinism because TED still samples",
         "duration_mode": "both",
+        "duration_token_seconds": 0.02,
+        "segment_description": "clear, confident, rhythmic spoken rap with restrained melody",
         "generation_settings": {
             "do_sample": True,
             "emo_alpha": 0,
@@ -435,6 +451,7 @@ def test_main_h200_max_head_override_recovers_from_hmm_nan_failure_and_records_s
         },
         "method": "max_head",
     }
+    assert fingerprint == hashlib.sha256(backend.canonical_json_dumps(config).encode("utf-8")).hexdigest()
 
 
 def test_render_pending_requests_keeps_matching_inference_config_and_rejects_conflicts(tmp_path: Path) -> None:
@@ -461,6 +478,155 @@ def test_render_pending_requests_keeps_matching_inference_config_and_rejects_con
     with pytest.raises(ValueError, match="inference config conflicts"):
         backend.render_pending_requests(**kwargs, inference_method="max_head")
     assert len(model.calls) == 1
+
+
+def test_render_pending_requests_persists_complete_config_before_inference(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "campaign" / "render_chunks.jsonl"
+    config_path = record_path.with_name("inference_config.json")
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    class ConfigCheckingModel(_FakeIndexTTS2):
+        def infer(self, **kwargs: object) -> None:
+            assert config_path.is_file()
+            super().infer(**kwargs)
+
+    backend.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=tmp_path / "chunks",
+        reference_wav_path=tmp_path / "reference.wav",
+        ted_model=ConfigCheckingModel(),
+        model_dir=tmp_path / "checkpoints",
+        cfg_path=tmp_path / "checkpoints" / "config.yaml",
+        ted_checkout=tmp_path / "TED-TTS",
+    )
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["reference_wav"] == str(tmp_path / "reference.wav")
+    assert config["model"]["model_dir"] == str(tmp_path / "checkpoints")
+    assert config["model"]["cfg_path"] == str(tmp_path / "checkpoints" / "config.yaml")
+    assert config["model"]["ted_checkout"] == str(tmp_path / "TED-TTS")
+    assert "configuration_sha256" in config
+
+
+@pytest.mark.parametrize(
+    "changed_config",
+    ["reference_wav", "model_dir", "cfg_path", "ted_checkout", "method", "generation_settings"],
+)
+def test_render_pending_requests_refuses_changed_complete_config_without_mutation(
+    tmp_path: Path,
+    changed_config: str,
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    model = _FakeIndexTTS2()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "campaign" / "render_chunks.jsonl"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    kwargs = {
+        "request_path": request_path,
+        "record_path": record_path,
+        "output_dir": tmp_path / "chunks",
+        "reference_wav_path": tmp_path / "reference.wav",
+        "ted_model": model,
+        "model_dir": tmp_path / "checkpoints",
+        "cfg_path": tmp_path / "checkpoints" / "config.yaml",
+        "ted_checkout": tmp_path / "TED-TTS",
+    }
+    backend.render_pending_requests(**kwargs)
+    config_path = record_path.with_name("inference_config.json")
+    original_config = config_path.read_text(encoding="utf-8")
+    original_ledger = record_path.read_text(encoding="utf-8")
+    resumed_kwargs = dict(kwargs)
+    if changed_config == "method":
+        resumed_kwargs["inference_method"] = "max_head"
+    elif changed_config == "generation_settings":
+        backend.TED_FIXED_GENERATION_SETTINGS = {
+            **backend.TED_FIXED_GENERATION_SETTINGS,
+            "temperature": 0.9,
+        }
+    else:
+        resumed_kwargs[changed_config if changed_config != "reference_wav" else "reference_wav_path"] = (
+            tmp_path / f"different-{changed_config}"
+        )
+
+    with pytest.raises(ValueError, match="inference config conflicts"):
+        backend.render_pending_requests(**resumed_kwargs)
+
+    assert len(model.calls) == 1
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert record_path.read_text(encoding="utf-8") == original_ledger
+
+
+def test_render_pending_requests_refuses_partial_legacy_config_with_successful_output(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _request()
+    model = _FakeIndexTTS2()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "campaign" / "render_chunks.jsonl"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    kwargs = {
+        "request_path": request_path,
+        "record_path": record_path,
+        "output_dir": tmp_path / "chunks",
+        "reference_wav_path": tmp_path / "reference.wav",
+        "ted_model": model,
+    }
+    backend.render_pending_requests(**kwargs)
+    config_path = record_path.with_name("inference_config.json")
+    legacy_config = {
+        "method": "hmm",
+        "duration_mode": "both",
+        "determinism_note": backend.TED_DETERMINISM_NOTE,
+        "generation_settings": dict(backend.TED_FIXED_GENERATION_SETTINGS),
+    }
+    config_path.write_text(json.dumps(legacy_config, sort_keys=True) + "\n", encoding="utf-8")
+    original_config = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="inference config conflicts"):
+        backend.render_pending_requests(**kwargs)
+
+    assert len(model.calls) == 1
+    assert config_path.read_text(encoding="utf-8") == original_config
+
+
+def test_render_pending_requests_upgrades_partial_legacy_config_without_successful_output(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "campaign" / "render_chunks.jsonl"
+    config_path = record_path.with_name("inference_config.json")
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "method": "hmm",
+                "duration_mode": "both",
+                "determinism_note": backend.TED_DETERMINISM_NOTE,
+                "generation_settings": dict(backend.TED_FIXED_GENERATION_SETTINGS),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = backend.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=tmp_path / "chunks",
+        reference_wav_path=tmp_path / "reference.wav",
+        ted_model=_FakeIndexTTS2(),
+    )
+
+    migrated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert records[0].success is True
+    assert migrated["schema_version"] == 1
+    assert "configuration_sha256" in migrated
 
 
 def test_render_pending_requests_rejects_successful_legacy_ledger_without_inference_config(tmp_path: Path) -> None:

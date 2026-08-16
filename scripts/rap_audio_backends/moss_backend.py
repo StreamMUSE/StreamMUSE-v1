@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import importlib.util
 import json
 import os
 import sys
 import tempfile
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -37,6 +39,8 @@ GENERATION_MODE = "generation"
 MAX_NEW_TOKENS = 256
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BASE_SEED = 20260816
+CAMPAIGN_MANIFEST_SCHEMA_VERSION = 1
+DEFAULT_CAMPAIGN_MANIFEST_NAME = "campaign_manifest.json"
 GENERATION_KWARGS = {
     "max_new_tokens": MAX_NEW_TOKENS,
     "audio_temperature": 1.7,
@@ -133,16 +137,21 @@ def render_requests(
     _write_progress_line(stream, f"backend_note {DETERMINISTIC_SEED_CAVEAT}")
     _write_progress_line(stream, f"backend_note {STYLE_INSTRUCTION_CAVEAT}")
 
-    if campaign_manifest_path is not None:
-        write_campaign_manifest(
-            campaign_manifest_path,
-            runtime=active_runtime,
-            reference_wav=reference_path,
-            max_retries=max_retries,
-            base_seed=base_seed,
-        )
-
     existing = read_chunk_record_index(ledger_path)
+    manifest_path = (
+        Path(campaign_manifest_path)
+        if campaign_manifest_path is not None
+        else ledger_path.with_name(DEFAULT_CAMPAIGN_MANIFEST_NAME)
+    )
+    _ensure_campaign_manifest(
+        manifest_path,
+        runtime=active_runtime,
+        reference_wav=reference_path,
+        max_retries=max_retries,
+        base_seed=base_seed,
+        has_resumable_outputs=_has_resumable_outputs(existing, requests=requests, output_root=output_root),
+    )
+
     rendered: list[ChunkRenderRecord] = []
     for request in requests:
         key = (ProtocolId.MOSS_GLOBAL, request.song_id, request.chunk_index)
@@ -193,9 +202,7 @@ def write_campaign_manifest(
         max_retries=max_retries,
         base_seed=base_seed,
     )
-    manifest_path = Path(path)
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    _atomic_write_json(Path(path), payload)
 
 
 def campaign_manifest_payload(
@@ -205,7 +212,8 @@ def campaign_manifest_payload(
     max_retries: int,
     base_seed: int,
 ) -> dict[str, Any]:
-    return {
+    payload = {
+        "schema_version": CAMPAIGN_MANIFEST_SCHEMA_VERSION,
         "protocol_id": ProtocolId.MOSS_GLOBAL.value,
         "model_id": runtime.model_id,
         "device": runtime.device,
@@ -221,6 +229,104 @@ def campaign_manifest_payload(
         "max_retries": max_retries,
         "base_seed": base_seed,
     }
+    payload["configuration_sha256"] = hashlib.sha256(
+        canonical_json_dumps(payload).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def _ensure_campaign_manifest(
+    path: Path,
+    *,
+    runtime: MossBackendRuntime,
+    reference_wav: Path,
+    max_retries: int,
+    base_seed: int,
+    has_resumable_outputs: bool,
+) -> None:
+    expected = campaign_manifest_payload(
+        runtime=runtime,
+        reference_wav=reference_wav,
+        max_retries=max_retries,
+        base_seed=base_seed,
+    )
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            if has_resumable_outputs:
+                raise ValueError(f"campaign manifest conflicts at {path}") from exc
+        else:
+            if existing == expected:
+                return
+            legacy_expected = {
+                key: value
+                for key, value in expected.items()
+                if key not in {"schema_version", "configuration_sha256"}
+            }
+            if existing == legacy_expected:
+                _atomic_write_json(path, expected)
+                return
+            if has_resumable_outputs:
+                raise ValueError(f"campaign manifest conflicts at {path}")
+    elif has_resumable_outputs:
+        raise ValueError(f"campaign manifest conflicts at {path}: missing for resumable outputs")
+
+    _atomic_write_json(path, expected)
+
+
+def _has_resumable_outputs(
+    existing: dict[tuple[ProtocolId, str, int], ChunkRenderRecord],
+    *,
+    requests: Sequence[TwoBarRenderRequest],
+    output_root: Path,
+) -> bool:
+    selected = {
+        (ProtocolId.MOSS_GLOBAL, request.song_id, request.chunk_index): request
+        for request in requests
+    }
+    for record in existing.values():
+        if not record.success or record.output_path is None or record.output_sha256 is None:
+            continue
+        output_path = Path(record.output_path)
+        try:
+            if not output_path.is_file() or file_sha256(output_path) != record.output_sha256:
+                continue
+        except OSError:
+            continue
+        key = (record.protocol_id, record.song_id, record.chunk_index)
+        request = selected.get(key)
+        if request is not None and (
+            record.request_sha256 != request.sha256
+            or output_path.resolve() != _chunk_output_path(output_root, request).resolve()
+        ):
+            continue
+        return True
+    return False
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(canonical_json_dumps(payload))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def load_requests_jsonl(path: Path | str) -> tuple[TwoBarRenderRequest, ...]:
@@ -340,16 +446,28 @@ def _render_single_request(
                 ),
             )
 
+    silence_frame_count = int(round(request.duration_seconds * runtime.sample_rate_hz))
+    _write_silence_wav(
+        output_path,
+        frame_count=silence_frame_count,
+        sample_rate_hz=runtime.sample_rate_hz,
+    )
+    metadata = validate_wav_metadata(
+        output_path,
+        expected_sample_rate_hz=runtime.sample_rate_hz,
+        expected_channels=1,
+        expected_frame_count=silence_frame_count,
+    )
     failure = ChunkRenderRecord(
         protocol_id=ProtocolId.MOSS_GLOBAL,
         song_id=request.song_id,
         chunk_index=request.chunk_index,
         request_sha256=request.sha256,
         success=False,
-        output_path=None,
-        output_sha256=None,
+        output_path=str(output_path),
+        output_sha256=file_sha256(output_path),
         source_chunk_sha256=None,
-        sample_rate_hz=runtime.sample_rate_hz,
+        sample_rate_hz=metadata.sample_rate_hz,
         attempts=max_retries,
         error=str(last_error) if last_error is not None else "unknown render failure",
     )
@@ -362,6 +480,15 @@ def _render_single_request(
         ),
     )
     return stored_failure
+
+
+def _write_silence_wav(path: Path, *, frame_count: int, sample_rate_hz: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate_hz)
+        handle.writeframes(b"\x00\x00" * frame_count)
 
 
 def _generate_chunk(
