@@ -57,11 +57,16 @@ _PHONE_SUFFIX_RE = re.compile(r"\d+$")
 
 StretchRegionFn = Callable[[np.ndarray, int, int], np.ndarray]
 WORD_TIER_FALLBACK_PREFIX = "WORD_TIER_FALLBACK:"
+UNKNOWN_PLANNED_VOWEL = "UNKNOWN_PLANNED_VOWEL"
 MIN_WARP_REGION_SECONDS = 0.010
 
 
 class PhoneVowelMismatchError(ValueError):
     """Strict phone-tier vowels do not match the planned syllables."""
+
+
+class MissingPlannedVowelError(PhoneVowelMismatchError):
+    """A planned syllable has no ARPAbet vowel for strict matching."""
 
 
 @dataclass(frozen=True)
@@ -264,9 +269,13 @@ def match_vowel_anchors_with_word_fallback(
         matched_words,
         owned_vowels,
     ):
-        planned_vowels = tuple((_primary_vowel_phone(syllable), syllable) for syllable in syllable_group)
+        planned_vowels = tuple(
+            (_word_fallback_vowel_phone(syllable), syllable)
+            for syllable in syllable_group
+        )
         phones_match = len(aligned_vowels) == len(planned_vowels) and all(
-            _normalise_phone(source.phone) == _normalise_phone(planned_phone)
+            planned_phone != UNKNOWN_PLANNED_VOWEL
+            and _normalise_phone(source.phone) == _normalise_phone(planned_phone)
             for source, (planned_phone, _) in zip(aligned_vowels, planned_vowels)
         )
         if phones_match:
@@ -856,7 +865,16 @@ def _primary_vowel_phone(syllable: SyllableTarget) -> str:
     for phone in syllable.phonemes:
         if is_arpabet_vowel(phone):
             return phone
-    raise ValueError(f"syllable {syllable.word!r} is missing an ARPAbet vowel anchor")
+    raise MissingPlannedVowelError(
+        f"syllable {syllable.word!r} is missing an ARPAbet vowel anchor"
+    )
+
+
+def _word_fallback_vowel_phone(syllable: SyllableTarget) -> str:
+    try:
+        return _primary_vowel_phone(syllable)
+    except MissingPlannedVowelError:
+        return UNKNOWN_PLANNED_VOWEL
 
 
 def _to_mono_float32(samples: np.ndarray) -> np.ndarray:

@@ -216,15 +216,19 @@ def _write_liftoff_textgrid(path: Path, *, malformed_phone_index: int | None = N
 def _write_owned_textgrid(
     path: Path,
     *,
+    request: TwoBarRenderRequest | None = None,
     extra_gap_vowel: bool = False,
     mismatched_phone_index: int | None = None,
     overlapping_words: bool = False,
     phone_labels: tuple[str, ...] | None = None,
+    spn_words: frozenset[str] = frozenset(),
     swap_first_two_phone_entries: bool = False,
 ) -> None:
+    aligned_request = request or _request()
+    request_words = aligned_request.text.split()
     words = []
     phone_values = []
-    for index, word in enumerate(_request().text.split()):
+    for index, word in enumerate(request_words):
         word_start = 0.05 + (index * 0.25)
         word_end = 0.38 if overlapping_words and index == 0 else word_start + 0.18
         words.append(
@@ -235,11 +239,17 @@ def _write_owned_textgrid(
                 text = "{word}"
             """
         )
-        phone_start = 0.10 + (index * 0.25)
-        phone = phone_labels[index] if phone_labels is not None else "AA1"
+        if word in spn_words:
+            phone_start = word_start
+            phone_end = word_end
+            phone = "spn"
+        else:
+            phone_start = 0.10 + (index * 0.25)
+            phone_end = phone_start + 0.04
+            phone = phone_labels[index] if phone_labels is not None else "AA1"
         if index == mismatched_phone_index:
             phone = "AE1"
-        phone_values.append((phone_start, phone_start + 0.04, phone))
+        phone_values.append((phone_start, phone_end, phone))
     if extra_gap_vowel:
         phone_values.append((0.25, 0.27, "AA1"))
     phone_values.sort()
@@ -255,7 +265,7 @@ def _write_owned_textgrid(
         for index, (start, end, phone) in enumerate(phone_values)
     ]
     path.write_text(
-        """
+        f"""
         File type = "ooTextFile"
         Object class = "TextGrid"
 
@@ -269,7 +279,7 @@ def _write_owned_textgrid(
                 name = "words"
                 xmin = 0
                 xmax = 5.50
-                intervals: size = 18
+                intervals: size = {len(request_words)}
         """
         + "".join(words)
         + f"""
@@ -457,6 +467,151 @@ def test_render_aligned_chunk_falls_back_only_for_liftoff_spn_word(tmp_path: Pat
         if anchor["aligned_phone"].startswith("WORD_TIER_FALLBACK:")
     ] == ["WORD_TIER_FALLBACK:liftoff", "WORD_TIER_FALLBACK:liftoff"]
     assert list(tmp_path.glob(".warped.wav.alignment.json.*.tmp")) == []
+
+
+def test_render_aligned_chunk_falls_back_for_single_syllable_oov_possessive(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    syllables = list(request.syllables)
+    syllables[0] = replace(
+        syllables[0],
+        word="gravity's",
+        phonemes=("G", "R", "V", "T", "Y"),
+    )
+    request = replace(
+        request,
+        text=request.text.replace("worda", "gravity's", 1),
+        syllables=tuple(syllables),
+    )
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(
+        source_wav,
+        1_000,
+        np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32),
+    )
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_owned_textgrid(
+        textgrid_path,
+        request=request,
+        spn_words=frozenset({"gravity's"}),
+    )
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert result.record.success
+    fallback_anchors = [
+        anchor
+        for anchor in result.anchor_map
+        if anchor.aligned_phone.startswith("WORD_TIER_FALLBACK:")
+    ]
+    assert len(fallback_anchors) == 1
+    assert fallback_anchors[0].word == "gravity's"
+    assert fallback_anchors[0].planned_phone == "UNKNOWN_PLANNED_VOWEL"
+    assert fallback_anchors[0].aligned_phone == "WORD_TIER_FALLBACK:gravity's"
+    assert result.fallback_count == 1
+
+    diagnostics = json.loads(
+        output_wav.with_suffix(output_wav.suffix + ".alignment.json").read_text(encoding="utf-8")
+    )
+    assert diagnostics["fallback_count"] == 1
+    assert diagnostics["anchor_map"][0]["planned_phone"] == "UNKNOWN_PLANNED_VOWEL"
+    assert diagnostics["anchor_map"][0]["aligned_phone"] == "WORD_TIER_FALLBACK:gravity's"
+
+
+def test_render_aligned_chunk_falls_back_for_multisyllable_oov_possessive(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    request = _liftoff_request()
+    syllables = tuple(
+        replace(
+            syllable,
+            word="darkness's",
+            phonemes=("D", "R", "K") if syllable.index_in_word == 0 else ("N", "S", "Z"),
+        )
+        if syllable.word == "liftoff"
+        else syllable
+        for syllable in request.syllables
+    )
+    request = replace(
+        request,
+        text=request.text.replace("liftoff", "darkness's", 1),
+        syllables=syllables,
+    )
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(
+        source_wav,
+        1_000,
+        np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32),
+    )
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_owned_textgrid(
+        textgrid_path,
+        request=request,
+        spn_words=frozenset({"darkness's"}),
+    )
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    fallback_anchors = [
+        anchor
+        for anchor in result.anchor_map
+        if anchor.aligned_phone.startswith("WORD_TIER_FALLBACK:")
+    ]
+    assert result.record.success
+    assert [(anchor.word, anchor.index_in_word) for anchor in fallback_anchors] == [
+        ("darkness's", 0),
+        ("darkness's", 1),
+    ]
+    assert all(
+        anchor.planned_phone == "UNKNOWN_PLANNED_VOWEL"
+        for anchor in fallback_anchors
+    )
+    assert all(
+        anchor.aligned_phone == "WORD_TIER_FALLBACK:darkness's"
+        for anchor in fallback_anchors
+    )
+    assert (
+        1.55
+        < fallback_anchors[0].source_seconds
+        < fallback_anchors[1].source_seconds
+        < 1.73
+    )
+    assert result.fallback_count == 2
+
+    diagnostics = json.loads(
+        output_wav.with_suffix(output_wav.suffix + ".alignment.json").read_text(encoding="utf-8")
+    )
+    diagnostic_fallbacks = [
+        anchor
+        for anchor in diagnostics["anchor_map"]
+        if anchor["aligned_phone"].startswith("WORD_TIER_FALLBACK:")
+    ]
+    assert diagnostics["fallback_count"] == 2
+    assert [anchor["planned_phone"] for anchor in diagnostic_fallbacks] == [
+        "UNKNOWN_PLANNED_VOWEL",
+        "UNKNOWN_PLANNED_VOWEL",
+    ]
 
 
 def test_render_aligned_chunk_rejects_malformed_phone_interval_before_fallback(tmp_path: Path) -> None:

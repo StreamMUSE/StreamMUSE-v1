@@ -9,6 +9,7 @@ import pytest
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget
 from streammuse.experiments.rap_audio_protocols.warp import (
     PhoneInterval,
+    PhoneVowelMismatchError,
     WordInterval,
     is_arpabet_vowel,
     match_vowel_anchors,
@@ -203,6 +204,21 @@ def test_match_vowel_anchors_rejects_source_target_count_mismatches() -> None:
 
     with pytest.raises(ValueError, match="aligned vowel count"):
         match_vowel_anchors(intervals, syllables, sample_rate_hz=1_000)
+
+
+def test_match_vowel_anchors_strictly_rejects_missing_planned_vowel() -> None:
+    with pytest.raises(PhoneVowelMismatchError, match="missing an ARPAbet vowel anchor"):
+        match_vowel_anchors(
+            (PhoneInterval(start_seconds=0.05, end_seconds=0.15, phone="spn"),),
+            (
+                _syllable(
+                    "gravity's",
+                    ("G", "R", "V", "T", "Y"),
+                    target_seconds=0.10,
+                ),
+            ),
+            sample_rate_hz=1_000,
+        )
 
 
 def test_match_vowel_anchors_clamps_only_endpoint_targets_to_warp_margin() -> None:
