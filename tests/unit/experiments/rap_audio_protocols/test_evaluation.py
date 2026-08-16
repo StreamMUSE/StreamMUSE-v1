@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from typing import NoReturn
 
 import numpy as np
 import pytest
@@ -162,6 +163,69 @@ def test_estimate_syllable_timing_error_skips_deleted_asr_word_without_shifting_
     assert max(abs(error) for error in timing_errors) < 1e-6
 
 
+def test_evaluate_protocol_song_reports_signed_timing_bias_separately_from_absolute_error(tmp_path: Path) -> None:
+    evaluation = importlib.import_module("streammuse.experiments.rap_audio_protocols.evaluation")
+    request = _request(0)
+    output_path = tmp_path / "chunk-000.wav"
+    _write_chunk_wav(output_path, request)
+    recognized_words = tuple(
+        evaluation.RecognizedWord(
+            text=syllable.word,
+            start_seconds=syllable.target_seconds + (-0.2 if index < 9 else 0.1),
+            end_seconds=syllable.target_seconds + (-0.08 if index < 9 else 0.22),
+        )
+        for index, syllable in enumerate(request.syllables)
+    )
+
+    metrics = evaluation.evaluate_protocol_song(
+        protocol_id=ProtocolId.MOSS_GLOBAL,
+        song_id=request.song_id,
+        requests=(request,),
+        chunk_records=(_record(request, output_path),),
+        transcribe_chunk=lambda _path: recognized_words,
+    )
+
+    assert "estimated_syllable_timing_error_ms" not in metrics
+    assert metrics["estimated_syllable_timing_bias_ms"] == {
+        "mean": pytest.approx(-50.0),
+        "median": pytest.approx(-50.0),
+        "measured_count": 18,
+    }
+    assert metrics["estimated_syllable_absolute_timing_error_ms"] == {
+        "mean": pytest.approx(150.0),
+        "median": pytest.approx(150.0),
+        "p95": pytest.approx(200.0),
+        "max": pytest.approx(200.0),
+        "measured_count": 18,
+    }
+
+
+def test_evaluate_protocol_song_counts_failed_chunk_as_reference_deletions_without_timing(tmp_path: Path) -> None:
+    evaluation = importlib.import_module("streammuse.experiments.rap_audio_protocols.evaluation")
+    request = _request(0)
+
+    def unexpected_transcription(_path: Path) -> NoReturn:
+        raise AssertionError("failed chunks must not be transcribed")
+
+    metrics = evaluation.evaluate_protocol_song(
+        protocol_id=ProtocolId.MOSS_GLOBAL,
+        song_id=request.song_id,
+        requests=(request,),
+        chunk_records=(_record(request, tmp_path / "missing.wav", success=False),),
+        transcribe_chunk=unexpected_transcription,
+    )
+
+    assert metrics["word_error_counts"] == {
+        "reference_word_count": 18,
+        "substitutions": 0,
+        "insertions": 0,
+        "deletions": 18,
+    }
+    assert metrics["word_error_rate"] == pytest.approx(1.0)
+    assert metrics["estimated_syllable_timing_bias_ms"]["measured_count"] == 0
+    assert metrics["estimated_syllable_absolute_timing_error_ms"]["measured_count"] == 0
+
+
 def test_evaluate_protocol_song_aggregates_duration_wer_and_failed_chunk_counts(tmp_path: Path) -> None:
     evaluation = importlib.import_module("streammuse.experiments.rap_audio_protocols.evaluation")
     first = _request(0)
@@ -210,12 +274,12 @@ def test_evaluate_protocol_song_aggregates_duration_wer_and_failed_chunk_counts(
     assert metrics["successful_chunk_count"] == 2
     assert metrics["failed_chunk_count"] == 1
     assert metrics["word_error_counts"] == {
-        "reference_word_count": 36,
+        "reference_word_count": 54,
         "substitutions": 1,
         "insertions": 1,
-        "deletions": 0,
+        "deletions": 18,
     }
-    assert metrics["word_error_rate"] == pytest.approx(2 / 36)
+    assert metrics["word_error_rate"] == pytest.approx(20 / 54)
     assert metrics["duration_error_ms"] == {
         "mean": pytest.approx(10.0),
         "median": pytest.approx(10.0),
@@ -223,7 +287,8 @@ def test_evaluate_protocol_song_aggregates_duration_wer_and_failed_chunk_counts(
         "max": pytest.approx(20.0),
     }
     assert metrics["clipped_sample_count"] == 2
-    assert metrics["estimated_syllable_timing_error_ms"]["measured_count"] == 35
+    assert metrics["estimated_syllable_timing_bias_ms"]["measured_count"] == 35
+    assert metrics["estimated_syllable_absolute_timing_error_ms"]["measured_count"] == 35
     assert metrics["stress_rms_correlation"] > 0.99
 
 

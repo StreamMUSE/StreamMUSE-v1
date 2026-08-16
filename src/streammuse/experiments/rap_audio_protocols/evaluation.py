@@ -249,13 +249,16 @@ def evaluate_protocol_song(
     silent_chunk_count = 0
     failed_chunk_count = 0
     stress_correlations: list[float] = []
-    timing_errors_ms: list[float] = []
+    signed_timing_errors_ms: list[float] = []
     successful_chunk_count = 0
 
     for request in requests:
+        request_reference_words = normalize_words(request.text)
+        total_word_counts["reference_word_count"] += len(request_reference_words)
         record = records_by_chunk.get(request.chunk_index)
         if record is None or not record.success or not record.output_path:
             failed_chunk_count += 1
+            total_word_counts["deletions"] += len(request_reference_words)
             if progress_callback is not None:
                 progress_callback(request, "failed")
             continue
@@ -272,10 +275,10 @@ def evaluate_protocol_song(
 
             recognized_words = tuple(transcribe_chunk(output_path))
             counts = compute_word_error_counts(
-                normalize_words(request.text),
+                request_reference_words,
                 tuple(word for word in (normalize_word(item.text) for item in recognized_words) if word),
             )
-            for key in total_word_counts:
+            for key in ("substitutions", "insertions", "deletions"):
                 total_word_counts[key] += int(counts[key])
 
             stress_correlation = measure_stress_rms_correlation(
@@ -286,7 +289,7 @@ def evaluate_protocol_song(
             if stress_correlation is not None and not math.isnan(stress_correlation):
                 stress_correlations.append(stress_correlation)
 
-            timing_errors_ms.extend(estimate_syllable_timing_error_ms(request, recognized_words))
+            signed_timing_errors_ms.extend(estimate_syllable_timing_error_ms(request, recognized_words))
         except Exception:
             if progress_callback is not None:
                 progress_callback(request, "error")
@@ -311,7 +314,10 @@ def evaluate_protocol_song(
         "word_error_counts": total_word_counts,
         "word_error_rate": 0.0 if reference_words == 0 else total_errors / reference_words,
         "duration_error_ms": _duration_summary(duration_errors_ms),
-        "estimated_syllable_timing_error_ms": _summarize_values(timing_errors_ms),
+        "estimated_syllable_timing_bias_ms": _timing_bias_summary(signed_timing_errors_ms),
+        "estimated_syllable_absolute_timing_error_ms": _summarize_values(
+            tuple(abs(error) for error in signed_timing_errors_ms)
+        ),
         "stress_rms_correlation": (
             float(np.mean(np.asarray(stress_correlations, dtype=np.float64)))
             if stress_correlations
@@ -402,6 +408,21 @@ def _duration_summary(values: Sequence[float]) -> dict[str, float]:
         "median": float(summary["median"]),
         "p95": float(summary["p95"]),
         "max": float(summary["max"]),
+    }
+
+
+def _timing_bias_summary(values: Sequence[float]) -> dict[str, float | int]:
+    if not values:
+        return {
+            "mean": 0.0,
+            "median": 0.0,
+            "measured_count": 0,
+        }
+    array = np.asarray(values, dtype=np.float64)
+    return {
+        "mean": float(np.mean(array)),
+        "median": float(np.median(array)),
+        "measured_count": int(array.size),
     }
 
 
