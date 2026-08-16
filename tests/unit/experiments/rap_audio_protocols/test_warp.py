@@ -50,7 +50,7 @@ def test_is_arpabet_vowel_accepts_stressed_and_unstressed_phones() -> None:
     assert not is_arpabet_vowel("SH")
 
 
-def test_parse_textgrid_phone_intervals_extracts_ordered_phone_intervals() -> None:
+def test_parse_textgrid_phone_intervals_reads_only_long_form_phones_tier() -> None:
     text = """
     File type = "ooTextFile"
     Object class = "TextGrid"
@@ -58,9 +58,19 @@ def test_parse_textgrid_phone_intervals_extracts_ordered_phone_intervals() -> No
     xmin = 0
     xmax = 0.42
     tiers? <exists>
-    size = 1
+    size = 2
     item []:
         item [1]:
+            class = "IntervalTier"
+            name = "words"
+            xmin = 0
+            xmax = 0.42
+            intervals: size = 1
+            intervals [1]:
+                xmin = 0.00
+                xmax = 0.42
+                text = "beat"
+        item [2]:
             class = "IntervalTier"
             name = "phones"
             xmin = 0
@@ -69,11 +79,11 @@ def test_parse_textgrid_phone_intervals_extracts_ordered_phone_intervals() -> No
             intervals [1]:
                 xmin = 0.00
                 xmax = 0.08
-                text = "HH"
+                text = "B"
             intervals [2]:
                 xmin = 0.08
                 xmax = 0.18
-                text = "EH1"
+                text = "IY1"
             intervals [3]:
                 xmin = 0.18
                 xmax = 0.25
@@ -86,7 +96,50 @@ def test_parse_textgrid_phone_intervals_extracts_ordered_phone_intervals() -> No
 
     intervals = parse_textgrid_phone_intervals(text)
 
-    assert [interval.phone for interval in intervals] == ["HH", "EH1", "L"]
+    assert [interval.phone for interval in intervals] == ["B", "IY1", "L"]
+    assert intervals[1].start_seconds == pytest.approx(0.08)
+    assert intervals[1].end_seconds == pytest.approx(0.18)
+
+
+def test_parse_textgrid_phone_intervals_supports_short_form_praat_textgrid() -> None:
+    text = '''
+    File type = "ooTextFile short"
+    "TextGrid"
+
+    0
+    0.42
+    <exists>
+    2
+    "IntervalTier"
+    "words"
+    0
+    0.42
+    1
+    0
+    0.42
+    "beat"
+    "IntervalTier"
+    "phones"
+    0
+    0.42
+    4
+    0.00
+    0.08
+    "B"
+    0.08
+    0.18
+    "IY1"
+    0.18
+    0.25
+    ""
+    0.25
+    0.42
+    "T"
+    '''
+
+    intervals = parse_textgrid_phone_intervals(text)
+
+    assert [interval.phone for interval in intervals] == ["B", "IY1", "T"]
     assert intervals[1].start_seconds == pytest.approx(0.08)
     assert intervals[1].end_seconds == pytest.approx(0.18)
 
@@ -193,3 +246,35 @@ def test_piecewise_pitch_preserving_warp_hits_target_anchors_and_keeps_exact_fra
     assert warped.samples[250] == pytest.approx(1.0)
     assert warped.samples[650] == pytest.approx(1.0)
     assert all(region.stretch_ratio > 0 for region in warped.stretch_regions)
+
+
+def test_piecewise_pitch_preserving_warp_preserves_boundary_impulses_with_default_crossfade() -> None:
+    sample_rate_hz = 1_000
+    samples = np.zeros(1_000, dtype=np.float32)
+    samples[110] = 1.0
+    samples[610] = 1.0
+    matched = match_vowel_anchors(
+        (
+            PhoneInterval(start_seconds=0.100, end_seconds=0.140, phone="IY1"),
+            PhoneInterval(start_seconds=0.600, end_seconds=0.640, phone="OW1"),
+        ),
+        (
+            _syllable("beat", ("B", "IY1", "T"), target_seconds=0.250),
+            _syllable("flow", ("F", "L", "OW1"), target_seconds=0.650),
+        ),
+        sample_rate_hz=sample_rate_hz,
+    )
+
+    warped = piecewise_pitch_preserving_warp(
+        samples,
+        sample_rate_hz=sample_rate_hz,
+        anchors=matched,
+        target_frame_count=1_000,
+        stretch_region=_impulse_stretcher,
+        source_sha256="c" * 64,
+    )
+
+    assert len(warped.samples) == 1_000
+    assert np.flatnonzero(np.abs(warped.samples) > 0.5).tolist() == [250, 650]
+    assert warped.samples[250] == pytest.approx(1.0)
+    assert warped.samples[650] == pytest.approx(1.0)

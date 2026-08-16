@@ -10,6 +10,11 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
+from streammuse.experiments.rap_audio_protocols.artifacts import (
+    append_chunk_record,
+    chunk_record_is_complete,
+    file_sha256,
+)
 from streammuse.experiments.rap_audio_protocols.contracts import ProtocolId, SyllableTarget, TwoBarRenderRequest
 
 
@@ -125,13 +130,19 @@ def test_stage_alignment_inputs_enforces_source_sha_and_writes_lab_pairs(tmp_pat
             expected_source_sha256=source_sha256,
         ),
     )
+    alignment_output_dir = tmp_path / "mfa-output"
 
-    staged = backend.stage_alignment_inputs(pending, tmp_path / "mfa-corpus")
+    staged = backend.stage_alignment_inputs(
+        pending,
+        tmp_path / "mfa-corpus",
+        output_dir=alignment_output_dir,
+    )
 
     assert len(staged) == 1
     assert staged[0].source_sha256 == source_sha256
     assert staged[0].staged_wav_path.read_bytes() == source_wav.read_bytes()
     assert staged[0].staged_lab_path.read_text(encoding="utf-8") == _request().text
+    assert staged[0].expected_textgrid_path == alignment_output_dir / "01_space_exploration__chunk_00.TextGrid"
 
     with pytest.raises(ValueError, match="SHA-256"):
         backend.stage_alignment_inputs(
@@ -143,6 +154,7 @@ def test_stage_alignment_inputs_enforces_source_sha_and_writes_lab_pairs(tmp_pat
                 ),
             ),
             tmp_path / "bad-corpus",
+            output_dir=tmp_path / "bad-output",
         )
 
 
@@ -186,7 +198,6 @@ def test_render_aligned_chunk_propagates_source_sha_and_logged_stretch_ratios(tm
         output_wav_path=output_wav,
         attempts=2,
         stretch_region=_impulse_stretcher,
-        crossfade_seconds=0.0,
     )
 
     sample_rate_hz, warped = wavfile.read(output_wav)
@@ -200,6 +211,10 @@ def test_render_aligned_chunk_propagates_source_sha_and_logged_stretch_ratios(tm
     assert len(result.anchor_map) == 18
     assert len(result.stretch_ratios) > 0
     assert all(ratio > 0 for ratio in result.stretch_ratios)
+    assert all(
+        warped[round(syllable.target_seconds * sample_rate_hz)] == pytest.approx(1.0)
+        for syllable in request.syllables
+    )
 
 
 def test_render_aligned_chunk_returns_explicit_failure_for_missing_vowel_anchor(tmp_path: Path) -> None:
@@ -208,17 +223,34 @@ def test_render_aligned_chunk_returns_explicit_failure_for_missing_vowel_anchor(
     _, source_sha256 = _write_source_wav(source_wav)
     textgrid_path = tmp_path / "aligned.TextGrid"
     _write_textgrid(textgrid_path, missing_last_vowel=True)
+    output_wav = tmp_path / "warped.wav"
 
     result = backend.render_aligned_chunk(
         request=_request(),
         source_wav_path=source_wav,
         expected_source_sha256=source_sha256,
         textgrid_path=textgrid_path,
-        output_wav_path=tmp_path / "warped.wav",
+        output_wav_path=output_wav,
         stretch_region=_impulse_stretcher,
-        crossfade_seconds=0.0,
     )
+    sample_rate_hz, silence = wavfile.read(output_wav)
 
     assert not result.record.success
     assert result.record.source_chunk_sha256 == source_sha256
     assert "aligned vowel count" in (result.record.error or "")
+    assert result.record.output_path == str(output_wav)
+    assert result.record.output_sha256 == file_sha256(output_wav)
+    assert result.record.sample_rate_hz == 1_000
+    assert result.output_wav_path == output_wav
+    assert sample_rate_hz == 1_000
+    assert len(silence) == round(_request().duration_seconds * sample_rate_hz)
+    assert np.count_nonzero(silence) == 0
+
+    ledger_path = tmp_path / "records.jsonl"
+    append_chunk_record(ledger_path, result.record)
+    assert not chunk_record_is_complete(
+        ledger_path,
+        output_wav,
+        request=_request(),
+        protocol_id=ProtocolId.MOSS_ALIGNED,
+    )

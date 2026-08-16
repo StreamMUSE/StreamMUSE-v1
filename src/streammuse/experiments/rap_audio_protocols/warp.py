@@ -34,10 +34,16 @@ _ARPABET_VOWELS = frozenset(
         "UW",
     }
 )
-_TEXTGRID_INTERVAL_RE = re.compile(
-    r"intervals \[\d+\]:\s*xmin = ([0-9.]+)\s*xmax = ([0-9.]+)\s*text = \"([^\"]*)\"",
+_NUMBER_PATTERN = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_LONG_TIER_RE = re.compile(r"^[ \t]*item \[\d+\]:[ \t]*$", re.MULTILINE)
+_LONG_INTERVAL_RE = re.compile(
+    rf"intervals \[\d+\]:\s*xmin\s*=\s*({_NUMBER_PATTERN})"
+    rf"\s*xmax\s*=\s*({_NUMBER_PATTERN})"
+    r'\s*text\s*=\s*"((?:""|[^"])*)"',
     re.MULTILINE,
 )
+_LONG_CLASS_RE = re.compile(r'^\s*class\s*=\s*"((?:""|[^"])*)"\s*$', re.MULTILINE)
+_LONG_NAME_RE = re.compile(r'^\s*name\s*=\s*"((?:""|[^"])*)"\s*$', re.MULTILINE)
 _PHONE_SUFFIX_RE = re.compile(r"\d+$")
 
 
@@ -137,21 +143,13 @@ def is_arpabet_vowel(phone: str) -> bool:
 
 
 def parse_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...]:
-    intervals = []
-    for start_seconds, end_seconds, phone in _TEXTGRID_INTERVAL_RE.findall(text):
-        label = phone.strip()
-        if not label:
-            continue
-        intervals.append(
-            PhoneInterval(
-                start_seconds=float(start_seconds),
-                end_seconds=float(end_seconds),
-                phone=label,
-            )
-        )
+    if _LONG_TIER_RE.search(text):
+        intervals = _parse_long_textgrid_phone_intervals(text)
+    else:
+        intervals = _parse_short_textgrid_phone_intervals(text)
     if not intervals:
         raise ValueError("no phone intervals found in TextGrid")
-    return tuple(intervals)
+    return intervals
 
 
 def load_textgrid_phone_intervals(path: Path | str) -> tuple[PhoneInterval, ...]:
@@ -244,6 +242,10 @@ def piecewise_pitch_preserving_warp(
         target_length = (target_end - target_start) + 1
         stretched = _coerce_region_length(stretcher(source_region, target_length, sample_rate_hz), target_length)
         if region_index > 0:
+            rendered_regions[-1][-1] = _preserve_boundary_sample(
+                rendered_regions[-1][-1],
+                stretched[0],
+            )
             stretched = stretched[1:]
         rendered_regions.append(stretched)
         diagnostics.append(
@@ -284,15 +286,120 @@ def _apply_equal_power_crossfade(
     for join_index, boundary in enumerate(target_points[1:-1], start=1):
         left_region = rendered_regions[join_index - 1]
         right_region = rendered_regions[join_index]
-        overlap = min(crossfade_samples, len(left_region), len(right_region), boundary + 1)
+        overlap = min(crossfade_samples, len(left_region) - 1, len(right_region))
         if overlap <= 1:
             continue
-        left_tail = left_region[-overlap:]
+        left_tail = left_region[-overlap - 1 : -1]
         right_head = right_region[:overlap]
-        theta = np.linspace(0.0, np.pi / 2.0, overlap, dtype=np.float32)
+        theta = np.linspace(0.0, np.pi / 2.0, overlap + 1, dtype=np.float32)[1:]
         blend = (left_tail * np.cos(theta)) + (right_head * np.sin(theta))
-        output[boundary - overlap + 1 : boundary + 1] = blend
+        output[boundary + 1 : boundary + overlap + 1] = blend
     return output.astype(np.float32, copy=False)
+
+
+def _preserve_boundary_sample(left_sample: np.float32, right_sample: np.float32) -> np.float32:
+    if abs(float(right_sample)) > abs(float(left_sample)):
+        return np.float32(right_sample)
+    return np.float32(left_sample)
+
+
+def _parse_long_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...]:
+    tier_matches = tuple(_LONG_TIER_RE.finditer(text))
+    for index, tier_match in enumerate(tier_matches):
+        end = tier_matches[index + 1].start() if index + 1 < len(tier_matches) else len(text)
+        tier = text[tier_match.end() : end]
+        class_match = _LONG_CLASS_RE.search(tier)
+        name_match = _LONG_NAME_RE.search(tier)
+        if class_match is None or name_match is None:
+            continue
+        tier_class = _decode_praat_string(class_match.group(1))
+        tier_name = _decode_praat_string(name_match.group(1))
+        if tier_class != "IntervalTier" or tier_name.casefold() != "phones":
+            continue
+        return _phone_intervals_from_values(_LONG_INTERVAL_RE.findall(tier))
+    raise ValueError("phones IntervalTier not found in TextGrid")
+
+
+def _parse_short_textgrid_phone_intervals(text: str) -> tuple[PhoneInterval, ...]:
+    values = [line.strip() for line in text.lstrip("\ufeff").splitlines() if line.strip()]
+    try:
+        cursor = values.index("<exists>") + 1
+    except ValueError as exc:
+        raise ValueError("short TextGrid is missing tier metadata") from exc
+
+    def take() -> str:
+        nonlocal cursor
+        if cursor >= len(values):
+            raise ValueError("short TextGrid ended before the phones tier was complete")
+        value = values[cursor]
+        cursor += 1
+        return value
+
+    tier_count = _parse_short_count(take(), field_name="tier count")
+    phone_values: list[tuple[str, str, str]] | None = None
+    for _ in range(tier_count):
+        tier_class = _parse_short_string(take())
+        tier_name = _parse_short_string(take())
+        _parse_short_number(take(), field_name="tier xmin")
+        _parse_short_number(take(), field_name="tier xmax")
+        entry_count = _parse_short_count(take(), field_name="tier entry count")
+        if tier_class == "IntervalTier":
+            entries = []
+            for _ in range(entry_count):
+                entries.append((take(), take(), _parse_short_string(take())))
+            if tier_name.casefold() == "phones":
+                phone_values = entries
+        elif tier_class == "TextTier":
+            for _ in range(entry_count):
+                take()
+                _parse_short_string(take())
+        else:
+            raise ValueError(f"unsupported short TextGrid tier class: {tier_class}")
+    if phone_values is None:
+        raise ValueError("phones IntervalTier not found in TextGrid")
+    return _phone_intervals_from_values(phone_values)
+
+
+def _phone_intervals_from_values(
+    values: Sequence[tuple[str, str, str]],
+) -> tuple[PhoneInterval, ...]:
+    intervals = []
+    for start_seconds, end_seconds, raw_phone in values:
+        label = _decode_praat_string(raw_phone).strip()
+        if not label:
+            continue
+        intervals.append(
+            PhoneInterval(
+                start_seconds=float(start_seconds),
+                end_seconds=float(end_seconds),
+                phone=label,
+            )
+        )
+    return tuple(intervals)
+
+
+def _parse_short_string(value: str) -> str:
+    if len(value) < 2 or not value.startswith('"') or not value.endswith('"'):
+        raise ValueError(f"expected quoted short TextGrid string, got {value!r}")
+    return _decode_praat_string(value[1:-1])
+
+
+def _parse_short_number(value: str, *, field_name: str) -> float:
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid short TextGrid {field_name}: {value!r}") from exc
+
+
+def _parse_short_count(value: str, *, field_name: str) -> int:
+    number = _parse_short_number(value, field_name=field_name)
+    if not number.is_integer() or number < 0:
+        raise ValueError(f"invalid short TextGrid {field_name}: {value!r}")
+    return int(number)
+
+
+def _decode_praat_string(value: str) -> str:
+    return value.replace('""', '"')
 
 
 def _build_control_points(

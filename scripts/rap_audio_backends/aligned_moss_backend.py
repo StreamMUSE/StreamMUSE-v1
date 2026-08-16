@@ -90,8 +90,11 @@ class MontrealForcedAlignerCommand:
 def stage_alignment_inputs(
     pending_chunks: Sequence[PendingAlignedChunk],
     staging_dir: Path | str,
+    *,
+    output_dir: Path | str,
 ) -> tuple[StagedAlignedChunk, ...]:
     staging_root = Path(staging_dir)
+    output_root = Path(output_dir)
     staging_root.mkdir(parents=True, exist_ok=True)
     staged = []
     for pending in pending_chunks:
@@ -108,7 +111,7 @@ def stage_alignment_inputs(
                 source_sha256=source_sha256,
                 staged_wav_path=staged_wav_path,
                 staged_lab_path=staged_lab_path,
-                expected_textgrid_path=staging_root / f"{stem}.TextGrid",
+                expected_textgrid_path=output_root / f"{stem}.TextGrid",
             )
         )
     return tuple(staged)
@@ -145,11 +148,11 @@ def render_aligned_chunk(
     stretch_region: StretchRegionFn | None = None,
     crossfade_seconds: float = 0.005,
 ) -> AlignedChunkRenderResult:
+    output_path = Path(output_wav_path)
     source_sha256: str | None = None
     sample_rate_hz: int | None = None
     try:
         source_path = Path(source_wav_path)
-        output_path = Path(output_wav_path)
         source_sha256 = verify_source_wav_sha(source_path, expected_source_sha256)
         sample_rate_hz, samples = _load_native_mono_float32(source_path)
         anchors = match_vowel_anchors(
@@ -186,20 +189,40 @@ def render_aligned_chunk(
             output_wav_path=output_path,
         )
     except Exception as exc:
+        output_sha256: str | None = None
+        failed_output_path: Path | None = None
+        error = f"aligned_moss_backend failed: {exc}"
+        if sample_rate_hz is not None:
+            try:
+                frame_count = round(request.duration_seconds * sample_rate_hz)
+                _write_native_float32_wav(
+                    output_path,
+                    sample_rate_hz,
+                    np.zeros(frame_count, dtype=np.float32),
+                )
+                output_sha256 = file_sha256(output_path)
+                failed_output_path = output_path
+            except Exception as silence_exc:
+                error = f"{error}; silence emission failed: {silence_exc}"
         record = ChunkRenderRecord(
             protocol_id=ProtocolId.MOSS_ALIGNED,
             song_id=request.song_id,
             chunk_index=request.chunk_index,
             request_sha256=request.sha256,
             success=False,
-            output_path=None,
-            output_sha256=None,
+            output_path=str(failed_output_path) if failed_output_path is not None else None,
+            output_sha256=output_sha256,
             source_chunk_sha256=source_sha256,
             sample_rate_hz=sample_rate_hz,
             attempts=attempts,
-            error=f"aligned_moss_backend failed: {exc}",
+            error=error,
         )
-        return AlignedChunkRenderResult(record=record, anchor_map=(), stretch_ratios=(), output_wav_path=None)
+        return AlignedChunkRenderResult(
+            record=record,
+            anchor_map=(),
+            stretch_ratios=(),
+            output_wav_path=failed_output_path,
+        )
 
 
 def verify_source_wav_sha(path: Path | str, expected_source_sha256: str) -> str:
