@@ -62,3 +62,20 @@ def test_boundary_jump_metrics_measure_target_map_discontinuities() -> None:
     assert metrics["boundary_count"] == 2
     assert metrics["mean_absolute_jump"] == pytest.approx(0.75)
     assert metrics["max_absolute_jump"] == pytest.approx(1.0)
+
+
+def test_resample_mono_converts_48khz_drums_to_24khz_vocals() -> None:
+    script = _load_script()
+    source = np.sin(
+        2.0 * np.pi * 440.0 * np.arange(48_000, dtype=np.float32) / 48_000.0
+    ).astype(np.float32)
+
+    resampled = script.resample_mono(
+        source,
+        source_rate_hz=48_000,
+        target_rate_hz=24_000,
+    )
+
+    assert len(resampled) == 24_000
+    assert resampled.dtype == np.float32
+    assert np.sqrt(np.mean(np.square(resampled))) == pytest.approx(1 / np.sqrt(2), rel=0.01)

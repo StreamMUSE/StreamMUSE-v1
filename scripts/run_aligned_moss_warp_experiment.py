@@ -10,12 +10,14 @@ import json
 import shutil
 import sys
 from dataclasses import asdict, dataclass
+from math import gcd
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Sequence
 
 import numpy as np
 from scipy.io import wavfile
+from scipy.signal import resample_poly
 
 from streammuse.experiments.rap_audio_protocols.artifacts import file_sha256
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget, TwoBarRenderRequest
@@ -446,20 +448,46 @@ def _mix_with_chunk_drums(
 ) -> None:
     vocal_rate, vocal = wavfile.read(vocal_path)
     drum_rate, drums = wavfile.read(drums_path)
-    if vocal_rate != drum_rate:
-        raise ValueError("vocal and drum sample rates must match")
     vocal_mono = _to_mono_float32(vocal)
     drum_mono = _to_mono_float32(drums)
     start = round(request.chunk_index * request.duration_seconds * drum_rate)
-    drum_chunk = drum_mono[start : start + len(vocal_mono)]
+    source_frame_count = round((len(vocal_mono) / vocal_rate) * drum_rate)
+    drum_chunk = drum_mono[start : start + source_frame_count]
+    drum_chunk = resample_mono(
+        drum_chunk,
+        source_rate_hz=drum_rate,
+        target_rate_hz=vocal_rate,
+    )
     if len(drum_chunk) < len(vocal_mono):
         drum_chunk = np.pad(drum_chunk, (0, len(vocal_mono) - len(drum_chunk)))
+    elif len(drum_chunk) > len(vocal_mono):
+        drum_chunk = drum_chunk[: len(vocal_mono)]
     mixed = (0.9 * vocal_mono) + (0.35 * drum_chunk)
     peak = float(np.max(np.abs(mixed), initial=0.0))
     if peak > 0.98:
         mixed = mixed * (0.98 / peak)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wavfile.write(output_path, vocal_rate, np.asarray(mixed, dtype=np.float32))
+
+
+def resample_mono(
+    samples: np.ndarray,
+    *,
+    source_rate_hz: int,
+    target_rate_hz: int,
+) -> np.ndarray:
+    if source_rate_hz <= 0 or target_rate_hz <= 0:
+        raise ValueError("sample rates must be positive")
+    mono = _to_mono_float32(samples)
+    if source_rate_hz == target_rate_hz:
+        return np.asarray(mono, dtype=np.float32)
+    divisor = gcd(source_rate_hz, target_rate_hz)
+    resampled = resample_poly(
+        mono,
+        up=target_rate_hz // divisor,
+        down=source_rate_hz // divisor,
+    )
+    return np.asarray(resampled, dtype=np.float32)
 
 
 def _concatenate_audio(paths: Sequence[Path], output_path: Path) -> None:
