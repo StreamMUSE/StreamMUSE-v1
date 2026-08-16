@@ -6,7 +6,9 @@ import argparse
 import importlib
 import inspect
 import json
+import os
 import sys
+import tempfile
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ from scipy.io import wavfile
 
 from streammuse.experiments.rap_audio_protocols.artifacts import (
     append_chunk_record,
+    chunk_record_is_complete,
     file_sha256,
     read_chunk_record_index,
 )
@@ -35,7 +38,11 @@ FASTPITCH_MODEL_ID = "tts_en_fastpitch"
 HIFIGAN_MODEL_ID = "tts_en_hifigan"
 FASTPITCH_SAMPLE_RATE_HZ = 22_050
 DEFAULT_MAX_ATTEMPTS = 3
+PROSODY_MODE_DURATION_ONLY = "duration-only"
+PROSODY_MODE_SMOKE_VALIDATED = "smoke-validated"
+PROSODY_MODES = (PROSODY_MODE_DURATION_ONLY, PROSODY_MODE_SMOKE_VALIDATED)
 PROSODY_CONTROLS_ENABLED = "stress_pitch_energy"
+PROSODY_CONTROLS_DURATION_ONLY = "duration_only_default"
 PROSODY_CONTROLS_GUARDED = "duration_only_version_guard"
 PROSODY_CONTROLS_NOT_STARTED = "not_started"
 
@@ -91,6 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--song", default=None)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
+    parser.add_argument(
+        "--prosody-controls",
+        choices=PROSODY_MODES,
+        default=PROSODY_MODE_DURATION_ONLY,
+        help="enable synthetic pitch/energy only after smoke validation on the installed NeMo build",
+    )
     return parser
 
 
@@ -128,6 +141,7 @@ def main(
         runtime=runtime,
         max_attempts=args.max_attempts,
         selected_song_id=args.song,
+        prosody_mode=args.prosody_controls,
     )
     return 1 if any(not record.success for record in records) else 0
 
@@ -159,7 +173,7 @@ def _load_nemo_model(model_class: Any, model_ref: str, *, device: str) -> Any:
     if model_path.exists():
         model = model_class.restore_from(restore_path=str(model_path), map_location=device)
     else:
-        model = model_class.from_pretrained(model_name=model_ref)
+        model = model_class.from_pretrained(model_name=model_ref, map_location=device)
     if hasattr(model, "to"):
         model = model.to(device)
     if hasattr(model, "eval"):
@@ -188,10 +202,13 @@ def render_pending_requests(
     runtime: FastPitchBackendRuntime | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     selected_song_id: str | None = None,
+    prosody_mode: str = PROSODY_MODE_DURATION_ONLY,
     progress_stream: Any = None,
 ) -> tuple[ChunkRenderRecord, ...]:
     if max_attempts <= 0:
         raise ValueError("max_attempts must be positive")
+    if prosody_mode not in PROSODY_MODES:
+        raise ValueError(f"unsupported prosody mode: {prosody_mode}")
 
     requests = load_requests(request_path)
     if selected_song_id is not None:
@@ -206,17 +223,25 @@ def render_pending_requests(
 
     for request in requests:
         key = (ProtocolId.FASTPITCH_PHONEME, request.song_id, request.chunk_index)
-        if key in existing:
-            continue
         output_path = output_root / request.song_id / f"chunk-{request.chunk_index:03d}.wav"
+        if chunk_record_is_complete(
+            ledger_path,
+            output_path,
+            request=request,
+            protocol_id=ProtocolId.FASTPITCH_PHONEME,
+        ):
+            continue
         record = _render_with_retries(
             request=request,
             output_path=output_path,
             record_path=ledger_path,
             runtime=active_runtime,
             max_attempts=max_attempts,
+            prosody_mode=prosody_mode,
+            replace_existing=key in existing,
             progress_stream=stream,
         )
+        existing[key] = record
         records.append(record)
     return tuple(records)
 
@@ -248,10 +273,13 @@ def render_request(
     request: TwoBarRenderRequest,
     output_path: Path | str,
     runtime: FastPitchBackendRuntime,
+    prosody_mode: str = PROSODY_MODE_DURATION_ONLY,
 ) -> ChunkRenderRecord:
+    if prosody_mode not in PROSODY_MODES:
+        raise ValueError(f"unsupported prosody mode: {prosody_mode}")
     plan = build_render_plan(request=request, runtime=runtime)
-    audio, prosody_controls = _synthesise_audio(request=request, runtime=runtime, plan=plan)
-    _write_audio_wav(output_path, audio)
+    audio, _ = _synthesise_audio(request=request, runtime=runtime, plan=plan, prosody_mode=prosody_mode)
+    _write_audio_wav(output_path, audio, sample_rate_hz=runtime.sample_rate_hz)
     metadata = validate_wav_metadata(output_path, expected_sample_rate_hz=runtime.sample_rate_hz, expected_channels=1)
     return ChunkRenderRecord(
         protocol_id=ProtocolId.FASTPITCH_PHONEME,
@@ -268,8 +296,12 @@ def render_request(
     )
 
 
-def chunk_frame_count(request: TwoBarRenderRequest) -> int:
-    return int(round(request.duration_seconds * FASTPITCH_SAMPLE_RATE_HZ))
+def chunk_frame_count(
+    request: TwoBarRenderRequest,
+    *,
+    sample_rate_hz: int = FASTPITCH_SAMPLE_RATE_HZ,
+) -> int:
+    return int(round(request.duration_seconds * sample_rate_hz))
 
 
 def _render_with_retries(
@@ -279,6 +311,8 @@ def _render_with_retries(
     record_path: Path,
     runtime: FastPitchBackendRuntime,
     max_attempts: int,
+    prosody_mode: str,
+    replace_existing: bool,
     progress_stream: Any,
 ) -> ChunkRenderRecord:
     plan: FastPitchRenderPlan | None = None
@@ -289,8 +323,18 @@ def _render_with_retries(
         try:
             if plan is None:
                 plan = build_render_plan(request=request, runtime=runtime)
-            audio, last_prosody_controls = _synthesise_audio(request=request, runtime=runtime, plan=plan)
-            _write_audio_wav(output_path, audio)
+            audio, last_prosody_controls = _synthesise_audio(
+                request=request,
+                runtime=runtime,
+                plan=plan,
+                prosody_mode=prosody_mode,
+            )
+            _write_audio_wav(output_path, audio, sample_rate_hz=runtime.sample_rate_hz)
+            metadata = validate_wav_metadata(
+                output_path,
+                expected_sample_rate_hz=runtime.sample_rate_hz,
+                expected_channels=1,
+            )
             record = ChunkRenderRecord(
                 protocol_id=ProtocolId.FASTPITCH_PHONEME,
                 song_id=request.song_id,
@@ -300,18 +344,28 @@ def _render_with_retries(
                 output_path=str(output_path),
                 output_sha256=file_sha256(output_path),
                 source_chunk_sha256=None,
-                sample_rate_hz=runtime.sample_rate_hz,
+                sample_rate_hz=metadata.sample_rate_hz,
                 attempts=attempt,
                 error=None,
             )
-            append_chunk_record(record_path, record)
-            stored = read_chunk_record_index(record_path)[(record.protocol_id, request.song_id, request.chunk_index)]
+            stored = _store_chunk_record(record_path, record, replace_existing=replace_existing)
             print(_progress_line(stored, plan=plan, prosody_controls=last_prosody_controls), file=progress_stream)
             return stored
         except Exception as exc:
             last_error = exc
 
-    _write_silence_wav(output_path, frame_count=chunk_frame_count(request))
+    silence_frame_count = chunk_frame_count(request, sample_rate_hz=runtime.sample_rate_hz)
+    _write_silence_wav(
+        output_path,
+        frame_count=silence_frame_count,
+        sample_rate_hz=runtime.sample_rate_hz,
+    )
+    metadata = validate_wav_metadata(
+        output_path,
+        expected_sample_rate_hz=runtime.sample_rate_hz,
+        expected_channels=1,
+        expected_frame_count=silence_frame_count,
+    )
     failure = ChunkRenderRecord(
         protocol_id=ProtocolId.FASTPITCH_PHONEME,
         song_id=request.song_id,
@@ -321,12 +375,11 @@ def _render_with_retries(
         output_path=str(output_path),
         output_sha256=file_sha256(output_path),
         source_chunk_sha256=None,
-        sample_rate_hz=runtime.sample_rate_hz,
+        sample_rate_hz=metadata.sample_rate_hz,
         attempts=max_attempts,
         error=_error_payload(last_error, attempts=max_attempts, plan=plan, prosody_controls=last_prosody_controls),
     )
-    append_chunk_record(record_path, failure)
-    stored_failure = read_chunk_record_index(record_path)[(failure.protocol_id, request.song_id, request.chunk_index)]
+    stored_failure = _store_chunk_record(record_path, failure, replace_existing=replace_existing)
     print(_progress_line(stored_failure, plan=plan, prosody_controls=last_prosody_controls), file=progress_stream)
     return stored_failure
 
@@ -336,6 +389,7 @@ def _synthesise_audio(
     request: TwoBarRenderRequest,
     runtime: FastPitchBackendRuntime,
     plan: FastPitchRenderPlan,
+    prosody_mode: str,
 ) -> tuple[np.ndarray, str]:
     torch_module = runtime.torch_module
     no_grad = torch_module.no_grad if hasattr(torch_module, "no_grad") else nullcontext
@@ -349,8 +403,8 @@ def _synthesise_audio(
     }
     with no_grad():
         spect, *_ = runtime.fastpitch(**kwargs)
-        prosody_controls = PROSODY_CONTROLS_GUARDED
-        if _supports_pitch_energy_controls(runtime.fastpitch):
+        prosody_controls = PROSODY_CONTROLS_DURATION_ONLY
+        if prosody_mode == PROSODY_MODE_SMOKE_VALIDATED and _supports_pitch_energy_controls(runtime.fastpitch):
             pitch, energy = _build_prosody_controls(request=request, runtime=runtime, plan=plan)
             try:
                 spect, *_ = runtime.fastpitch(
@@ -366,6 +420,8 @@ def _synthesise_audio(
                 if not _is_version_guard_error(exc):
                     raise
                 prosody_controls = PROSODY_CONTROLS_GUARDED
+        elif prosody_mode == PROSODY_MODE_SMOKE_VALIDATED:
+            prosody_controls = PROSODY_CONTROLS_GUARDED
         audio = runtime.hifigan.convert_spectrogram_to_audio(spec=spect)
     return _to_mono_float32(audio), prosody_controls
 
@@ -450,16 +506,68 @@ def _to_mono_float32(audio: Any) -> np.ndarray:
     raise ValueError("audio output must be one- or two-dimensional")
 
 
-def _write_audio_wav(path: Path | str, audio: Any) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    wavfile.write(destination, FASTPITCH_SAMPLE_RATE_HZ, _to_mono_float32(audio))
+def _store_chunk_record(
+    path: Path,
+    record: ChunkRenderRecord,
+    *,
+    replace_existing: bool,
+) -> ChunkRenderRecord:
+    key = (record.protocol_id, record.song_id, record.chunk_index)
+    if replace_existing:
+        _replace_chunk_record(path, record)
+    else:
+        append_chunk_record(path, record)
+    return read_chunk_record_index(path)[key]
 
 
-def _write_silence_wav(path: Path | str, *, frame_count: int) -> None:
+def _replace_chunk_record(path: Path, record: ChunkRenderRecord) -> None:
+    existing = read_chunk_record_index(path)
+    key = (record.protocol_id, record.song_id, record.chunk_index)
+    if key not in existing:
+        raise ValueError(f"cannot replace missing chunk record for {key}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = path.stat().st_mode & 0o7777
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            for existing_key, existing_record in existing.items():
+                if existing_key == key:
+                    continue
+                handle.write(canonical_json_dumps(existing_record.to_payload()))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        append_chunk_record(temporary_path, record)
+        with temporary_path.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, original_mode)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _write_audio_wav(path: Path | str, audio: Any, *, sample_rate_hz: int) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    wavfile.write(destination, FASTPITCH_SAMPLE_RATE_HZ, np.zeros(frame_count, dtype=np.int16))
+    wavfile.write(destination, sample_rate_hz, _to_mono_float32(audio))
+
+
+def _write_silence_wav(path: Path | str, *, frame_count: int, sample_rate_hz: int) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    wavfile.write(destination, sample_rate_hz, np.zeros(frame_count, dtype=np.int16))
 
 
 def _error_payload(

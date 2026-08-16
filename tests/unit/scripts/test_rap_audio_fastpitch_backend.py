@@ -7,6 +7,7 @@ import io
 import json
 import sys
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from typing import Iterable
@@ -15,7 +16,12 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
-from streammuse.experiments.rap_audio_protocols.artifacts import read_chunk_record_index
+from streammuse.experiments.rap_audio_protocols.artifacts import (
+    append_chunk_record,
+    chunk_record_is_complete,
+    read_chunk_record_index,
+)
+from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId
 from streammuse.experiments.rap_audio_protocols.corpus import load_song_corpus
 
 
@@ -182,7 +188,8 @@ class FakeFastPitch:
 
 
 class FakeHiFiGan:
-    def __init__(self) -> None:
+    def __init__(self, *, sample_rate: int = 22_050) -> None:
+        self.sample_rate = sample_rate
         self.calls: list[object] = []
         self.to_calls: list[str] = []
         self.eval_called = False
@@ -217,12 +224,12 @@ def test_fastpitch_backend_module_import_is_dependency_light(monkeypatch: pytest
     assert module.HIFIGAN_MODEL_ID == "tts_en_hifigan"
 
 
-def test_render_pending_requests_uses_parse_ids_to_tokens_duration_tensors_and_direct_forward(tmp_path: Path) -> None:
+def test_default_render_uses_parse_ids_to_tokens_and_duration_only_direct_forward(tmp_path: Path) -> None:
     module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_render")
     request = _fixture_request()
     labels = _tokenizer_labels(request)
     runtime = module.FastPitchBackendRuntime(
-        fastpitch=FakeFastPitch(labels_by_text={request.text: labels}, reject_pitch_energy=True),
+        fastpitch=FakeFastPitch(labels_by_text={request.text: labels}),
         hifigan=FakeHiFiGan(),
         torch_module=FakeTorch(),
         device="cuda:5",
@@ -250,7 +257,7 @@ def test_render_pending_requests_uses_parse_ids_to_tokens_duration_tensors_and_d
     assert runtime.fastpitch.parse_calls == [request.text]
     assert runtime.fastpitch.vocab.ids_to_tokens_calls == [list(range(len(labels)))]
     assert runtime.fastpitch.generate_spectrogram_calls == 0
-    assert len(runtime.fastpitch.calls) == 2
+    assert len(runtime.fastpitch.calls) == 1
     assert runtime.fastpitch.calls[0]["text"].shape == runtime.fastpitch.calls[0]["durs"].shape
     assert runtime.fastpitch.calls[0] == {
         "text": runtime.fastpitch.calls[0]["text"],
@@ -260,13 +267,168 @@ def test_render_pending_requests_uses_parse_ids_to_tokens_duration_tensors_and_d
         "speaker": None,
         "pace": 1.0,
     }
-    assert runtime.fastpitch.calls[1]["pitch"] is not None
-    assert runtime.fastpitch.calls[1]["energy"] is not None
     assert len(runtime.hifigan.calls) == 1
-    assert "prosody_controls=duration_only_version_guard" in progress.getvalue()
+    assert "prosody_controls=duration_only_default" in progress.getvalue()
 
     stored = read_chunk_record_index(record_path)[(record.protocol_id, request.song_id, request.chunk_index)]
     assert stored.output_sha256 == record.output_sha256
+
+
+def test_smoke_validated_prosody_opt_in_preserves_duration_only_version_guard(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_prosody_guard")
+    request = _fixture_request()
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}, reject_pitch_energy=True),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    request_path = tmp_path / "requests.jsonl"
+    progress = io.StringIO()
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    records = module.render_pending_requests(
+        request_path=request_path,
+        record_path=tmp_path / "records.jsonl",
+        output_dir=tmp_path / "chunks",
+        runtime=runtime,
+        prosody_mode="smoke-validated",
+        progress_stream=progress,
+    )
+
+    assert records[0].success is True
+    assert len(runtime.fastpitch.calls) == 2
+    assert runtime.fastpitch.calls[1]["pitch"] is not None
+    assert runtime.fastpitch.calls[1]["energy"] is not None
+    assert "prosody_controls=duration_only_version_guard" in progress.getvalue()
+
+
+@pytest.mark.parametrize("stale_kind", ["failed", "missing_wav", "request_mismatch", "hash_mismatch"])
+def test_render_pending_requests_replaces_incomplete_record_without_losing_other_rows(
+    tmp_path: Path,
+    stale_kind: str,
+) -> None:
+    module = _load_backend(f"scripts.rap_audio_backends.fastpitch_backend_resume_{stale_kind}")
+    original_request = _fixture_request()
+    current_request = original_request
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "records.jsonl"
+    output_dir = tmp_path / "chunks"
+    output_path = output_dir / original_request.song_id / "chunk-000.wav"
+    request_path.write_text(json.dumps(original_request.to_payload()) + "\n", encoding="utf-8")
+    first_runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={original_request.text: _tokenizer_labels(original_request)}),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    first = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=first_runtime,
+    )
+    primary = first[0]
+    other = ChunkRenderRecord(
+        protocol_id=ProtocolId.FASTPITCH_PHONEME,
+        song_id="unrelated_song",
+        chunk_index=7,
+        request_sha256="1" * 64,
+        success=False,
+        sample_rate_hz=22_050,
+        attempts=2,
+        error="unrelated failure",
+    )
+    append_chunk_record(record_path, other)
+
+    if stale_kind == "failed":
+        failed = replace(primary, success=False, error="old failure")
+        record_path.write_text(
+            "\n".join(json.dumps(item.to_payload()) for item in (failed, other)) + "\n",
+            encoding="utf-8",
+        )
+    elif stale_kind == "missing_wav":
+        output_path.unlink()
+    elif stale_kind == "hash_mismatch":
+        wavfile.write(output_path, 22_050, np.full(64, 0.5, dtype=np.float32))
+    else:
+        current_request = replace(
+            original_request,
+            start_bar=original_request.start_bar + 2,
+            end_bar=original_request.end_bar + 2,
+        )
+        request_path.write_text(json.dumps(current_request.to_payload()) + "\n", encoding="utf-8")
+
+    second_runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={current_request.text: _tokenizer_labels(current_request)}),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    rerendered = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=second_runtime,
+    )
+
+    index = read_chunk_record_index(record_path)
+    key = (ProtocolId.FASTPITCH_PHONEME, current_request.song_id, current_request.chunk_index)
+    other_key = (other.protocol_id, other.song_id, other.chunk_index)
+    assert len(second_runtime.fastpitch.calls) == 1
+    assert rerendered == (index[key],)
+    assert index[other_key] == other
+    assert len(record_path.read_text(encoding="utf-8").splitlines()) == 2
+    assert chunk_record_is_complete(
+        record_path,
+        output_path,
+        request=current_request,
+        protocol_id=ProtocolId.FASTPITCH_PHONEME,
+    )
+
+
+def test_render_pending_requests_skips_only_complete_matching_record(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_complete_resume")
+    request = _fixture_request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "records.jsonl"
+    output_dir = tmp_path / "chunks"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    def make_runtime():
+        return module.FastPitchBackendRuntime(
+            fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}),
+            hifigan=FakeHiFiGan(),
+            torch_module=FakeTorch(),
+            device="cuda:0",
+            fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+            hifigan_model_id=module.HIFIGAN_MODEL_ID,
+        )
+
+    first_runtime = make_runtime()
+    second_runtime = make_runtime()
+    first = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=first_runtime,
+    )
+    resumed = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=second_runtime,
+    )
+
+    assert first[0].success is True
+    assert resumed == ()
+    assert second_runtime.fastpitch.calls == []
 
 
 def test_build_render_plan_uses_tokenizer_derived_oov_recovery_from_timing_api() -> None:
@@ -298,12 +460,40 @@ def test_build_render_plan_uses_tokenizer_derived_oov_recovery_from_timing_api()
     assert len(plan.anchor_error_frames) == len(request.syllables)
 
 
+def test_runtime_sample_rate_controls_successful_wav_and_record(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_success_sample_rate")
+    request = _fixture_request()
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}),
+        hifigan=FakeHiFiGan(sample_rate=44_100),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    request_path = tmp_path / "requests.jsonl"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    records = module.render_pending_requests(
+        request_path=request_path,
+        record_path=tmp_path / "records.jsonl",
+        output_dir=tmp_path / "chunks",
+        runtime=runtime,
+    )
+
+    sample_rate_hz, samples = wavfile.read(Path(records[0].output_path or ""))
+    assert records[0].success is True
+    assert records[0].sample_rate_hz == 44_100
+    assert sample_rate_hz == 44_100
+    assert samples.shape == (384,)
+
+
 def test_render_pending_requests_retries_and_logs_silence_after_bounded_failures(tmp_path: Path) -> None:
     module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_retry")
     request = _fixture_request()
     runtime = module.FastPitchBackendRuntime(
         fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}, failures_remaining=3),
-        hifigan=FakeHiFiGan(),
+        hifigan=FakeHiFiGan(sample_rate=44_100),
         torch_module=FakeTorch(),
         device="cuda:1",
         fastpitch_model_id=module.FASTPITCH_MODEL_ID,
@@ -328,11 +518,11 @@ def test_render_pending_requests_retries_and_logs_silence_after_bounded_failures
     assert record.attempts == 3
     assert record.output_path is not None
     assert record.output_sha256
-    assert record.sample_rate_hz == 22_050
+    assert record.sample_rate_hz == 44_100
 
     sample_rate_hz, samples = wavfile.read(Path(record.output_path))
-    assert sample_rate_hz == 22_050
-    assert samples.shape == (module.chunk_frame_count(request),)
+    assert sample_rate_hz == 44_100
+    assert samples.shape == (module.chunk_frame_count(request, sample_rate_hz=44_100),)
     assert np.count_nonzero(samples) == 0
 
     error_payload = json.loads(str(record.error))
@@ -342,6 +532,79 @@ def test_render_pending_requests_retries_and_logs_silence_after_bounded_failures
     assert error_payload["tokenizer_labels"]
     assert error_payload["duration_frames"]
     assert error_payload["anchor_error_frames"]
+
+
+def test_main_rerenders_prior_failure_and_reports_failure_again(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_failure_resume")
+    request = _fixture_request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "records.jsonl"
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+    created_runtimes = []
+
+    def failing_factory(*, fastpitch_model_id: str, hifigan_model_id: str, device: str):
+        runtime = module.FastPitchBackendRuntime(
+            fastpitch=FakeFastPitch(
+                labels_by_text={request.text: _tokenizer_labels(request)},
+                failures_remaining=1,
+            ),
+            hifigan=FakeHiFiGan(),
+            torch_module=FakeTorch(),
+            device=device,
+            fastpitch_model_id=fastpitch_model_id,
+            hifigan_model_id=hifigan_model_id,
+        )
+        created_runtimes.append(runtime)
+        return runtime
+
+    argv = [
+        "--requests-jsonl",
+        str(request_path),
+        "--records-jsonl",
+        str(record_path),
+        "--output-dir",
+        str(tmp_path / "chunks"),
+        "--max-attempts",
+        "1",
+    ]
+
+    assert module.main(argv, runtime_factory=failing_factory) == 1
+    assert module.main(argv, runtime_factory=failing_factory) == 1
+    assert [len(runtime.fastpitch.calls) for runtime in created_runtimes] == [1, 1]
+    assert len(record_path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_pretrained_checkpoint_loading_uses_requested_map_location_then_device() -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_model_loading")
+    from_pretrained_calls: list[dict[str, object]] = []
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.to_calls: list[str] = []
+            self.eval_called = False
+
+        def to(self, device: str):
+            self.to_calls.append(device)
+            return self
+
+        def eval(self):
+            self.eval_called = True
+            return self
+
+    model = FakeModel()
+
+    class FakeModelClass:
+        @classmethod
+        def from_pretrained(cls, **kwargs: object) -> FakeModel:
+            from_pretrained_calls.append(dict(kwargs))
+            return model
+
+    loaded = module._load_nemo_model(FakeModelClass, "tts_en_fastpitch", device="cuda:6")
+
+    assert loaded is model
+    assert from_pretrained_calls == [{"model_name": "tts_en_fastpitch", "map_location": "cuda:6"}]
+    assert model.to_calls == ["cuda:6"]
+    assert model.eval_called is True
 
 
 def test_main_uses_lazy_runtime_factory_and_h200_friendly_cli_arguments(tmp_path: Path) -> None:
@@ -389,3 +652,4 @@ def test_main_uses_lazy_runtime_factory_and_h200_friendly_cli_arguments(tmp_path
 
     assert exit_code == 0
     assert len(created_runtimes) == 1
+    assert len(created_runtimes[0].fastpitch.calls) == 1
