@@ -23,6 +23,7 @@ from streammuse.experiments.rap_audio_protocols.artifacts import (
 )
 from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId
 from streammuse.experiments.rap_audio_protocols.corpus import load_song_corpus
+from streammuse.experiments.rap_audio_protocols.timing import build_fastpitch_phone_plan
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -458,6 +459,70 @@ def test_render_pending_requests_skips_only_complete_matching_record(tmp_path: P
     assert second_runtime.fastpitch.calls == []
 
 
+@pytest.mark.parametrize(
+    "stale_sidecar",
+    ["missing", "corrupt_json", "request_mismatch", "invalid_plan_shape"],
+)
+def test_render_pending_requests_rerenders_success_with_invalid_timing_sidecar(
+    tmp_path: Path,
+    stale_sidecar: str,
+) -> None:
+    module = _load_backend(f"scripts.rap_audio_backends.fastpitch_backend_sidecar_{stale_sidecar}")
+    request = _fixture_request()
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "records.jsonl"
+    output_dir = tmp_path / "chunks"
+    output_path = output_dir / request.song_id / "chunk-000.wav"
+    sidecar_path = output_path.with_suffix(".timing.json")
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    def make_runtime():
+        return module.FastPitchBackendRuntime(
+            fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}),
+            hifigan=FakeHiFiGan(),
+            torch_module=FakeTorch(),
+            device="cuda:0",
+            fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+            hifigan_model_id=module.HIFIGAN_MODEL_ID,
+        )
+
+    first_runtime = make_runtime()
+    first = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=first_runtime,
+    )
+    assert first[0].success is True
+
+    if stale_sidecar == "missing":
+        sidecar_path.unlink()
+    elif stale_sidecar == "corrupt_json":
+        sidecar_path.write_text("{not-json\n", encoding="utf-8")
+    else:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        if stale_sidecar == "request_mismatch":
+            sidecar["request_sha256"] = "0" * 64
+        else:
+            sidecar["syllable_label_indices"] = sidecar["syllable_label_indices"][:-1]
+        sidecar_path.write_text(json.dumps(sidecar) + "\n", encoding="utf-8")
+
+    second_runtime = make_runtime()
+    rerendered = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=second_runtime,
+    )
+
+    repaired_sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert len(second_runtime.fastpitch.calls) == 1
+    assert len(rerendered) == 1
+    assert rerendered[0].success is True
+    assert repaired_sidecar["request_sha256"] == request.sha256
+    assert len(repaired_sidecar["syllable_label_indices"]) == len(request.syllables)
+
+
 def test_build_render_plan_uses_tokenizer_derived_oov_recovery_from_timing_api() -> None:
     module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_plan")
     request = _campaign_request("01_space_exploration", 9)
@@ -536,13 +601,48 @@ def test_grapheme_fallback_writes_auditable_timing_sidecar_and_progress(tmp_path
 
     sidecar_path = output_path.with_suffix(".timing.json")
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    expected_plan = build_fastpitch_phone_plan(request, labels)
     assert records[0].success is True
+    assert set(sidecar) == {
+        "schema_version",
+        "protocol_id",
+        "song_id",
+        "chunk_index",
+        "request_sha256",
+        "output_path",
+        "tokenizer_labels",
+        "duration_frames",
+        "spoken_label_indices",
+        "vowel_label_indices",
+        "syllable_phone_groups",
+        "syllable_label_indices",
+        "anchor_error_frames",
+        "compressed_consonant_regions",
+        "grapheme_fallback_words",
+    }
+    assert sidecar["schema_version"] == 1
+    assert sidecar["protocol_id"] == ProtocolId.FASTPITCH_PHONEME.value
+    assert sidecar["song_id"] == request.song_id
+    assert sidecar["chunk_index"] == request.chunk_index
+    assert sidecar["request_sha256"] == request.sha256
+    assert sidecar["output_path"] == str(output_path)
     assert sidecar["tokenizer_labels"] == list(labels)
-    assert len(sidecar["duration_frames"]) == len(labels)
+    assert sidecar["duration_frames"] == list(expected_plan.duration_frames)
+    assert sidecar["spoken_label_indices"] == list(expected_plan.spoken_label_indices)
+    assert sidecar["vowel_label_indices"] == list(expected_plan.vowel_label_indices)
+    assert sidecar["syllable_phone_groups"] == [list(group) for group in expected_plan.syllable_phone_groups]
+    assert sidecar["syllable_label_indices"] == [list(group) for group in expected_plan.syllable_label_indices]
+    assert sidecar["anchor_error_frames"] == list(expected_plan.anchor_error_frames)
+    assert sidecar["compressed_consonant_regions"] == list(expected_plan.compressed_consonant_regions)
+    assert sidecar["grapheme_fallback_words"] == list(expected_plan.grapheme_fallback_words)
     assert sum(sidecar["duration_frames"]) == round(request.duration_seconds * 22050 / 256)
-    assert len(sidecar["anchor_error_frames"]) == len(request.syllables)
-    assert sidecar["compressed_consonant_regions"]
-    assert sidecar["grapheme_fallback_words"] == ["where"]
+    assert all(
+        [sidecar["tokenizer_labels"][label_index] for label_index in label_group] == phone_group
+        for phone_group, label_group in zip(
+            sidecar["syllable_phone_groups"],
+            sidecar["syllable_label_indices"],
+        )
+    )
     assert "grapheme_fallback_words=where" in progress.getvalue()
 
 
@@ -601,7 +701,7 @@ def test_timing_sidecar_replacement_is_atomic_on_failure(tmp_path: Path, monkeyp
     monkeypatch.setattr(module.os, "replace", fail_replace)
 
     with pytest.raises(OSError, match="synthetic atomic replace failure"):
-        module._write_timing_sidecar(output_path, plan)
+        module._write_timing_sidecar(output_path, request, plan)
 
     assert sidecar_path.read_text(encoding="utf-8") == '{"previous":true}\n'
     assert list(tmp_path.glob(".chunk-000.timing.json.*.tmp")) == []

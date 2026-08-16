@@ -37,6 +37,7 @@ from streammuse.experiments.rap_audio_protocols.timing import FastPitchPhonePlan
 FASTPITCH_MODEL_ID = "tts_en_fastpitch"
 HIFIGAN_MODEL_ID = "tts_en_hifigan"
 FASTPITCH_SAMPLE_RATE_HZ = 22_050
+TIMING_SIDECAR_SCHEMA_VERSION = 1
 DEFAULT_MAX_ATTEMPTS = 3
 PROSODY_MODE_DURATION_ONLY = "duration-only"
 PROSODY_MODE_SMOKE_VALIDATED = "smoke-validated"
@@ -79,6 +80,18 @@ class FastPitchRenderPlan:
     @property
     def syllable_phone_groups(self) -> tuple[tuple[str, ...], ...]:
         return self.phone_plan.syllable_phone_groups
+
+    @property
+    def syllable_label_indices(self) -> tuple[tuple[int, ...], ...]:
+        return self.phone_plan.syllable_label_indices
+
+    @property
+    def spoken_label_indices(self) -> tuple[int, ...]:
+        return self.phone_plan.spoken_label_indices
+
+    @property
+    def vowel_label_indices(self) -> tuple[int, ...]:
+        return self.phone_plan.vowel_label_indices
 
     @property
     def compressed_consonant_regions(self) -> tuple[int, ...]:
@@ -228,12 +241,7 @@ def render_pending_requests(
     for request in requests:
         key = (ProtocolId.FASTPITCH_PHONEME, request.song_id, request.chunk_index)
         output_path = output_root / request.song_id / f"chunk-{request.chunk_index:03d}.wav"
-        if chunk_record_is_complete(
-            ledger_path,
-            output_path,
-            request=request,
-            protocol_id=ProtocolId.FASTPITCH_PHONEME,
-        ):
+        if _render_artifacts_are_complete(ledger_path, output_path, request=request):
             continue
         record = _render_with_retries(
             request=request,
@@ -301,7 +309,7 @@ def render_request(
     audio, _ = _synthesise_audio(request=request, runtime=runtime, plan=plan, prosody_mode=prosody_mode)
     _write_audio_wav(output_path, audio, sample_rate_hz=runtime.sample_rate_hz)
     metadata = validate_wav_metadata(output_path, expected_sample_rate_hz=runtime.sample_rate_hz, expected_channels=1)
-    _write_timing_sidecar(output_path, plan)
+    _write_timing_sidecar(output_path, request, plan)
     return ChunkRenderRecord(
         protocol_id=ProtocolId.FASTPITCH_PHONEME,
         song_id=request.song_id,
@@ -356,7 +364,7 @@ def _render_with_retries(
                 expected_sample_rate_hz=runtime.sample_rate_hz,
                 expected_channels=1,
             )
-            _write_timing_sidecar(output_path, plan)
+            _write_timing_sidecar(output_path, request, plan)
             record = ChunkRenderRecord(
                 protocol_id=ProtocolId.FASTPITCH_PHONEME,
                 song_id=request.song_id,
@@ -597,14 +605,34 @@ def _timing_sidecar_path(output_path: Path | str) -> Path:
     return Path(output_path).with_suffix(".timing.json")
 
 
-def _write_timing_sidecar(output_path: Path | str, plan: FastPitchRenderPlan) -> Path:
+def _render_artifacts_are_complete(
+    record_path: Path | str,
+    output_path: Path | str,
+    *,
+    request: TwoBarRenderRequest,
+) -> bool:
+    return chunk_record_is_complete(
+        record_path,
+        output_path,
+        request=request,
+        protocol_id=ProtocolId.FASTPITCH_PHONEME,
+    ) and _timing_sidecar_is_valid(output_path, request=request)
+
+
+def _write_timing_sidecar(
+    output_path: Path | str,
+    request: TwoBarRenderRequest,
+    plan: FastPitchRenderPlan,
+) -> Path:
     destination = _timing_sidecar_path(output_path)
     payload = {
-        "tokenizer_labels": list(plan.tokenizer_labels),
-        "duration_frames": list(plan.duration_frames),
-        "anchor_error_frames": list(plan.anchor_error_frames),
-        "compressed_consonant_regions": list(plan.compressed_consonant_regions),
-        "grapheme_fallback_words": list(plan.grapheme_fallback_words),
+        "schema_version": TIMING_SIDECAR_SCHEMA_VERSION,
+        "protocol_id": ProtocolId.FASTPITCH_PHONEME.value,
+        "song_id": request.song_id,
+        "chunk_index": request.chunk_index,
+        "request_sha256": request.sha256,
+        "output_path": str(Path(output_path)),
+        **_timing_plan_payload(plan),
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -628,6 +656,55 @@ def _write_timing_sidecar(output_path: Path | str, plan: FastPitchRenderPlan) ->
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
     return destination
+
+
+def _timing_sidecar_is_valid(output_path: Path | str, *, request: TwoBarRenderRequest) -> bool:
+    try:
+        with _timing_sidecar_path(output_path).open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+
+    expected_binding = {
+        "schema_version": TIMING_SIDECAR_SCHEMA_VERSION,
+        "protocol_id": ProtocolId.FASTPITCH_PHONEME.value,
+        "song_id": request.song_id,
+        "chunk_index": request.chunk_index,
+        "request_sha256": request.sha256,
+        "output_path": str(Path(output_path)),
+    }
+    if not isinstance(payload, dict) or canonical_json_dumps(
+        {key: payload.get(key) for key in expected_binding}
+    ) != canonical_json_dumps(expected_binding):
+        return False
+
+    tokenizer_labels = payload.get("tokenizer_labels")
+    if not isinstance(tokenizer_labels, list) or not tokenizer_labels or not all(
+        isinstance(label, str) for label in tokenizer_labels
+    ):
+        return False
+    try:
+        expected_plan = build_fastpitch_phone_plan(request, tuple(tokenizer_labels))
+    except (IndexError, ValueError):
+        return False
+
+    expected_plan_payload = _timing_plan_payload(expected_plan)
+    actual_plan_payload = {key: payload.get(key) for key in expected_plan_payload}
+    return canonical_json_dumps(actual_plan_payload) == canonical_json_dumps(expected_plan_payload)
+
+
+def _timing_plan_payload(plan: FastPitchPhonePlan | FastPitchRenderPlan) -> dict[str, Any]:
+    return {
+        "tokenizer_labels": list(plan.tokenizer_labels),
+        "duration_frames": list(plan.duration_frames),
+        "spoken_label_indices": list(plan.spoken_label_indices),
+        "vowel_label_indices": list(plan.vowel_label_indices),
+        "syllable_phone_groups": [list(group) for group in plan.syllable_phone_groups],
+        "syllable_label_indices": [list(group) for group in plan.syllable_label_indices],
+        "anchor_error_frames": list(plan.anchor_error_frames),
+        "compressed_consonant_regions": list(plan.compressed_consonant_regions),
+        "grapheme_fallback_words": list(plan.grapheme_fallback_words),
+    }
 
 
 def _error_payload(

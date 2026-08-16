@@ -34,6 +34,7 @@ class FastPitchPhonePlan:
     spoken_label_indices: tuple[int, ...]
     vowel_label_indices: tuple[int, ...]
     syllable_phone_groups: tuple[tuple[str, ...], ...]
+    syllable_label_indices: tuple[tuple[int, ...], ...]
     anchor_error_frames: tuple[int, ...]
     compressed_consonant_regions: tuple[int, ...]
     grapheme_fallback_words: tuple[str, ...]
@@ -146,6 +147,7 @@ def build_fastpitch_phone_plan(
         spoken_label_indices=spoken_label_indices,
         vowel_label_indices=tuple(vowel_label_indices),
         syllable_phone_groups=syllable_phone_groups,
+        syllable_label_indices=syllable_label_indices,
         anchor_error_frames=tuple(anchor_error_frames),
         compressed_consonant_regions=tuple(dict.fromkeys(compressed_consonant_regions)),
         grapheme_fallback_words=grapheme_fallback_words,

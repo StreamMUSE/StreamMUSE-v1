@@ -235,7 +235,17 @@ def test_fastpitch_phone_plan_recovers_multisyllabic_beyond_monotonically() -> N
         for index, syllable in enumerate(request.syllables)
         if syllable.word == "beyond"
     )
+    beyond_label_groups = tuple(
+        plan.syllable_label_indices[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "beyond"
+    )
     assert beyond_groups == (("b", "e"), ("y", "o", "n", "d"))
+    assert beyond_label_groups == ((1, 3), (5, 7, 9, 11))
+    assert tuple(
+        tuple(tokenizer_labels[label_index] for label_index in label_group)
+        for label_group in beyond_label_groups
+    ) == beyond_groups
     assert plan.grapheme_fallback_words == ("beyond",)
 
 
