@@ -192,11 +192,47 @@ def test_chunk_record_is_complete_rejects_missing_source_hash_for_moss_aligned(t
     )
 
 
-def test_chunk_record_is_complete_accepts_valid_source_hash_for_moss_aligned(tmp_path: Path) -> None:
+def test_chunk_record_is_complete_accepts_matching_source_hash_for_moss_aligned(tmp_path: Path) -> None:
     ledger_path = tmp_path / "records.jsonl"
     wav_path = tmp_path / "chunk.wav"
     request = _request(0)
     audio = render_common_drums((request,), song_index=3, allow_smoke_test=True)
+    write_listening_wav(wav_path, audio)
+    source_hash = "b" * 64
+    append_chunk_record(
+        ledger_path,
+        ChunkRenderRecord(
+            protocol_id=ProtocolId.MOSS_ALIGNED,
+            song_id=request.song_id,
+            chunk_index=request.chunk_index,
+            request_sha256=request.sha256,
+            success=True,
+            output_path=str(wav_path),
+            output_sha256="",
+            source_chunk_sha256=source_hash,
+            sample_rate_hz=48_000,
+            attempts=1,
+        ),
+    )
+
+    assert chunk_record_is_complete(
+        ledger_path,
+        wav_path,
+        request=request,
+        protocol_id=ProtocolId.MOSS_ALIGNED,
+        expected_source_sha256=source_hash,
+    )
+
+
+@pytest.mark.parametrize("recorded_source_sha256", [None, "c" * 64])
+def test_chunk_record_is_complete_rejects_missing_or_stale_source_hash_for_moss_aligned(
+    tmp_path: Path,
+    recorded_source_sha256: str | None,
+) -> None:
+    ledger_path = tmp_path / "records.jsonl"
+    wav_path = tmp_path / "chunk.wav"
+    request = _request(0)
+    audio = render_common_drums((request,), song_index=4, allow_smoke_test=True)
     write_listening_wav(wav_path, audio)
     append_chunk_record(
         ledger_path,
@@ -208,17 +244,18 @@ def test_chunk_record_is_complete_accepts_valid_source_hash_for_moss_aligned(tmp
             success=True,
             output_path=str(wav_path),
             output_sha256="",
-            source_chunk_sha256="b" * 64,
+            source_chunk_sha256=recorded_source_sha256,
             sample_rate_hz=48_000,
             attempts=1,
         ),
     )
 
-    assert chunk_record_is_complete(
+    assert not chunk_record_is_complete(
         ledger_path,
         wav_path,
         request=request,
         protocol_id=ProtocolId.MOSS_ALIGNED,
+        expected_source_sha256="b" * 64,
     )
 
 

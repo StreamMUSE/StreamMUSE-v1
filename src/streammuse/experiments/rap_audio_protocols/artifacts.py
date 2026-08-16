@@ -81,6 +81,7 @@ def chunk_record_is_complete(
     *,
     request: TwoBarRenderRequest,
     protocol_id: ProtocolId,
+    expected_source_sha256: str | None = None,
 ) -> bool:
     wav = Path(wav_path)
     if not wav.is_file():
@@ -93,6 +94,8 @@ def chunk_record_is_complete(
     if record.request_sha256 != request.sha256:
         return False
     if not _source_chunk_sha256_is_valid(record):
+        return False
+    if expected_source_sha256 is not None and record.source_chunk_sha256 != expected_source_sha256:
         return False
     if Path(record.output_path or "").resolve() != wav.resolve():
         return False
