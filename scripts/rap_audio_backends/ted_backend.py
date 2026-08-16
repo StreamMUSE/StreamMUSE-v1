@@ -33,6 +33,7 @@ from streammuse.experiments.rap_audio_protocols.timing import TimedTextSegment, 
 
 TED_SAMPLE_RATE_HZ = 22_050
 TED_DURATION_TOKEN_SECONDS = 0.02
+TED_INFERENCE_METHOD = "max_head"
 TED_SEGMENT_DESCRIPTION = "clear, confident, rhythmic spoken rap with restrained melody"
 TED_DETERMINISM_NOTE = "use_random=False does not guarantee determinism because TED still samples"
 DEFAULT_MAX_ATTEMPTS = 3
@@ -303,7 +304,7 @@ def build_infer_kwargs(
         "repetition_penalty": 10.0,
         "length_penalty": 0.0,
         "max_mel_tokens": 850,
-        "method": "hmm",
+        "method": TED_INFERENCE_METHOD,
     }
 
 

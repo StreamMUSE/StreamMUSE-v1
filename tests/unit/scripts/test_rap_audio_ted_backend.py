@@ -112,7 +112,7 @@ def test_render_pending_requests_invokes_ted_with_exact_local_duration_arguments
         "repetition_penalty": 10.0,
         "length_penalty": 0.0,
         "max_mel_tokens": 850,
-        "method": "hmm",
+        "method": "max_head",
     }
     stored = read_chunk_record_index(record_path)[(records[0].protocol_id, request.song_id, request.chunk_index)]
     assert stored.success is True
@@ -182,6 +182,8 @@ def test_render_pending_requests_retries_and_logs_silence_after_bounded_failures
     assert record.output_path is not None
     assert record.output_sha256
     assert record.sample_rate_hz == 22_050
+    diagnostic = json.loads(str(record.error))
+    assert diagnostic["infer_kwargs"]["method"] == "max_head"
 
     sample_rate_hz, samples = wavfile.read(Path(record.output_path))
     assert sample_rate_hz == 22_050
