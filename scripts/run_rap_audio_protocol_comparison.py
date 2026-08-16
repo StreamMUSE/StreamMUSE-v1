@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import sys
 from typing import Any, Callable, Sequence
 
 import numpy as np
@@ -61,14 +63,29 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    if args.stage == "prepare":
-        prepare_campaign(args)
-    elif args.stage == "assemble":
-        assemble_campaign(args)
-    elif args.stage == "evaluate":
-        evaluate_campaign(args, transcriber_factory=transcriber_factory)
-    else:
-        package_campaign(args)
+    try:
+        if args.stage == "prepare":
+            prepare_campaign(args)
+        elif args.stage == "assemble":
+            assemble_campaign(args)
+        elif args.stage == "evaluate":
+            evaluate_campaign(args, transcriber_factory=transcriber_factory)
+        else:
+            package_campaign(args)
+    except Exception as error:
+        _append_campaign_error(args.output_dir / "campaign_errors.jsonl", args=args, error=error)
+        _write_progress(
+            stage=args.stage,
+            song_id=args.song,
+            protocol_id=args.protocol,
+            chunk_index=None,
+            ordinal=None,
+            total=None,
+            status="error",
+            error_type=type(error).__name__,
+            message=str(error),
+        )
+        raise
     return 0
 
 
@@ -103,6 +120,17 @@ def prepare_campaign(args: argparse.Namespace) -> None:
         if requests_path.exists() and requests_path.read_text(encoding="utf-8") != rendered_requests:
             raise ValueError(f"mismatched existing request set for {song_id}")
         requests_path.write_text(rendered_requests, encoding="utf-8")
+        for ordinal, request in enumerate(requests, start=1):
+            _write_progress(
+                stage="prepare",
+                song_id=song_id,
+                protocol_id="common",
+                chunk_index=request.chunk_index,
+                ordinal=ordinal,
+                total=len(requests),
+                status="ready",
+                request_sha256=request.sha256,
+            )
 
         drums_path = song_root / "drums.wav"
         if not drums_path.exists():
@@ -154,12 +182,25 @@ def assemble_campaign(args: argparse.Namespace) -> None:
             record_by_chunk = {record.chunk_index: record for record in records}
             chunk_paths = {}
             ordered_records = []
-            for request in requests:
+            for ordinal, request in enumerate(requests, start=1):
                 record = record_by_chunk.get(request.chunk_index)
                 if record is None or not record.success or not record.output_path:
                     raise ValueError(f"missing successful chunk record for {protocol_name}/{song_id}/{request.chunk_index}")
-                chunk_paths[request.chunk_index] = Path(record.output_path)
+                chunk_path = Path(record.output_path)
+                if not chunk_path.is_file():
+                    raise ValueError(f"missing rendered WAV for {protocol_name}/{song_id}/{request.chunk_index}: {chunk_path}")
+                chunk_paths[request.chunk_index] = chunk_path
                 ordered_records.append(record)
+                _write_progress(
+                    stage="assemble",
+                    song_id=song_id,
+                    protocol_id=protocol_name,
+                    chunk_index=request.chunk_index,
+                    ordinal=ordinal,
+                    total=len(requests),
+                    status="verified",
+                    output_sha256=record.output_sha256 or "-",
+                )
             vocal_stem = assemble_vocal_stem(
                 requests,
                 chunk_paths_by_index=chunk_paths,
@@ -198,12 +239,29 @@ def evaluate_campaign(
         requests = _load_requests(args.output_dir / "common" / song_id / "requests.jsonl")
         for protocol_name in _selected_protocols(args.protocol):
             protocol_root = args.output_dir / protocol_name / song_id
+            ordinal_by_chunk = {
+                request.chunk_index: ordinal
+                for ordinal, request in enumerate(requests, start=1)
+            }
+
+            def report_progress(request: TwoBarRenderRequest, status: str) -> None:
+                _write_progress(
+                    stage="evaluate",
+                    song_id=song_id,
+                    protocol_id=protocol_name,
+                    chunk_index=request.chunk_index,
+                    ordinal=ordinal_by_chunk[request.chunk_index],
+                    total=len(requests),
+                    status=status,
+                )
+
             metrics = evaluate_protocol_song(
                 protocol_id=ProtocolId(protocol_name),
                 song_id=song_id,
                 requests=requests,
                 chunk_records=_load_chunk_records(protocol_root / "render_chunks.jsonl"),
                 transcribe_chunk=transcriber,
+                progress_callback=report_progress,
             )
             (protocol_root / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
             aggregate.append(metrics)
@@ -243,6 +301,16 @@ def package_campaign(args: argparse.Namespace) -> None:
                     "failed_chunk_count": metrics.get("failed_chunk_count", "n/a"),
                 }
             )
+            _write_progress(
+                stage="package",
+                song_id=song_id,
+                protocol_id=protocol_name,
+                chunk_index=None,
+                ordinal=len(assets),
+                total=None,
+                status="ready",
+                mix_sha256=comparison_rows[-1]["mix_sha256"],
+            )
     if not assets:
         raise ValueError("package stage requires at least one assembled mix.wav")
     outputs = write_listening_package(output_dir=args.output_dir, assets=assets)
@@ -271,6 +339,54 @@ def _selected_songs(selected_song: str | None) -> tuple[str, ...]:
 
 def _selected_protocols(selected_protocol: str | None) -> tuple[str, ...]:
     return (selected_protocol,) if selected_protocol is not None else _PROTOCOL_IDS
+
+
+def _append_campaign_error(path: Path, *, args: argparse.Namespace, error: Exception) -> None:
+    payload = {
+        "schema_version": "streammuse.rap_audio_protocols.campaign_error.v1",
+        "stage": args.stage,
+        "song_id": args.song,
+        "protocol_id": args.protocol,
+        "chunk_index": None,
+        "error_type": type(error).__name__,
+        "message": str(error),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(canonical_json_dumps(payload))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _write_progress(
+    *,
+    stage: str,
+    song_id: str | None,
+    protocol_id: str | None,
+    chunk_index: int | None,
+    ordinal: int | None,
+    total: int | None,
+    status: str,
+    **details: Any,
+) -> None:
+    fields = [
+        f"stage={stage}",
+        f"song={song_id or '-'}",
+        f"protocol={protocol_id or '-'}",
+        f"chunk={chunk_index:03d}" if chunk_index is not None else "chunk=-",
+        f"count={ordinal}/{total}" if ordinal is not None and total is not None else "count=-",
+        f"status={status}",
+    ]
+    fields.extend(
+        f"{key}={_progress_value(value)}"
+        for key, value in details.items()
+    )
+    print(" ".join(fields), file=sys.stdout, flush=True)
+
+
+def _progress_value(value: Any) -> str:
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
 def _load_requests(path: Path) -> tuple[TwoBarRenderRequest, ...]:

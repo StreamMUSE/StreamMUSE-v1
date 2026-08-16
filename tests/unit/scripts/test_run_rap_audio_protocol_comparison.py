@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -75,6 +79,12 @@ def _write_chunk_wav(path: Path, *, frame_count: int = CHUNK_FRAME_COUNT) -> Non
     wavfile.write(path, 48_000, np.full(frame_count, 0.25, dtype=np.float32))
 
 
+def _write_executable(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+
+
 def _protocol_records(song_id: str, request_path: Path, output_dir: Path) -> list[ChunkRenderRecord]:
     requests = load_song_corpus(FIXTURE_PATH, song_id="01_space_exploration", expected_bars=2)
     del requests  # silence lint in the test file
@@ -122,6 +132,34 @@ def test_prepare_selects_only_songs_01_to_03_and_writes_exactly_75_canonical_req
         assert (path.parent / "drums.wav").is_file()
 
 
+def test_prepare_prints_one_dense_progress_line_per_chunk(load_script, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    module = load_script("run_rap_audio_protocol_comparison")
+    source_album = _build_source_album(tmp_path)
+    song_id = "01_space_exploration"
+
+    assert module.main(
+        [
+            "--source-album",
+            str(source_album),
+            "--output-dir",
+            str(tmp_path / "campaign"),
+            "--stage",
+            "prepare",
+            "--song",
+            song_id,
+        ]
+    ) == 0
+
+    progress_lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith(f"stage=prepare song={song_id} ")
+    ]
+    assert len(progress_lines) == 25
+    assert "protocol=common chunk=000 count=1/25 status=ready request_sha256=" in progress_lines[0]
+    assert "protocol=common chunk=024 count=25/25 status=ready request_sha256=" in progress_lines[-1]
+
+
 def test_prepare_refuses_mismatched_existing_manifest(load_script, tmp_path: Path) -> None:
     module = load_script("run_rap_audio_protocol_comparison")
     source_album = _build_source_album(tmp_path)
@@ -133,8 +171,28 @@ def test_prepare_refuses_mismatched_existing_manifest(load_script, tmp_path: Pat
     with pytest.raises(ValueError, match="mismatched existing manifest"):
         _prepare_campaign(module, source_album, output_dir)
 
+    error_records = [
+        json.loads(line)
+        for line in (output_dir / "campaign_errors.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert error_records == [
+        {
+            "chunk_index": None,
+            "error_type": "ValueError",
+            "message": "mismatched existing manifest",
+            "protocol_id": None,
+            "schema_version": "streammuse.rap_audio_protocols.campaign_error.v1",
+            "song_id": None,
+            "stage": "prepare",
+        }
+    ]
 
-def test_assemble_requires_25_records_and_writes_exact_length_artifacts(load_script, tmp_path: Path) -> None:
+
+def test_assemble_requires_25_records_and_writes_exact_length_artifacts(
+    load_script,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     module = load_script("run_rap_audio_protocol_comparison")
     source_album = _build_source_album(tmp_path)
     output_dir = tmp_path / "campaign"
@@ -185,9 +243,21 @@ def test_assemble_requires_25_records_and_writes_exact_length_artifacts(load_scr
     mix_path = record_dir / "mix.wav"
     assert wavfile.read(vocals_path)[1].shape[0] == SONG_FRAME_COUNT
     assert wavfile.read(mix_path)[1].shape[0] == SONG_FRAME_COUNT
+    progress_lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith(f"stage=assemble song={song_id} protocol={ProtocolId.MOSS_GLOBAL.value} ")
+    ]
+    assert len(progress_lines) == 25
+    assert "chunk=000 count=1/25 status=verified" in progress_lines[0]
+    assert "chunk=024 count=25/25 status=verified" in progress_lines[-1]
 
 
-def test_evaluate_is_lazy_and_package_writes_blinded_outputs(load_script, tmp_path: Path) -> None:
+def test_evaluate_is_lazy_and_package_writes_blinded_outputs(
+    load_script,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     module = load_script("run_rap_audio_protocol_comparison")
     source_album = _build_source_album(tmp_path)
     output_dir = tmp_path / "campaign"
@@ -245,11 +315,34 @@ def test_evaluate_is_lazy_and_package_writes_blinded_outputs(load_script, tmp_pa
     ) == 0
     assert created == []
 
+    assert module.main(
+        [
+            "--source-album",
+            str(source_album),
+            "--output-dir",
+            str(output_dir),
+            "--stage",
+            "evaluate",
+            "--song",
+            song_id,
+            "--protocol",
+            protocol_id,
+        ],
+        transcriber_factory=fake_transcriber_factory,
+    ) == 0
+    assert created == [{"model_size": "small", "device": "cpu", "compute_type": "int8"}]
+    evaluate_lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith(f"stage=evaluate song={song_id} protocol={protocol_id} ")
+    ]
+    assert len(evaluate_lines) == 25
+    assert "chunk=000 count=1/25 status=success" in evaluate_lines[0]
+    assert "chunk=024 count=25/25 status=success" in evaluate_lines[-1]
+
     metrics_path = protocol_dir / "metrics.json"
-    metrics_path.write_text(
-        json.dumps({"protocol_id": protocol_id, "song_id": song_id, "failed_chunk_count": 0}),
-        encoding="utf-8",
-    )
+    assert metrics_path.is_file()
+    assert json.loads(metrics_path.read_text(encoding="utf-8"))["failed_chunk_count"] == 0
 
     exit_code = module.main(
         [
@@ -272,3 +365,247 @@ def test_evaluate_is_lazy_and_package_writes_blinded_outputs(load_script, tmp_pa
     assert (output_dir / "listening.html").is_file()
     assert (output_dir / "COMPARISON.md").is_file()
     assert (output_dir / "package_audit.json").is_file()
+
+
+def test_h200_setup_is_idempotent_and_records_pinned_environments_models_and_reference(tmp_path: Path) -> None:
+    setup_script = ROOT / "scripts" / "setup_rap_audio_protocols_h200.sh"
+    root_prefix = tmp_path / "root"
+    env_root = root_prefix / "envs" / "rap-audio-protocols"
+    checkout_root = root_prefix / "checkouts" / "rap-audio-protocols"
+    asset_root = root_prefix / "assets" / "rap-audio-protocols"
+    hf_home = tmp_path / "shared-hf"
+    command_log = tmp_path / "commands.log"
+    fake_bin = tmp_path / "fake-bin"
+
+    moss_commit = "58b20a0d5fcc6766658d50967a90a9d890009a46"
+    ted_commit = "36ffc3e2de346156baa7d60a1749ca4a9365625b"
+    moss_snapshot = "cdd3b911b1585e3f2dbc7775ef10f9926f58850a"
+    indextts_snapshot = "740dcaff396282ffb241903d150ac011cd4b1ede"
+
+    _write_executable(
+        fake_bin / "git",
+        r'''
+printf 'git' >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+if [ "${1:-}" = "clone" ]; then
+  target="${@: -1}"
+  mkdir -p "${target}/.git" "${target}/datasets/Ref"
+  printf 'ted-reference-audio\n' > "${target}/datasets/Ref/0011_000001.wav"
+  exit 0
+fi
+if [ "${1:-}" = "-C" ]; then
+  target="$2"
+  shift 2
+  case "${1:-}" in
+    checkout)
+      printf '%s\n' "${@: -1}" > "${target}/.fake-head"
+      ;;
+    rev-parse)
+      cat "${target}/.fake-head"
+      ;;
+  esac
+fi
+''',
+    )
+    _write_executable(
+        fake_bin / "uv",
+        r'''
+printf 'cwd=%s UV_PROJECT_ENVIRONMENT=%s uv' "$PWD" "${UV_PROJECT_ENVIRONMENT:-}" >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+if [ "${1:-}" = "--version" ]; then
+  printf 'uv 0.test\n'
+fi
+''',
+    )
+    _write_executable(
+        fake_bin / "conda",
+        r'''
+printf 'conda' >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+if [ "${1:-}" = "--version" ]; then
+  printf 'conda 25.test\n'
+  exit 0
+fi
+prefix=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--prefix" ] || [ "$1" = "-p" ]; then
+    prefix="$2"
+    break
+  fi
+  shift
+done
+mkdir -p "${prefix}/conda-meta"
+''',
+    )
+    _write_executable(fake_bin / "sudo", "exit 99\n")
+    _write_executable(
+        fake_bin / "apt",
+        r'''
+printf 'apt' >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+if [ "${1:-}" = "download" ]; then
+  shift
+  for spec in "$@"; do
+    package="${spec%%=*}"
+    printf 'fake deb\n' > "${package}_fake_amd64.deb"
+  done
+fi
+''',
+    )
+    _write_executable(
+        fake_bin / "dpkg-deb",
+        r'''
+printf 'dpkg-deb' >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+deb="$2"
+target="$3"
+mkdir -p "${target}/usr/bin" "${target}/usr/lib/x86_64-linux-gnu"
+if [[ "${deb}" == *rubberband-cli* ]]; then
+  cat > "${target}/usr/bin/rubberband" <<'EOF'
+#!/usr/bin/env bash
+printf 'rubberband 3.3.0\n'
+EOF
+  chmod +x "${target}/usr/bin/rubberband"
+fi
+''',
+    )
+
+    for env_name in ("moss", "ted"):
+        env_dir = env_root / env_name
+        _write_executable(env_dir / "bin" / "python", "exit 0\n")
+        _write_executable(
+            env_dir / "bin" / "hf",
+            r'''
+printf 'hf' >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+repo="$2"
+shift 2
+revision=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--revision" ]; then
+    revision="$2"
+    break
+  fi
+  shift
+done
+repo_dir="${repo//\//--}"
+snapshot_path="${HF_HOME}/hub/models--${repo_dir}/snapshots/${revision}"
+mkdir -p "${snapshot_path}"
+printf 'model-config\n' > "${snapshot_path}/config.yaml"
+printf '%s\n' "${snapshot_path}"
+''',
+        )
+
+    _write_executable(
+        env_root / "nemo" / "bin" / "python",
+        r'''
+printf 'nemo-python' >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+cat >/dev/null
+printf '%s\n' '{"cuda_version":"12.8","models":["tts_en_fastpitch","tts_en_hifigan"],"nemo_toolkit_version":"2.7.3","torch_version":"2.9.1+cu128","torchaudio_version":"2.9.1+cu128"}'
+''',
+    )
+    _write_executable(env_root / "align" / "bin" / "python", "exit 0\n")
+    _write_executable(
+        env_root / "align" / "bin" / "mfa",
+        r'''
+printf 'mfa' >> "${COMMAND_LOG}"
+printf ' %s' "$@" >> "${COMMAND_LOG}"
+printf '\n' >> "${COMMAND_LOG}"
+if [ "${1:-}" = "version" ]; then
+  printf '3.4.1\n'
+fi
+''',
+    )
+    _write_executable(
+        env_root / "ffmpeg7" / "bin" / "ffmpeg",
+        "printf 'ffmpeg version 7.1.1 test-build\\n'\n",
+    )
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "COMMAND_LOG": str(command_log),
+            "ROOT_PREFIX": str(root_prefix),
+            "ENV_ROOT": str(env_root),
+            "CHECKOUT_ROOT": str(checkout_root),
+            "ASSET_ROOT": str(asset_root),
+            "HF_HOME": str(hf_home),
+            "MANIFEST_PATH": str(env_root / "environment_manifest.json"),
+            "UV_BIN": str(fake_bin / "uv"),
+            "PYTHON_BIN": sys.executable,
+            "MOSS_PYTHON_BIN": "/usr/bin/python3.12",
+            "PYTHON310_BIN": "/data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron/bin/python",
+            "CONDA_BIN": str(fake_bin / "conda"),
+        }
+    )
+
+    first = subprocess.run(["bash", str(setup_script)], cwd=ROOT, env=environment, text=True, capture_output=True)
+    assert first.returncode == 0, first.stderr
+    manifest_path = env_root / "environment_manifest.json"
+    first_manifest = manifest_path.read_bytes()
+    second = subprocess.run(["bash", str(setup_script)], cwd=ROOT, env=environment, text=True, capture_output=True)
+    assert second.returncode == 0, second.stderr
+    assert manifest_path.read_bytes() == first_manifest
+
+    manifest = json.loads(first_manifest)
+    assert manifest["repositories"]["moss"]["requested_ref"] == moss_commit
+    assert manifest["repositories"]["moss"]["resolved_commit"] == moss_commit
+    assert manifest["repositories"]["ted"]["requested_ref"] == ted_commit
+    assert manifest["repositories"]["ted"]["resolved_commit"] == ted_commit
+    assert manifest["packages"]["nemo_toolkit"] == {"package_version": "2.7.3", "source_tag": "v2.7.3"}
+    assert manifest["packages"]["montreal_forced_aligner"] == {"package_version": "3.4.1", "source_tag": "v3.4.1"}
+    assert manifest["packages"]["faster_whisper"] == {"package_version": "1.2.1"}
+    assert manifest["packages"]["ffmpeg"] == {
+        "package_version": "7.1.1",
+        "resolved_version": "ffmpeg version 7.1.1 test-build",
+    }
+    assert manifest["packages"]["rubberband"] == {
+        "apt_package_version": "3.3.0+dfsg-2build1",
+        "binary_path": str(asset_root / "rubberband" / "rootfs" / "usr" / "bin" / "rubberband"),
+        "resolved_version": "rubberband 3.3.0",
+    }
+    assert manifest["models"]["moss_tts"]["revision"] == moss_snapshot
+    assert manifest["models"]["index_tts_2"]["revision"] == indextts_snapshot
+    assert manifest["models"]["nemo"] == ["tts_en_fastpitch", "tts_en_hifigan"]
+    assert manifest["hf_home"] == str(hf_home)
+    assert set(manifest["environments"]) == {"align", "ffmpeg7", "moss", "nemo", "ted"}
+
+    expected_reference_hash = hashlib.sha256(b"ted-reference-audio\n").hexdigest()
+    assert manifest["ted_reference"]["relative_source_path"] == "datasets/Ref/0011_000001.wav"
+    assert manifest["ted_reference"]["source_sha256"] == expected_reference_hash
+    assert manifest["ted_reference"]["copied_sha256"] == expected_reference_hash
+    assert Path(manifest["ted_reference"]["copied_path"]).read_bytes() == b"ted-reference-audio\n"
+
+    commands = command_log.read_text(encoding="utf-8")
+    assert f"git -C {checkout_root / 'moss'} checkout --detach {moss_commit}" in commands
+    assert f"git -C {checkout_root / 'ted'} checkout --detach {ted_commit}" in commands
+    assert (
+        f"uv venv --python /usr/bin/python3.12 {env_root / 'moss'}" in commands
+    )
+    assert (
+        f"uv pip install --python {env_root / 'moss' / 'bin' / 'python'} "
+        "--index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu128 "
+        f"--index-strategy unsafe-best-match -e {checkout_root / 'moss'}[torch-runtime]"
+    ) in commands
+    assert f"uv pip install --python {env_root / 'moss' / 'bin' / 'python'} faster-whisper==1.2.1" in commands
+    assert f"UV_PROJECT_ENVIRONMENT={env_root / 'ted'} uv sync --all-extras" in commands
+    assert "torch==2.9.1+cu128 torchaudio==2.9.1+cu128 nemo_toolkit[tts]==2.7.3" in commands
+    assert "conda create --yes --prefix" in commands
+    assert "python=3.10 montreal-forced-aligner=3.4.1" in commands
+    assert "conda create --yes --prefix" in commands
+    assert "ffmpeg=7.1.1 fftw libsamplerate libsndfile" in commands
+    assert "apt download rubberband-cli=3.3.0+dfsg-2build1 librubberband2=3.3.0+dfsg-2build1" in commands
+    assert "dpkg-deb -x" in commands
+    assert f"hf download OpenMOSS-Team/MOSS-TTS-v1.5 --revision {moss_snapshot}" in commands
+    assert f"hf download IndexTeam/IndexTTS-2 --revision {indextts_snapshot}" in commands
+    assert "mfa model download acoustic english_us_arpa" in commands
+    assert "mfa model download dictionary english_us_arpa" in commands

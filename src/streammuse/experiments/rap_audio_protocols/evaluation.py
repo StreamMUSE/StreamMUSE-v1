@@ -100,11 +100,25 @@ def estimate_syllable_timing_error_ms(
     This is explicitly a syllable-level estimate derived from word timing, not a
     phone-level ground truth measurement.
     """
-    request_groups = _group_request_syllables(request)
-    recognized_groups = [word for word in recognized_words if normalize_word(word.text)]
+    request_groups = [
+        (normalized, syllables)
+        for word, syllables in _group_request_syllables(request)
+        if (normalized := normalize_word(word))
+    ]
+    recognized_groups = [
+        (normalized, word)
+        for word in recognized_words
+        if (normalized := normalize_word(word.text))
+    ]
 
     errors: list[float] = []
-    for (_group_word, syllables), recognized in zip(request_groups, recognized_groups):
+    matches = _matching_word_indices(
+        tuple(word for word, _syllables in request_groups),
+        tuple(word for word, _recognized in recognized_groups),
+    )
+    for request_index, recognized_index in matches:
+        syllables = request_groups[request_index][1]
+        recognized = recognized_groups[recognized_index][1]
         if recognized.start_seconds is None or recognized.end_seconds is None:
             continue
         if recognized.end_seconds <= recognized.start_seconds:
@@ -117,6 +131,60 @@ def estimate_syllable_timing_error_ms(
         for syllable, estimate in zip(syllables, estimated_seconds, strict=True):
             errors.append((estimate - syllable.target_seconds) * 1000.0)
     return tuple(errors)
+
+
+def _matching_word_indices(
+    reference_words: Sequence[str],
+    hypothesis_words: Sequence[str],
+) -> tuple[tuple[int, int], ...]:
+    """Return exact word matches from a deterministic edit-distance alignment."""
+    rows = len(reference_words) + 1
+    cols = len(hypothesis_words) + 1
+    costs = [[0] * cols for _ in range(rows)]
+    directions = [[""] * cols for _ in range(rows)]
+
+    for row in range(1, rows):
+        costs[row][0] = row
+        directions[row][0] = "delete"
+    for col in range(1, cols):
+        costs[0][col] = col
+        directions[0][col] = "insert"
+
+    for row in range(1, rows):
+        for col in range(1, cols):
+            if reference_words[row - 1] == hypothesis_words[col - 1]:
+                costs[row][col] = costs[row - 1][col - 1]
+                directions[row][col] = "match"
+                continue
+            candidates = (
+                (costs[row - 1][col - 1] + 1, 0, "substitute"),
+                (costs[row][col - 1] + 1, 1, "insert"),
+                (costs[row - 1][col] + 1, 2, "delete"),
+            )
+            cost, _priority, direction = min(candidates)
+            costs[row][col] = cost
+            directions[row][col] = direction
+
+    matches: list[tuple[int, int]] = []
+    row = len(reference_words)
+    col = len(hypothesis_words)
+    while row or col:
+        direction = directions[row][col]
+        if direction == "match":
+            matches.append((row - 1, col - 1))
+            row -= 1
+            col -= 1
+        elif direction == "substitute":
+            row -= 1
+            col -= 1
+        elif direction == "insert":
+            col -= 1
+        elif direction == "delete":
+            row -= 1
+        else:  # pragma: no cover - only reachable if the matrix is malformed
+            raise RuntimeError("invalid edit-alignment backtrace")
+    matches.reverse()
+    return tuple(matches)
 
 
 def compute_signal_metrics(samples: np.ndarray) -> dict[str, int | bool | float]:
@@ -167,6 +235,7 @@ def evaluate_protocol_song(
     requests: Sequence[TwoBarRenderRequest],
     chunk_records: Sequence[ChunkRenderRecord],
     transcribe_chunk: Callable[[Path], Sequence[RecognizedWord]],
+    progress_callback: Callable[[TwoBarRenderRequest, str], None] | None = None,
 ) -> dict[str, Any]:
     records_by_chunk = {record.chunk_index: record for record in chunk_records}
     total_word_counts = {
@@ -187,34 +256,43 @@ def evaluate_protocol_song(
         record = records_by_chunk.get(request.chunk_index)
         if record is None or not record.success or not record.output_path:
             failed_chunk_count += 1
+            if progress_callback is not None:
+                progress_callback(request, "failed")
             continue
-        output_path = Path(record.output_path)
-        sample_rate_hz, samples = wavfile.read(output_path)
-        mono = _to_mono_float32(samples)
-        successful_chunk_count += 1
+        try:
+            output_path = Path(record.output_path)
+            sample_rate_hz, samples = wavfile.read(output_path)
+            mono = _to_mono_float32(samples)
+            successful_chunk_count += 1
 
-        duration_errors_ms.append(abs((mono.shape[0] / sample_rate_hz) - request.duration_seconds) * 1000.0)
-        signal_metrics = compute_signal_metrics(mono)
-        clipped_sample_count += int(signal_metrics["clipped_sample_count"])
-        silent_chunk_count += int(bool(signal_metrics["silent"]))
+            duration_errors_ms.append(abs((mono.shape[0] / sample_rate_hz) - request.duration_seconds) * 1000.0)
+            signal_metrics = compute_signal_metrics(mono)
+            clipped_sample_count += int(signal_metrics["clipped_sample_count"])
+            silent_chunk_count += int(bool(signal_metrics["silent"]))
 
-        recognized_words = tuple(transcribe_chunk(output_path))
-        counts = compute_word_error_counts(
-            normalize_words(request.text),
-            tuple(word for word in (normalize_word(item.text) for item in recognized_words) if word),
-        )
-        for key in total_word_counts:
-            total_word_counts[key] += int(counts[key])
+            recognized_words = tuple(transcribe_chunk(output_path))
+            counts = compute_word_error_counts(
+                normalize_words(request.text),
+                tuple(word for word in (normalize_word(item.text) for item in recognized_words) if word),
+            )
+            for key in total_word_counts:
+                total_word_counts[key] += int(counts[key])
 
-        stress_correlation = measure_stress_rms_correlation(
-            request,
-            mono,
-            sample_rate_hz=sample_rate_hz,
-        )
-        if stress_correlation is not None and not math.isnan(stress_correlation):
-            stress_correlations.append(stress_correlation)
+            stress_correlation = measure_stress_rms_correlation(
+                request,
+                mono,
+                sample_rate_hz=sample_rate_hz,
+            )
+            if stress_correlation is not None and not math.isnan(stress_correlation):
+                stress_correlations.append(stress_correlation)
 
-        timing_errors_ms.extend(estimate_syllable_timing_error_ms(request, recognized_words))
+            timing_errors_ms.extend(estimate_syllable_timing_error_ms(request, recognized_words))
+        except Exception:
+            if progress_callback is not None:
+                progress_callback(request, "error")
+            raise
+        if progress_callback is not None:
+            progress_callback(request, "success")
 
     reference_words = total_word_counts["reference_word_count"]
     total_errors = (

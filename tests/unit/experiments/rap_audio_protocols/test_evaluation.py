@@ -124,6 +124,46 @@ def test_estimate_syllable_timing_error_and_stress_rms_correlation_from_independ
     assert clip_counts["silent"] is False
 
 
+def test_estimate_syllable_timing_error_skips_inserted_asr_word_without_shifting_matches() -> None:
+    evaluation = importlib.import_module("streammuse.experiments.rap_audio_protocols.evaluation")
+    request = _request(0)
+    recognized = (
+        evaluation.RecognizedWord(text="intruder", start_seconds=10.0, end_seconds=10.1),
+        *(
+            evaluation.RecognizedWord(
+                text=syllable.word,
+                start_seconds=syllable.target_seconds,
+                end_seconds=syllable.target_seconds + 0.12,
+            )
+            for syllable in request.syllables
+        ),
+    )
+
+    timing_errors = evaluation.estimate_syllable_timing_error_ms(request, recognized)
+
+    assert len(timing_errors) == 18
+    assert max(abs(error) for error in timing_errors) < 1e-6
+
+
+def test_estimate_syllable_timing_error_skips_deleted_asr_word_without_shifting_matches() -> None:
+    evaluation = importlib.import_module("streammuse.experiments.rap_audio_protocols.evaluation")
+    request = _request(0)
+    recognized = tuple(
+        evaluation.RecognizedWord(
+            text=syllable.word,
+            start_seconds=syllable.target_seconds,
+            end_seconds=syllable.target_seconds + 0.12,
+        )
+        for index, syllable in enumerate(request.syllables)
+        if index != 7
+    )
+
+    timing_errors = evaluation.estimate_syllable_timing_error_ms(request, recognized)
+
+    assert len(timing_errors) == 17
+    assert max(abs(error) for error in timing_errors) < 1e-6
+
+
 def test_evaluate_protocol_song_aggregates_duration_wer_and_failed_chunk_counts(tmp_path: Path) -> None:
     evaluation = importlib.import_module("streammuse.experiments.rap_audio_protocols.evaluation")
     first = _request(0)
@@ -185,7 +225,7 @@ def test_evaluate_protocol_song_aggregates_duration_wer_and_failed_chunk_counts(
         "max": pytest.approx(20.0),
     }
     assert metrics["clipped_sample_count"] == 2
-    assert metrics["estimated_syllable_timing_error_ms"]["measured_count"] == 36
+    assert metrics["estimated_syllable_timing_error_ms"]["measured_count"] == 35
     assert metrics["stress_rms_correlation"] > 0.99
 
 
