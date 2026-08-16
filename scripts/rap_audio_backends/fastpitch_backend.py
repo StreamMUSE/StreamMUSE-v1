@@ -84,6 +84,10 @@ class FastPitchRenderPlan:
     def compressed_consonant_regions(self) -> tuple[int, ...]:
         return self.phone_plan.compressed_consonant_regions
 
+    @property
+    def grapheme_fallback_words(self) -> tuple[str, ...]:
+        return self.phone_plan.grapheme_fallback_words
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -297,6 +301,7 @@ def render_request(
     audio, _ = _synthesise_audio(request=request, runtime=runtime, plan=plan, prosody_mode=prosody_mode)
     _write_audio_wav(output_path, audio, sample_rate_hz=runtime.sample_rate_hz)
     metadata = validate_wav_metadata(output_path, expected_sample_rate_hz=runtime.sample_rate_hz, expected_channels=1)
+    _write_timing_sidecar(output_path, plan)
     return ChunkRenderRecord(
         protocol_id=ProtocolId.FASTPITCH_PHONEME,
         song_id=request.song_id,
@@ -351,6 +356,7 @@ def _render_with_retries(
                 expected_sample_rate_hz=runtime.sample_rate_hz,
                 expected_channels=1,
             )
+            _write_timing_sidecar(output_path, plan)
             record = ChunkRenderRecord(
                 protocol_id=ProtocolId.FASTPITCH_PHONEME,
                 song_id=request.song_id,
@@ -370,6 +376,7 @@ def _render_with_retries(
         except Exception as exc:
             last_error = exc
 
+    _timing_sidecar_path(output_path).unlink(missing_ok=True)
     silence_frame_count = chunk_frame_count(request, sample_rate_hz=runtime.sample_rate_hz)
     _write_silence_wav(
         output_path,
@@ -586,6 +593,43 @@ def _write_silence_wav(path: Path | str, *, frame_count: int, sample_rate_hz: in
     wavfile.write(destination, sample_rate_hz, np.zeros(frame_count, dtype=np.int16))
 
 
+def _timing_sidecar_path(output_path: Path | str) -> Path:
+    return Path(output_path).with_suffix(".timing.json")
+
+
+def _write_timing_sidecar(output_path: Path | str, plan: FastPitchRenderPlan) -> Path:
+    destination = _timing_sidecar_path(output_path)
+    payload = {
+        "tokenizer_labels": list(plan.tokenizer_labels),
+        "duration_frames": list(plan.duration_frames),
+        "anchor_error_frames": list(plan.anchor_error_frames),
+        "compressed_consonant_regions": list(plan.compressed_consonant_regions),
+        "grapheme_fallback_words": list(plan.grapheme_fallback_words),
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(canonical_json_dumps(payload))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    return destination
+
+
 def _error_payload(
     error: Exception | None,
     *,
@@ -601,6 +645,7 @@ def _error_payload(
         "duration_frames": list(plan.duration_frames) if plan is not None else [],
         "anchor_error_frames": list(plan.anchor_error_frames) if plan is not None else [],
         "compressed_consonant_regions": list(plan.compressed_consonant_regions) if plan is not None else [],
+        "grapheme_fallback_words": list(plan.grapheme_fallback_words) if plan is not None else [],
     }
     return canonical_json_dumps(payload)
 
@@ -613,12 +658,14 @@ def _progress_line(
 ) -> str:
     duration_frames = sum(plan.duration_frames) if plan is not None else 0
     max_anchor_error = max((abs(value) for value in (plan.anchor_error_frames if plan is not None else ())), default=0)
+    grapheme_fallback_words = ",".join(plan.grapheme_fallback_words) if plan is not None else ""
     return (
         f"protocol={record.protocol_id.value} song_id={record.song_id} chunk_index={record.chunk_index} "
         f"success={int(record.success)} attempts={record.attempts} sample_rate_hz={record.sample_rate_hz} "
         f"prosody_controls={prosody_controls} duration_frames={duration_frames} "
         f"tokenizer_labels={len(plan.tokenizer_labels) if plan is not None else 0} "
-        f"max_anchor_error_frames={max_anchor_error} output_path={record.output_path}"
+        f"max_anchor_error_frames={max_anchor_error} "
+        f"grapheme_fallback_words={grapheme_fallback_words or 'none'} output_path={record.output_path}"
     )
 
 

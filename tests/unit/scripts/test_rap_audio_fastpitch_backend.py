@@ -59,16 +59,33 @@ def _tokenizer_labels(request, overrides: dict[str, tuple[str, ...]] | None = No
     labels: list[str] = ["<blk>"]
     words = list(_word_syllables(request.syllables))
     for word_index, (word, syllables) in enumerate(words):
-        if all(syllable.phonemes for syllable in syllables):
+        if word.lower() in overrides:
+            phones = overrides[word.lower()]
+        elif all(syllable.phonemes for syllable in syllables):
             phones = tuple(phone for syllable in syllables for phone in syllable.phonemes)
         else:
-            phones = overrides.get(word.lower(), OOV_PHONE_LABELS[word.lower()])
+            phones = OOV_PHONE_LABELS[word.lower()]
         for phone in phones:
             labels.append(phone)
             labels.append("<blk>")
         if word_index + 1 < len(words):
             labels.append(" ")
     return tuple(labels)
+
+
+def _request_with_replaced_word(request, old_word: str, new_word: str, phoneme_groups: tuple[tuple[str, ...], ...]):
+    matching_indices = [index for index, syllable in enumerate(request.syllables) if syllable.word == old_word]
+    assert len(matching_indices) == len(phoneme_groups)
+    syllables = list(request.syllables)
+    for index, phonemes in zip(matching_indices, phoneme_groups):
+        syllables[index] = replace(syllables[index], word=new_word, phonemes=phonemes)
+    text_start = request.text.lower().index(old_word.lower())
+    text_end = text_start + len(old_word)
+    return replace(
+        request,
+        text=request.text[:text_start] + new_word + request.text[text_end:],
+        syllables=tuple(syllables),
+    )
 
 
 def _word_syllables(syllables) -> Iterable[tuple[str, tuple[object, ...]]]:
@@ -490,6 +507,104 @@ def test_build_render_plan_supports_nemo_27_vocab_without_ids_to_tokens() -> Non
 
     assert plan.tokenizer_labels == labels
     assert plan.duration_tensor.shape == plan.tokens.shape
+
+
+def test_grapheme_fallback_writes_auditable_timing_sidecar_and_progress(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_grapheme_sidecar")
+    request = _request_with_replaced_word(_fixture_request(), "blasts", "where", (("W", "EH1", "R"),))
+    labels = _tokenizer_labels(request, overrides={"where": tuple("where")})
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={request.text: labels}),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    request_path = tmp_path / "requests.jsonl"
+    output_path = tmp_path / "chunks" / request.song_id / "chunk-000.wav"
+    progress = io.StringIO()
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    records = module.render_pending_requests(
+        request_path=request_path,
+        record_path=tmp_path / "records.jsonl",
+        output_dir=tmp_path / "chunks",
+        runtime=runtime,
+        progress_stream=progress,
+    )
+
+    sidecar_path = output_path.with_suffix(".timing.json")
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert records[0].success is True
+    assert sidecar["tokenizer_labels"] == list(labels)
+    assert len(sidecar["duration_frames"]) == len(labels)
+    assert sum(sidecar["duration_frames"]) == round(request.duration_seconds * 22050 / 256)
+    assert len(sidecar["anchor_error_frames"]) == len(request.syllables)
+    assert sidecar["compressed_consonant_regions"]
+    assert sidecar["grapheme_fallback_words"] == ["where"]
+    assert "grapheme_fallback_words=where" in progress.getvalue()
+
+
+def test_grapheme_fallback_is_reported_for_failed_render_without_success_sidecar(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_grapheme_failure")
+    request = _request_with_replaced_word(_fixture_request(), "blasts", "where", (("W", "EH1", "R"),))
+    labels = _tokenizer_labels(request, overrides={"where": tuple("where")})
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={request.text: labels}, failures_remaining=1),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    request_path = tmp_path / "requests.jsonl"
+    output_path = tmp_path / "chunks" / request.song_id / "chunk-000.wav"
+    progress = io.StringIO()
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    records = module.render_pending_requests(
+        request_path=request_path,
+        record_path=tmp_path / "records.jsonl",
+        output_dir=tmp_path / "chunks",
+        runtime=runtime,
+        max_attempts=1,
+        progress_stream=progress,
+    )
+
+    error = json.loads(str(records[0].error))
+    assert records[0].success is False
+    assert error["grapheme_fallback_words"] == ["where"]
+    assert "grapheme_fallback_words=where" in progress.getvalue()
+    assert not output_path.with_suffix(".timing.json").exists()
+
+
+def test_timing_sidecar_replacement_is_atomic_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_atomic_sidecar")
+    request = _fixture_request()
+    runtime = module.FastPitchBackendRuntime(
+        fastpitch=FakeFastPitch(labels_by_text={request.text: _tokenizer_labels(request)}),
+        hifigan=FakeHiFiGan(),
+        torch_module=FakeTorch(),
+        device="cuda:0",
+        fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+        hifigan_model_id=module.HIFIGAN_MODEL_ID,
+    )
+    output_path = tmp_path / "chunk-000.wav"
+    sidecar_path = output_path.with_suffix(".timing.json")
+    sidecar_path.write_text('{"previous":true}\n', encoding="utf-8")
+    plan = module.build_render_plan(request=request, runtime=runtime)
+
+    def fail_replace(source: object, destination: object) -> None:
+        raise OSError("synthetic atomic replace failure")
+
+    monkeypatch.setattr(module.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="synthetic atomic replace failure"):
+        module._write_timing_sidecar(output_path, plan)
+
+    assert sidecar_path.read_text(encoding="utf-8") == '{"previous":true}\n'
+    assert list(tmp_path.glob(".chunk-000.timing.json.*.tmp")) == []
 
 
 def test_runtime_sample_rate_controls_successful_wav_and_record(tmp_path: Path) -> None:

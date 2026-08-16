@@ -51,16 +51,33 @@ def _tokenizer_labels(request, overrides: dict[str, tuple[str, ...]] | None = No
     labels: list[str] = ["<blk>"]
     words = list(_word_syllables(request.syllables))
     for word_index, (word, syllables) in enumerate(words):
-        if all(syllable.phonemes for syllable in syllables):
+        if word.lower() in overrides:
+            phones = overrides[word.lower()]
+        elif all(syllable.phonemes for syllable in syllables):
             phones = tuple(phone for syllable in syllables for phone in syllable.phonemes)
         else:
-            phones = overrides.get(word.lower(), OOV_PHONE_LABELS[word.lower()])
+            phones = OOV_PHONE_LABELS[word.lower()]
         for phone in phones:
             labels.append(phone)
             labels.append("<blk>")
         if word_index + 1 < len(words):
             labels.append(" ")
     return tuple(labels)
+
+
+def _request_with_replaced_word(request, old_word: str, new_word: str, phoneme_groups: tuple[tuple[str, ...], ...]):
+    matching_indices = [index for index, syllable in enumerate(request.syllables) if syllable.word == old_word]
+    assert len(matching_indices) == len(phoneme_groups)
+    syllables = list(request.syllables)
+    for index, phonemes in zip(matching_indices, phoneme_groups):
+        syllables[index] = replace(syllables[index], word=new_word, phonemes=phonemes)
+    text_start = request.text.lower().index(old_word.lower())
+    text_end = text_start + len(old_word)
+    return replace(
+        request,
+        text=request.text[:text_start] + new_word + request.text[text_end:],
+        syllables=tuple(syllables),
+    )
 
 
 def _nemo_punctuated_tokenizer_labels(request) -> tuple[str, ...]:
@@ -183,6 +200,71 @@ def test_fastpitch_phone_plan_rejects_phone_token_mismatches() -> None:
 
     with pytest.raises(ValueError, match="tokenizer labels do not align"):
         build_fastpitch_phone_plan(request, tuple(tokenizer_labels))
+
+
+def test_fastpitch_phone_plan_recovers_single_syllable_where_from_graphemes() -> None:
+    request = _request_with_replaced_word(_request(), "blasts", "where", (("W", "EH1", "R"),))
+    tokenizer_labels = _tokenizer_labels(request, overrides={"where": tuple("where")})
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    where_group = next(
+        plan.syllable_phone_groups[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "where"
+    )
+    assert where_group == ("w", "h", "e", "r", "e")
+    assert plan.grapheme_fallback_words == ("where",)
+    where_indices = [index for index, label in enumerate(tokenizer_labels) if label in tuple("where")]
+    assert any(plan.duration_frames[index] > 1 for index in where_indices if tokenizer_labels[index] == "e")
+
+
+def test_fastpitch_phone_plan_recovers_multisyllabic_beyond_monotonically() -> None:
+    request = _request_with_replaced_word(
+        _request(),
+        "rocket",
+        "beyond",
+        (("B", "IH0"), ("Y", "AA1", "N", "D")),
+    )
+    tokenizer_labels = _tokenizer_labels(request, overrides={"beyond": tuple("beyond")})
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    beyond_groups = tuple(
+        plan.syllable_phone_groups[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "beyond"
+    )
+    assert beyond_groups == (("b", "e"), ("y", "o", "n", "d"))
+    assert plan.grapheme_fallback_words == ("beyond",)
+
+
+def test_fastpitch_phone_plan_collapses_contiguous_ai_to_one_vowel_nucleus() -> None:
+    request = _request_with_replaced_word(_request(), "blasts", "ai", (("EY1",),))
+    tokenizer_labels = _tokenizer_labels(request, overrides={"ai": ("a", "i")})
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    ai_group = next(
+        plan.syllable_phone_groups[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "ai"
+    )
+    assert ai_group == ("a", "i")
+    assert plan.grapheme_fallback_words == ("ai",)
+
+
+def test_fastpitch_phone_plan_rejects_graphemes_with_too_few_vowel_nuclei() -> None:
+    request = _request_with_replaced_word(
+        _request(),
+        "rocket",
+        "rhythm",
+        (("R", "IH1"), ("DH", "AH0", "M")),
+    )
+    tokenizer_labels = _tokenizer_labels(request, overrides={"rhythm": tuple("rhythm")})
+
+    with pytest.raises(ValueError, match="cannot recover grapheme syllable groups for word 'rhythm'"):
+        build_fastpitch_phone_plan(request, tokenizer_labels)
 
 
 def test_fastpitch_phone_plan_recovers_real_corpus_oov_syllable_groups_from_tokenizer_labels() -> None:

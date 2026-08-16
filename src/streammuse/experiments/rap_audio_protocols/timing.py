@@ -16,6 +16,8 @@ _MEL_FRAMES_PER_SECOND = _FASTPITCH_SAMPLE_RATE_HZ / _FASTPITCH_HOP_LENGTH
 _PADDING_LABELS = frozenset({"", "<blk>", "<blank>", "<eps>", "<pad>"})
 _PUNCTUATION_LABELS = frozenset(string.punctuation)
 _WORD_BOUNDARY_PUNCTUATION_LABELS = _PUNCTUATION_LABELS - {"'"}
+_GRAPHEME_VOWELS = frozenset("aeiouy")
+_CORE_GRAPHEME_VOWELS = _GRAPHEME_VOWELS - {"y"}
 _WORD_PATTERN = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
 
 
@@ -34,6 +36,7 @@ class FastPitchPhonePlan:
     syllable_phone_groups: tuple[tuple[str, ...], ...]
     anchor_error_frames: tuple[int, ...]
     compressed_consonant_regions: tuple[int, ...]
+    grapheme_fallback_words: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -90,7 +93,9 @@ def build_fastpitch_phone_plan(
     request: TwoBarRenderRequest, tokenizer_labels: tuple[str, ...]
 ) -> FastPitchPhonePlan:
     """Align tokenizer labels to lexical phones and assign per-label mel durations."""
-    syllable_phone_groups, syllable_label_indices = _resolve_syllable_phone_groups(request, tokenizer_labels)
+    syllable_phone_groups, syllable_label_indices, grapheme_fallback_words = _resolve_syllable_phone_groups(
+        request, tokenizer_labels
+    )
     spoken_label_indices = tuple(index for group in syllable_label_indices for index in group)
 
     duration_frames = [0] * len(tokenizer_labels)
@@ -143,6 +148,7 @@ def build_fastpitch_phone_plan(
         syllable_phone_groups=syllable_phone_groups,
         anchor_error_frames=tuple(anchor_error_frames),
         compressed_consonant_regions=tuple(dict.fromkeys(compressed_consonant_regions)),
+        grapheme_fallback_words=grapheme_fallback_words,
     )
 
 
@@ -160,14 +166,25 @@ def _is_punctuation_label(label: str) -> bool:
 
 def _vowel_phone_offset(phones: tuple[str, ...]) -> int:
     for index, phone in enumerate(phones):
-        if phone[-1:].isdigit():
+        if phone[-1:].isdigit() or _is_grapheme_vowel(phones, index):
             return index
     raise ValueError("cannot recover syllable phone groups without a vowel phone")
 
 
+def _is_grapheme_vowel(labels: tuple[str, ...], index: int) -> bool:
+    label = labels[index]
+    if label not in _GRAPHEME_VOWELS:
+        return False
+    if label in _CORE_GRAPHEME_VOWELS:
+        return True
+    previous_is_core_vowel = index > 0 and labels[index - 1] in _CORE_GRAPHEME_VOWELS
+    next_is_core_vowel = index + 1 < len(labels) and labels[index + 1] in _CORE_GRAPHEME_VOWELS
+    return not previous_is_core_vowel and not next_is_core_vowel
+
+
 def _resolve_syllable_phone_groups(
     request: TwoBarRenderRequest, tokenizer_labels: tuple[str, ...]
-) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...]]:
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], tuple[str, ...]]:
     words = _word_spans(request)
     tokenizer_words = _tokenizer_word_groups(tokenizer_labels)
     if len(tokenizer_words) != len(words):
@@ -175,12 +192,17 @@ def _resolve_syllable_phone_groups(
 
     syllable_phone_groups: list[tuple[str, ...]] = []
     syllable_label_indices: list[tuple[int, ...]] = []
+    grapheme_fallback_words: list[str] = []
     for word_span, tokenizer_word in zip(words, tokenizer_words):
         word_syllables = request.syllables[word_span.start_syllable_index : word_span.end_syllable_index + 1]
-        phone_groups, label_groups = _resolve_word_phone_groups(word_span.word, word_syllables, tokenizer_word)
+        phone_groups, label_groups, used_grapheme_fallback = _resolve_word_phone_groups(
+            word_span.word, word_syllables, tokenizer_word
+        )
         syllable_phone_groups.extend(phone_groups)
         syllable_label_indices.extend(label_groups)
-    return tuple(syllable_phone_groups), tuple(syllable_label_indices)
+        if used_grapheme_fallback:
+            grapheme_fallback_words.append(word_span.word)
+    return tuple(syllable_phone_groups), tuple(syllable_label_indices), tuple(grapheme_fallback_words)
 
 
 def _tokenizer_word_groups(tokenizer_labels: tuple[str, ...]) -> tuple[_TokenizerWordGroup, ...]:
@@ -209,23 +231,66 @@ def _resolve_word_phone_groups(
     word: str,
     syllables: tuple[SyllableTarget, ...],
     tokenizer_word: _TokenizerWordGroup,
-) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...]]:
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...], bool]:
     lexical_groups = tuple(syllable.phonemes for syllable in syllables)
     if all(lexical_groups):
         expected = tuple(phone for group in lexical_groups for phone in group)
-        if tokenizer_word.labels != expected:
-            raise ValueError("tokenizer labels do not align with lexical phones")
-        label_groups: list[tuple[int, ...]] = []
-        start = 0
-        for group in lexical_groups:
-            end = start + len(group)
-            label_groups.append(tokenizer_word.label_indices[start:end])
-            start = end
-        return lexical_groups, tuple(label_groups)
+        if tokenizer_word.labels == expected:
+            label_groups: list[tuple[int, ...]] = []
+            start = 0
+            for group in lexical_groups:
+                end = start + len(group)
+                label_groups.append(tokenizer_word.label_indices[start:end])
+                start = end
+            return lexical_groups, tuple(label_groups), False
+
+    if _is_grapheme_word(tokenizer_word.labels):
+        phone_groups, label_groups = _recover_grapheme_syllable_groups(word, len(syllables), tokenizer_word)
+        return phone_groups, label_groups, True
+
+    if all(lexical_groups):
+        raise ValueError("tokenizer labels do not align with lexical phones")
 
     if any(lexical_groups):
         raise ValueError(f"cannot recover syllable phone groups for partially populated word {word!r}")
-    return _recover_syllable_phone_groups(word, len(syllables), tokenizer_word)
+    phone_groups, label_groups = _recover_syllable_phone_groups(word, len(syllables), tokenizer_word)
+    return phone_groups, label_groups, False
+
+
+def _is_grapheme_word(labels: tuple[str, ...]) -> bool:
+    return bool(labels) and all(
+        len(label) == 1 and label.isascii() and label.islower() and label.isalpha() for label in labels
+    )
+
+
+def _recover_grapheme_syllable_groups(
+    word: str,
+    syllable_count: int,
+    tokenizer_word: _TokenizerWordGroup,
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...]]:
+    nuclei: list[tuple[int, int]] = []
+    index = 0
+    while index < len(tokenizer_word.labels):
+        if not _is_grapheme_vowel(tokenizer_word.labels, index):
+            index += 1
+            continue
+        start = index
+        while index < len(tokenizer_word.labels) and _is_grapheme_vowel(tokenizer_word.labels, index):
+            index += 1
+        nuclei.append((start, index))
+
+    if len(nuclei) < syllable_count:
+        raise ValueError(f"cannot recover grapheme syllable groups for word {word!r}")
+
+    phone_groups: list[tuple[str, ...]] = []
+    label_groups: list[tuple[int, ...]] = []
+    start = 0
+    for syllable_index in range(syllable_count):
+        end = nuclei[syllable_index][1] if syllable_index + 1 < syllable_count else len(tokenizer_word.labels)
+        phone_groups.append(tokenizer_word.labels[start:end])
+        label_groups.append(tokenizer_word.label_indices[start:end])
+        start = end
+    return tuple(phone_groups), tuple(label_groups)
 
 
 def _recover_syllable_phone_groups(
