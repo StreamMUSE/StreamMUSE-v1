@@ -24,7 +24,7 @@ from streammuse.experiments.rap_audio_protocols.audio import (
     render_common_drums,
     write_listening_wav,
 )
-from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId, SyllableTarget, TwoBarRenderRequest, canonical_json_dumps
+from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId, SyllableTarget, TwoBarRenderRequest, canonical_json_dumps, sha256_hex
 from streammuse.experiments.rap_audio_protocols.corpus import load_song_corpus
 from streammuse.experiments.rap_audio_protocols.evaluation import build_faster_whisper_transcriber, evaluate_protocol_song
 from streammuse.experiments.rap_audio_protocols.listening import ListeningAsset, write_listening_package
@@ -92,6 +92,7 @@ def prepare_campaign(args: argparse.Namespace) -> None:
     common_root = args.output_dir / "common"
     common_root.mkdir(parents=True, exist_ok=True)
     manifest_songs = []
+    lyrics_by_song = []
     total_request_count = 0
 
     for song_index, song_id in enumerate(selected_songs):
@@ -100,6 +101,7 @@ def prepare_campaign(args: argparse.Namespace) -> None:
         requests = corpus.two_bar_requests()
         if len(requests) != 25:
             raise ValueError(f"{song_id} must yield exactly 25 requests")
+        lyrics_by_song.append((song_id, requests))
         total_request_count += len(requests)
 
         song_root = common_root / song_id
@@ -164,6 +166,12 @@ def prepare_campaign(args: argparse.Namespace) -> None:
         raise ValueError("mismatched existing manifest")
     manifest_path.write_text(rendered_manifest, encoding="utf-8")
 
+    lyrics_path = common_root / "lyrics.md"
+    rendered_lyrics = _render_lyrics_markdown(lyrics_by_song)
+    if lyrics_path.exists() and lyrics_path.read_text(encoding="utf-8") != rendered_lyrics:
+        raise ValueError("mismatched existing lyrics artifact")
+    lyrics_path.write_text(rendered_lyrics, encoding="utf-8")
+
 
 def assemble_campaign(args: argparse.Namespace) -> None:
     protocol_ids = _selected_protocols(args.protocol)
@@ -177,6 +185,11 @@ def assemble_campaign(args: argparse.Namespace) -> None:
             records = _load_chunk_records(protocol_root / "render_chunks.jsonl")
             if len(records) != 25:
                 raise ValueError(f"{protocol_name}/{song_id} must contain exactly 25 chunk records")
+            if protocol_id == ProtocolId.MOSS_ALIGNED:
+                moss_records = _load_chunk_records(
+                    args.output_dir / ProtocolId.MOSS_GLOBAL.value / song_id / "render_chunks.jsonl"
+                )
+                _validate_aligned_source_records(records, moss_records)
             record_by_chunk = {record.chunk_index: record for record in records}
             chunk_paths = {}
             ordered_records = []
@@ -288,6 +301,13 @@ def package_campaign(args: argparse.Namespace) -> None:
             "package stage requires complete selected matrix: "
             f"missing {len(missing_mixes)} mix.wav files: {missing_paths}"
         )
+    for song_id, protocol_name in selected_matrix:
+        protocol_root = args.output_dir / protocol_name / song_id
+        _validate_packaging_manifest(
+            protocol_root / "artifact_manifest.json",
+            mix_path=protocol_root / "mix.wav",
+            protocol_id=protocol_name,
+        )
 
     assets = []
     comparison_rows = []
@@ -344,6 +364,45 @@ def _render_comparison_markdown(rows: Sequence[dict[str, Any]]) -> str:
             f"| {row['song_id']} | {row['protocol_id']} | `{row['mix_sha256']}` | {row['failed_chunk_count']} |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _render_lyrics_markdown(
+    songs: Sequence[tuple[str, Sequence[TwoBarRenderRequest]]],
+) -> str:
+    lines = ["# Rap Audio Protocol Comparison Lyrics", ""]
+    for song_id, requests in songs:
+        lines.extend((f"## {song_id.replace('_', ' ')}", ""))
+        for request in requests:
+            lines.extend(
+                (
+                    f"### Bars {request.start_bar + 1}-{request.end_bar}",
+                    "",
+                    request.text,
+                    "",
+                )
+            )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _validate_packaging_manifest(
+    manifest_path: Path,
+    *,
+    mix_path: Path,
+    protocol_id: str,
+) -> None:
+    if not manifest_path.is_file():
+        raise ValueError(f"missing artifact manifest: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    recorded_manifest_sha = manifest.pop("artifact_manifest_sha256", None)
+    if recorded_manifest_sha != sha256_hex(manifest):
+        raise ValueError(f"artifact manifest SHA-256 mismatch: {manifest_path}")
+    if manifest.get("protocol_id") != protocol_id:
+        raise ValueError(f"artifact manifest protocol mismatch: {manifest_path}")
+    mix = manifest.get("mix")
+    if not isinstance(mix, dict) or Path(str(mix.get("path", ""))).resolve() != mix_path.resolve():
+        raise ValueError(f"artifact manifest mix path mismatch: {manifest_path}")
+    if mix.get("sha256") != file_sha256(mix_path):
+        raise ValueError(f"artifact manifest mix SHA-256 mismatch: {manifest_path}")
 
 
 def _selected_songs(selected_song: str | None) -> tuple[str, ...]:
@@ -450,7 +509,13 @@ def _load_chunk_records(path: Path) -> tuple[ChunkRenderRecord, ...]:
             continue
         payload = json.loads(raw)
         output_path = payload.get("output_path")
-        actual_sha = file_sha256(output_path) if output_path and Path(output_path).is_file() else payload.get("output_sha256")
+        recorded_sha = payload.get("output_sha256")
+        if output_path and Path(output_path).is_file():
+            actual_sha = file_sha256(output_path)
+            if actual_sha != recorded_sha:
+                raise ValueError(f"{path}: output_sha256 mismatch for {output_path}")
+        else:
+            actual_sha = recorded_sha
         sample_rate_hz = payload.get("sample_rate_hz")
         if output_path and Path(output_path).is_file() and sample_rate_hz is None:
             sample_rate_hz = int(wavfile.read(Path(output_path))[0])
@@ -486,6 +551,29 @@ def _load_stereo_float32_audio(path: Path) -> PcmAudio:
     else:
         float32 = array.astype(np.float32, copy=False)
     return PcmAudio(TARGET_STEREO_FORMAT, int(float32.shape[0]), float32.tobytes())
+
+
+def _validate_aligned_source_records(
+    aligned_records: Sequence[ChunkRenderRecord],
+    moss_records: Sequence[ChunkRenderRecord],
+) -> None:
+    moss_by_key = {
+        (record.song_id, record.chunk_index): record
+        for record in moss_records
+    }
+    if len(moss_by_key) != len(aligned_records):
+        raise ValueError("moss_aligned source record set mismatch")
+    for record in aligned_records:
+        source = moss_by_key.get((record.song_id, record.chunk_index))
+        if source is None or source.request_sha256 != record.request_sha256:
+            raise ValueError("moss_aligned source record set mismatch")
+        if not source.success or not source.output_sha256:
+            raise ValueError("moss_aligned requires successful MOSS source records")
+        if record.source_chunk_sha256 != source.output_sha256:
+            raise ValueError(
+                f"moss_aligned source_chunk_sha256 mismatch for "
+                f"{record.song_id}/{record.chunk_index}"
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover

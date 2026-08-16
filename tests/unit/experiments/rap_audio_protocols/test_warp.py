@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.io import wavfile
 
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget
 from streammuse.experiments.rap_audio_protocols.warp import (
     PhoneInterval,
     PhoneVowelMismatchError,
+    RubberBandStretcher,
     WordInterval,
     is_arpabet_vowel,
     match_vowel_anchors,
@@ -47,6 +50,22 @@ def _impulse_stretcher(samples: np.ndarray, target_frames: int, sample_rate_hz: 
         mapped = round(index * (target_frames - 1) / (len(samples) - 1))
         output[mapped] = samples[index]
     return output
+
+
+def test_rubberband_stretcher_does_not_request_a_pitch_shift(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_command: list[str] = []
+
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        captured_command.extend(command)
+        wavfile.write(Path(command[-1]), 1_000, np.zeros(100, dtype=np.float32))
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    RubberBandStretcher(binary="rubberband")(np.ones(50, dtype=np.float32), 100, 1_000)
+
+    assert "--pitch" not in captured_command
+    assert "--frequency" not in captured_command
 
 
 def test_is_arpabet_vowel_accepts_stressed_and_unstressed_phones() -> None:

@@ -158,8 +158,6 @@ class RubberBandStretcher:
                     [
                         self._binary,
                         "--quiet",
-                        "--pitch",
-                        "1.0",
                         "--duration",
                         f"{target_seconds:.9f}",
                         *self._extra_args,

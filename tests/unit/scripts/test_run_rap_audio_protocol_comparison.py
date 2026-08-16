@@ -13,7 +13,7 @@ import pytest
 from scipy.io import wavfile
 
 from streammuse.experiments.rap_audio_protocols.audio import CHUNK_FRAME_COUNT, SONG_FRAME_COUNT
-from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId, canonical_json_dumps
+from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId, canonical_json_dumps, sha256_hex
 from streammuse.experiments.rap_audio_protocols.corpus import load_song_corpus
 
 
@@ -83,6 +83,21 @@ def _write_package_mix(output_dir: Path, *, song_id: str, protocol_id: str) -> N
     mix_path = output_dir / protocol_id / song_id / "mix.wav"
     mix_path.parent.mkdir(parents=True, exist_ok=True)
     mix_path.write_bytes(b"RIFF-test-package-wave")
+    manifest = {
+        "protocol_id": protocol_id,
+        "mix": {
+            "path": str(mix_path),
+            "sha256": hashlib.sha256(mix_path.read_bytes()).hexdigest(),
+        },
+    }
+    (mix_path.parent / "artifact_manifest.json").write_text(
+        json.dumps(
+            {**manifest, "artifact_manifest_sha256": sha256_hex(manifest)},
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -107,7 +122,7 @@ def _protocol_records(song_id: str, request_path: Path, output_dir: Path) -> lis
                 request_sha256=payload["request_sha256"],
                 success=True,
                 output_path=str(chunk_path),
-                output_sha256="a" * 64,
+                output_sha256=hashlib.sha256(chunk_path.read_bytes()).hexdigest(),
                 sample_rate_hz=48_000,
                 attempts=1,
             )
@@ -132,6 +147,14 @@ def test_prepare_selects_only_songs_01_to_03_and_writes_exactly_75_canonical_req
     ]
     assert not (common_root / "04_city_nights").exists()
     assert sum(len(path.read_text(encoding="utf-8").splitlines()) for path in requests_paths) == 75
+    lyrics = (common_root / "lyrics.md").read_text(encoding="utf-8")
+    assert lyrics.startswith("# Rap Audio Protocol Comparison Lyrics\n")
+    assert "## 01 space exploration" in lyrics
+    assert "## 02 deep ocean" in lyrics
+    assert "## 03 artificial intelligence" in lyrics
+    assert "04 city nights" not in lyrics
+    assert lyrics.count("### Bars ") == 75
+    assert "Rocket blasts liftoff, silence breaks free," in lyrics
     for path in requests_paths:
         payload = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         assert json.dumps(payload, sort_keys=True, separators=(",", ":")) == canonical_json_dumps(payload)
@@ -194,6 +217,65 @@ def test_prepare_refuses_mismatched_existing_manifest(load_script, tmp_path: Pat
     ]
 
 
+def test_load_chunk_records_rejects_a_modified_rendered_wav(load_script, tmp_path: Path) -> None:
+    module = load_script("run_rap_audio_protocol_comparison")
+    chunk_path = tmp_path / "chunk-000.wav"
+    chunk_path.write_bytes(b"modified-rendered-audio")
+    ledger_path = tmp_path / "render_chunks.jsonl"
+    ledger_path.write_text(
+        canonical_json_dumps(
+            {
+                "attempts": 1,
+                "chunk_index": 0,
+                "error": None,
+                "output_path": str(chunk_path),
+                "output_sha256": "a" * 64,
+                "protocol_id": ProtocolId.MOSS_GLOBAL.value,
+                "request_sha256": "b" * 64,
+                "sample_rate_hz": 48_000,
+                "song_id": "01_space_exploration",
+                "source_chunk_sha256": None,
+                "success": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="output_sha256 mismatch"):
+        module._load_chunk_records(ledger_path)
+
+
+def test_validate_aligned_sources_rejects_a_stale_moss_hash(load_script) -> None:
+    module = load_script("run_rap_audio_protocol_comparison")
+    moss_record = ChunkRenderRecord(
+        protocol_id=ProtocolId.MOSS_GLOBAL,
+        song_id="01_space_exploration",
+        chunk_index=0,
+        request_sha256="a" * 64,
+        success=True,
+        output_path="moss.wav",
+        output_sha256="b" * 64,
+        sample_rate_hz=24_000,
+        attempts=1,
+    )
+    aligned_record = ChunkRenderRecord(
+        protocol_id=ProtocolId.MOSS_ALIGNED,
+        song_id="01_space_exploration",
+        chunk_index=0,
+        request_sha256="a" * 64,
+        success=True,
+        output_path="aligned.wav",
+        output_sha256="c" * 64,
+        source_chunk_sha256="d" * 64,
+        sample_rate_hz=24_000,
+        attempts=1,
+    )
+
+    with pytest.raises(ValueError, match="source_chunk_sha256 mismatch"):
+        module._validate_aligned_source_records((aligned_record,), (moss_record,))
+
+
 def test_assemble_requires_25_records_and_writes_exact_length_artifacts(
     load_script,
     tmp_path: Path,
@@ -219,7 +301,7 @@ def test_assemble_requires_25_records_and_writes_exact_length_artifacts(
                 request_sha256=payload["request_sha256"],
                 success=True,
                 output_path=str(chunk_path),
-                output_sha256="a" * 64,
+                output_sha256=hashlib.sha256(chunk_path.read_bytes()).hexdigest(),
                 sample_rate_hz=48_000,
                 attempts=1,
             )
@@ -286,7 +368,7 @@ def test_evaluate_is_lazy_and_package_writes_blinded_outputs(
                 request_sha256=payload["request_sha256"],
                 success=True,
                 output_path=str(chunk_path),
-                output_sha256="a" * 64,
+                output_sha256=hashlib.sha256(chunk_path.read_bytes()).hexdigest(),
                 sample_rate_hz=48_000,
                 attempts=1,
             )
@@ -350,6 +432,20 @@ def test_evaluate_is_lazy_and_package_writes_blinded_outputs(
     assert metrics_path.is_file()
     assert json.loads(metrics_path.read_text(encoding="utf-8"))["failed_chunk_count"] == 0
 
+    requests = module._load_requests(request_path)
+    artifact_manifest = module.build_protocol_artifact_manifest(
+        ProtocolId.MOSS_GLOBAL,
+        requests=requests,
+        chunk_records=records,
+        vocal_stem_path=protocol_dir / "vocals.wav",
+        drums_path=output_dir / "common" / song_id / "drums.wav",
+        mix_path=protocol_dir / "mix.wav",
+    )
+    (protocol_dir / "artifact_manifest.json").write_text(
+        json.dumps(artifact_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
     exit_code = module.main(
         [
             "--source-album",
@@ -371,6 +467,23 @@ def test_evaluate_is_lazy_and_package_writes_blinded_outputs(
     assert (output_dir / "listening.html").is_file()
     assert (output_dir / "COMPARISON.md").is_file()
     assert (output_dir / "package_audit.json").is_file()
+
+    (protocol_dir / "mix.wav").write_bytes(b"tampered-after-assembly")
+    with pytest.raises(ValueError, match="artifact manifest mix SHA-256 mismatch"):
+        module.main(
+            [
+                "--source-album",
+                str(source_album),
+                "--output-dir",
+                str(output_dir),
+                "--stage",
+                "package",
+                "--song",
+                song_id,
+                "--protocol",
+                protocol_id,
+            ]
+        )
 
 
 @pytest.mark.parametrize(
