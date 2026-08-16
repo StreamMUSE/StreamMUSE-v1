@@ -21,6 +21,8 @@ from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 TARGET_SAMPLE_RATE_HZ = 48_000
 CHUNK_FRAME_COUNT = 256_000
 SONG_FRAME_COUNT = 6_400_000
+CAMPAIGN_REQUEST_COUNT = 25
+CAMPAIGN_BAR_COUNT = 50
 TARGET_VOCAL_FORMAT = AudioFormat(sample_rate_hz=TARGET_SAMPLE_RATE_HZ, channels=1, sample_width_bytes=4)
 TARGET_STEREO_FORMAT = AudioFormat(sample_rate_hz=TARGET_SAMPLE_RATE_HZ, channels=2, sample_width_bytes=4)
 _TEMPO = Tempo(90.0, 4, 4)
@@ -58,7 +60,22 @@ class MixResult:
     applied_gain: float
 
 
-def validate_wav_metadata(path: Path | str) -> WavMetadata:
+@dataclass(frozen=True)
+class RequestSetShape:
+    song_id: str
+    request_count: int
+    total_bars: int
+    expected_frame_count: int
+
+
+def validate_wav_metadata(
+    path: Path | str,
+    *,
+    expected_sample_rate_hz: int | None = None,
+    expected_channels: int | None = None,
+    expected_frame_count: int | None = None,
+    expected_dtype: str | None = None,
+) -> WavMetadata:
     sample_rate_hz, samples = wavfile.read(Path(path))
     array = np.asarray(samples)
     if sample_rate_hz <= 0:
@@ -67,7 +84,58 @@ def validate_wav_metadata(path: Path | str) -> WavMetadata:
     frame_count = int(array.shape[0])
     if frame_count <= 0:
         raise ValueError("WAV must contain at least one frame")
-    return WavMetadata(sample_rate_hz=sample_rate_hz, channels=channels, frame_count=frame_count, dtype=str(array.dtype))
+    dtype = str(array.dtype)
+    if expected_sample_rate_hz is not None and sample_rate_hz != expected_sample_rate_hz:
+        raise ValueError(f"WAV sample rate mismatch: expected {expected_sample_rate_hz}, got {sample_rate_hz}")
+    if expected_channels is not None and channels != expected_channels:
+        raise ValueError(f"WAV channel mismatch: expected {expected_channels}, got {channels}")
+    if expected_frame_count is not None and frame_count != expected_frame_count:
+        raise ValueError(f"WAV frame count mismatch: expected {expected_frame_count}, got {frame_count}")
+    if expected_dtype is not None and dtype != expected_dtype:
+        raise ValueError(f"WAV dtype mismatch: expected {expected_dtype}, got {dtype}")
+    return WavMetadata(sample_rate_hz=sample_rate_hz, channels=channels, frame_count=frame_count, dtype=dtype)
+
+
+def validate_request_set(
+    requests: Sequence[TwoBarRenderRequest],
+    *,
+    allow_smoke_test: bool = False,
+) -> RequestSetShape:
+    if not requests:
+        raise ValueError("requests must not be empty")
+
+    song_id = requests[0].song_id
+    for expected_chunk_index, request in enumerate(requests):
+        if request.song_id != song_id:
+            raise ValueError("requests must belong to one song")
+        if request.chunk_index != expected_chunk_index:
+            raise ValueError("requests must be contiguous and zero-based by chunk_index")
+        expected_start_bar = expected_chunk_index * 2
+        if request.start_bar != expected_start_bar or request.end_bar != expected_start_bar + 2:
+            raise ValueError("requests must form a contiguous zero-based two-bar sequence")
+
+    request_count = len(requests)
+    total_bars = requests[-1].end_bar
+    expected_frame_count = request_count * CHUNK_FRAME_COUNT
+    if allow_smoke_test:
+        return RequestSetShape(
+            song_id=song_id,
+            request_count=request_count,
+            total_bars=total_bars,
+            expected_frame_count=expected_frame_count,
+        )
+    if request_count != CAMPAIGN_REQUEST_COUNT:
+        raise ValueError(f"campaign outputs require exactly {CAMPAIGN_REQUEST_COUNT} requests")
+    if total_bars != CAMPAIGN_BAR_COUNT:
+        raise ValueError(f"campaign outputs require exactly {CAMPAIGN_BAR_COUNT} bars")
+    if expected_frame_count != SONG_FRAME_COUNT:
+        raise ValueError(f"campaign outputs require exactly {SONG_FRAME_COUNT} frames")
+    return RequestSetShape(
+        song_id=song_id,
+        request_count=request_count,
+        total_bars=total_bars,
+        expected_frame_count=expected_frame_count,
+    )
 
 
 def load_wav_mono_float32(path: Path | str) -> PcmAudio:
@@ -85,11 +153,11 @@ def assemble_vocal_stem(
     requests: Sequence[TwoBarRenderRequest],
     *,
     chunk_paths_by_index: Mapping[int, Path | str],
+    allow_smoke_test: bool = False,
     listening_wav_path: Path | str | None = None,
     float32_wav_path: Path | str | None = None,
 ) -> VocalStemAssembly:
-    if not requests:
-        raise ValueError("requests must not be empty")
+    shape = validate_request_set(requests, allow_smoke_test=allow_smoke_test)
 
     chunks: list[np.ndarray] = []
     diagnostics: list[ChunkAssemblyDiagnostic] = []
@@ -105,6 +173,10 @@ def assemble_vocal_stem(
         diagnostics.append(diagnostic)
 
     stem = _pcm_audio(TARGET_VOCAL_FORMAT, np.concatenate(chunks, axis=0))
+    if stem.frame_count != shape.expected_frame_count:
+        raise ValueError(
+            f"assembled vocal stem frame count mismatch: expected {shape.expected_frame_count}, got {stem.frame_count}"
+        )
     if listening_wav_path is not None:
         write_listening_wav(listening_wav_path, stem)
     if float32_wav_path is not None:
@@ -116,21 +188,22 @@ def render_common_drums(
     requests: Sequence[TwoBarRenderRequest],
     *,
     song_index: int,
+    allow_smoke_test: bool = False,
     listening_wav_path: Path | str | None = None,
     float32_wav_path: Path | str | None = None,
 ) -> PcmAudio:
     if song_index < 0:
         raise ValueError("song_index must be nonnegative")
-    if not requests:
-        raise ValueError("requests must not be empty")
+    shape = validate_request_set(requests, allow_smoke_test=allow_smoke_test)
 
-    total_bars = max(request.end_bar for request in requests)
     renderer = ProceduralBoomBapRenderer(seed=20260816 + song_index * 10_000)
     bar_samples = [
         _samples(renderer.render(_COMMON_DRUM_TEMPLATE, _TEMPO, TARGET_STEREO_FORMAT, bar))
-        for bar in range(total_bars)
+        for bar in range(shape.total_bars)
     ]
     drums = _pcm_audio(TARGET_STEREO_FORMAT, np.concatenate(bar_samples, axis=0))
+    if drums.frame_count != shape.expected_frame_count:
+        raise ValueError(f"common drums frame count mismatch: expected {shape.expected_frame_count}, got {drums.frame_count}")
     if listening_wav_path is not None:
         write_listening_wav(listening_wav_path, drums)
     if float32_wav_path is not None:

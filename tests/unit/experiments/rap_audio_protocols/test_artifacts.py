@@ -3,16 +3,23 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+from scipy.io import wavfile
 
 from streammuse.experiments.rap_audio_protocols.artifacts import (
     append_chunk_record,
     build_protocol_artifact_manifest,
     chunk_record_is_complete,
+    file_sha256,
     read_chunk_record_index,
 )
-from streammuse.experiments.rap_audio_protocols.audio import render_common_drums, write_listening_wav
+from streammuse.experiments.rap_audio_protocols.audio import CHUNK_FRAME_COUNT, render_common_drums, write_listening_wav
 from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId, SyllableTarget, TwoBarRenderRequest
+
+
+def _requests(total_chunks: int = 25) -> tuple[TwoBarRenderRequest, ...]:
+    return tuple(_request(index) for index in range(total_chunks))
 
 
 def _request(chunk_index: int) -> TwoBarRenderRequest:
@@ -41,8 +48,14 @@ def _request(chunk_index: int) -> TwoBarRenderRequest:
     )
 
 
-def _record(*, protocol_id: ProtocolId = ProtocolId.MOSS_GLOBAL, output_sha256: str = "a" * 64) -> ChunkRenderRecord:
-    request = _request(0)
+def _record(
+    *,
+    request: TwoBarRenderRequest | None = None,
+    protocol_id: ProtocolId = ProtocolId.MOSS_GLOBAL,
+    output_sha256: str = "a" * 64,
+    source_chunk_sha256: str | None = None,
+) -> ChunkRenderRecord:
+    request = request or _request(0)
     return ChunkRenderRecord(
         protocol_id=protocol_id,
         song_id=request.song_id,
@@ -51,10 +64,15 @@ def _record(*, protocol_id: ProtocolId = ProtocolId.MOSS_GLOBAL, output_sha256: 
         success=True,
         output_path="chunks/chunk-000.wav",
         output_sha256=output_sha256,
-        source_chunk_sha256=request.sha256,
+        source_chunk_sha256=source_chunk_sha256,
         sample_rate_hz=48_000,
         attempts=1,
     )
+
+
+def _write_listening_wav(path: Path, *, frames: int, channels: int) -> None:
+    shape = (frames,) if channels == 1 else (frames, channels)
+    wavfile.write(path, 48_000, np.zeros(shape, dtype=np.int16))
 
 
 def test_protocol_manifests_share_the_same_common_drum_hash(tmp_path: Path) -> None:
@@ -62,38 +80,69 @@ def test_protocol_manifests_share_the_same_common_drum_hash(tmp_path: Path) -> N
     drums_path = tmp_path / "drums.wav"
     vocal_path = tmp_path / "vocals.wav"
     mix_path = tmp_path / "mix.wav"
-    record = _record()
+    first_record = _record(request=request, protocol_id=ProtocolId.MOSS_GLOBAL)
+    second_record = _record(request=request, protocol_id=ProtocolId.TED_LOCAL)
 
-    write_listening_wav(drums_path, render_common_drums((request,), song_index=0))
-    write_listening_wav(vocal_path, render_common_drums((request,), song_index=1))
-    write_listening_wav(mix_path, render_common_drums((request,), song_index=2))
+    write_listening_wav(drums_path, render_common_drums((request,), song_index=0, allow_smoke_test=True))
+    _write_listening_wav(vocal_path, frames=CHUNK_FRAME_COUNT, channels=1)
+    _write_listening_wav(mix_path, frames=CHUNK_FRAME_COUNT, channels=2)
 
     first = build_protocol_artifact_manifest(
         ProtocolId.MOSS_GLOBAL,
         requests=(request,),
-        chunk_records=(record,),
+        chunk_records=(first_record,),
         vocal_stem_path=vocal_path,
         drums_path=drums_path,
         mix_path=mix_path,
+        allow_smoke_test=True,
     )
     second = build_protocol_artifact_manifest(
         ProtocolId.TED_LOCAL,
         requests=(request,),
-        chunk_records=(record,),
+        chunk_records=(second_record,),
         vocal_stem_path=vocal_path,
         drums_path=drums_path,
         mix_path=mix_path,
+        allow_smoke_test=True,
     )
 
     assert first["request_sha256"] == [request.sha256]
     assert first["drums"]["sha256"] == second["drums"]["sha256"]
 
 
-def test_chunk_record_is_complete_only_for_matching_successful_record_and_wav(tmp_path: Path) -> None:
+def test_chunk_record_is_complete_accepts_actual_source_chunk_hash(tmp_path: Path) -> None:
     ledger_path = tmp_path / "records.jsonl"
     wav_path = tmp_path / "chunk.wav"
     request = _request(0)
-    audio = render_common_drums((request,), song_index=0)
+    audio = render_common_drums((request,), song_index=0, allow_smoke_test=True)
+    write_listening_wav(wav_path, audio)
+    source_hash = file_sha256(wav_path)
+
+    record = ChunkRenderRecord(
+        protocol_id=ProtocolId.MOSS_GLOBAL,
+        song_id=request.song_id,
+        chunk_index=request.chunk_index,
+        request_sha256=request.sha256,
+        success=True,
+        output_path=str(wav_path),
+        output_sha256="",
+        source_chunk_sha256=source_hash,
+        sample_rate_hz=48_000,
+        attempts=1,
+    )
+    stored = append_chunk_record(ledger_path, record)
+    stored_payload = json.loads(stored)
+
+    assert chunk_record_is_complete(ledger_path, wav_path, request=request, protocol_id=ProtocolId.MOSS_GLOBAL)
+    assert stored_payload["output_sha256"] == read_chunk_record_index(ledger_path)[(ProtocolId.MOSS_GLOBAL, request.song_id, 0)].output_sha256
+    assert stored_payload["source_chunk_sha256"] == source_hash
+
+
+def test_chunk_record_is_complete_allows_missing_source_hash_for_native_protocols(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "records.jsonl"
+    wav_path = tmp_path / "chunk.wav"
+    request = _request(0)
+    audio = render_common_drums((request,), song_index=1, allow_smoke_test=True)
     write_listening_wav(wav_path, audio)
 
     record = ChunkRenderRecord(
@@ -104,15 +153,100 @@ def test_chunk_record_is_complete_only_for_matching_successful_record_and_wav(tm
         success=True,
         output_path=str(wav_path),
         output_sha256="",
-        source_chunk_sha256=request.sha256,
+        source_chunk_sha256=None,
         sample_rate_hz=48_000,
         attempts=1,
     )
-    stored = append_chunk_record(ledger_path, record)
-    stored_payload = json.loads(stored)
+    append_chunk_record(ledger_path, record)
 
     assert chunk_record_is_complete(ledger_path, wav_path, request=request, protocol_id=ProtocolId.MOSS_GLOBAL)
-    assert stored_payload["output_sha256"] == read_chunk_record_index(ledger_path)[(ProtocolId.MOSS_GLOBAL, request.song_id, 0)].output_sha256
+
+
+def test_build_protocol_artifact_manifest_rejects_chunk_records_from_other_protocols(tmp_path: Path) -> None:
+    request = _request(0)
+    drums_path = tmp_path / "drums.wav"
+    vocal_path = tmp_path / "vocals.wav"
+    mix_path = tmp_path / "mix.wav"
+    write_listening_wav(drums_path, render_common_drums((request,), song_index=0, allow_smoke_test=True))
+    _write_listening_wav(vocal_path, frames=CHUNK_FRAME_COUNT, channels=1)
+    _write_listening_wav(mix_path, frames=CHUNK_FRAME_COUNT, channels=2)
+
+    with pytest.raises(ValueError, match="protocol"):
+        build_protocol_artifact_manifest(
+            ProtocolId.TED_LOCAL,
+            requests=(request,),
+            chunk_records=(_record(request=request, protocol_id=ProtocolId.MOSS_GLOBAL),),
+            vocal_stem_path=vocal_path,
+            drums_path=drums_path,
+            mix_path=mix_path,
+            allow_smoke_test=True,
+        )
+
+
+def test_build_protocol_artifact_manifest_rejects_chunk_records_for_other_requests(tmp_path: Path) -> None:
+    request = _request(0)
+    other_request = _request(1)
+    drums_path = tmp_path / "drums.wav"
+    vocal_path = tmp_path / "vocals.wav"
+    mix_path = tmp_path / "mix.wav"
+    write_listening_wav(drums_path, render_common_drums((request,), song_index=0, allow_smoke_test=True))
+    _write_listening_wav(vocal_path, frames=CHUNK_FRAME_COUNT, channels=1)
+    _write_listening_wav(mix_path, frames=CHUNK_FRAME_COUNT, channels=2)
+
+    with pytest.raises(ValueError, match="request set"):
+        build_protocol_artifact_manifest(
+            ProtocolId.MOSS_GLOBAL,
+            requests=(request,),
+            chunk_records=(_record(request=other_request, protocol_id=ProtocolId.MOSS_GLOBAL),),
+            vocal_stem_path=vocal_path,
+            drums_path=drums_path,
+            mix_path=mix_path,
+            allow_smoke_test=True,
+        )
+
+
+def test_build_protocol_artifact_manifest_rejects_wrong_wav_shape(tmp_path: Path) -> None:
+    request = _request(0)
+    record = _record(request=request, protocol_id=ProtocolId.MOSS_GLOBAL)
+    drums_path = tmp_path / "drums.wav"
+    vocal_path = tmp_path / "vocals.wav"
+    mix_path = tmp_path / "mix.wav"
+    _write_listening_wav(drums_path, frames=CHUNK_FRAME_COUNT - 1, channels=2)
+    _write_listening_wav(vocal_path, frames=CHUNK_FRAME_COUNT, channels=1)
+    _write_listening_wav(mix_path, frames=CHUNK_FRAME_COUNT, channels=2)
+
+    with pytest.raises(ValueError, match="frame count"):
+        build_protocol_artifact_manifest(
+            ProtocolId.MOSS_GLOBAL,
+            requests=(request,),
+            chunk_records=(record,),
+            vocal_stem_path=vocal_path,
+            drums_path=drums_path,
+            mix_path=mix_path,
+            allow_smoke_test=True,
+        )
+
+
+def test_build_protocol_artifact_manifest_rejects_non_campaign_request_sets_without_override(tmp_path: Path) -> None:
+    requests = _requests(1)
+    request = requests[0]
+    record = _record(request=request, protocol_id=ProtocolId.MOSS_GLOBAL)
+    drums_path = tmp_path / "drums.wav"
+    vocal_path = tmp_path / "vocals.wav"
+    mix_path = tmp_path / "mix.wav"
+    _write_listening_wav(drums_path, frames=CHUNK_FRAME_COUNT, channels=2)
+    _write_listening_wav(vocal_path, frames=CHUNK_FRAME_COUNT, channels=1)
+    _write_listening_wav(mix_path, frames=CHUNK_FRAME_COUNT, channels=2)
+
+    with pytest.raises(ValueError, match="25 requests"):
+        build_protocol_artifact_manifest(
+            ProtocolId.MOSS_GLOBAL,
+            requests=requests,
+            chunk_records=(record,),
+            vocal_stem_path=vocal_path,
+            drums_path=drums_path,
+            mix_path=mix_path,
+        )
 
 
 def test_append_chunk_record_rejects_duplicate_and_conflicting_rows(tmp_path: Path) -> None:

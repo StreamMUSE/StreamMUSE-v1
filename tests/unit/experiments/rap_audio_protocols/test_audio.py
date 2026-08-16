@@ -19,6 +19,10 @@ from streammuse.experiments.rap_audio_protocols.audio import (
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget, TwoBarRenderRequest
 
 
+def _requests(total_chunks: int = 25) -> tuple[TwoBarRenderRequest, ...]:
+    return tuple(_request(index) for index in range(total_chunks))
+
+
 def _request(chunk_index: int) -> TwoBarRenderRequest:
     start_bar = chunk_index * 2
     syllables = tuple(
@@ -73,7 +77,7 @@ def test_load_wav_mono_float32_resamples_integer_sources_to_target_format(tmp_pa
 
 
 def test_assemble_vocal_stem_pads_and_truncates_only_at_chunk_boundaries_for_50_bars(tmp_path: Path) -> None:
-    requests = tuple(_request(index) for index in range(25))
+    requests = _requests()
     chunk_paths: list[Path] = []
     exact_chunk = np.full(CHUNK_FRAME_COUNT, 0.1, dtype=np.float32)
 
@@ -106,14 +110,35 @@ def test_assemble_vocal_stem_pads_and_truncates_only_at_chunk_boundaries_for_50_
     np.testing.assert_allclose(samples[CHUNK_FRAME_COUNT : (2 * CHUNK_FRAME_COUNT)], 0.5, atol=5e-5)
 
 
-def test_render_common_drums_is_deterministic_for_a_song_index() -> None:
-    requests = tuple(_request(index) for index in range(2))
+def test_assemble_vocal_stem_rejects_non_campaign_request_sets_without_explicit_override(tmp_path: Path) -> None:
+    requests = _requests(1)
+    path = tmp_path / "chunk-00.wav"
+    _write_pcm16_mono(path, 48_000, np.full(CHUNK_FRAME_COUNT, 0.25, dtype=np.float32))
 
-    first = render_common_drums(requests, song_index=3)
-    second = render_common_drums(requests, song_index=3)
+    with pytest.raises(ValueError, match="25 requests"):
+        assemble_vocal_stem(requests, chunk_paths_by_index={0: path})
+
+
+def test_smoke_override_allows_short_request_sets_for_targeted_audio_tests(tmp_path: Path) -> None:
+    requests = _requests(1)
+    path = tmp_path / "chunk-00.wav"
+    _write_pcm16_mono(path, 48_000, np.full(CHUNK_FRAME_COUNT, 0.25, dtype=np.float32))
+
+    assembled = assemble_vocal_stem(requests, chunk_paths_by_index={0: path}, allow_smoke_test=True)
+    drums = render_common_drums(requests, song_index=3, allow_smoke_test=True)
+
+    assert assembled.audio.frame_count == CHUNK_FRAME_COUNT
+    assert drums.frame_count == CHUNK_FRAME_COUNT
+
+
+def test_render_common_drums_is_deterministic_for_a_song_index_under_smoke_override() -> None:
+    requests = _requests(1)
+
+    first = render_common_drums(requests, song_index=3, allow_smoke_test=True)
+    second = render_common_drums(requests, song_index=3, allow_smoke_test=True)
 
     assert first.format == AudioFormat(sample_rate_hz=48_000, channels=2, sample_width_bytes=4)
-    assert first.frame_count == 2 * CHUNK_FRAME_COUNT
+    assert first.frame_count == CHUNK_FRAME_COUNT
     assert first.data == second.data
 
 
