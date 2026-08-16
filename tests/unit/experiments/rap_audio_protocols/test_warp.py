@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -204,21 +205,87 @@ def test_match_vowel_anchors_rejects_source_target_count_mismatches() -> None:
         match_vowel_anchors(intervals, syllables, sample_rate_hz=1_000)
 
 
+def test_match_vowel_anchors_clamps_only_endpoint_targets_to_warp_margin() -> None:
+    anchors = match_vowel_anchors(
+        (
+            PhoneInterval(start_seconds=0.10, end_seconds=0.14, phone="IY1"),
+            PhoneInterval(start_seconds=0.40, end_seconds=0.44, phone="OW1"),
+            PhoneInterval(start_seconds=0.70, end_seconds=0.74, phone="AA1"),
+        ),
+        (
+            _syllable("beat", ("B", "IY1", "T"), target_seconds=0.0),
+            _syllable("flow", ("F", "L", "OW1"), target_seconds=0.5),
+            _syllable("bars", ("B", "AA1", "R", "Z"), target_seconds=1.0),
+        ),
+        sample_rate_hz=1_000,
+        target_duration_seconds=1.0,
+    )
+
+    assert [anchor.requested_target_seconds for anchor in anchors] == [0.0, 0.5, 1.0]
+    assert [anchor.target_seconds for anchor in anchors] == pytest.approx([0.010, 0.5, 0.989])
+    assert [anchor.target_sample for anchor in anchors] == [10, 500, 989]
+    assert [anchor.boundary_adjusted for anchor in anchors] == [True, False, True]
+
+
+def test_match_vowel_anchors_does_not_shift_positive_target_inside_margin() -> None:
+    anchors = match_vowel_anchors(
+        (
+            PhoneInterval(start_seconds=0.10, end_seconds=0.14, phone="IY1"),
+            PhoneInterval(start_seconds=0.40, end_seconds=0.44, phone="OW1"),
+        ),
+        (
+            _syllable("beat", ("B", "IY1", "T"), target_seconds=0.005),
+            _syllable("flow", ("F", "L", "OW1"), target_seconds=0.5),
+        ),
+        sample_rate_hz=1_000,
+        target_duration_seconds=1.0,
+    )
+
+    assert anchors[0].requested_target_seconds == pytest.approx(0.005)
+    assert anchors[0].target_seconds == pytest.approx(0.005)
+    assert anchors[0].target_sample == 5
+    assert not anchors[0].boundary_adjusted
+
+
 def test_word_tier_fallback_rejects_non_monotonic_source_anchors() -> None:
     syllables = (
-        _syllable("beat", ("B", "IY1", "T"), target_seconds=0.20),
-        _syllable("flow", ("F", "L", "OW1"), target_seconds=0.40),
+        _syllable("liftoff", ("L", "IH1", "F"), target_seconds=0.20),
+        replace(
+            _syllable("liftoff", ("T", "AO1", "F"), target_seconds=0.40),
+            index_in_word=1,
+        ),
     )
 
     with pytest.raises(ValueError, match="non-monotonic source anchors"):
         match_vowel_anchors_with_word_fallback(
             (
-                PhoneInterval(start_seconds=0.50, end_seconds=0.70, phone="spn"),
-                PhoneInterval(start_seconds=0.10, end_seconds=0.30, phone="spn"),
+                PhoneInterval(start_seconds=0.50, end_seconds=0.60, phone="IH1"),
+                PhoneInterval(start_seconds=0.20, end_seconds=0.30, phone="AO1"),
             ),
             (
-                WordInterval(start_seconds=0.50, end_seconds=0.70, word="beat"),
-                WordInterval(start_seconds=0.10, end_seconds=0.30, word="flow"),
+                WordInterval(start_seconds=0.10, end_seconds=0.70, word="liftoff"),
+            ),
+            syllables,
+            sample_rate_hz=1_000,
+            request_words=("liftoff",),
+        )
+
+
+def test_word_tier_fallback_rejects_vowel_interval_spanning_word_boundary() -> None:
+    syllables = (
+        _syllable("beat", ("B", "IY1", "T"), target_seconds=0.20),
+        _syllable("flow", ("F", "L", "OW1"), target_seconds=0.40),
+    )
+
+    with pytest.raises(ValueError, match="aligned vowel ownership"):
+        match_vowel_anchors_with_word_fallback(
+            (
+                PhoneInterval(start_seconds=0.10, end_seconds=0.15, phone="IY1"),
+                PhoneInterval(start_seconds=0.20, end_seconds=0.32, phone="OW1"),
+            ),
+            (
+                WordInterval(start_seconds=0.00, end_seconds=0.30, word="beat"),
+                WordInterval(start_seconds=0.30, end_seconds=0.60, word="flow"),
             ),
             syllables,
             sample_rate_hz=1_000,

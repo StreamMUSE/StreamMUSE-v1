@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -42,6 +42,14 @@ _LONG_INTERVAL_RE = re.compile(
     r'\s*text\s*=\s*"((?:""|[^"])*)"',
     re.MULTILINE,
 )
+_LONG_INTERVAL_SIZE_RE = re.compile(
+    r"^[ \t]*intervals:[ \t]*size[ \t]*=[ \t]*(\d+)[ \t]*$",
+    re.MULTILINE,
+)
+_LONG_INTERVAL_HEADER_RE = re.compile(
+    r"^[ \t]*intervals \[(\d+)\]:[ \t]*$",
+    re.MULTILINE,
+)
 _LONG_CLASS_RE = re.compile(r'^\s*class\s*=\s*"((?:""|[^"])*)"\s*$', re.MULTILINE)
 _LONG_NAME_RE = re.compile(r'^\s*name\s*=\s*"((?:""|[^"])*)"\s*$', re.MULTILINE)
 _PHONE_SUFFIX_RE = re.compile(r"\d+$")
@@ -49,6 +57,7 @@ _PHONE_SUFFIX_RE = re.compile(r"\d+$")
 
 StretchRegionFn = Callable[[np.ndarray, int, int], np.ndarray]
 WORD_TIER_FALLBACK_PREFIX = "WORD_TIER_FALLBACK:"
+MIN_WARP_REGION_SECONDS = 0.010
 
 
 class PhoneVowelMismatchError(ValueError):
@@ -96,9 +105,11 @@ class VowelAnchor:
     planned_phone: str
     aligned_phone: str
     source_seconds: float
+    requested_target_seconds: float
     target_seconds: float
     source_sample: int
     target_sample: int
+    boundary_adjusted: bool
 
 
 @dataclass(frozen=True)
@@ -197,6 +208,7 @@ def match_vowel_anchors(
     syllables: Sequence[SyllableTarget],
     *,
     sample_rate_hz: int,
+    target_duration_seconds: float | None = None,
 ) -> tuple[VowelAnchor, ...]:
     if sample_rate_hz <= 0:
         raise ValueError("sample_rate_hz must be positive")
@@ -222,7 +234,11 @@ def match_vowel_anchors(
                 sample_rate_hz=sample_rate_hz,
             )
         )
-    return tuple(anchors)
+    return _apply_target_boundary_policy(
+        anchors,
+        sample_rate_hz=sample_rate_hz,
+        target_duration_seconds=target_duration_seconds,
+    )
 
 
 def match_vowel_anchors_with_word_fallback(
@@ -232,6 +248,7 @@ def match_vowel_anchors_with_word_fallback(
     *,
     sample_rate_hz: int,
     request_words: Sequence[str] | None = None,
+    target_duration_seconds: float | None = None,
 ) -> tuple[VowelAnchor, ...]:
     if sample_rate_hz <= 0:
         raise ValueError("sample_rate_hz must be positive")
@@ -239,15 +256,15 @@ def match_vowel_anchors_with_word_fallback(
     if request_words is not None:
         _validate_request_word_sequence(request_words, syllable_groups)
     matched_words = _match_word_intervals(syllable_groups, word_intervals)
+    owned_vowels = _assign_vowels_to_matched_words(phone_intervals, matched_words)
 
     anchors: list[VowelAnchor] = []
-    for syllable_group, word_interval in zip(syllable_groups, matched_words):
+    for syllable_group, word_interval, aligned_vowels in zip(
+        syllable_groups,
+        matched_words,
+        owned_vowels,
+    ):
         planned_vowels = tuple((_primary_vowel_phone(syllable), syllable) for syllable in syllable_group)
-        aligned_vowels = tuple(
-            interval
-            for interval in phone_intervals
-            if is_arpabet_vowel(interval.phone) and _phone_belongs_to_word(interval, word_interval)
-        )
         phones_match = len(aligned_vowels) == len(planned_vowels) and all(
             _normalise_phone(source.phone) == _normalise_phone(planned_phone)
             for source, (planned_phone, _) in zip(aligned_vowels, planned_vowels)
@@ -275,12 +292,21 @@ def match_vowel_anchors_with_word_fallback(
                     planned_phone=planned_phone,
                     aligned_phone=f"{WORD_TIER_FALLBACK_PREFIX}{word_interval.word}",
                     source_seconds=source_seconds,
+                    requested_target_seconds=syllable.target_seconds,
                     target_seconds=syllable.target_seconds,
                     source_sample=round(source_seconds * sample_rate_hz),
                     target_sample=round(syllable.target_seconds * sample_rate_hz),
+                    boundary_adjusted=False,
                 )
             )
 
+    anchors = list(
+        _apply_target_boundary_policy(
+            anchors,
+            sample_rate_hz=sample_rate_hz,
+            target_duration_seconds=target_duration_seconds,
+        )
+    )
     _validate_fallback_anchor_monotonicity(anchors)
     return tuple(anchors)
 
@@ -293,7 +319,7 @@ def piecewise_pitch_preserving_warp(
     target_frame_count: int,
     stretch_region: StretchRegionFn | None = None,
     crossfade_seconds: float = 0.005,
-    min_region_seconds: float = 0.010,
+    min_region_seconds: float = MIN_WARP_REGION_SECONDS,
     source_sha256: str,
 ) -> WarpedChunk:
     if sample_rate_hz <= 0:
@@ -419,7 +445,39 @@ def _parse_long_textgrid_interval_values(
         parsed_tier_name = _decode_praat_string(name_match.group(1))
         if tier_class != "IntervalTier" or parsed_tier_name.casefold() != tier_name.casefold():
             continue
-        return tuple(_LONG_INTERVAL_RE.findall(tier))
+        size_matches = tuple(_LONG_INTERVAL_SIZE_RE.finditer(tier))
+        if len(size_matches) != 1:
+            raise ValueError(
+                f"malformed {tier_name} IntervalTier: expected exactly one declared interval count"
+            )
+        declared_count = int(size_matches[0].group(1))
+        interval_headers = tuple(_LONG_INTERVAL_HEADER_RE.finditer(tier))
+        if len(interval_headers) != declared_count:
+            raise ValueError(
+                f"malformed {tier_name} IntervalTier: declared {declared_count} intervals, "
+                f"found {len(interval_headers)} interval blocks"
+            )
+
+        values = []
+        for expected_index, header in enumerate(interval_headers, start=1):
+            interval_index = int(header.group(1))
+            if interval_index != expected_index:
+                raise ValueError(
+                    f"malformed {tier_name} IntervalTier: expected interval {expected_index}, "
+                    f"found interval {interval_index}"
+                )
+            block_end = (
+                interval_headers[expected_index].start()
+                if expected_index < len(interval_headers)
+                else len(tier)
+            )
+            interval_match = _LONG_INTERVAL_RE.fullmatch(tier[header.start() : block_end].strip())
+            if interval_match is None:
+                raise ValueError(
+                    f"malformed {tier_name} IntervalTier: interval {interval_index} is incomplete"
+                )
+            values.append(interval_match.groups())
+        return tuple(values)
     raise ValueError(f"{tier_name} IntervalTier not found in TextGrid")
 
 
@@ -605,10 +663,57 @@ def _phone_vowel_anchor(
         planned_phone=planned_phone,
         aligned_phone=source.phone,
         source_seconds=source_seconds,
+        requested_target_seconds=syllable.target_seconds,
         target_seconds=syllable.target_seconds,
         source_sample=round(source_seconds * sample_rate_hz),
         target_sample=round(syllable.target_seconds * sample_rate_hz),
+        boundary_adjusted=False,
     )
+
+
+def _apply_target_boundary_policy(
+    anchors: Sequence[VowelAnchor],
+    *,
+    sample_rate_hz: int,
+    target_duration_seconds: float | None,
+) -> tuple[VowelAnchor, ...]:
+    if target_duration_seconds is None:
+        return tuple(anchors)
+    if target_duration_seconds <= 0:
+        raise ValueError("target_duration_seconds must be positive")
+
+    target_frame_count = round(target_duration_seconds * sample_rate_hz)
+    margin_samples = max(1, round(MIN_WARP_REGION_SECONDS * sample_rate_hz))
+    first_interior_sample = margin_samples
+    last_interior_sample = (target_frame_count - 1) - margin_samples
+    if first_interior_sample >= last_interior_sample:
+        raise ValueError("target audio is too short for the target anchor boundary margin")
+
+    adjusted: list[VowelAnchor] = []
+    for anchor in anchors:
+        requested_seconds = anchor.requested_target_seconds
+        if requested_seconds <= 0:
+            effective_sample = first_interior_sample
+        elif requested_seconds >= target_duration_seconds:
+            effective_sample = last_interior_sample
+        else:
+            adjusted.append(anchor)
+            continue
+        adjusted.append(
+            replace(
+                anchor,
+                target_seconds=effective_sample / sample_rate_hz,
+                target_sample=effective_sample,
+                boundary_adjusted=True,
+            )
+        )
+
+    if any(anchor.boundary_adjusted for anchor in adjusted) and any(
+        right.target_sample <= left.target_sample
+        for left, right in zip(adjusted, adjusted[1:])
+    ):
+        raise ValueError("target boundary adjustment collides with an adjacent anchor")
+    return tuple(adjusted)
 
 
 def _group_syllables_by_word(
@@ -673,6 +778,33 @@ def _match_word_intervals(
     return tuple(matched)
 
 
+def _assign_vowels_to_matched_words(
+    phone_intervals: Sequence[PhoneInterval],
+    matched_words: Sequence[WordInterval],
+) -> tuple[tuple[PhoneInterval, ...], ...]:
+    for left, right in zip(matched_words, matched_words[1:]):
+        if right.start_seconds < left.end_seconds:
+            raise ValueError("matched word intervals must be chronological and non-overlapping")
+
+    owned: list[list[PhoneInterval]] = [[] for _ in matched_words]
+    for phone in phone_intervals:
+        if not is_arpabet_vowel(phone.phone):
+            continue
+        owners = tuple(
+            index
+            for index, word in enumerate(matched_words)
+            if _phone_belongs_to_word(phone, word)
+        )
+        if len(owners) != 1:
+            ownership = "unowned" if not owners else "ambiguously owned"
+            raise ValueError(
+                "aligned vowel ownership must resolve to exactly one matched word: "
+                f"{phone.phone!r} at {phone.start_seconds:.6f}-{phone.end_seconds:.6f}s is {ownership}"
+            )
+        owned[owners[0]].append(phone)
+    return tuple(tuple(intervals) for intervals in owned)
+
+
 def _validate_request_word_sequence(
     request_words: Sequence[str],
     syllable_groups: Sequence[Sequence[SyllableTarget]],
@@ -699,8 +831,7 @@ def _word_interval_is_ignorable(interval: WordInterval) -> bool:
 
 
 def _phone_belongs_to_word(phone: PhoneInterval, word: WordInterval) -> bool:
-    midpoint = (phone.start_seconds + phone.end_seconds) / 2
-    return word.start_seconds <= midpoint <= word.end_seconds
+    return word.start_seconds <= phone.start_seconds and phone.end_seconds <= word.end_seconds
 
 
 def _validate_fallback_anchor_monotonicity(anchors: Sequence[VowelAnchor]) -> None:

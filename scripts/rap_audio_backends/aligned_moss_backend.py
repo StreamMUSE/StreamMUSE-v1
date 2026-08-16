@@ -59,6 +59,7 @@ class AlignedChunkRenderResult:
     anchor_map: tuple[VowelAnchor, ...]
     stretch_ratios: tuple[float, ...]
     fallback_count: int
+    boundary_adjustment_count: int
     output_wav_path: Path | None
     diagnostics_path: Path | None
 
@@ -176,6 +177,7 @@ def render_aligned_chunk(
                 phone_intervals,
                 request.syllables,
                 sample_rate_hz=sample_rate_hz,
+                target_duration_seconds=request.duration_seconds,
             )
         except PhoneVowelMismatchError as strict_error:
             try:
@@ -185,7 +187,13 @@ def render_aligned_chunk(
                     request.syllables,
                     sample_rate_hz=sample_rate_hz,
                     request_words=tuple(request.text.split()),
+                    target_duration_seconds=request.duration_seconds,
                 )
+                if not any(
+                    anchor.aligned_phone.startswith(WORD_TIER_FALLBACK_PREFIX)
+                    for anchor in anchors
+                ):
+                    raise ValueError("word-tier fallback produced no synthesized anchors")
             except ValueError as fallback_error:
                 raise ValueError(
                     f"{strict_error}; word-tier fallback failed: {fallback_error}"
@@ -205,6 +213,7 @@ def render_aligned_chunk(
             anchor.aligned_phone.startswith(WORD_TIER_FALLBACK_PREFIX)
             for anchor in warped.anchor_map
         )
+        boundary_adjustment_count = sum(anchor.boundary_adjusted for anchor in warped.anchor_map)
         record = ChunkRenderRecord(
             protocol_id=ProtocolId.MOSS_ALIGNED,
             song_id=request.song_id,
@@ -225,9 +234,10 @@ def render_aligned_chunk(
                 "request_sha256": request.sha256,
                 "source_sha256": source_sha256,
                 "output_sha256": record.output_sha256,
-                "anchor_map": [asdict(anchor) for anchor in warped.anchor_map],
+                "anchor_map": [_anchor_diagnostic_payload(anchor) for anchor in warped.anchor_map],
                 "stretch_ratios": list(stretch_ratios),
                 "fallback_count": fallback_count,
+                "boundary_adjustment_count": boundary_adjustment_count,
                 "error": None,
             },
         )
@@ -236,6 +246,7 @@ def render_aligned_chunk(
             anchor_map=warped.anchor_map,
             stretch_ratios=stretch_ratios,
             fallback_count=fallback_count,
+            boundary_adjustment_count=boundary_adjustment_count,
             output_wav_path=output_path,
             diagnostics_path=diagnostics_path,
         )
@@ -269,6 +280,7 @@ def render_aligned_chunk(
                             "anchor_map": [],
                             "stretch_ratios": [],
                             "fallback_count": 0,
+                            "boundary_adjustment_count": 0,
                             "error": error,
                         },
                     )
@@ -293,6 +305,7 @@ def render_aligned_chunk(
             anchor_map=(),
             stretch_ratios=(),
             fallback_count=0,
+            boundary_adjustment_count=0,
             output_wav_path=failed_output_path,
             diagnostics_path=failed_diagnostics_path,
         )
@@ -358,3 +371,9 @@ def _write_atomic_alignment_diagnostics(path: Path, payload: dict[str, Any]) -> 
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise
+
+
+def _anchor_diagnostic_payload(anchor: VowelAnchor) -> dict[str, Any]:
+    payload = asdict(anchor)
+    payload["effective_target_seconds"] = anchor.target_seconds
+    return payload

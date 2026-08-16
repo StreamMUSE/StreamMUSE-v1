@@ -62,7 +62,7 @@ def _request() -> TwoBarRenderRequest:
     )
 
 
-def _liftoff_request() -> TwoBarRenderRequest:
+def _liftoff_request(*, first_target_seconds: float = 0.15) -> TwoBarRenderRequest:
     words = (
         "ignite",
         "the",
@@ -97,7 +97,7 @@ def _liftoff_request() -> TwoBarRenderRequest:
                     boundary_strength=0,
                     absolute_tick=syllable_index,
                     tick_in_chunk=syllable_index,
-                    target_seconds=0.15 + (syllable_index * 0.25),
+                    target_seconds=first_target_seconds + (syllable_index * 0.25),
                 )
             )
     return TwoBarRenderRequest(
@@ -121,7 +121,8 @@ def _write_source_wav(path: Path, *, sample_rate_hz: int = 1_000) -> tuple[np.nd
 
 def _write_textgrid(path: Path, *, missing_last_vowel: bool = False) -> None:
     intervals = []
-    for index in range(18 - int(missing_last_vowel)):
+    interval_count = 18 - int(missing_last_vowel)
+    for index in range(interval_count):
         start = 0.10 + (index * 0.25)
         end = start + 0.04
         intervals.append(
@@ -133,7 +134,7 @@ def _write_textgrid(path: Path, *, missing_last_vowel: bool = False) -> None:
             """
         )
     path.write_text(
-        """
+        f"""
         File type = "ooTextFile"
         Object class = "TextGrid"
 
@@ -147,14 +148,14 @@ def _write_textgrid(path: Path, *, missing_last_vowel: bool = False) -> None:
                 name = "phones"
                 xmin = 0
                 xmax = 5.50
-                intervals: size = 18
+                intervals: size = {interval_count}
         """
         + "".join(intervals),
         encoding="utf-8",
     )
 
 
-def _write_liftoff_textgrid(path: Path) -> None:
+def _write_liftoff_textgrid(path: Path, *, malformed_phone_index: int | None = None) -> None:
     request = _liftoff_request()
     words = []
     phones = []
@@ -172,12 +173,13 @@ def _write_liftoff_textgrid(path: Path) -> None:
         phone_start = word_start if word == "liftoff" else word_start + 0.04
         phone_end = word_end if word == "liftoff" else phone_start + 0.04
         phone = "spn" if word == "liftoff" else "AA1"
+        label_field = "label" if index == malformed_phone_index else "text"
         phones.append(
             f"""
             intervals [{index + 1}]:
                 xmin = {phone_start:.3f}
                 xmax = {phone_end:.3f}
-                text = "{phone}"
+                {label_field} = "{phone}"
             """
         )
     path.write_text(
@@ -205,6 +207,78 @@ def _write_liftoff_textgrid(path: Path) -> None:
                 xmin = 0
                 xmax = 5.50
                 intervals: size = 17
+        """
+        + "".join(phones),
+        encoding="utf-8",
+    )
+
+
+def _write_owned_textgrid(
+    path: Path,
+    *,
+    extra_gap_vowel: bool = False,
+    mismatched_phone_index: int | None = None,
+    overlapping_words: bool = False,
+    phone_labels: tuple[str, ...] | None = None,
+    swap_first_two_phone_entries: bool = False,
+) -> None:
+    words = []
+    phone_values = []
+    for index, word in enumerate(_request().text.split()):
+        word_start = 0.05 + (index * 0.25)
+        word_end = 0.38 if overlapping_words and index == 0 else word_start + 0.18
+        words.append(
+            f"""
+            intervals [{index + 1}]:
+                xmin = {word_start:.3f}
+                xmax = {word_end:.3f}
+                text = "{word}"
+            """
+        )
+        phone_start = 0.10 + (index * 0.25)
+        phone = phone_labels[index] if phone_labels is not None else "AA1"
+        if index == mismatched_phone_index:
+            phone = "AE1"
+        phone_values.append((phone_start, phone_start + 0.04, phone))
+    if extra_gap_vowel:
+        phone_values.append((0.25, 0.27, "AA1"))
+    phone_values.sort()
+    if swap_first_two_phone_entries:
+        phone_values[0], phone_values[1] = phone_values[1], phone_values[0]
+    phones = [
+        f"""
+        intervals [{index + 1}]:
+            xmin = {start:.3f}
+            xmax = {end:.3f}
+            text = "{phone}"
+        """
+        for index, (start, end, phone) in enumerate(phone_values)
+    ]
+    path.write_text(
+        """
+        File type = "ooTextFile"
+        Object class = "TextGrid"
+
+        xmin = 0
+        xmax = 5.50
+        tiers? <exists>
+        size = 2
+        item []:
+            item [1]:
+                class = "IntervalTier"
+                name = "words"
+                xmin = 0
+                xmax = 5.50
+                intervals: size = 18
+        """
+        + "".join(words)
+        + f"""
+            item [2]:
+                class = "IntervalTier"
+                name = "phones"
+                xmin = 0
+                xmax = 5.50
+                intervals: size = {len(phone_values)}
         """
         + "".join(phones),
         encoding="utf-8",
@@ -325,8 +399,10 @@ def test_render_aligned_chunk_propagates_source_sha_and_logged_stretch_ratios(tm
     diagnostics_path = output_wav.with_suffix(output_wav.suffix + ".alignment.json")
     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
     assert result.fallback_count == 0
+    assert result.boundary_adjustment_count == 0
     assert result.diagnostics_path == diagnostics_path
     assert diagnostics["fallback_count"] == 0
+    assert diagnostics["boundary_adjustment_count"] == 0
     assert all(not anchor["aligned_phone"].startswith("WORD_TIER_FALLBACK:") for anchor in diagnostics["anchor_map"])
 
 
@@ -369,8 +445,10 @@ def test_render_aligned_chunk_falls_back_only_for_liftoff_spn_word(tmp_path: Pat
     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
     assert result.diagnostics_path == diagnostics_path
     assert result.fallback_count == 2
+    assert result.boundary_adjustment_count == 0
     assert diagnostics["source_sha256"] == source_sha256
     assert diagnostics["fallback_count"] == 2
+    assert diagnostics["boundary_adjustment_count"] == 0
     assert len(diagnostics["anchor_map"]) == 18
     assert diagnostics["stretch_ratios"] == list(result.stretch_ratios)
     assert [
@@ -379,6 +457,188 @@ def test_render_aligned_chunk_falls_back_only_for_liftoff_spn_word(tmp_path: Pat
         if anchor["aligned_phone"].startswith("WORD_TIER_FALLBACK:")
     ] == ["WORD_TIER_FALLBACK:liftoff", "WORD_TIER_FALLBACK:liftoff"]
     assert list(tmp_path.glob(".warped.wav.alignment.json.*.tmp")) == []
+
+
+def test_render_aligned_chunk_rejects_malformed_phone_interval_before_fallback(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _liftoff_request()
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(source_wav, 1_000, np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32))
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_liftoff_textgrid(textgrid_path, malformed_phone_index=0)
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert not result.record.success
+    assert "malformed phones IntervalTier" in (result.record.error or "")
+    assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
+
+
+def test_render_aligned_chunk_rejects_unowned_gap_vowel_instead_of_reporting_zero_fallback(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    source_wav = tmp_path / "source.wav"
+    _, source_sha256 = _write_source_wav(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_owned_textgrid(textgrid_path, extra_gap_vowel=True)
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert not result.record.success
+    assert "aligned vowel ownership" in (result.record.error or "")
+    diagnostics = json.loads(
+        output_wav.with_suffix(output_wav.suffix + ".alignment.json").read_text(encoding="utf-8")
+    )
+    assert diagnostics["success"] is False
+    assert diagnostics["fallback_count"] == 0
+
+
+def test_render_aligned_chunk_rejects_overlapping_word_intervals_before_ambiguous_ownership(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    source_wav = tmp_path / "source.wav"
+    _, source_sha256 = _write_source_wav(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_owned_textgrid(
+        textgrid_path,
+        mismatched_phone_index=17,
+        overlapping_words=True,
+    )
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert not result.record.success
+    assert "matched word intervals must be chronological and non-overlapping" in (result.record.error or "")
+    assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
+
+
+def test_render_aligned_chunk_rejects_zero_fallback_after_strict_phone_order_failure(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    syllables = list(request.syllables)
+    syllables[0] = replace(syllables[0], phonemes=("IY1",))
+    syllables[1] = replace(syllables[1], phonemes=("OW1",))
+    request = replace(request, syllables=tuple(syllables))
+    source_wav = tmp_path / "source.wav"
+    _, source_sha256 = _write_source_wav(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_owned_textgrid(
+        textgrid_path,
+        phone_labels=("IY1", "OW1", *(("AA1",) * 16)),
+        swap_first_two_phone_entries=True,
+    )
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert not result.record.success
+    assert "word-tier fallback produced no synthesized anchors" in (result.record.error or "")
+    assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
+
+
+def test_render_aligned_chunk_clamps_tick_zero_target_and_audits_adjustment(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _liftoff_request(first_target_seconds=0.0)
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(source_wav, 1_000, np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32))
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_liftoff_textgrid(textgrid_path)
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert result.record.success
+    assert result.boundary_adjustment_count == 1
+    assert result.anchor_map[0].requested_target_seconds == 0.0
+    assert result.anchor_map[0].target_seconds == pytest.approx(0.010)
+    assert result.anchor_map[0].target_sample == 10
+    assert result.anchor_map[0].boundary_adjusted
+    assert result.anchor_map[1].requested_target_seconds == pytest.approx(0.25)
+    assert result.anchor_map[1].target_seconds == pytest.approx(0.25)
+    assert not result.anchor_map[1].boundary_adjusted
+
+    diagnostics_path = output_wav.with_suffix(output_wav.suffix + ".alignment.json")
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics["boundary_adjustment_count"] == 1
+    assert diagnostics["anchor_map"][0]["requested_target_seconds"] == 0.0
+    assert diagnostics["anchor_map"][0]["effective_target_seconds"] == pytest.approx(0.010)
+    assert diagnostics["anchor_map"][0]["boundary_adjusted"] is True
+    assert diagnostics["anchor_map"][1]["requested_target_seconds"] == pytest.approx(0.25)
+    assert diagnostics["anchor_map"][1]["effective_target_seconds"] == pytest.approx(0.25)
+    assert diagnostics["anchor_map"][1]["boundary_adjusted"] is False
+
+
+def test_render_aligned_chunk_fails_closed_when_boundary_clamp_collides(tmp_path: Path) -> None:
+    backend = _load_backend()
+    request = _liftoff_request(first_target_seconds=0.0)
+    syllables = list(request.syllables)
+    syllables[1] = replace(syllables[1], target_seconds=0.010)
+    request = replace(request, syllables=tuple(syllables))
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(source_wav, 1_000, np.zeros(round(request.duration_seconds * 1_000), dtype=np.float32))
+    source_sha256 = file_sha256(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    _write_liftoff_textgrid(textgrid_path)
+    output_wav = tmp_path / "warped.wav"
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        stretch_region=_impulse_stretcher,
+    )
+
+    assert not result.record.success
+    assert "target boundary adjustment collides" in (result.record.error or "")
+    assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
 
 
 def test_render_aligned_chunk_fails_closed_when_request_word_sequence_cannot_match(tmp_path: Path) -> None:
@@ -442,6 +702,7 @@ def test_render_aligned_chunk_returns_explicit_failure_for_missing_vowel_anchor(
     assert diagnostics["anchor_map"] == []
     assert diagnostics["stretch_ratios"] == []
     assert diagnostics["fallback_count"] == 0
+    assert diagnostics["boundary_adjustment_count"] == 0
     assert "aligned vowel count" in diagnostics["error"]
 
     ledger_path = tmp_path / "records.jsonl"
