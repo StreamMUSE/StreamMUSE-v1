@@ -63,6 +63,37 @@ def _tokenizer_labels(request, overrides: dict[str, tuple[str, ...]] | None = No
     return tuple(labels)
 
 
+def _nemo_punctuated_tokenizer_labels(request) -> tuple[str, ...]:
+    labels: list[str] = ["<pad>"]
+    punctuated_word_indices = {2, 5, 11}
+    words = list(_word_syllables(request.syllables))
+    for word_index, (_, syllables) in enumerate(words):
+        labels.extend(phone for syllable in syllables for phone in syllable.phonemes)
+        if word_index in punctuated_word_indices:
+            labels.append(",")
+        labels.append(" ")
+    labels.extend((" ", "<pad>"))
+    return tuple(labels)
+
+
+def _nemo_tokenizer_labels_with_internal_apostrophe(request) -> tuple[str, ...]:
+    labels: list[str] = ["<pad>"]
+    words = list(_word_syllables(request.syllables))
+    for word, syllables in words:
+        if all(syllable.phonemes for syllable in syllables):
+            phones = tuple(phone for syllable in syllables for phone in syllable.phonemes)
+        else:
+            phones = OOV_PHONE_LABELS[word.lower()]
+        if "'" in word:
+            labels.extend(phones[:-1])
+            labels.append("'")
+            labels.append(phones[-1])
+        else:
+            labels.extend(phones)
+        labels.append(" ")
+    return tuple(labels)
+
+
 def _word_syllables(syllables) -> Iterable[tuple[str, tuple[object, ...]]]:
     start = 0
     while start < len(syllables):
@@ -130,6 +161,21 @@ def test_fastpitch_phone_plan_allocates_durations_for_every_token_and_keeps_vowe
     assert plan.compressed_consonant_regions == (0,)
 
 
+def test_fastpitch_phone_plan_ignores_nemo_punctuation_and_padded_spaces() -> None:
+    request = _request()
+    tokenizer_labels = _nemo_punctuated_tokenizer_labels(request)
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    non_spoken_indices = {
+        index for index, label in enumerate(tokenizer_labels) if label in {",", " ", "<pad>"}
+    }
+    assert len(plan.duration_frames) == len(tokenizer_labels)
+    assert all(plan.duration_frames[index] == 0 for index in non_spoken_indices)
+    assert non_spoken_indices.isdisjoint(plan.spoken_label_indices)
+    assert sum(plan.duration_frames) == TOTAL_FRAMES
+
+
 def test_fastpitch_phone_plan_rejects_phone_token_mismatches() -> None:
     request = _request()
     tokenizer_labels = list(_tokenizer_labels(request))
@@ -155,6 +201,27 @@ def test_fastpitch_phone_plan_recovers_real_corpus_oov_syllable_groups_from_toke
         ("T", "IY0", "Z"),
     )
     assert sum(plan.duration_frames) == TOTAL_FRAMES
+
+
+def test_fastpitch_phone_plan_ignores_internal_apostrophe_without_splitting_word() -> None:
+    request = _campaign_request("01_space_exploration", 9)
+    tokenizer_labels = _nemo_tokenizer_labels_with_internal_apostrophe(request)
+
+    plan = build_fastpitch_phone_plan(request, tokenizer_labels)
+
+    apostrophe_index = tokenizer_labels.index("'")
+    gravity_groups = tuple(
+        plan.syllable_phone_groups[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "gravity's"
+    )
+    assert gravity_groups == (
+        ("G", "R", "AE1"),
+        ("V", "AH0"),
+        ("T", "IY0", "Z"),
+    )
+    assert plan.duration_frames[apostrophe_index] == 0
+    assert apostrophe_index not in plan.spoken_label_indices
 
 
 def test_fastpitch_phone_plan_rejects_oov_word_groups_with_the_wrong_vowel_count() -> None:

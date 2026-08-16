@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 from dataclasses import dataclass
 
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget, TwoBarRenderRequest
@@ -13,6 +14,8 @@ _FASTPITCH_SAMPLE_RATE_HZ = 22050
 _FASTPITCH_HOP_LENGTH = 256
 _MEL_FRAMES_PER_SECOND = _FASTPITCH_SAMPLE_RATE_HZ / _FASTPITCH_HOP_LENGTH
 _PADDING_LABELS = frozenset({"", "<blk>", "<blank>", "<eps>", "<pad>"})
+_PUNCTUATION_LABELS = frozenset(string.punctuation)
+_WORD_BOUNDARY_PUNCTUATION_LABELS = _PUNCTUATION_LABELS - {"'"}
 _WORD_PATTERN = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
 
 
@@ -148,7 +151,11 @@ def _is_padding_label(label: str) -> bool:
 
 
 def _is_word_boundary_label(label: str) -> bool:
-    return bool(label) and label.isspace()
+    return bool(label) and (label.isspace() or label in _WORD_BOUNDARY_PUNCTUATION_LABELS)
+
+
+def _is_punctuation_label(label: str) -> bool:
+    return label in _PUNCTUATION_LABELS
 
 
 def _vowel_phone_offset(phones: tuple[str, ...]) -> int:
@@ -188,6 +195,8 @@ def _tokenizer_word_groups(tokenizer_labels: tuple[str, ...]) -> tuple[_Tokenize
                 groups.append(_TokenizerWordGroup(labels=tuple(current_labels), label_indices=tuple(current_indices)))
                 current_labels = []
                 current_indices = []
+            continue
+        if _is_punctuation_label(label):
             continue
         current_labels.append(label)
         current_indices.append(index)
