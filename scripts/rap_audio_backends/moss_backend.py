@@ -6,15 +6,27 @@ import argparse
 import importlib
 import importlib.util
 import json
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-import numpy as np
-
-from streammuse.experiments.rap_audio_protocols.artifacts import append_chunk_record, read_chunk_record_index
-from streammuse.experiments.rap_audio_protocols.contracts import ChunkRenderRecord, ProtocolId, SyllableTarget, TwoBarRenderRequest
+from streammuse.experiments.rap_audio_protocols.artifacts import (
+    append_chunk_record,
+    chunk_record_is_complete,
+    file_sha256,
+    read_chunk_record_index,
+)
+from streammuse.experiments.rap_audio_protocols.audio import validate_wav_metadata
+from streammuse.experiments.rap_audio_protocols.contracts import (
+    ChunkRenderRecord,
+    ProtocolId,
+    SyllableTarget,
+    TwoBarRenderRequest,
+    canonical_json_dumps,
+)
 from streammuse.experiments.rap_audio_protocols.timing import moss_token_target
 
 
@@ -134,7 +146,13 @@ def render_requests(
     rendered: list[ChunkRenderRecord] = []
     for request in requests:
         key = (ProtocolId.MOSS_GLOBAL, request.song_id, request.chunk_index)
-        if key in existing:
+        output_path = _chunk_output_path(output_root, request)
+        if chunk_record_is_complete(
+            ledger_path,
+            output_path,
+            request=request,
+            protocol_id=ProtocolId.MOSS_GLOBAL,
+        ):
             record = existing[key]
             rendered.append(record)
             _write_progress_line(
@@ -147,14 +165,16 @@ def render_requests(
             continue
         record = _render_single_request(
             request=request,
-            output_dir=output_root,
+            output_path=output_path,
             record_path=ledger_path,
             reference_wav=reference_path,
             runtime=active_runtime,
             max_retries=max_retries,
             base_seed=base_seed,
             progress_stream=stream,
+            replace_existing=key in existing,
         )
+        existing[key] = record
         rendered.append(record)
     return tuple(rendered)
 
@@ -262,16 +282,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _render_single_request(
     *,
     request: TwoBarRenderRequest,
-    output_dir: Path,
+    output_path: Path,
     record_path: Path,
     reference_wav: Path,
     runtime: MossBackendRuntime,
     max_retries: int,
     base_seed: int,
     progress_stream: Any,
+    replace_existing: bool,
 ) -> ChunkRenderRecord:
-    output_path = output_dir / f"chunk-{request.chunk_index:03d}.wav"
-    output_dir.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
         seed = _seed_for_attempt(base_seed=base_seed, request=request, attempt=attempt)
@@ -283,6 +302,11 @@ def _render_single_request(
                 reference_wav=reference_wav,
                 runtime=runtime,
             )
+            metadata = validate_wav_metadata(
+                output_path,
+                expected_sample_rate_hz=runtime.sample_rate_hz,
+                expected_channels=1,
+            )
             record = ChunkRenderRecord(
                 protocol_id=ProtocolId.MOSS_GLOBAL,
                 song_id=request.song_id,
@@ -290,14 +314,13 @@ def _render_single_request(
                 request_sha256=request.sha256,
                 success=True,
                 output_path=str(output_path),
-                output_sha256=None,
+                output_sha256=file_sha256(output_path),
                 source_chunk_sha256=None,
-                sample_rate_hz=runtime.sample_rate_hz,
+                sample_rate_hz=metadata.sample_rate_hz,
                 attempts=attempt,
                 error=None,
             )
-            append_chunk_record(record_path, record)
-            stored = read_chunk_record_index(record_path)[(ProtocolId.MOSS_GLOBAL, request.song_id, request.chunk_index)]
+            stored = _store_chunk_record(record_path, record, replace_existing=replace_existing)
             _write_progress_line(
                 progress_stream,
                 (
@@ -330,8 +353,7 @@ def _render_single_request(
         attempts=max_retries,
         error=str(last_error) if last_error is not None else "unknown render failure",
     )
-    append_chunk_record(record_path, failure)
-    stored_failure = read_chunk_record_index(record_path)[(ProtocolId.MOSS_GLOBAL, request.song_id, request.chunk_index)]
+    stored_failure = _store_chunk_record(record_path, failure, replace_existing=replace_existing)
     _write_progress_line(
         progress_stream,
         (
@@ -364,28 +386,82 @@ def _generate_chunk(
     )
     decoded_message = runtime.processor.decode(outputs)[0]
     audio = decoded_message.audio_codes_list[0]
-    waveform = _normalise_audio_for_save(audio)
+    waveform = _normalise_audio_for_save(audio, torch_module=runtime.torch_module)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     runtime.torchaudio_module.save(str(output_path), waveform, runtime.sample_rate_hz)
 
 
-def _normalise_audio_for_save(audio: Any) -> np.ndarray:
-    if hasattr(audio, "detach"):
-        audio = audio.detach()
-    if hasattr(audio, "cpu"):
-        audio = audio.cpu()
-    if hasattr(audio, "float"):
-        audio = audio.float()
-    if hasattr(audio, "numpy"):
-        array = np.asarray(audio.numpy(), dtype=np.float32)
-    elif hasattr(audio, "unsqueeze"):
-        array = np.asarray(audio.unsqueeze(0), dtype=np.float32)
+def _normalise_audio_for_save(audio: Any, *, torch_module: Any) -> Any:
+    as_tensor = getattr(torch_module, "as_tensor", None)
+    if not callable(as_tensor):
+        raise TypeError("torch runtime must provide as_tensor for audio serialization")
+    tensor = as_tensor(audio, dtype=torch_module.float32)
+    tensor = tensor.detach().cpu().float()
+    if tensor.ndim == 1:
+        return tensor.unsqueeze(0)
+    if tensor.ndim == 2:
+        shape = tuple(tensor.shape)
+        if shape[0] == 1:
+            return tensor
+        if shape[1] == 1:
+            return tensor.transpose(0, 1)
+    raise ValueError(f"expected mono audio tensor, got shape {tuple(tensor.shape)}")
+
+
+def _chunk_output_path(output_root: Path, request: TwoBarRenderRequest) -> Path:
+    return output_root / request.song_id / f"chunk-{request.chunk_index:03d}.wav"
+
+
+def _store_chunk_record(
+    path: Path,
+    record: ChunkRenderRecord,
+    *,
+    replace_existing: bool,
+) -> ChunkRenderRecord:
+    key = (record.protocol_id, record.song_id, record.chunk_index)
+    if replace_existing:
+        _replace_chunk_record(path, record)
     else:
-        array = np.asarray(audio, dtype=np.float32)
-    if array.ndim == 1:
-        return np.expand_dims(array, 0)
-    if array.ndim == 2:
-        return array
-    raise ValueError(f"expected mono audio tensor, got shape {array.shape}")
+        append_chunk_record(path, record)
+    return read_chunk_record_index(path)[key]
+
+
+def _replace_chunk_record(path: Path, record: ChunkRenderRecord) -> None:
+    existing = read_chunk_record_index(path)
+    key = (record.protocol_id, record.song_id, record.chunk_index)
+    if key not in existing:
+        raise ValueError(f"cannot replace missing chunk record for {key}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = path.stat().st_mode & 0o7777
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            for existing_key, existing_record in existing.items():
+                if existing_key == key:
+                    continue
+                handle.write(canonical_json_dumps(existing_record.to_payload()))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        append_chunk_record(temporary_path, record)
+        with temporary_path.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, original_mode)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _seed_for_attempt(*, base_seed: int, request: TwoBarRenderRequest, attempt: int) -> int:
@@ -407,7 +483,8 @@ def _resolve_attn_implementation(torch_module: Any, *, device: str, dtype: Any) 
     if _is_cuda_device(device):
         has_flash_attn = importlib.util.find_spec("flash_attn") is not None
         if has_flash_attn and dtype in {getattr(torch_module, "float16", object()), getattr(torch_module, "bfloat16", object())}:
-            capability = getattr(torch_module.cuda, "get_device_capability", lambda: (0, 0))()
+            get_device_capability = getattr(torch_module.cuda, "get_device_capability", None)
+            capability = get_device_capability(device) if callable(get_device_capability) else (0, 0)
             if capability[0] >= 8:
                 return "flash_attention_2"
         return "sdpa"
