@@ -241,7 +241,7 @@ def render_pending_requests(
     for request in requests:
         key = (ProtocolId.FASTPITCH_PHONEME, request.song_id, request.chunk_index)
         output_path = output_root / request.song_id / f"chunk-{request.chunk_index:03d}.wav"
-        if _render_artifacts_are_complete(ledger_path, output_path, request=request):
+        if _render_artifacts_are_complete(ledger_path, output_path, request=request, runtime=active_runtime):
             continue
         record = _render_with_retries(
             request=request,
@@ -610,13 +610,14 @@ def _render_artifacts_are_complete(
     output_path: Path | str,
     *,
     request: TwoBarRenderRequest,
+    runtime: FastPitchBackendRuntime,
 ) -> bool:
     return chunk_record_is_complete(
         record_path,
         output_path,
         request=request,
         protocol_id=ProtocolId.FASTPITCH_PHONEME,
-    ) and _timing_sidecar_is_valid(output_path, request=request)
+    ) and _timing_sidecar_is_valid(output_path, request=request, runtime=runtime)
 
 
 def _write_timing_sidecar(
@@ -625,15 +626,7 @@ def _write_timing_sidecar(
     plan: FastPitchRenderPlan,
 ) -> Path:
     destination = _timing_sidecar_path(output_path)
-    payload = {
-        "schema_version": TIMING_SIDECAR_SCHEMA_VERSION,
-        "protocol_id": ProtocolId.FASTPITCH_PHONEME.value,
-        "song_id": request.song_id,
-        "chunk_index": request.chunk_index,
-        "request_sha256": request.sha256,
-        "output_path": str(Path(output_path)),
-        **_timing_plan_payload(plan),
-    }
+    payload = _timing_sidecar_payload(output_path, request=request, plan=plan)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -658,39 +651,44 @@ def _write_timing_sidecar(
     return destination
 
 
-def _timing_sidecar_is_valid(output_path: Path | str, *, request: TwoBarRenderRequest) -> bool:
-    try:
-        with _timing_sidecar_path(output_path).open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
-
-    expected_binding = {
+def _timing_sidecar_payload(
+    output_path: Path | str,
+    *,
+    request: TwoBarRenderRequest,
+    plan: FastPitchRenderPlan,
+) -> dict[str, Any]:
+    return {
         "schema_version": TIMING_SIDECAR_SCHEMA_VERSION,
         "protocol_id": ProtocolId.FASTPITCH_PHONEME.value,
         "song_id": request.song_id,
         "chunk_index": request.chunk_index,
         "request_sha256": request.sha256,
         "output_path": str(Path(output_path)),
+        **_timing_plan_payload(plan),
     }
-    if not isinstance(payload, dict) or canonical_json_dumps(
-        {key: payload.get(key) for key in expected_binding}
-    ) != canonical_json_dumps(expected_binding):
+
+
+def _timing_sidecar_is_valid(
+    output_path: Path | str,
+    *,
+    request: TwoBarRenderRequest,
+    runtime: FastPitchBackendRuntime,
+) -> bool:
+    try:
+        with _timing_sidecar_path(output_path).open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return False
 
-    tokenizer_labels = payload.get("tokenizer_labels")
-    if not isinstance(tokenizer_labels, list) or not tokenizer_labels or not all(
-        isinstance(label, str) for label in tokenizer_labels
-    ):
+    if not isinstance(payload, dict):
         return False
     try:
-        expected_plan = build_fastpitch_phone_plan(request, tuple(tokenizer_labels))
-    except (IndexError, ValueError):
+        expected_plan = build_render_plan(request=request, runtime=runtime)
+    except Exception:
         return False
 
-    expected_plan_payload = _timing_plan_payload(expected_plan)
-    actual_plan_payload = {key: payload.get(key) for key in expected_plan_payload}
-    return canonical_json_dumps(actual_plan_payload) == canonical_json_dumps(expected_plan_payload)
+    expected_payload = _timing_sidecar_payload(output_path, request=request, plan=expected_plan)
+    return canonical_json_dumps(payload) == canonical_json_dumps(expected_payload)
 
 
 def _timing_plan_payload(plan: FastPitchPhonePlan | FastPitchRenderPlan) -> dict[str, Any]:

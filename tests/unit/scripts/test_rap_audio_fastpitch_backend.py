@@ -456,6 +456,7 @@ def test_render_pending_requests_skips_only_complete_matching_record(tmp_path: P
 
     assert first[0].success is True
     assert resumed == ()
+    assert second_runtime.fastpitch.parse_calls == [request.text]
     assert second_runtime.fastpitch.calls == []
 
 
@@ -521,6 +522,75 @@ def test_render_pending_requests_rerenders_success_with_invalid_timing_sidecar(
     assert rerendered[0].success is True
     assert repaired_sidecar["request_sha256"] == request.sha256
     assert len(repaired_sidecar["syllable_label_indices"]) == len(request.syllables)
+
+
+def test_render_pending_requests_rerenders_canonical_sidecar_with_runtime_tokenizer_mismatch(tmp_path: Path) -> None:
+    module = _load_backend("scripts.rap_audio_backends.fastpitch_backend_sidecar_runtime_mismatch")
+    request = _request_with_replaced_word(_fixture_request(), "blasts", "where", (("W", "EH1", "R"),))
+    runtime_labels = _tokenizer_labels(request, overrides={"where": tuple("where")})
+    request_path = tmp_path / "requests.jsonl"
+    record_path = tmp_path / "records.jsonl"
+    output_dir = tmp_path / "chunks"
+    output_path = output_dir / request.song_id / "chunk-000.wav"
+    sidecar_path = output_path.with_suffix(".timing.json")
+    request_path.write_text(json.dumps(request.to_payload()) + "\n", encoding="utf-8")
+
+    def make_runtime():
+        return module.FastPitchBackendRuntime(
+            fastpitch=FakeFastPitch(labels_by_text={request.text: runtime_labels}),
+            hifigan=FakeHiFiGan(),
+            torch_module=FakeTorch(),
+            device="cuda:0",
+            fastpitch_model_id=module.FASTPITCH_MODEL_ID,
+            hifigan_model_id=module.HIFIGAN_MODEL_ID,
+        )
+
+    first = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=make_runtime(),
+    )
+    assert first[0].success is True
+
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    where_syllable_index = next(
+        index for index, syllable in enumerate(request.syllables) if syllable.word == "where"
+    )
+    where_label_indices = sidecar["syllable_label_indices"][where_syllable_index]
+    assert [sidecar["tokenizer_labels"][index] for index in where_label_indices] == list("where")
+    altered_labels = list(sidecar["tokenizer_labels"])
+    for label_index, label in zip(where_label_indices, "there"):
+        altered_labels[label_index] = label
+    altered_plan = build_fastpitch_phone_plan(request, tuple(altered_labels))
+    sidecar.update(
+        {
+            "tokenizer_labels": list(altered_plan.tokenizer_labels),
+            "duration_frames": list(altered_plan.duration_frames),
+            "spoken_label_indices": list(altered_plan.spoken_label_indices),
+            "vowel_label_indices": list(altered_plan.vowel_label_indices),
+            "syllable_phone_groups": [list(group) for group in altered_plan.syllable_phone_groups],
+            "syllable_label_indices": [list(group) for group in altered_plan.syllable_label_indices],
+            "anchor_error_frames": list(altered_plan.anchor_error_frames),
+            "compressed_consonant_regions": list(altered_plan.compressed_consonant_regions),
+            "grapheme_fallback_words": list(altered_plan.grapheme_fallback_words),
+        }
+    )
+    sidecar_path.write_text(json.dumps(sidecar) + "\n", encoding="utf-8")
+
+    second_runtime = make_runtime()
+    rerendered = module.render_pending_requests(
+        request_path=request_path,
+        record_path=record_path,
+        output_dir=output_dir,
+        runtime=second_runtime,
+    )
+
+    repaired_sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert len(rerendered) == 1
+    assert rerendered[0].success is True
+    assert len(second_runtime.fastpitch.calls) == 1
+    assert repaired_sidecar["tokenizer_labels"] == list(runtime_labels)
 
 
 def test_build_render_plan_uses_tokenizer_derived_oov_recovery_from_timing_api() -> None:
