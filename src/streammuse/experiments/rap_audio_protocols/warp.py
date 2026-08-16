@@ -11,6 +11,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 from scipy.io import wavfile
+from scipy.optimize import Bounds, LinearConstraint, minimize
 
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget
 
@@ -56,6 +57,10 @@ _PHONE_SUFFIX_RE = re.compile(r"\d+$")
 
 
 StretchRegionFn = Callable[[np.ndarray, int, int], np.ndarray]
+FullChunkWarpFn = Callable[
+    [np.ndarray, int, int, tuple[tuple[int, int], ...]],
+    np.ndarray,
+]
 WORD_TIER_FALLBACK_PREFIX = "WORD_TIER_FALLBACK:"
 UNKNOWN_PLANNED_VOWEL = "UNKNOWN_PLANNED_VOWEL"
 MIN_WARP_REGION_SECONDS = 0.010
@@ -118,6 +123,7 @@ class VowelAnchor:
     target_sample: int
     source_boundary_adjusted: bool
     boundary_adjusted: bool
+    anchor_kind: str = "vowel"
 
 
 @dataclass(frozen=True)
@@ -173,6 +179,75 @@ class RubberBandStretcher:
             except subprocess.CalledProcessError as exc:
                 stderr = exc.stderr.strip() if exc.stderr else "unknown rubberband failure"
                 raise RuntimeError(f"rubberband stretch failed: {stderr}") from exc
+            _, stretched = wavfile.read(output_path)
+        return _coerce_region_length(_to_mono_float32(stretched), target_frames)
+
+
+class RubberBandTimeMapStretcher:
+    """Apply one pitch-preserving Rubber Band warp to a complete chunk."""
+
+    def __init__(
+        self,
+        *,
+        binary: str = "rubberband",
+        engine: str = "r3",
+        smoothing: bool = False,
+        extra_args: Sequence[str] = (),
+    ) -> None:
+        if engine not in {"r2", "r3"}:
+            raise ValueError("engine must be 'r2' or 'r3'")
+        if engine == "r3" and smoothing:
+            raise ValueError("Rubber Band smoothing is available only with the R2 engine")
+        self._binary = binary
+        self._engine = engine
+        self._smoothing = smoothing
+        self._extra_args = tuple(extra_args)
+
+    def __call__(
+        self,
+        samples: np.ndarray,
+        target_frames: int,
+        sample_rate_hz: int,
+        time_map: tuple[tuple[int, int], ...],
+    ) -> np.ndarray:
+        if target_frames <= 0:
+            raise ValueError("target_frames must be positive")
+        _validate_time_map(time_map)
+        with tempfile.TemporaryDirectory(prefix="streammuse-rubberband-timemap-") as temp_dir:
+            input_path = Path(temp_dir) / "input.wav"
+            output_path = Path(temp_dir) / "output.wav"
+            time_map_path = Path(temp_dir) / "time_map.txt"
+            wavfile.write(input_path, sample_rate_hz, np.asarray(samples, dtype=np.float32))
+            time_map_path.write_text(
+                "".join(f"{source} {target}\n" for source, target in time_map),
+                encoding="utf-8",
+            )
+            engine_args = ["--fine"] if self._engine == "r3" else []
+            if self._smoothing:
+                engine_args.append("--smoothing")
+            try:
+                subprocess.run(
+                    [
+                        self._binary,
+                        "--quiet",
+                        "--duration",
+                        f"{target_frames / sample_rate_hz:.9f}",
+                        "--timemap",
+                        str(time_map_path),
+                        *engine_args,
+                        *self._extra_args,
+                        str(input_path),
+                        str(output_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("rubberband binary is not installed") from exc
+            except subprocess.CalledProcessError as exc:
+                stderr = exc.stderr.strip() if exc.stderr else "unknown rubberband failure"
+                raise RuntimeError(f"rubberband time-map warp failed: {stderr}") from exc
             _, stretched = wavfile.read(output_path)
         return _coerce_region_length(_to_mono_float32(stretched), target_frames)
 
@@ -322,6 +397,235 @@ def match_vowel_anchors_with_word_fallback(
     )
     _validate_fallback_anchor_monotonicity(anchors)
     return tuple(anchors)
+
+
+def promote_vowel_anchors_to_syllable_onsets(
+    phone_intervals: Sequence[PhoneInterval],
+    syllables: Sequence[SyllableTarget],
+    anchors: Sequence[VowelAnchor],
+    *,
+    sample_rate_hz: int,
+) -> tuple[VowelAnchor, ...]:
+    """Move strict vowel anchors to aligned syllable onsets when phones agree."""
+    if sample_rate_hz <= 0:
+        raise ValueError("sample_rate_hz must be positive")
+    if len(syllables) != len(anchors):
+        raise ValueError("syllables and anchors must have equal lengths")
+
+    promoted: list[VowelAnchor] = []
+    search_start = 0
+    for syllable, anchor in zip(syllables, anchors):
+        if anchor.aligned_phone.startswith(WORD_TIER_FALLBACK_PREFIX):
+            promoted.append(anchor)
+            continue
+        vowel_index = _find_aligned_vowel_interval(
+            phone_intervals,
+            anchor,
+            search_start=search_start,
+        )
+        if vowel_index is None:
+            promoted.append(anchor)
+            continue
+        search_start = vowel_index + 1
+        planned_vowel_index = _primary_vowel_index(syllable)
+        onset_index = vowel_index - planned_vowel_index
+        if onset_index < 0:
+            promoted.append(anchor)
+            continue
+        planned_onset = tuple(
+            _normalise_phone(phone) for phone in syllable.phonemes[:planned_vowel_index]
+        )
+        aligned_onset = tuple(
+            _normalise_phone(interval.phone)
+            for interval in phone_intervals[onset_index:vowel_index]
+        )
+        if aligned_onset != planned_onset:
+            promoted.append(anchor)
+            continue
+        source_seconds = phone_intervals[onset_index].start_seconds
+        source_sample = round(source_seconds * sample_rate_hz)
+        promoted.append(
+            replace(
+                anchor,
+                requested_source_seconds=source_seconds,
+                source_seconds=source_seconds,
+                requested_source_sample=source_sample,
+                source_sample=source_sample,
+                source_boundary_adjusted=False,
+                anchor_kind="syllable_onset",
+            )
+        )
+    return tuple(promoted)
+
+
+def regularize_anchor_targets(
+    anchors: Sequence[VowelAnchor],
+    syllables: Sequence[SyllableTarget],
+    *,
+    sample_rate_hz: int,
+    source_frame_count: int,
+    target_frame_count: int,
+    min_stretch_ratio: float = 0.5,
+    max_stretch_ratio: float = 2.0,
+    stress_priority: float = 4.0,
+) -> tuple[VowelAnchor, ...]:
+    """Move target anchors minimally so local stretch ratios stay bounded."""
+    if len(anchors) != len(syllables):
+        raise ValueError("anchors and syllables must have equal lengths")
+    if not anchors:
+        raise ValueError("at least one anchor is required")
+    if min_stretch_ratio <= 0 or max_stretch_ratio < min_stretch_ratio:
+        raise ValueError("stretch ratio bounds are invalid")
+    if stress_priority < 0:
+        raise ValueError("stress_priority must not be negative")
+
+    effective_anchors = _apply_source_boundary_policy(
+        anchors,
+        sample_rate_hz=sample_rate_hz,
+        source_frame_count=source_frame_count,
+    )
+    source_points = np.asarray(
+        [0, *(anchor.source_sample for anchor in effective_anchors), source_frame_count - 1],
+        dtype=np.float64,
+    )
+    source_gaps = np.diff(source_points)
+    target_end = target_frame_count - 1
+    lower_gaps = min_stretch_ratio * source_gaps
+    upper_gaps = max_stretch_ratio * source_gaps
+    if not float(np.sum(lower_gaps)) <= target_end <= float(np.sum(upper_gaps)):
+        raise ValueError("stretch ratio bounds are infeasible for the source and target durations")
+
+    anchor_count = len(effective_anchors)
+    difference_matrix = np.zeros((anchor_count + 1, anchor_count), dtype=np.float64)
+    difference_matrix[0, 0] = 1.0
+    for row in range(1, anchor_count):
+        difference_matrix[row, row - 1] = -1.0
+        difference_matrix[row, row] = 1.0
+    difference_matrix[-1, -1] = -1.0
+    lower = np.array(lower_gaps, copy=True)
+    upper = np.array(upper_gaps, copy=True)
+    lower[-1] -= target_end
+    upper[-1] -= target_end
+
+    requested = np.asarray(
+        [round(anchor.requested_target_seconds * sample_rate_hz) for anchor in effective_anchors],
+        dtype=np.float64,
+    )
+    weights = np.asarray(
+        [1.0 + stress_priority * syllable.target_stress for syllable in syllables],
+        dtype=np.float64,
+    )
+    initial = source_points[1:-1] * (target_end / (source_frame_count - 1))
+
+    def objective(values: np.ndarray) -> float:
+        return float(np.sum(weights * np.square(values - requested)))
+
+    def gradient(values: np.ndarray) -> np.ndarray:
+        return 2.0 * weights * (values - requested)
+
+    result = minimize(
+        objective,
+        initial,
+        jac=gradient,
+        method="SLSQP",
+        bounds=Bounds(
+            np.ones(anchor_count, dtype=np.float64),
+            np.full(anchor_count, target_end - 1, dtype=np.float64),
+        ),
+        constraints=(LinearConstraint(difference_matrix, lower, upper),),
+        options={"ftol": 1e-9, "maxiter": 500},
+    )
+    if not result.success:
+        raise ValueError(f"target-anchor regularization failed: {result.message}")
+
+    target_samples = np.rint(result.x).astype(int)
+    regularized = tuple(
+        replace(
+            anchor,
+            target_sample=int(target_sample),
+            target_seconds=int(target_sample) / sample_rate_hz,
+            boundary_adjusted=(
+                anchor.boundary_adjusted or int(target_sample) != anchor.target_sample
+            ),
+        )
+        for anchor, target_sample in zip(effective_anchors, target_samples)
+    )
+    _validate_anchor_monotonicity(
+        tuple(anchor.source_sample for anchor in regularized),
+        tuple(anchor.target_sample for anchor in regularized),
+        source_frame_count,
+        target_frame_count,
+    )
+    return regularized
+
+
+def continuous_pitch_preserving_warp(
+    samples: np.ndarray,
+    *,
+    sample_rate_hz: int,
+    anchors: Sequence[VowelAnchor],
+    target_frame_count: int,
+    stretch_full_chunk: FullChunkWarpFn | None = None,
+    source_sha256: str,
+) -> WarpedChunk:
+    """Warp a chunk in one process using source-to-target anchor pairs."""
+    if sample_rate_hz <= 0:
+        raise ValueError("sample_rate_hz must be positive")
+    if target_frame_count <= 0:
+        raise ValueError("target_frame_count must be positive")
+    if not anchors:
+        raise ValueError("at least one anchor is required")
+
+    mono = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if len(mono) == 0:
+        raise ValueError("samples must not be empty")
+    effective_anchors = _apply_source_boundary_policy(
+        anchors,
+        sample_rate_hz=sample_rate_hz,
+        source_frame_count=len(mono),
+    )
+    source_anchors = tuple(anchor.source_sample for anchor in effective_anchors)
+    target_anchors = tuple(anchor.target_sample for anchor in effective_anchors)
+    _validate_anchor_monotonicity(
+        source_anchors,
+        target_anchors,
+        len(mono),
+        target_frame_count,
+    )
+    time_map = tuple(
+        zip(
+            (0, *source_anchors, len(mono) - 1),
+            (0, *target_anchors, target_frame_count - 1),
+        )
+    )
+    _validate_time_map(time_map)
+    warped = (stretch_full_chunk or RubberBandTimeMapStretcher())(
+        mono,
+        target_frame_count,
+        sample_rate_hz,
+        time_map,
+    )
+    warped = _coerce_region_length(warped, target_frame_count)
+    diagnostics = tuple(
+        StretchRegionDiagnostic(
+            source_start_sample=source_start,
+            source_end_sample=source_end,
+            target_start_sample=target_start,
+            target_end_sample=target_end,
+            stretch_ratio=(target_end - target_start) / max(1, source_end - source_start),
+        )
+        for (source_start, target_start), (source_end, target_end) in zip(
+            time_map,
+            time_map[1:],
+        )
+    )
+    return WarpedChunk(
+        samples=warped,
+        sample_rate_hz=sample_rate_hz,
+        source_sha256=source_sha256,
+        anchor_map=effective_anchors,
+        stretch_regions=diagnostics,
+    )
 
 
 def piecewise_pitch_preserving_warp(
@@ -924,13 +1228,33 @@ def _normalise_phone(phone: str) -> str:
     return _PHONE_SUFFIX_RE.sub("", phone.strip().upper())
 
 
-def _primary_vowel_phone(syllable: SyllableTarget) -> str:
-    for phone in syllable.phonemes:
+def _find_aligned_vowel_interval(
+    phone_intervals: Sequence[PhoneInterval],
+    anchor: VowelAnchor,
+    *,
+    search_start: int,
+) -> int | None:
+    expected_phone = _normalise_phone(anchor.aligned_phone)
+    for index in range(search_start, len(phone_intervals)):
+        interval = phone_intervals[index]
+        if _normalise_phone(interval.phone) != expected_phone:
+            continue
+        if interval.start_seconds <= anchor.requested_source_seconds <= interval.end_seconds:
+            return index
+    return None
+
+
+def _primary_vowel_index(syllable: SyllableTarget) -> int:
+    for index, phone in enumerate(syllable.phonemes):
         if is_arpabet_vowel(phone):
-            return phone
+            return index
     raise MissingPlannedVowelError(
         f"syllable {syllable.word!r} is missing an ARPAbet vowel anchor"
     )
+
+
+def _primary_vowel_phone(syllable: SyllableTarget) -> str:
+    return syllable.phonemes[_primary_vowel_index(syllable)]
 
 
 def _word_fallback_vowel_phone(syllable: SyllableTarget) -> str:
@@ -963,3 +1287,16 @@ def _coerce_region_length(samples: np.ndarray, target_frames: int) -> np.ndarray
     source_positions = np.linspace(0.0, 1.0, len(region), dtype=np.float32)
     target_positions = np.linspace(0.0, 1.0, target_frames, dtype=np.float32)
     return np.interp(target_positions, source_positions, region).astype(np.float32, copy=False)
+
+
+def _validate_time_map(time_map: Sequence[tuple[int, int]]) -> None:
+    if len(time_map) < 2:
+        raise ValueError("time map must contain at least two points")
+    source_points = tuple(source for source, _ in time_map)
+    target_points = tuple(target for _, target in time_map)
+    if any(point < 0 for point in (*source_points, *target_points)):
+        raise ValueError("time-map points must not be negative")
+    if any(right <= left for left, right in zip(source_points, source_points[1:])):
+        raise ValueError("time-map source points must be strictly monotonic")
+    if any(right <= left for left, right in zip(target_points, target_points[1:])):
+        raise ValueError("time-map target points must be strictly monotonic")

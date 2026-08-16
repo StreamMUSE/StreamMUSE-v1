@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -20,20 +21,43 @@ from streammuse.experiments.rap_audio_protocols.contracts import (
     TwoBarRenderRequest,
     canonical_json_dumps,
 )
+from streammuse.experiments.rap_audio_protocols.stress import apply_stress_envelope
 from streammuse.experiments.rap_audio_protocols.warp import (
+    FullChunkWarpFn,
     PhoneVowelMismatchError,
+    RubberBandTimeMapStretcher,
     StretchRegionFn,
     VowelAnchor,
     WORD_TIER_FALLBACK_PREFIX,
+    continuous_pitch_preserving_warp,
     load_textgrid_phone_intervals,
     load_textgrid_word_intervals,
     match_vowel_anchors,
     match_vowel_anchors_with_word_fallback,
     piecewise_pitch_preserving_warp,
+    promote_vowel_anchors_to_syllable_onsets,
+    regularize_anchor_targets,
 )
 
 
 MfaCommand = Callable[..., None]
+
+
+class AlignedWarpMode(str, Enum):
+    PIECEWISE_VOWEL_R2 = "piecewise_vowel_r2"
+    CONTINUOUS_VOWEL_R3 = "continuous_vowel_r3"
+    CONTINUOUS_ONSET_R3 = "continuous_onset_r3"
+    CONTINUOUS_ONSET_CONSTRAINED_R3_STRESS = "continuous_onset_constrained_r3_stress"
+    CONTINUOUS_ONSET_R2_SMOOTH = "continuous_onset_r2_smooth"
+
+
+_ONSET_MODES = frozenset(
+    {
+        AlignedWarpMode.CONTINUOUS_ONSET_R3,
+        AlignedWarpMode.CONTINUOUS_ONSET_CONSTRAINED_R3_STRESS,
+        AlignedWarpMode.CONTINUOUS_ONSET_R2_SMOOTH,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +87,9 @@ class AlignedChunkRenderResult:
     source_boundary_adjustment_count: int
     output_wav_path: Path | None
     diagnostics_path: Path | None
+    mode: str = AlignedWarpMode.PIECEWISE_VOWEL_R2.value
+    stress_applied: bool = False
+    peak_limited: bool = False
 
 
 class MontrealForcedAlignerCommand:
@@ -161,13 +188,19 @@ def render_aligned_chunk(
     output_wav_path: Path | str,
     attempts: int = 1,
     stretch_region: StretchRegionFn | None = None,
+    stretch_full_chunk: FullChunkWarpFn | None = None,
     crossfade_seconds: float = 0.005,
+    mode: AlignedWarpMode | str = AlignedWarpMode.PIECEWISE_VOWEL_R2,
 ) -> AlignedChunkRenderResult:
     output_path = Path(output_wav_path)
     diagnostics_path = output_path.with_suffix(output_path.suffix + ".alignment.json")
     source_sha256: str | None = None
     sample_rate_hz: int | None = None
+    requested_mode = mode.value if isinstance(mode, AlignedWarpMode) else str(mode)
+    stress_payload: dict[str, Any] = {"applied": False}
+    regularization_payload: dict[str, Any] = {"applied": False}
     try:
+        selected_mode = AlignedWarpMode(requested_mode)
         diagnostics_path.unlink(missing_ok=True)
         source_path = Path(source_wav_path)
         source_sha256 = verify_source_wav_sha(source_path, expected_source_sha256)
@@ -199,16 +232,89 @@ def render_aligned_chunk(
                 raise ValueError(
                     f"{strict_error}; word-tier fallback failed: {fallback_error}"
                 ) from fallback_error
-        warped = piecewise_pitch_preserving_warp(
-            samples,
-            sample_rate_hz=sample_rate_hz,
-            anchors=anchors,
-            target_frame_count=round(request.duration_seconds * sample_rate_hz),
-            stretch_region=stretch_region,
-            crossfade_seconds=crossfade_seconds,
-            source_sha256=source_sha256,
+        target_frame_count = round(request.duration_seconds * sample_rate_hz)
+        if selected_mode in _ONSET_MODES:
+            anchors = promote_vowel_anchors_to_syllable_onsets(
+                phone_intervals,
+                request.syllables,
+                anchors,
+                sample_rate_hz=sample_rate_hz,
+            )
+        if selected_mode is AlignedWarpMode.CONTINUOUS_ONSET_CONSTRAINED_R3_STRESS:
+            anchors = regularize_anchor_targets(
+                anchors,
+                request.syllables,
+                sample_rate_hz=sample_rate_hz,
+                source_frame_count=len(samples),
+                target_frame_count=target_frame_count,
+            )
+            target_drift_seconds = tuple(
+                anchor.target_seconds - anchor.requested_target_seconds for anchor in anchors
+            )
+            regularization_payload = {
+                "applied": True,
+                "min_stretch_ratio": 0.5,
+                "max_stretch_ratio": 2.0,
+                "stress_priority": 4.0,
+                "target_drift_seconds": list(target_drift_seconds),
+                "max_absolute_target_drift_seconds": max(
+                    abs(value) for value in target_drift_seconds
+                ),
+            }
+
+        if selected_mode is AlignedWarpMode.PIECEWISE_VOWEL_R2:
+            warped = piecewise_pitch_preserving_warp(
+                samples,
+                sample_rate_hz=sample_rate_hz,
+                anchors=anchors,
+                target_frame_count=target_frame_count,
+                stretch_region=stretch_region,
+                crossfade_seconds=crossfade_seconds,
+                source_sha256=source_sha256,
+            )
+        else:
+            full_chunk_stretcher = stretch_full_chunk
+            if full_chunk_stretcher is None:
+                if selected_mode is AlignedWarpMode.CONTINUOUS_ONSET_R2_SMOOTH:
+                    full_chunk_stretcher = RubberBandTimeMapStretcher(
+                        engine="r2",
+                        smoothing=True,
+                    )
+                else:
+                    full_chunk_stretcher = RubberBandTimeMapStretcher(engine="r3")
+            warped = continuous_pitch_preserving_warp(
+                samples,
+                sample_rate_hz=sample_rate_hz,
+                anchors=anchors,
+                target_frame_count=target_frame_count,
+                stretch_full_chunk=full_chunk_stretcher,
+                source_sha256=source_sha256,
+            )
+
+        rendered_samples = warped.samples
+        peak_limited = False
+        stress_applied = (
+            selected_mode is AlignedWarpMode.CONTINUOUS_ONSET_CONSTRAINED_R3_STRESS
         )
-        _write_native_float32_wav(output_path, sample_rate_hz, warped.samples)
+        if stress_applied:
+            stress_result = apply_stress_envelope(
+                rendered_samples,
+                sample_rate_hz=sample_rate_hz,
+                syllables=request.syllables,
+            )
+            rendered_samples = stress_result.samples
+            peak_limited = stress_result.peak_limited
+            stress_payload = {
+                "applied": True,
+                "weak_db": -1.0,
+                "strong_db": 2.5,
+                "ramp_seconds": 0.025,
+                "input_rms": stress_result.input_rms,
+                "output_rms": stress_result.output_rms,
+                "peak_limited": stress_result.peak_limited,
+                "syllable_gain_db": list(stress_result.syllable_gain_db),
+            }
+        _write_native_float32_wav(output_path, sample_rate_hz, rendered_samples)
         stretch_ratios = tuple(region.stretch_ratio for region in warped.stretch_regions)
         fallback_count = sum(
             anchor.aligned_phone.startswith(WORD_TIER_FALLBACK_PREFIX)
@@ -233,8 +339,9 @@ def render_aligned_chunk(
         _write_atomic_alignment_diagnostics(
             diagnostics_path,
             {
-                "schema_version": "streammuse.rap_audio_protocols.alignment_diagnostics.v1",
+                "schema_version": "streammuse.rap_audio_protocols.alignment_diagnostics.v2",
                 "success": True,
+                "mode": selected_mode.value,
                 "request_sha256": request.sha256,
                 "source_sha256": source_sha256,
                 "output_sha256": record.output_sha256,
@@ -243,6 +350,8 @@ def render_aligned_chunk(
                 "fallback_count": fallback_count,
                 "boundary_adjustment_count": boundary_adjustment_count,
                 "source_boundary_adjustment_count": source_boundary_adjustment_count,
+                "timing_regularization": regularization_payload,
+                "stress": stress_payload,
                 "error": None,
             },
         )
@@ -255,6 +364,9 @@ def render_aligned_chunk(
             source_boundary_adjustment_count=source_boundary_adjustment_count,
             output_wav_path=output_path,
             diagnostics_path=diagnostics_path,
+            mode=selected_mode.value,
+            stress_applied=stress_applied,
+            peak_limited=peak_limited,
         )
     except Exception as exc:
         output_sha256: str | None = None
@@ -278,8 +390,9 @@ def render_aligned_chunk(
                     _write_atomic_alignment_diagnostics(
                         diagnostics_path,
                         {
-                            "schema_version": "streammuse.rap_audio_protocols.alignment_diagnostics.v1",
+                            "schema_version": "streammuse.rap_audio_protocols.alignment_diagnostics.v2",
                             "success": False,
+                            "mode": requested_mode,
                             "request_sha256": request.sha256,
                             "source_sha256": source_sha256,
                             "output_sha256": output_sha256,
@@ -288,6 +401,8 @@ def render_aligned_chunk(
                             "fallback_count": 0,
                             "boundary_adjustment_count": 0,
                             "source_boundary_adjustment_count": 0,
+                            "timing_regularization": regularization_payload,
+                            "stress": stress_payload,
                             "error": error,
                         },
                     )
@@ -316,6 +431,7 @@ def render_aligned_chunk(
             source_boundary_adjustment_count=0,
             output_wav_path=failed_output_path,
             diagnostics_path=failed_diagnostics_path,
+            mode=requested_mode,
         )
 
 

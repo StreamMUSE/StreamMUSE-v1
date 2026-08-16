@@ -318,6 +318,18 @@ def _impulse_stretcher(samples: np.ndarray, target_frames: int, sample_rate_hz: 
     return output
 
 
+def _linear_full_chunk_stretcher(
+    samples: np.ndarray,
+    target_frames: int,
+    sample_rate_hz: int,
+    time_map: tuple[tuple[int, int], ...],
+) -> np.ndarray:
+    del sample_rate_hz, time_map
+    source_positions = np.linspace(0.0, 1.0, len(samples), dtype=np.float32)
+    target_positions = np.linspace(0.0, 1.0, target_frames, dtype=np.float32)
+    return np.interp(target_positions, source_positions, samples).astype(np.float32)
+
+
 def test_stage_alignment_inputs_enforces_source_sha_and_writes_lab_pairs(tmp_path: Path) -> None:
     backend = _load_backend()
     source_wav = tmp_path / "source.wav"
@@ -424,6 +436,51 @@ def test_render_aligned_chunk_propagates_source_sha_and_logged_stretch_ratios(tm
     assert diagnostics["boundary_adjustment_count"] == 0
     assert diagnostics["source_boundary_adjustment_count"] == 0
     assert all(not anchor["aligned_phone"].startswith("WORD_TIER_FALLBACK:") for anchor in diagnostics["anchor_map"])
+
+
+def test_render_aligned_chunk_supports_auditable_constrained_onset_stress_mode(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    request = _request()
+    source_wav = tmp_path / "source.wav"
+    _, source_sha256 = _write_source_wav(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    output_wav = tmp_path / "warped.wav"
+    _write_textgrid(textgrid_path)
+    calls: list[tuple[tuple[int, int], ...]] = []
+
+    def recording_stretcher(
+        samples: np.ndarray,
+        target_frames: int,
+        sample_rate_hz: int,
+        time_map: tuple[tuple[int, int], ...],
+    ) -> np.ndarray:
+        calls.append(time_map)
+        return _linear_full_chunk_stretcher(samples, target_frames, sample_rate_hz, time_map)
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        mode="continuous_onset_constrained_r3_stress",
+        stretch_full_chunk=recording_stretcher,
+    )
+
+    diagnostics = json.loads(
+        output_wav.with_suffix(output_wav.suffix + ".alignment.json").read_text(encoding="utf-8")
+    )
+    assert result.record.success
+    assert len(calls) == 1
+    assert result.mode == "continuous_onset_constrained_r3_stress"
+    assert result.stress_applied
+    assert all(anchor.anchor_kind == "syllable_onset" for anchor in result.anchor_map)
+    assert diagnostics["mode"] == "continuous_onset_constrained_r3_stress"
+    assert diagnostics["stress"]["applied"] is True
+    assert diagnostics["timing_regularization"]["applied"] is True
+    assert len(diagnostics["timing_regularization"]["target_drift_seconds"]) == 18
 
 
 def test_render_aligned_chunk_falls_back_only_for_liftoff_spn_word(tmp_path: Path) -> None:
