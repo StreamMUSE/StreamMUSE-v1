@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Iterable
 
 import pytest
 
@@ -16,7 +17,23 @@ from streammuse.experiments.rap_audio_protocols.timing import (
 
 
 FIXTURE_PATH = Path("tests/fixtures/rap_audio_protocols/two_bar_records.jsonl")
+CAMPAIGN_OUTPUT_DIR = Path("output/rap_album_10x50_90bpm_20260816_v4")
 TOTAL_FRAMES = round((16 / 3) * 22050 / 256)
+OOV_PHONE_LABELS = {
+    "gravity's": ("G", "R", "AE1", "V", "AH0", "T", "IY0", "Z"),
+    "seabirds": ("S", "IY1", "B", "ER0", "D", "Z"),
+    "darkness's": ("D", "AA1", "R", "K", "N", "AH0", "S", "Z"),
+    "briny": ("B", "R", "AY1", "N", "IY0"),
+    "midnight's": ("M", "IH1", "D", "N", "AY0", "T", "S"),
+    "ebon": ("EH1", "B", "AH0", "N"),
+    "twilight's": ("T", "W", "AY1", "L", "AY0", "T", "S"),
+    "silicon's": ("S", "IH1", "L", "AH0", "K", "AA0", "N", "Z"),
+    "ai's": ("AY1", "Z"),
+    "binary's": ("B", "AY1", "N", "ER0", "IY0", "Z"),
+    "skelebots": ("S", "K", "EH1", "L", "AH0", "B", "AA0", "T", "S"),
+    "sync'd": ("S", "IH1", "NG", "K", "T"),
+    "cogs": ("K", "AA1", "G", "Z"),
+}
 
 
 def _request():
@@ -24,19 +41,37 @@ def _request():
     return corpus.two_bar_requests()[0]
 
 
-def _tokenizer_labels(request) -> tuple[str, ...]:
+def _campaign_request(song_id: str, chunk_index: int):
+    corpus = load_song_corpus(CAMPAIGN_OUTPUT_DIR / song_id / "chosen_lyrics.jsonl", song_id=song_id)
+    return corpus.two_bar_requests()[chunk_index]
+
+
+def _tokenizer_labels(request, overrides: dict[str, tuple[str, ...]] | None = None) -> tuple[str, ...]:
+    overrides = overrides or {}
     labels: list[str] = ["<blk>"]
-    last_word = request.syllables[0].word
-    for syllable_index, syllable in enumerate(request.syllables):
-        if syllable_index > 0:
+    words = list(_word_syllables(request.syllables))
+    for word_index, (word, syllables) in enumerate(words):
+        if all(syllable.phonemes for syllable in syllables):
+            phones = tuple(phone for syllable in syllables for phone in syllable.phonemes)
+        else:
+            phones = overrides.get(word.lower(), OOV_PHONE_LABELS[word.lower()])
+        for phone in phones:
+            labels.append(phone)
             labels.append("<blk>")
-        labels.extend(syllable.phonemes)
-        next_word = request.syllables[syllable_index + 1].word if syllable_index + 1 < len(request.syllables) else None
-        if next_word is not None and next_word != last_word:
+        if word_index + 1 < len(words):
             labels.append(" ")
-        last_word = syllable.word
-    labels.append("<blk>")
     return tuple(labels)
+
+
+def _word_syllables(syllables) -> Iterable[tuple[str, tuple[object, ...]]]:
+    start = 0
+    while start < len(syllables):
+        word = syllables[start].word
+        end = start
+        while end + 1 < len(syllables) and syllables[end + 1].word == word:
+            end += 1
+        yield word, syllables[start : end + 1]
+        start = end + 1
 
 
 def test_moss_target_and_ted_segments_follow_the_approved_two_bar_request() -> None:
@@ -102,3 +137,44 @@ def test_fastpitch_phone_plan_rejects_phone_token_mismatches() -> None:
 
     with pytest.raises(ValueError, match="tokenizer labels do not align"):
         build_fastpitch_phone_plan(request, tuple(tokenizer_labels))
+
+
+def test_fastpitch_phone_plan_recovers_real_corpus_oov_syllable_groups_from_tokenizer_labels() -> None:
+    request = _campaign_request("01_space_exploration", 9)
+
+    plan = build_fastpitch_phone_plan(request, _tokenizer_labels(request))
+
+    gravity_groups = tuple(
+        plan.syllable_phone_groups[index]
+        for index, syllable in enumerate(request.syllables)
+        if syllable.word == "gravity's"
+    )
+    assert gravity_groups == (
+        ("G", "R", "AE1"),
+        ("V", "AH0"),
+        ("T", "IY0", "Z"),
+    )
+    assert sum(plan.duration_frames) == TOTAL_FRAMES
+
+
+def test_fastpitch_phone_plan_rejects_oov_word_groups_with_the_wrong_vowel_count() -> None:
+    request = _campaign_request("01_space_exploration", 9)
+    tokenizer_labels = _tokenizer_labels(
+        request,
+        overrides={"gravity's": ("G", "R", "AE1", "V", "AH0", "T", "Z")},
+    )
+
+    with pytest.raises(ValueError, match="cannot recover syllable phone groups"):
+        build_fastpitch_phone_plan(request, tokenizer_labels)
+
+
+def test_campaign_songs_01_through_03_build_timing_plans_without_fastpitch_failures() -> None:
+    for song_id in ("01_space_exploration", "02_deep_ocean", "03_artificial_intelligence"):
+        corpus = load_song_corpus(CAMPAIGN_OUTPUT_DIR / song_id / "chosen_lyrics.jsonl", song_id=song_id)
+        for request in corpus.two_bar_requests():
+            labels = _tokenizer_labels(request)
+            build_ted_segments(request)
+            plan = build_fastpitch_phone_plan(request, labels)
+
+            assert len(plan.duration_frames) == len(labels)
+            assert sum(plan.duration_frames) == round(request.duration_seconds * 22050 / 256)

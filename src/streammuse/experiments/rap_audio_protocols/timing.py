@@ -28,6 +28,7 @@ class FastPitchPhonePlan:
     duration_frames: tuple[int, ...]
     spoken_label_indices: tuple[int, ...]
     vowel_label_indices: tuple[int, ...]
+    syllable_phone_groups: tuple[tuple[str, ...], ...]
     anchor_error_frames: tuple[int, ...]
     compressed_consonant_regions: tuple[int, ...]
 
@@ -38,6 +39,12 @@ class _WordSpan:
     start_syllable_index: int
     end_syllable_index: int
     text_start: int
+
+
+@dataclass(frozen=True)
+class _TokenizerWordGroup:
+    labels: tuple[str, ...]
+    label_indices: tuple[int, ...]
 
 
 def moss_token_target(request: TwoBarRenderRequest) -> int:
@@ -80,13 +87,8 @@ def build_fastpitch_phone_plan(
     request: TwoBarRenderRequest, tokenizer_labels: tuple[str, ...]
 ) -> FastPitchPhonePlan:
     """Align tokenizer labels to lexical phones and assign per-label mel durations."""
-    spoken_label_indices = tuple(index for index, label in enumerate(tokenizer_labels) if not _is_padding_label(label))
-    lexical_phones = tuple(phone for syllable in request.syllables for phone in syllable.phonemes)
-    if len(spoken_label_indices) != len(lexical_phones):
-        raise ValueError("tokenizer labels do not align with lexical phones")
-    for token_index, phone in zip(spoken_label_indices, lexical_phones):
-        if tokenizer_labels[token_index] != phone:
-            raise ValueError("tokenizer labels do not align with lexical phones")
+    syllable_phone_groups, syllable_label_indices = _resolve_syllable_phone_groups(request, tokenizer_labels)
+    spoken_label_indices = tuple(index for group in syllable_label_indices for index in group)
 
     duration_frames = [0] * len(tokenizer_labels)
     vowel_label_indices: list[int] = []
@@ -95,14 +97,12 @@ def build_fastpitch_phone_plan(
     anchor_frames = tuple(round(syllable.target_seconds * _MEL_FRAMES_PER_SECOND) for syllable in request.syllables)
     total_frames = round(request.duration_seconds * _MEL_FRAMES_PER_SECOND)
 
-    phone_cursor = 0
     current_start = 0
-    for syllable_index, syllable in enumerate(request.syllables):
-        vowel_phone_offset = _vowel_phone_offset(syllable)
+    for syllable_index, phones in enumerate(syllable_phone_groups):
+        vowel_phone_offset = _vowel_phone_offset(phones)
         onset_count = vowel_phone_offset
-        coda_count = len(syllable.phonemes) - vowel_phone_offset - 1
-        label_indices = spoken_label_indices[phone_cursor : phone_cursor + len(syllable.phonemes)]
-        phone_cursor += len(syllable.phonemes)
+        coda_count = len(phones) - vowel_phone_offset - 1
+        label_indices = syllable_label_indices[syllable_index]
 
         target_center = anchor_frames[syllable_index]
         left_vowel_frames = max(0, target_center - onset_count - current_start)
@@ -113,7 +113,7 @@ def build_fastpitch_phone_plan(
 
         minimum_end = current_start + onset_count + left_vowel_frames + 1 + coda_count
         if syllable_index + 1 < len(request.syllables):
-            next_onset_count = _vowel_phone_offset(request.syllables[syllable_index + 1])
+            next_onset_count = _vowel_phone_offset(syllable_phone_groups[syllable_index + 1])
             maximum_end = anchor_frames[syllable_index + 1] - next_onset_count
             right_vowel_frames = max(0, maximum_end - minimum_end)
             if maximum_end < minimum_end:
@@ -137,20 +137,107 @@ def build_fastpitch_phone_plan(
         duration_frames=tuple(duration_frames),
         spoken_label_indices=spoken_label_indices,
         vowel_label_indices=tuple(vowel_label_indices),
+        syllable_phone_groups=syllable_phone_groups,
         anchor_error_frames=tuple(anchor_error_frames),
         compressed_consonant_regions=tuple(dict.fromkeys(compressed_consonant_regions)),
     )
 
 
 def _is_padding_label(label: str) -> bool:
-    return label in _PADDING_LABELS or label.isspace()
+    return label in _PADDING_LABELS
 
 
-def _vowel_phone_offset(syllable: SyllableTarget) -> int:
-    for index, phone in enumerate(syllable.phonemes):
+def _is_word_boundary_label(label: str) -> bool:
+    return bool(label) and label.isspace()
+
+
+def _vowel_phone_offset(phones: tuple[str, ...]) -> int:
+    for index, phone in enumerate(phones):
         if phone[-1:].isdigit():
             return index
-    raise ValueError(f"syllable {syllable.word!r} has no vowel phone")
+    raise ValueError("cannot recover syllable phone groups without a vowel phone")
+
+
+def _resolve_syllable_phone_groups(
+    request: TwoBarRenderRequest, tokenizer_labels: tuple[str, ...]
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...]]:
+    words = _word_spans(request)
+    tokenizer_words = _tokenizer_word_groups(tokenizer_labels)
+    if len(tokenizer_words) != len(words):
+        raise ValueError("tokenizer word groups do not align with request words")
+
+    syllable_phone_groups: list[tuple[str, ...]] = []
+    syllable_label_indices: list[tuple[int, ...]] = []
+    for word_span, tokenizer_word in zip(words, tokenizer_words):
+        word_syllables = request.syllables[word_span.start_syllable_index : word_span.end_syllable_index + 1]
+        phone_groups, label_groups = _resolve_word_phone_groups(word_span.word, word_syllables, tokenizer_word)
+        syllable_phone_groups.extend(phone_groups)
+        syllable_label_indices.extend(label_groups)
+    return tuple(syllable_phone_groups), tuple(syllable_label_indices)
+
+
+def _tokenizer_word_groups(tokenizer_labels: tuple[str, ...]) -> tuple[_TokenizerWordGroup, ...]:
+    groups: list[_TokenizerWordGroup] = []
+    current_labels: list[str] = []
+    current_indices: list[int] = []
+    for index, label in enumerate(tokenizer_labels):
+        if _is_padding_label(label):
+            continue
+        if _is_word_boundary_label(label):
+            if current_labels:
+                groups.append(_TokenizerWordGroup(labels=tuple(current_labels), label_indices=tuple(current_indices)))
+                current_labels = []
+                current_indices = []
+            continue
+        current_labels.append(label)
+        current_indices.append(index)
+    if current_labels:
+        groups.append(_TokenizerWordGroup(labels=tuple(current_labels), label_indices=tuple(current_indices)))
+    return tuple(groups)
+
+
+def _resolve_word_phone_groups(
+    word: str,
+    syllables: tuple[SyllableTarget, ...],
+    tokenizer_word: _TokenizerWordGroup,
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...]]:
+    lexical_groups = tuple(syllable.phonemes for syllable in syllables)
+    if all(lexical_groups):
+        expected = tuple(phone for group in lexical_groups for phone in group)
+        if tokenizer_word.labels != expected:
+            raise ValueError("tokenizer labels do not align with lexical phones")
+        label_groups: list[tuple[int, ...]] = []
+        start = 0
+        for group in lexical_groups:
+            end = start + len(group)
+            label_groups.append(tokenizer_word.label_indices[start:end])
+            start = end
+        return lexical_groups, tuple(label_groups)
+
+    if any(lexical_groups):
+        raise ValueError(f"cannot recover syllable phone groups for partially populated word {word!r}")
+    return _recover_syllable_phone_groups(word, len(syllables), tokenizer_word)
+
+
+def _recover_syllable_phone_groups(
+    word: str,
+    syllable_count: int,
+    tokenizer_word: _TokenizerWordGroup,
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[int, ...], ...]]:
+    vowel_positions = [index for index, phone in enumerate(tokenizer_word.labels) if phone[-1:].isdigit()]
+    if len(vowel_positions) != syllable_count:
+        raise ValueError(f"cannot recover syllable phone groups for word {word!r}")
+    phone_groups: list[tuple[str, ...]] = []
+    label_groups: list[tuple[int, ...]] = []
+    start = 0
+    for syllable_index, vowel_position in enumerate(vowel_positions):
+        end = vowel_position + 1 if syllable_index + 1 < len(vowel_positions) else len(tokenizer_word.labels)
+        if start > vowel_position or end <= start:
+            raise ValueError(f"cannot recover syllable phone groups for word {word!r}")
+        phone_groups.append(tokenizer_word.labels[start:end])
+        label_groups.append(tokenizer_word.label_indices[start:end])
+        start = end
+    return tuple(phone_groups), tuple(label_groups)
 
 
 def _word_spans(request: TwoBarRenderRequest) -> tuple[_WordSpan, ...]:
