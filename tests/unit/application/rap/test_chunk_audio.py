@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from math import gcd
 import struct
 import wave
 from dataclasses import dataclass, replace
@@ -53,15 +54,15 @@ def _flow(template_id: str) -> FlowTemplate:
     )
 
 
-def _request() -> RemoteRapChunkRequest:
+def _request(*, tempo_bpm: float = 90.0, first_bar: int = 0) -> RemoteRapChunkRequest:
     return RemoteRapChunkRequest.create(
         session_id="session-1",
-        chunk_index=0,
+        chunk_index=first_bar // 2,
         bars=(
-            RemoteRapBarRequest(0, "space", _flow("first-flow")),
-            RemoteRapBarRequest(1, "space", _flow("second-flow")),
+            RemoteRapBarRequest(first_bar, "space", _flow("first-flow")),
+            RemoteRapBarRequest(first_bar + 1, "space", _flow("second-flow")),
         ),
-        tempo_bpm=90.0,
+        tempo_bpm=tempo_bpm,
         remaining_budget_ms=5_000,
         policy=RemoteCandidatePolicy.realtime_default(),
         context_lines=(),
@@ -76,17 +77,44 @@ def _syllables() -> tuple[Syllable, Syllable]:
     )
 
 
-def _wav_bytes(samples: np.ndarray) -> bytes:
+def _wav_bytes(
+    samples: np.ndarray,
+    *,
+    channels: int = 1,
+    sample_width: int = 2,
+    sample_rate_hz: int = 24_000,
+) -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(24_000)
-        wav.writeframes(samples.astype("<i2", copy=False).tobytes())
+        wav.setnchannels(channels)
+        wav.setsampwidth(sample_width)
+        wav.setframerate(sample_rate_hz)
+        if sample_width == 2:
+            frames = np.repeat(samples[:, np.newaxis], channels, axis=1).astype("<i2", copy=False).tobytes()
+        else:
+            frames = bytes([128]) * samples.shape[0] * channels * sample_width
+        wav.writeframes(frames)
     return buffer.getvalue()
 
 
-def _package(request: RemoteRapChunkRequest, samples: np.ndarray | None = None) -> DecodedRapChunkPackage:
+def _target_anchors(request: RemoteRapChunkRequest) -> tuple[float, ...]:
+    chunk_start_frame = round(request.bars[0].bar * 4 * 60 / request.tempo_bpm * 48_000)
+    anchors = []
+    for bar_request in request.bars:
+        for slot in bar_request.flow_template.slots:
+            absolute_tick = bar_request.bar * 16 + slot.tick_in_bar
+            absolute_frame = round(absolute_tick * 60 / (request.tempo_bpm * 4) * 48_000)
+            package_frame = round((absolute_frame - chunk_start_frame) * 24_000 / 48_000)
+            anchors.append(package_frame / 24_000)
+    return tuple(anchors)
+
+
+def _package(
+    request: RemoteRapChunkRequest,
+    samples: np.ndarray | None = None,
+    *,
+    warnings: tuple[str, ...] = (),
+) -> DecodedRapChunkPackage:
     source = samples if samples is not None else np.full(request.expected_frame_count, 1_000, dtype=np.int16)
     vocal_wav = _wav_bytes(source)
     selected = tuple(
@@ -123,8 +151,8 @@ def _package(request: RemoteRapChunkRequest, samples: np.ndarray | None = None) 
             },
             alignment_diagnostics={
                 "fallback_counts": {"word": 0},
-                "source_anchors": [0.0, 1.0, 2.0, 3.0],
-                "target_anchors": [0.0, 1.0, 2.0, 3.0],
+                "source_anchors": _target_anchors(request),
+                "target_anchors": _target_anchors(request),
                 "local_warp_ratios": [1.0],
             },
             audio_diagnostics={
@@ -134,11 +162,37 @@ def _package(request: RemoteRapChunkRequest, samples: np.ndarray | None = None) 
                 "peak": 0.5,
             },
             model_tool_versions={"moss": "test", "aligner": "test", "rubberband": "test"},
-            warnings=(),
+            warnings=warnings,
         ),
         vocal_sha256=hashlib.sha256(vocal_wav).hexdigest(),
     )
     return DecodedRapChunkPackage(manifest, vocal_wav)
+
+
+def _replace_alignment(
+    package: DecodedRapChunkPackage,
+    *,
+    source_anchors: tuple[float, ...] | None = None,
+    target_anchors: tuple[float, ...] | None = None,
+) -> DecodedRapChunkPackage:
+    diagnostics = package.manifest.diagnostics
+    alignment = dict(diagnostics.alignment_diagnostics)
+    if source_anchors is not None:
+        alignment["source_anchors"] = source_anchors
+    if target_anchors is not None:
+        alignment["target_anchors"] = target_anchors
+    changed_diagnostics = replace(diagnostics, alignment_diagnostics=alignment)
+    return DecodedRapChunkPackage(
+        replace(package.manifest, diagnostics=changed_diagnostics),
+        package.vocal_wav,
+    )
+
+
+def _replace_wav(package: DecodedRapChunkPackage, vocal_wav: bytes) -> DecodedRapChunkPackage:
+    return DecodedRapChunkPackage(
+        replace(package.manifest, vocal_sha256=hashlib.sha256(vocal_wav).hexdigest()),
+        vocal_wav,
+    )
 
 
 @dataclass
@@ -165,10 +219,11 @@ class _FakeClient:
 @dataclass
 class _FakeProsody:
     calls: list[str]
+    syllables: tuple[Syllable, ...] = _syllables()
 
     def analyze(self, text: str) -> ProsodyAnalysis:
         self.calls.append(text)
-        return ProsodyAnalysis(text, text, _syllables(), (), (), (), ())
+        return ProsodyAnalysis(text, text, self.syllables, (), (), (), ())
 
 
 @dataclass
@@ -178,7 +233,10 @@ class _FakeDrums:
 
     def render(self, template, tempo, audio_format, bar):
         self.calls.append((template.template_id, bar))
-        frames = round(tempo.tick_to_seconds(tempo.ticks_per_bar) * audio_format.sample_rate_hz)
+        bar_seconds = tempo.beats_per_bar * 60 / tempo.bpm
+        frames = round((bar + 1) * bar_seconds * audio_format.sample_rate_hz) - round(
+            bar * bar_seconds * audio_format.sample_rate_hz
+        )
         return PcmAudio(audio_format, frames, np.full((frames, 2), self.level, dtype=np.float32).tobytes())
 
 
@@ -212,6 +270,67 @@ def test_remote_chunk_splits_and_mixes_exact_bars() -> None:
     )
     assert actual.shape == expected.shape
     assert np.allclose(actual, expected, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("tempo_bpm", "first_bar", "expected_bar_frames"),
+    (
+        (71.0, 0, (162_254, 162_253)),
+        (83.0, 1, (138_795, 138_796)),
+    ),
+)
+def test_remote_chunk_preserves_exact_mac_frames_at_varied_tempo_and_bar_index(
+    tempo_bpm: float,
+    first_bar: int,
+    expected_bar_frames: tuple[int, int],
+) -> None:
+    request = _request(tempo_bpm=tempo_bpm, first_bar=first_bar)
+    source = ((np.arange(request.expected_frame_count) % 1_000) - 500).astype(np.int16)
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(_package(request, source)),
+        tempo_bpm=tempo_bpm,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    prepared = strategy.prepare(request, deadline_monotonic=10.0)
+
+    assert tuple(bar.audio.frame_count for bar in prepared.bars) == expected_bar_frames
+    target_frames = sum(expected_bar_frames)
+    divisor = gcd(source.shape[0], target_frames)
+    expected = resample_poly(
+        source.astype(np.float32) / 32768.0,
+        up=target_frames // divisor,
+        down=source.shape[0] // divisor,
+    ).astype(np.float32)
+    if expected.shape[0] > target_frames:
+        expected = expected[:target_frames]
+    elif expected.shape[0] < target_frames:
+        expected = np.pad(expected, (0, target_frames - expected.shape[0]), mode="edge")
+    actual = np.concatenate(
+        [np.frombuffer(bar.audio.data, dtype=np.float32).reshape(bar.audio.frame_count, 2)[:, 0] for bar in prepared.bars]
+    )
+    assert actual.shape == (target_frames,)
+    assert np.allclose(actual, expected * 0.8, atol=1e-6)
+
+
+def test_remote_chunk_rejects_near_equal_request_tempo_before_transport() -> None:
+    request = _request(tempo_bpm=90.00000001)
+    client = _FakeClient(_package(request))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=client,
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="Mac timing authority"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+    assert client.calls == 0
 
 
 def test_remote_chunk_rejects_selected_schedule_mismatch_as_preparation_failure() -> None:
@@ -250,6 +369,296 @@ def test_remote_chunk_rejects_selected_schedule_mismatch_as_preparation_failure(
         strategy.prepare(request, deadline_monotonic=10.0)
 
 
+def test_remote_chunk_rejects_selected_text_that_disagrees_with_mac_reanalysis() -> None:
+    request = _request()
+    package = _package(request)
+    selected = list(package.manifest.selected_bars)
+    selected[0] = replace(selected[0], text="comet comet")
+    package = DecodedRapChunkPackage(
+        replace(package.manifest, selected_bars=tuple(selected)),
+        package.vocal_wav,
+    )
+    comet_syllables = tuple(replace(item, word="comet") for item in _syllables())
+    drums = _FakeDrums([])
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=drums,
+        prosody=_FakeProsody([], comet_syllables),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="selected schedule"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+    assert drums.calls == []
+
+
+def test_remote_chunk_rejects_selected_text_with_wrong_syllable_count() -> None:
+    request = _request()
+    drums = _FakeDrums([])
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(_package(request)),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=drums,
+        prosody=_FakeProsody([], _syllables()[:1]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="does not fit the original flow"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+    assert drums.calls == []
+
+
+@pytest.mark.parametrize("anchor_index", (1, 2))
+def test_remote_chunk_rejects_monotonic_target_anchor_that_misses_mac_schedule(anchor_index: int) -> None:
+    request = _request()
+    package = _package(request)
+    changed = list(package.manifest.diagnostics.alignment_diagnostics["target_anchors"])
+    changed[anchor_index] = float(changed[anchor_index]) + 1 / 24_000
+    package = _replace_alignment(package, target_anchors=tuple(changed))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="target anchors do not match"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+@pytest.mark.parametrize("anchor_name", ("source", "target"))
+def test_remote_chunk_rejects_duplicate_alignment_anchor(anchor_name: str) -> None:
+    request = _request()
+    package = _package(request)
+    anchors = list(package.manifest.diagnostics.alignment_diagnostics[f"{anchor_name}_anchors"])
+    anchors[1] = anchors[0]
+    package = _replace_alignment(
+        package,
+        source_anchors=tuple(anchors) if anchor_name == "source" else None,
+        target_anchors=tuple(anchors) if anchor_name == "target" else None,
+    )
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="anchors are not monotonic"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+def test_remote_chunk_rejects_distinct_source_anchors_on_the_same_pcm_frame() -> None:
+    request = _request()
+    package = _package(request)
+    anchors = list(package.manifest.diagnostics.alignment_diagnostics["source_anchors"])
+    anchors[1] = 0.25 / 24_000
+    package = _replace_alignment(package, source_anchors=tuple(anchors))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="anchors are not monotonic"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+def test_remote_chunk_rejects_vocal_hash_mismatch() -> None:
+    request = _request()
+    package = _package(request)
+    corrupt = DecodedRapChunkPackage(package.manifest, package.vocal_wav + b"corrupt")
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(corrupt),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="vocal hash"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+@pytest.mark.parametrize(
+    "manifest_change",
+    (
+        {"request_id": "0" * 64},
+        {"chunk_index": 7},
+        {"tempo_bpm": 90.00000001},
+    ),
+)
+def test_remote_chunk_rejects_manifest_identity_field_mismatch(manifest_change: dict[str, object]) -> None:
+    request = _request()
+    package = _package(request)
+    mismatch = DecodedRapChunkPackage(replace(package.manifest, **manifest_change), package.vocal_wav)
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(mismatch),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="manifest does not match"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+@pytest.mark.parametrize(
+    "diagnostics_change",
+    (
+        {"accepted_request_budget_ms": 4_999},
+        {"resolved_policy": replace(RemoteCandidatePolicy.realtime_default(), minimum_score=0.5)},
+    ),
+)
+def test_remote_chunk_rejects_request_diagnostics_mismatch(diagnostics_change: dict[str, object]) -> None:
+    request = _request()
+    package = _package(request)
+    diagnostics = replace(package.manifest.diagnostics, **diagnostics_change)
+    mismatch = DecodedRapChunkPackage(
+        replace(package.manifest, diagnostics=diagnostics),
+        package.vocal_wav,
+    )
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(mismatch),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="diagnostics do not match"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+def test_remote_chunk_rejects_manifest_tempo_and_frame_count_mismatch() -> None:
+    request = _request()
+    other_package = _package(_request(tempo_bpm=91.0))
+    mismatch = DecodedRapChunkPackage(
+        replace(
+            other_package.manifest,
+            request_id=request.request_id,
+            chunk_index=request.chunk_index,
+        ),
+        other_package.vocal_wav,
+    )
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(mismatch),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="manifest does not match"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+@pytest.mark.parametrize(
+    "wav_options",
+    (
+        {"channels": 2},
+        {"sample_width": 1},
+        {"sample_rate_hz": 22_050},
+    ),
+)
+def test_remote_chunk_rejects_invalid_pcm_wav_format(wav_options: dict[str, int]) -> None:
+    request = _request()
+    package = _package(request)
+    samples = np.full(request.expected_frame_count, 1_000, dtype=np.int16)
+    package = _replace_wav(package, _wav_bytes(samples, **wav_options))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="24 kHz mono PCM16"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+def test_remote_chunk_rejects_wav_duration_mismatch() -> None:
+    request = _request()
+    package = _package(request)
+    short_samples = np.full(request.expected_frame_count - 1, 1_000, dtype=np.int16)
+    package = _replace_wav(package, _wav_bytes(short_samples))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="exact duration"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+@pytest.mark.parametrize(
+    ("vocal_wav", "message"),
+    (
+        (b"not a WAV package", "WAV is invalid"),
+        (None, "WAV is truncated"),
+    ),
+)
+def test_remote_chunk_rejects_malformed_and_truncated_wav(
+    vocal_wav: bytes | None,
+    message: str,
+) -> None:
+    request = _request()
+    package = _package(request)
+    changed_wav = package.vocal_wav[:-2] if vocal_wav is None else vocal_wav
+    package = _replace_wav(package, changed_wav)
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match=message):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
+def test_remote_chunk_rejects_alignment_anchor_count_mismatch() -> None:
+    request = _request()
+    package = _package(request)
+    source = tuple(package.manifest.diagnostics.alignment_diagnostics["source_anchors"][:-1])
+    target = tuple(package.manifest.diagnostics.alignment_diagnostics["target_anchors"][:-1])
+    package = _replace_alignment(package, source_anchors=source, target_anchors=target)
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="cover every selected syllable"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
 def test_remote_chunk_peak_limits_the_local_mix() -> None:
     request = _request()
     strategy = RemoteMossChunkPreparationStrategy(
@@ -268,6 +677,41 @@ def test_remote_chunk_peak_limits_the_local_mix() -> None:
         for bar in prepared.bars
     )
     assert peak == pytest.approx(0.95)
+
+
+def test_remote_chunk_preserves_manifest_warnings_and_observed_render_latency() -> None:
+    request = _request()
+    warnings = ("pronunciation fallback used", "alignment confidence degraded")
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(_package(request, warnings=warnings)),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    prepared = strategy.prepare(request, deadline_monotonic=10.0)
+
+    assert prepared.diagnostics["warnings"] == warnings
+    assert all(tuple(warning.message for warning in bar.warnings) == warnings for bar in prepared.bars)
+    assert all(bar.render_latency_ms == pytest.approx(6.0) for bar in prepared.bars)
+
+
+def test_remote_chunk_rejects_deadline_expiry_during_final_value_construction() -> None:
+    request = _request()
+    times = iter((0.0, 0.0, 0.0, 10.0))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(_package(request)),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: next(times),
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="missed its useful deadline"):
+        strategy.prepare(request, deadline_monotonic=10.0)
 
 
 def test_strategy_abort_is_reusable_and_close_is_final_and_idempotent() -> None:

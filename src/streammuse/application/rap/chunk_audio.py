@@ -16,7 +16,15 @@ from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.audio_rendering import bar_frame_count, limit_peak, mix_at, tick_frame_in_bar
 from streammuse.application.rap.audio_service import DrumRenderer, RapChunkPreparationStrategy
 from streammuse.application.rap.service import ProsodyAnalyzer
-from streammuse.domain.rap.audio import AudioFormat, PcmAudio, PreparedRapBar, SyllablePlacementDiagnostic
+from streammuse.domain.rap.audio import (
+    AudioFormat,
+    AudioWarning,
+    AudioWarningCode,
+    AudioWarningSeverity,
+    PcmAudio,
+    PreparedRapBar,
+    SyllablePlacementDiagnostic,
+)
 from streammuse.domain.rap.flow import materialize_flow
 from streammuse.domain.rap.remote_chunk import PreparedRapChunk, RemoteRapChunkManifest, RemoteRapChunkRequest
 from streammuse.domain.timing import Tempo
@@ -68,7 +76,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             if tempo_bpm is None or not isinstance(tempo_bpm, (int, float)) or not isfinite(tempo_bpm) or tempo_bpm <= 0:
                 raise ValueError("tempo or a positive finite tempo_bpm is required")
             tempo = Tempo(float(tempo_bpm), ticks_per_beat=4, beats_per_bar=4)
-        elif tempo_bpm is not None and not isclose(tempo.bpm, tempo_bpm):
+        elif tempo_bpm is not None and tempo.bpm != tempo_bpm:
             raise ValueError("tempo and tempo_bpm must agree")
         if tempo.ticks_per_beat != 4 or tempo.beats_per_bar != 4:
             raise ValueError("remote MOSS chunks require 4/4 timing with four ticks per beat")
@@ -92,7 +100,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         now = self._clock()
         if now >= deadline_monotonic:
             raise RemoteChunkPreparationError("remote chunk deadline elapsed before request")
-        if not isclose(request.tempo_bpm, self._tempo.bpm):
+        if request.tempo_bpm != self._tempo.bpm:
             raise RemoteChunkPreparationError("request tempo does not match the Mac timing authority")
         try:
             response = self._client.prepare(
@@ -109,21 +117,30 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         try:
             self._validate_manifest(response.package, request)
             vocal_samples = _decode_pcm16_mono_wav(response.package.vocal_wav, request.expected_frame_count)
-            full_vocals = _resample_to_output(vocal_samples, self._audio_format, request)
-            bars = self._prepare_bars(response.package.manifest, request, full_vocals)
+            frame_counts = tuple(bar_frame_count(item.bar, self._tempo, self._audio_format) for item in request.bars)
+            full_vocals = _resample_to_output(vocal_samples, self._audio_format, sum(frame_counts))
+            observed_latency_ms = response.timing.request_ms + response.timing.first_byte_ms + response.timing.download_ms
+            bars = self._prepare_bars(
+                response.package.manifest,
+                request,
+                full_vocals,
+                frame_counts,
+                observed_latency_ms,
+            )
         except RemoteChunkPreparationError:
             raise
         except (EOFError, ValueError, wave.Error) as error:
             raise RemoteChunkPreparationError("remote chunk package failed Mac validation") from error
         if self._clock() >= deadline_monotonic:
             raise RemoteChunkPreparationError("remote chunk preparation missed its useful deadline")
-        return PreparedRapChunk(
+        prepared = PreparedRapChunk(
             request_id=request.request_id,
             chunk_index=request.chunk_index,
             renderer="moss_aligned_remote",
             bars=bars,
             diagnostics={
                 "manifest": response.package.manifest.to_payload(),
+                "warnings": response.package.manifest.diagnostics.warnings,
                 "transfer": {
                     "request_ms": response.timing.request_ms,
                     "first_byte_ms": response.timing.first_byte_ms,
@@ -133,6 +150,9 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 },
             },
         )
+        if self._clock() >= deadline_monotonic:
+            raise RemoteChunkPreparationError("remote chunk preparation missed its useful deadline")
+        return prepared
 
     def abort(self) -> None:
         if not self._closed:
@@ -151,11 +171,16 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         if (
             manifest.request_id != request.request_id
             or manifest.chunk_index != request.chunk_index
-            or not isclose(manifest.tempo_bpm, request.tempo_bpm)
+            or manifest.tempo_bpm != request.tempo_bpm
             or manifest.output_sample_rate_hz != request.output_sample_rate_hz
             or manifest.expected_frame_count != request.expected_frame_count
         ):
             raise RemoteChunkPreparationError("remote chunk manifest does not match the original request")
+        if (
+            manifest.diagnostics.accepted_request_budget_ms != request.remaining_budget_ms
+            or manifest.diagnostics.resolved_policy != request.policy
+        ):
+            raise RemoteChunkPreparationError("remote chunk diagnostics do not match the original request")
         if hashlib.sha256(package.vocal_wav).hexdigest() != manifest.vocal_sha256:
             raise RemoteChunkPreparationError("remote chunk vocal hash does not match its manifest")
         diagnostics = manifest.diagnostics.audio_diagnostics
@@ -182,16 +207,26 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         duration_seconds = request.expected_frame_count / _REMOTE_SAMPLE_RATE_HZ
         for anchors in (alignment["source_anchors"], alignment["target_anchors"]):
             values = tuple(float(item) for item in anchors)
-            if any(not 0.0 <= value <= duration_seconds for value in values) or values != tuple(sorted(values)):
+            frame_values = tuple(round(value * _REMOTE_SAMPLE_RATE_HZ) for value in values)
+            if any(not 0.0 <= value <= duration_seconds for value in values) or any(
+                current <= previous for previous, current in zip(values, values[1:])
+            ) or any(
+                current <= previous for previous, current in zip(frame_values, frame_values[1:])
+            ):
                 raise RemoteChunkPreparationError("remote alignment anchors are not monotonic within the chunk")
+        returned_target_frames = tuple(round(float(item) * _REMOTE_SAMPLE_RATE_HZ) for item in alignment["target_anchors"])
+        expected_target_frames = _mac_target_anchor_frames(request, self._tempo, self._audio_format)
+        if returned_target_frames != expected_target_frames:
+            raise RemoteChunkPreparationError("remote target anchors do not match the Mac-selected syllable schedule")
 
     def _prepare_bars(
         self,
         manifest: RemoteRapChunkManifest,
         request: RemoteRapChunkRequest,
         vocals: np.ndarray,
+        frame_counts: tuple[int, int],
+        observed_latency_ms: float,
     ) -> tuple[PreparedRapBar, PreparedRapBar]:
-        frame_counts = tuple(bar_frame_count(item.bar, self._tempo, self._audio_format) for item in request.bars)
         if vocals.shape != (sum(frame_counts), self._audio_format.channels):
             raise RemoteChunkPreparationError("resampled remote vocals do not cover both Mac bars exactly")
         result: list[PreparedRapBar] = []
@@ -206,6 +241,16 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             mixed = vocal_bar * np.float32(_VOCAL_GAIN)
             mix_at(mixed, drum, 0, _DRUM_GAIN)
             diagnostics = self._placement_diagnostics(manifest, selected.scheduled, bar_request.bar, frames, anchor_offset)
+            warnings = tuple(
+                AudioWarning(
+                    code=AudioWarningCode.PRONUNCIATION_FALLBACK,
+                    severity=AudioWarningSeverity.WARNING,
+                    message=message,
+                    bar=bar_request.bar,
+                    action="remote_manifest_warning",
+                )
+                for message in manifest.diagnostics.warnings
+            )
             result.append(
                 PreparedRapBar(
                     bar=bar_request.bar,
@@ -215,8 +260,8 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                     scheduled=selected.scheduled,
                     audio=PcmAudio(self._audio_format, frames, limit_peak(mixed, _FINAL_PEAK).tobytes()),
                     diagnostics=diagnostics,
-                    warnings=(),
-                    render_latency_ms=0.0,
+                    warnings=warnings,
+                    render_latency_ms=observed_latency_ms,
                 )
             )
             start = end
@@ -278,10 +323,40 @@ def _decode_pcm16_mono_wav(vocal_wav: bytes, expected_frames: int) -> np.ndarray
     return np.frombuffer(data, dtype="<i2").astype(np.float32) / np.float32(32768.0)
 
 
-def _resample_to_output(samples: np.ndarray, audio_format: AudioFormat, request: RemoteRapChunkRequest) -> np.ndarray:
-    divisor = gcd(_REMOTE_SAMPLE_RATE_HZ, audio_format.sample_rate_hz)
-    resampled = resample_poly(samples, audio_format.sample_rate_hz // divisor, _REMOTE_SAMPLE_RATE_HZ // divisor).astype(np.float32)
-    expected_frames = request.expected_frame_count * audio_format.sample_rate_hz // _REMOTE_SAMPLE_RATE_HZ
-    if resampled.shape[0] != expected_frames:
-        raise RemoteChunkPreparationError("remote resampling did not preserve exact source coverage")
+def _mac_target_anchor_frames(
+    request: RemoteRapChunkRequest,
+    tempo: Tempo,
+    audio_format: AudioFormat,
+) -> tuple[int, ...]:
+    chunk_frame = 0
+    targets = []
+    for bar_request in request.bars:
+        for slot in materialize_flow(bar_request.flow_template, bar_request.bar):
+            local_frame = tick_frame_in_bar(
+                bar_request.bar,
+                slot.tick - bar_request.bar * tempo.ticks_per_bar,
+                tempo,
+                audio_format,
+            )
+            targets.append(round((chunk_frame + local_frame) * _REMOTE_SAMPLE_RATE_HZ / audio_format.sample_rate_hz))
+        chunk_frame += bar_frame_count(bar_request.bar, tempo, audio_format)
+    return tuple(targets)
+
+
+def _resample_to_output(samples: np.ndarray, audio_format: AudioFormat, target_frames: int) -> np.ndarray:
+    divisor = gcd(samples.shape[0], target_frames)
+    resampled = resample_poly(
+        samples,
+        target_frames // divisor,
+        samples.shape[0] // divisor,
+    ).astype(np.float32)
+    endpoint_delta = target_frames - resampled.shape[0]
+    if abs(endpoint_delta) > 1:
+        raise RemoteChunkPreparationError("remote resampling is inconsistent with the exact Mac frame grid")
+    if endpoint_delta < 0:
+        resampled = resampled[:target_frames]
+    elif endpoint_delta > 0:
+        resampled = np.pad(resampled, (0, endpoint_delta), mode="edge")
+    if resampled.shape[0] != target_frames:
+        raise RemoteChunkPreparationError("remote resampling did not produce the exact Mac frame count")
     return np.repeat(resampled[:, np.newaxis], audio_format.channels, axis=1)
