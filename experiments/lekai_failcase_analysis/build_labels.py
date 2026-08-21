@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -16,6 +16,8 @@ CONDITION_COLUMNS = {
 RUN_FIELDS = (
     "style",
     "piece",
+    "npz_time_signature",
+    "meter_status",
     "seed",
     "condition",
     "score_raw",
@@ -76,18 +78,60 @@ def load_exclusions(path: Path) -> dict[str, str]:
         return {row["piece"].strip(): row["reason"].strip() for row in reader}
 
 
+def load_meter_audit(path: Path) -> dict[str, dict[str, str]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required = {
+            "piece",
+            "meter_status",
+            "npz_time_signature",
+            "meter_hold_reason",
+        }
+        if reader.fieldnames is None or not required <= set(reader.fieldnames):
+            missing = sorted(required - set(reader.fieldnames or ()))
+            raise ValueError(f"meter audit missing columns: {', '.join(missing)}")
+
+        audit: dict[str, dict[str, str]] = {}
+        for row_number, row in enumerate(reader, start=2):
+            piece = (row["piece"] or "").strip()
+            if piece in audit:
+                raise ValueError(f"duplicate piece in meter audit at row {row_number}: {piece!r}")
+            status = (row["meter_status"] or "").strip()
+            if status not in {"include_4_4", "hold_non_4_4", "hold_unknown"}:
+                raise ValueError(
+                    f"invalid meter_status in meter audit at row {row_number}: {status!r}"
+                )
+            hold_reason = (row["meter_hold_reason"] or "").strip()
+            if status != "include_4_4" and not hold_reason:
+                raise ValueError(
+                    f"held meter audit row {row_number} has no meter_hold_reason"
+                )
+            audit[piece] = {
+                "meter_status": status,
+                "npz_time_signature": (row["npz_time_signature"] or "").strip(),
+                "meter_hold_reason": hold_reason,
+            }
+        return audit
+
+
 def build_labels(
     ratings_path: Path,
     output_dir: Path,
     exclusions_path: Path,
     excluded_styles: list[str],
+    meter_audit_path: Path | None = None,
 ) -> dict[str, object]:
     exclusions = load_exclusions(exclusions_path)
+    meter_audit = load_meter_audit(
+        meter_audit_path or Path(__file__).with_name("meter_audit.csv")
+    )
     runs: list[dict[str, object]] = []
     components: list[dict[str, object]] = []
     included_pairs: set[tuple[str, str, str]] = set()
     included_pieces: set[str] = set()
     excluded_pairs: dict[tuple[str, str, str], str] = {}
+    meter_pieces: dict[str, set[str]] = defaultdict(set)
+    meter_pairs: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
 
     with ratings_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -102,11 +146,22 @@ def build_labels(
             style = row["style"].strip()
             piece = row["piece"].strip()
             seed = row["seed"].strip()
+            if piece not in meter_audit:
+                raise ValueError(
+                    f"ratings row {row_number}: piece missing from meter audit: {piece!r}"
+                )
+            meter = meter_audit[piece]
+            meter_status = meter["meter_status"]
+            npz_time_signature = meter["npz_time_signature"]
             reason = exclusions.get(piece, "")
             if style in excluded_styles:
                 reason = f"style:{style}"
+            if not reason and meter_status != "include_4_4":
+                reason = meter["meter_hold_reason"]
             include_main = not reason
             pair_key = (style, piece, seed)
+            meter_pieces[meter_status].add(piece)
+            meter_pairs[meter_status].add(pair_key)
             if include_main:
                 included_pairs.add(pair_key)
                 included_pieces.add(piece)
@@ -127,6 +182,8 @@ def build_labels(
                         {
                             "style": style,
                             "piece": piece,
+                            "npz_time_signature": npz_time_signature,
+                            "meter_status": meter_status,
                             "seed": seed,
                             "condition": condition,
                             "score_raw": "",
@@ -152,6 +209,8 @@ def build_labels(
                 run = {
                     "style": style,
                     "piece": piece,
+                    "npz_time_signature": npz_time_signature,
+                    "meter_status": meter_status,
                     "seed": seed,
                     "condition": condition,
                     "score_raw": score_raw,
@@ -184,10 +243,19 @@ def build_labels(
     reason_output_counts = Counter(
         str(run["exclusion_reason"]) for run in runs if not run["include_main"]
     )
+    meter_output_counts = Counter(str(run["meter_status"]) for run in runs)
     summary: dict[str, object] = {
         "main_piece_count": len(included_pieces),
         "main_paired_row_count": len(included_pairs),
         "main_condition_output_count": sum(bool(run["include_main"]) for run in runs),
+        "meter_status_counts": {
+            status: {
+                "pieces": len(meter_pieces[status]),
+                "paired_rows": len(meter_pairs[status]),
+                "condition_outputs": meter_output_counts[status],
+            }
+            for status in sorted(meter_pieces)
+        },
         "exclusion_reason_counts": {
             reason: {
                 "paired_rows": reason_pair_counts[reason],
@@ -222,6 +290,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path(__file__).with_name("cohort_exclusions.csv"),
     )
+    parser.add_argument(
+        "--meter-audit",
+        type=Path,
+        default=Path(__file__).with_name("meter_audit.csv"),
+    )
     parser.add_argument("--exclude-style", action="append", default=None)
     args = parser.parse_args(argv)
     build_labels(
@@ -229,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output_dir,
         args.exclusions,
         args.exclude_style if args.exclude_style is not None else ["jazz_blues"],
+        args.meter_audit,
     )
     return 0
 

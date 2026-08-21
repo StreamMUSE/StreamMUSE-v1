@@ -23,6 +23,16 @@ python experiments/lekai_failcase_analysis/build_labels.py \
   --output-dir experiments/lekai_failcase_analysis/derived
 ```
 
-The default cohort excludes `jazz_blues` by style and the pieces listed in `cohort_exclusions.csv`. Outputs are `labels_runs.csv`, `labels_components.csv`, and `cohort_summary.json`.
+The default cohort excludes `jazz_blues` by style, the pieces listed in `cohort_exclusions.csv`, and every piece not marked `include_4_4` in `meter_audit.csv`. Outputs are `labels_runs.csv`, `labels_components.csv`, and `cohort_summary.json`.
 
-The expected clean cohort is **23 pieces / 46 piece-seed paired rows / 92 condition outputs**.
+Meter is a cohort gate, not a prediction feature. Non-4/4 pieces are held for later analysis rather than deleted; a later stage can use them for `meter_mismatch` diagnosis. The current gate is a first-pass audit of NPZ metadata and does not claim that each source MusicXML is purely 4/4 across the full piece. A future MusicXML audit can upgrade that determination.
+
+Rebuild the audit from the selection bundle with:
+
+```bash
+python experiments/lekai_failcase_analysis/build_meter_audit.py \
+  --selection-manifest path/to/metadata/selection_manifest.csv \
+  --output experiments/lekai_failcase_analysis/meter_audit.csv
+```
+
+The expected clean 4/4 cohort is **14 pieces / 28 piece-seed paired rows / 56 condition outputs**.

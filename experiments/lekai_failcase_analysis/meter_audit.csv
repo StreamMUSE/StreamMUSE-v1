@@ -1,0 +1,36 @@
+style,piece,title,record_id,source_npz,npz_time_signature,npz_time_signature_idx,meter_source,meter_status,meter_hold_reason
+classical,classical_pachelbel_canon_in_d,Canon in D,1376056,technical/source_npz/classical/01_canon_in_d_1376056_strict.npz,4/4,0,npz_metadata,include_4_4,
+classical,classical_chopin_waltz_in_a_minor,Waltz in A Minor,5605119,technical/source_npz/classical/02_waltz_in_a_minor_5605119_strict.npz,3/4,1,npz_metadata,hold_non_4_4,meter_not_4_4:3/4
+classical,classical_beethoven_fur_elise,Fur Elise,6154808,technical/source_npz/classical/03_fur_elise_6154808_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+classical,classical_beethoven_moonlight_sonata,Moonlight Sonata,5115536,technical/source_npz/classical/04_moonlight_sonata_5115536_fallback_existing.npz,6/8,3,npz_metadata,hold_non_4_4,meter_not_4_4:6/8
+classical,classical_mozart_rondo_alla_turca,Rondo Alla Turca,5610221,technical/source_npz/classical/05_rondo_alla_turca_5610221_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+jazz_blues,jazz_blues_antonio_carlos_jobim_one_note_samba,One Note Samba,5571209,technical/source_npz/jazz_blues/01_one_note_samba_5571209_fallback_existing.npz,2/2,9,npz_metadata,hold_non_4_4,meter_not_4_4:2/2
+jazz_blues,jazz_blues_joseph_kosma_autumn_leaves,Autumn Leaves,5547739,technical/source_npz/jazz_blues/02_autumn_leaves_5547739_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+jazz_blues,jazz_blues_scott_joplin_maple_leaf_rag,Maple Leaf Rag,6189352,technical/source_npz/jazz_blues/03_maple_leaf_rag_6189352_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+jazz_blues,jazz_blues_scott_joplin_the_entertainer,The Entertainer,5435024,technical/source_npz/jazz_blues/04_the_entertainer_5435024_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+jazz_blues,jazz_blues_vince_guaraldi_linus_and_lucy,Linus and Lucy,5003793,technical/source_npz/jazz_blues/05_linus_and_lucy_5003793_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+pop_contemporary,pop_contemporary_queen_bohemian_rhapsody,Bohemian Rhapsody,142159,technical/source_npz/pop_contemporary/01_bohemian_rhapsody_142159_strict.npz,4/4,0,npz_metadata,include_4_4,
+pop_contemporary,pop_contemporary_adele_someone_like_you,Someone Like You,149761,technical/source_npz/pop_contemporary/02_someone_like_you_149761_strict.npz,4/4,0,npz_metadata,include_4_4,
+pop_contemporary,pop_contemporary_yiruma_river_flows_in_you,River Flows in You,2757411,technical/source_npz/pop_contemporary/03_river_flows_in_you_2757411_strict.npz,4/4,0,npz_metadata,include_4_4,
+pop_contemporary,pop_contemporary_the_beatles_let_it_be,Let It Be,5120186,technical/source_npz/pop_contemporary/04_let_it_be_5120186_strict.npz,4/4,0,npz_metadata,include_4_4,
+pop_contemporary,pop_contemporary_coldplay_clocks,Clocks,5578678,technical/source_npz/pop_contemporary/05_clocks_5578678_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+film,film_henry_mancini_moon_river,Moon River,2142261,technical/source_npz/film/01_moon_river_2142261_strict.npz,6/8,3,npz_metadata,hold_non_4_4,meter_not_4_4:6/8
+film,film_justin_hurwitz_city_of_stars,City of Stars,5071775,technical/source_npz/film/02_city_of_stars_5071775_strict.npz,4/4,0,npz_metadata,include_4_4,
+film,film_hans_zimmer_time,Time,3943646,technical/source_npz/film/03_time_3943646_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+film,film_john_williams_star_wars,Star Wars,3964936,technical/source_npz/film/04_star_wars_3964936_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+film,film_klaus_badelt_hes_a_pirate,He's a Pirate,6094256,technical/source_npz/film/05_he_s_a_pirate_6094256_fallback_existing.npz,6/8,3,npz_metadata,hold_non_4_4,meter_not_4_4:6/8
+anime,anime_joe_hisaishi_one_summers_day,One Summer's Day,6386770,technical/source_npz/anime/01_one_summer_s_day_6386770_anime_reference.npz,4/4,0,npz_metadata,include_4_4,
+anime,anime_joe_hisaishi_tonari_no_totoro,Tonari no Totoro,4827295,technical/source_npz/anime/02_tonari_no_totoro_4827295_anime_reference.npz,4/4,0,npz_metadata,include_4_4,
+anime,anime_joe_hisaishi_merry_go_round_of_life,Merry-Go-Round of Life,5606167,technical/source_npz/anime/03_merry_go_round_of_life_5606167_anime_reference.npz,3/4,1,npz_metadata,hold_non_4_4,meter_not_4_4:3/4
+anime,anime_hiroyuki_sawano_aliez,aLIEz,1213481,technical/source_npz/anime/04_aliez_1213481_anime_reference.npz,4/4,0,npz_metadata,include_4_4,
+anime,anime_yumi_kimura_always_with_me,Always With Me,6041491,technical/source_npz/anime/05_always_with_me_6041491_anime_reference.npz,3/4,1,npz_metadata,hold_non_4_4,meter_not_4_4:3/4
+game,game_yoko_shimomura_dearly_beloved,Dearly Beloved,188997,technical/source_npz/game/01_dearly_beloved_188997_strict.npz,4/4,0,npz_metadata,include_4_4,
+game,game_toby_fox_megalovania,Megalovania,5990547,technical/source_npz/game/02_megalovania_5990547_strict.npz,4/4,0,npz_metadata,include_4_4,
+game,game_c418_sweden,Sweden,4792790,technical/source_npz/game/03_sweden_4792790_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
+game,game_koji_kondo_song_of_storms,Song of Storms,4982952,technical/source_npz/game/04_song_of_storms_4982952_fallback_existing.npz,6/8,3,npz_metadata,hold_non_4_4,meter_not_4_4:6/8
+game,game_nobuo_uematsu_to_zanarkand,To Zanarkand,5573518,technical/source_npz/game/05_to_zanarkand_5573518_fallback_existing.npz,3/4,1,npz_metadata,hold_non_4_4,meter_not_4_4:3/4
+folk_traditional,folk_traditional_john_newton_amazing_grace,Amazing Grace,351256,technical/source_npz/folk_traditional/01_amazing_grace_351256_strict.npz,3/4,1,npz_metadata,hold_non_4_4,meter_not_4_4:3/4
+folk_traditional,folk_traditional_traditional_greensleeves,Greensleeves,5408565,technical/source_npz/folk_traditional/02_greensleeves_5408565_fallback_existing.npz,6/8,3,npz_metadata,hold_non_4_4,meter_not_4_4:6/8
+folk_traditional,folk_traditional_traditional_scarborough_fair,Scarborough Fair,2023281,technical/source_npz/folk_traditional/03_scarborough_fair_2023281_fallback_existing.npz,3/4,1,npz_metadata,hold_non_4_4,meter_not_4_4:3/4
+folk_traditional,folk_traditional_traditional_spanish_romance,Spanish Romance,93392,technical/source_npz/folk_traditional/04_spanish_romance_93392_fallback_existing.npz,3/4,1,npz_metadata,hold_non_4_4,meter_not_4_4:3/4
+folk_traditional,folk_traditional_traditional_when_the_saints_go_marching_in,When the Saints Go Marching In,6052271,technical/source_npz/folk_traditional/05_when_the_saints_go_marching_in_6052271_fallback_existing.npz,4/4,0,npz_metadata,include_4_4,
