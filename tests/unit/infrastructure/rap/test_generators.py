@@ -583,6 +583,7 @@ def test_independent_choice_generator_requests_one_line_per_api_choice() -> None
     assert batch.prompt_tokens == 31
     assert batch.completion_tokens == 22
     assert batch.warning == "requested_4_received_3"
+    assert batch.provider_choice_indices == (0, 2, 3)
     assert client.calls[0][1] == {"n": 4, "max_tokens": 32, "temperature": 1.0}
 
 
@@ -614,6 +615,38 @@ def test_independent_choice_generator_preserves_bounded_client_warnings() -> Non
     batch = IndependentChoiceCandidateGenerator(client).generate(request_for_bar())
 
     assert batch.warning == "choice[2] malformed; requested_4_received_1"
+
+
+def test_independent_choice_generator_preserves_over_returned_choice_indices() -> None:
+    client = FakeChoicesClient(("one", "two", "three", "four", "five"))
+
+    batch = IndependentChoiceCandidateGenerator(client).generate(request_for_bar())
+
+    assert batch.candidates == ("one", "two", "three", "four", "five")
+    assert batch.provider_choice_indices == (0, 1, 2, 3, 4)
+
+
+def test_candidate_batch_provider_choice_indices_are_optional_and_aligned() -> None:
+    batch = CandidateBatch(
+        request_id="provider-default",
+        candidates=("one",),
+        source="test",
+        prompt=(),
+        raw_response="one",
+        latency_ms=0.0,
+    )
+
+    assert batch.provider_choice_indices == ()
+    with pytest.raises(ValueError, match="provider_choice_indices"):
+        CandidateBatch(
+            request_id="provider-mismatch",
+            candidates=("one", "two"),
+            source="test",
+            prompt=(),
+            raw_response="one\ntwo",
+            latency_ms=0.0,
+            provider_choice_indices=(4,),
+        )
 
 
 def test_independent_choice_generator_returns_explicit_error_batch() -> None:

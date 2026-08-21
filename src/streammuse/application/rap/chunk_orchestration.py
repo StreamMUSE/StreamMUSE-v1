@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -57,6 +58,28 @@ class NoValidCandidates(RuntimeError):
 
 class PhraseRenderFailed(RuntimeError):
     """Raised when phrase rendering cannot produce a valid exact-duration WAV."""
+
+
+_SENSITIVE_DIAGNOSTIC_ASSIGNMENT = re.compile(
+    r"(?i)\b(?P<name>(?:[a-z][a-z0-9_]*_)?(?:api[-_]?key|access[-_]?key(?:[-_]?id)?|key|token|password|secret|authorization))"
+    r"(?P<separator>\s*(?::|=)\s*)(?:(?:bearer\s+)?\[redacted\]|bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)"
+)
+_BEARER_DIAGNOSTIC = re.compile(r"(?i)\bbearer\s+(?:\[redacted\]|[^\s,;}\]]+)")
+_MAX_DIAGNOSTIC_CHARS = 256
+
+
+def _bounded_diagnostic_text(value: object) -> str:
+    sanitized = _SENSITIVE_DIAGNOSTIC_ASSIGNMENT.sub(
+        lambda match: f"{match.group('name')}{match.group('separator')}[REDACTED]",
+        str(value),
+    )
+    sanitized = _BEARER_DIAGNOSTIC.sub("Bearer [REDACTED]", sanitized)
+    return " ".join(sanitized.split())[:_MAX_DIAGNOSTIC_CHARS]
+
+
+def _bounded_exception_text(error: BaseException) -> str:
+    detail = _bounded_diagnostic_text(error)
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
 def _freeze(value: object) -> object:
@@ -209,6 +232,7 @@ class _CandidateRecord:
     analysis: ProsodyAnalysis
     source: str
     source_order: int
+    provider_choice_index: int | None
     wave: int
     ledger_index: int
     evaluation: CandidateEvaluation | None = None
@@ -274,6 +298,7 @@ class ChunkCandidatePlanner:
         ledger: list[dict[str, object]] = []
         generation_ms = 0.0
         evaluation_ms = 0.0
+        waves_started = 0
 
         for state in states:
             wave_size = min(
@@ -282,7 +307,12 @@ class ChunkCandidatePlanner:
             if wave_size <= 0:
                 continue
             if self._monotonic() >= cutoff:
+                if waves_started == 0:
+                    raise RenderBudgetExpired(
+                        "generation cutoff expired before the first candidate wave"
+                    )
                 break
+            waves_started += 1
             generated, evaluated = self._run_wave(request, state, wave_size, ledger)
             generation_ms += generated
             evaluation_ms += evaluated
@@ -298,8 +328,13 @@ class ChunkCandidatePlanner:
                 if wave_size <= 0:
                     continue
                 if self._monotonic() >= cutoff:
+                    if waves_started == 0:
+                        raise RenderBudgetExpired(
+                            "generation cutoff expired before the first candidate wave"
+                        )
                     cutoff_reached = True
                     break
+                waves_started += 1
                 generated, evaluated = self._run_wave(request, state, wave_size, ledger)
                 generation_ms += generated
                 evaluation_ms += evaluated
@@ -344,6 +379,8 @@ class ChunkCandidatePlanner:
         render_request = self._render_request(request, selected_bars)
         stats = self._candidate_stats(request, states, ledger)
         elapsed_ms = max(0.0, (self._monotonic() - started_at) * 1000.0)
+        accounted_ms = generation_ms + evaluation_ms
+        total_ms = max(elapsed_ms, accounted_ms)
         return ChunkLyricPlan(
             request=request,
             selected_bars=selected_bars,  # type: ignore[arg-type]
@@ -352,7 +389,8 @@ class ChunkCandidatePlanner:
             stage_timings_ms={
                 "generation": generation_ms,
                 "evaluation": evaluation_ms,
-                "total": max(elapsed_ms, generation_ms + evaluation_ms),
+                "overhead": total_ms - accounted_ms,
+                "total": total_ms,
             },
             candidate_ledger=tuple(_frozen_mapping(item) for item in ledger),
         )
@@ -386,6 +424,7 @@ class ChunkCandidatePlanner:
                 raise ValueError("candidate generator returned a mismatched request_id")
         except Exception as exc:
             generation_ms = max(0.0, (self._monotonic() - generation_started) * 1000.0)
+            evaluation_started = self._monotonic()
             ledger.append(
                 {
                     "bar": bar.bar,
@@ -395,12 +434,23 @@ class ChunkCandidatePlanner:
                     "requested_count": wave_size,
                 }
             )
-            evaluation_started = self._monotonic()
             self._rerank(request, state, ledger)
             evaluation_ms = max(0.0, (self._monotonic() - evaluation_started) * 1000.0)
             return generation_ms, evaluation_ms
 
         generation_ms = max(0.0, (self._monotonic() - generation_started) * 1000.0)
+        evaluation_started = self._monotonic()
+        if isinstance(batch.warning, str) and batch.warning.strip():
+            ledger.append(
+                {
+                    "bar": bar.bar,
+                    "wave": wave,
+                    "source": batch.source,
+                    "status": "generation_warning",
+                    "reasons": (_bounded_diagnostic_text(batch.warning),),
+                    "requested_count": wave_size,
+                }
+            )
         if batch.error_type is not None:
             ledger.append(
                 {
@@ -419,6 +469,11 @@ class ChunkCandidatePlanner:
         for response_index, raw_text in enumerate(batch.candidates):
             source_order = state.received_count
             state.received_count += 1
+            provider_choice_index = (
+                batch.provider_choice_indices[response_index]
+                if batch.provider_choice_indices
+                else None
+            )
             candidate_id = (
                 f"{request.request_id}:bar:{bar.bar}:candidate:{source_order}"
             )
@@ -429,6 +484,7 @@ class ChunkCandidatePlanner:
                 "candidate_id": candidate_id,
                 "source": batch.source,
                 "source_order": source_order,
+                "provider_choice_index": provider_choice_index,
                 "text": text,
             }
             if response_index >= wave_size:
@@ -489,12 +545,11 @@ class ChunkCandidatePlanner:
                     analysis=analysis,
                     source=batch.source,
                     source_order=source_order,
+                    provider_choice_index=provider_choice_index,
                     wave=wave,
                     ledger_index=ledger_index,
                 )
             )
-
-        evaluation_started = self._monotonic()
         self._rerank(request, state, ledger)
         evaluation_ms = max(0.0, (self._monotonic() - evaluation_started) * 1000.0)
         return generation_ms, evaluation_ms
@@ -620,6 +675,7 @@ class ChunkCandidatePlanner:
             if row.get("bar") == request.bars[state.position].bar
             and row.get("candidate_id")
             and row.get("status") != "selectable"
+            and row.get("status") != "over_returned"
         )[:8]
         return top, rejected
 
@@ -683,7 +739,9 @@ class ChunkCandidatePlanner:
         rejected_rows = [
             row
             for row in ledger
-            if row.get("candidate_id") and row.get("status") != "selectable"
+            if row.get("candidate_id")
+            and row.get("status") != "selectable"
+            and row.get("status") != "over_returned"
         ]
         rejections = tuple(self._rejection_summary(row) for row in rejected_rows[:8])
         return RemoteCandidateStats(
@@ -721,6 +779,7 @@ class ChunkCandidatePlanner:
                 "candidate_id": selected.candidate_id,
                 "source": selected.source,
                 "source_order": selected.source_order,
+                "provider_choice_index": selected.provider_choice_index,
                 "component_scores": component_scores,
                 "component_contributions": component_contributions,
                 "pair_tiebreak": pair_diagnostics,
@@ -785,13 +844,20 @@ class RapChunkOrchestrator:
         if lyric_plan.request.canonical_json_bytes() != request.canonical_json_bytes():
             raise PhraseRenderFailed("planner returned a mismatched request identity")
         workspace = self._workspace_root / request.request_id
-        workspace.mkdir(parents=True, exist_ok=True)
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise PhraseRenderFailed(
+                f"workspace preparation failed: {_bounded_exception_text(exc)}"
+            ) from exc
         try:
             phrase = self._renderer.render(lyric_plan.render_request, workspace)
         except PhraseRenderFailed:
             raise
         except Exception as exc:
-            raise PhraseRenderFailed(f"phrase renderer failed: {exc}") from exc
+            raise PhraseRenderFailed(
+                f"phrase renderer failed: {_bounded_exception_text(exc)}"
+            ) from exc
         if not isinstance(phrase, PhraseRenderResult):
             raise PhraseRenderFailed("phrase renderer returned a malformed result")
 
@@ -803,9 +869,24 @@ class RapChunkOrchestrator:
             "warp": float(phrase.stage_timings_ms["warp"]),
             "packaging": 0.0,
         }
+        planning_overhead = float(lyric_plan.stage_timings_ms.get("overhead", 0.0))
         measured_total = max(0.0, (self._monotonic() - started_at) * 1000.0)
-        stage_timings["total"] = max(measured_total, sum(stage_timings.values()))
-        warnings = tuple((*phrase.warnings, "packaging timing is provisional"))
+        stage_timings["total"] = max(
+            measured_total, sum(stage_timings.values()) + planning_overhead
+        )
+        planning_warnings = tuple(
+            str(reason)
+            for row in lyric_plan.candidate_ledger
+            if row.get("status") == "generation_warning"
+            for reason in row.get("reasons", ())
+        )
+        warnings = tuple(
+            (
+                *planning_warnings,
+                *phrase.warnings,
+                "packaging timing is provisional",
+            )
+        )
         try:
             diagnostics = RemoteRapChunkDiagnostics(
                 accepted_request_budget_ms=request.remaining_budget_ms,

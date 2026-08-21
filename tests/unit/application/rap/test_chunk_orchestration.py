@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from streammuse.application.rap import chunk_orchestration as orchestration_module
 from streammuse.application.rap.chunk_orchestration import (
     ChunkCandidatePlanner,
     NoValidCandidates,
@@ -40,6 +41,14 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.value += seconds
+
+
+class SequenceClock:
+    def __init__(self, values: tuple[float, ...]) -> None:
+        self.values = iter(values)
+
+    def __call__(self) -> float:
+        return next(self.values)
 
 
 class FakeAnalyzer:
@@ -220,6 +229,48 @@ def test_planner_rescues_only_deficient_bar_and_clamps_final_wave() -> None:
     assert tuple(item.text for item in plan.selected_bars) == ("valid", "clean")
 
 
+def test_planner_rescues_only_bar_one_when_its_initial_wave_is_deficient() -> None:
+    policy = RemoteCandidatePolicy("bar-one-rescue", 2, 1, 3, 1, 0.0, 500)
+    generator = ScriptedGenerator(
+        [
+            (0, ("clean", "steady")),
+            (1, ("too many", "still long")),
+            (1, ("ready",)),
+        ]
+    )
+
+    plan = planner(generator).plan(chunk_request(policy=policy))
+
+    assert [(item.target_bar, item.count) for item in generator.requests] == [
+        (0, 2),
+        (1, 2),
+        (1, 1),
+    ]
+    assert tuple(item.text for item in plan.selected_bars) == ("clean", "ready")
+
+
+def test_planner_rescues_both_bars_after_both_initial_waves() -> None:
+    policy = RemoteCandidatePolicy("both-rescue", 1, 1, 2, 1, 0.0, 500)
+    generator = ScriptedGenerator(
+        [
+            (0, ("too many",)),
+            (1, ("still long",)),
+            (0, ("clean",)),
+            (1, ("ready",)),
+        ]
+    )
+
+    plan = planner(generator).plan(chunk_request(policy=policy))
+
+    assert [(item.target_bar, item.count) for item in generator.requests] == [
+        (0, 1),
+        (1, 1),
+        (0, 1),
+        (1, 1),
+    ]
+    assert tuple(item.text for item in plan.selected_bars) == ("clean", "ready")
+
+
 def test_planner_raises_render_budget_expired_before_any_wave() -> None:
     clock = FakeClock()
     generator = ScriptedGenerator([], clock=clock)
@@ -229,6 +280,20 @@ def test_planner_raises_render_budget_expired_before_any_wave() -> None:
     )
 
     with pytest.raises(RenderBudgetExpired):
+        planner(generator, clock=clock).plan(request)
+
+    assert generator.requests == []
+
+
+def test_planner_raises_budget_expired_when_cutoff_hits_between_entry_checks() -> None:
+    clock = SequenceClock((100.0, 100.0, 100.5))
+    generator = ScriptedGenerator([])
+    request = chunk_request(
+        remaining_budget_ms=1_000,
+        policy=RemoteCandidatePolicy("between-checks", 1, 0, 1, 1, 0.0, 500),
+    )
+
+    with pytest.raises(RenderBudgetExpired, match="before the first candidate wave"):
         planner(generator, clock=clock).plan(request)
 
     assert generator.requests == []
@@ -334,6 +399,41 @@ def test_planner_deduplicates_normalized_lines_and_records_malformed_candidates(
     assert statuses == ["malformed", "selectable", "duplicate", "analysis_error"]
     assert plan.candidate_stats.requested_count == 8
     assert plan.candidate_stats.parseable_count == 5
+
+
+def test_evaluation_timing_includes_analysis_and_accumulated_reranking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FakeClock()
+
+    class TimedAnalyzer(FakeAnalyzer):
+        def analyze(self, text: str) -> ProsodyAnalysis:
+            analysis = super().analyze(text)
+            clock.advance(0.010)
+            return analysis
+
+    real_rank_candidates = orchestration_module.rank_candidates
+
+    def timed_rank_candidates(*args, **kwargs):
+        result = real_rank_candidates(*args, **kwargs)
+        clock.advance(0.020)
+        return result
+
+    monkeypatch.setattr(orchestration_module, "rank_candidates", timed_rank_candidates)
+    generator = ScriptedGenerator([(0, ("moon",)), (1, ("sun",))])
+
+    plan = planner(generator, TimedAnalyzer(), clock=clock).plan(
+        chunk_request(policy=RemoteCandidatePolicy("timed", 1, 0, 1, 1, 0.0, 500))
+    )
+
+    assert plan.stage_timings_ms["generation"] == pytest.approx(0.0)
+    assert plan.stage_timings_ms["evaluation"] == pytest.approx(60.0)
+    assert plan.stage_timings_ms["overhead"] == pytest.approx(0.0)
+    assert plan.stage_timings_ms["total"] == pytest.approx(
+        plan.stage_timings_ms["generation"]
+        + plan.stage_timings_ms["evaluation"]
+        + plan.stage_timings_ms["overhead"]
+    )
 
 
 def test_planner_raises_when_hard_gate_or_minimum_score_leaves_a_bar_unselectable() -> (
@@ -444,6 +544,77 @@ def test_pair_selection_preserves_source_order_when_every_score_ties() -> None:
     )
 
     assert tuple(item.text for item in plan.selected_bars) == ("red moon", "cold star")
+
+
+def test_pair_selection_prioritizes_mean_score_over_continuity_and_rhyme() -> None:
+    two = flow("mean-first", (0, 8))
+    generator = ScriptedGenerator(
+        [
+            (0, ("space moon", "shared moon")),
+            (1, ("space star", "shared moon")),
+        ]
+    )
+    weights = ScoreWeights(
+        stress_alignment=0.0,
+        boundary_fit=0.0,
+        rhyme_quality=0.0,
+        topic_coverage=1.0,
+        lexical_continuity=0.0,
+        novelty=0.0,
+    )
+
+    plan = ChunkCandidatePlanner(
+        generator,
+        FakeAnalyzer(),
+        weights,
+        monotonic=FakeClock(),
+    ).plan(
+        chunk_request(
+            first_flow=two,
+            second_flow=two,
+            policy=RemoteCandidatePolicy("mean-first", 2, 0, 2, 1, 0.0, 500),
+        )
+    )
+
+    assert tuple(item.text for item in plan.selected_bars) == (
+        "space moon",
+        "space star",
+    )
+    pair = plan.selected_bars[0].diagnostics["pair_tiebreak"]
+    assert pair["mean_total_score"] == 1.0
+    assert pair["lexical_continuity"] == 0.0
+    assert pair["rhyme_quality"] == 0.0
+
+
+def test_over_returned_choices_keep_provider_index_separate_from_source_order() -> None:
+    class OverReturningGenerator:
+        def generate(self, request):
+            candidates = ("moon", "extra") if request.target_bar == 0 else ("sun",)
+            provider_indices = (40, 73) if request.target_bar == 0 else (11,)
+            return CandidateBatch(
+                request_id=request.request_id,
+                candidates=candidates,
+                source="independent",
+                prompt=(),
+                raw_response="\n".join(candidates),
+                latency_ms=0.0,
+                provider_choice_indices=provider_indices,
+            )
+
+    plan = planner(OverReturningGenerator()).plan(
+        chunk_request(policy=RemoteCandidatePolicy("over-return", 1, 0, 1, 1, 0.0, 500))
+    )
+
+    bar_zero = [row for row in plan.candidate_ledger if row.get("bar") == 0]
+    assert [
+        (row["source_order"], row["provider_choice_index"]) for row in bar_zero
+    ] == [
+        (0, 40),
+        (1, 73),
+    ]
+    assert [row["status"] for row in bar_zero] == ["selectable", "over_returned"]
+    assert plan.candidate_stats.requested_count == 2
+    assert plan.candidate_stats.parseable_count == 2
 
 
 def test_render_request_contains_exact_targets_for_two_different_flows() -> None:
@@ -618,6 +789,53 @@ def test_orchestrator_combines_plan_render_and_manifest_diagnostics(
     assert "component_scores" in artifact.manifest.selected_bars[0].diagnostics
 
 
+def test_partial_choice_warnings_survive_ledger_and_success_manifest(
+    tmp_path: Path,
+) -> None:
+    class WarningGenerator:
+        def generate(self, request):
+            warning = f"choice[{request.target_bar + 7}] malformed"
+            return CandidateBatch(
+                request_id=request.request_id,
+                candidates=("moon" if request.target_bar == 0 else "sun",),
+                source="local_chat_independent",
+                prompt=(),
+                raw_response="raw",
+                latency_ms=1.0,
+                warning=warning,
+                provider_choice_indices=(request.target_bar + 3,),
+            )
+
+    request = chunk_request(
+        policy=RemoteCandidatePolicy("warnings", 1, 0, 1, 1, 0.0, 500)
+    )
+    artifact = RapChunkOrchestrator(
+        planner(WarningGenerator()),
+        FakeRenderer(phrase_result()),
+        workspace_root=tmp_path,
+    ).render(request)
+
+    warning_rows = [
+        row
+        for row in artifact.candidate_ledger
+        if row.get("status") == "generation_warning"
+    ]
+    assert [row["reasons"] for row in warning_rows] == [
+        ("choice[7] malformed",),
+        ("choice[8] malformed",),
+    ]
+    candidate_rows = [
+        row for row in artifact.candidate_ledger if row.get("candidate_id")
+    ]
+    assert [row["provider_choice_index"] for row in candidate_rows] == [3, 4]
+    assert artifact.manifest.diagnostics.warnings == (
+        "choice[7] malformed",
+        "choice[8] malformed",
+        "test warning",
+        "packaging timing is provisional",
+    )
+
+
 def test_orchestrator_wraps_renderer_failure(tmp_path: Path) -> None:
     lyric_planner, request = simple_planner_and_request()
     renderer = FakeRenderer(RuntimeError("MOSS failed"))
@@ -626,6 +844,45 @@ def test_orchestrator_wraps_renderer_failure(tmp_path: Path) -> None:
         RapChunkOrchestrator(lyric_planner, renderer, workspace_root=tmp_path).render(
             request
         )
+
+
+def test_orchestrator_wraps_workspace_failure_with_bounded_sanitized_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lyric_planner, request = simple_planner_and_request()
+    renderer = FakeRenderer(phrase_result())
+    secret = "workspace-secret-value"
+
+    def fail_mkdir(_path, *args, **kwargs):
+        del args, kwargs
+        raise OSError(f"OPENAI_API_KEY={secret}; {'x' * 1_000}")
+
+    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+
+    with pytest.raises(PhraseRenderFailed) as error:
+        RapChunkOrchestrator(
+            lyric_planner,
+            renderer,
+            workspace_root=tmp_path,
+        ).render(request)
+
+    assert "workspace preparation failed" in str(error.value)
+    assert secret not in str(error.value)
+    assert "OPENAI_API_KEY=[REDACTED]" in str(error.value)
+    assert len(str(error.value)) <= 320
+    assert renderer.calls == []
+
+
+def test_orchestrator_does_not_wrap_system_exit_from_renderer(tmp_path: Path) -> None:
+    lyric_planner, request = simple_planner_and_request()
+
+    with pytest.raises(SystemExit, match="stop now"):
+        RapChunkOrchestrator(
+            lyric_planner,
+            FakeRenderer(SystemExit("stop now")),
+            workspace_root=tmp_path,
+        ).render(request)
 
 
 @pytest.mark.parametrize(

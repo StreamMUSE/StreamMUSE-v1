@@ -184,6 +184,7 @@ class IndependentChoiceCandidateGenerator:
             if not isinstance(response, LocalChatChoicesResponse):
                 raise ValueError("malformed independent-choice response")
             candidates: list[str] = []
+            provider_choice_indices: list[int] = []
             normalized: set[str] = set()
             for choice in response.choices:
                 lines = _parse_candidate_lines(choice.text, 1)
@@ -195,8 +196,7 @@ class IndependentChoiceCandidateGenerator:
                     continue
                 normalized.add(identity)
                 candidates.append(line)
-                if len(candidates) == request.count:
-                    break
+                provider_choice_indices.append(choice.index)
             if not candidates:
                 return _error_batch(
                     request,
@@ -225,6 +225,7 @@ class IndependentChoiceCandidateGenerator:
                 prompt_tokens=response.prompt_tokens,
                 completion_tokens=response.completion_tokens,
                 warning="; ".join(warnings) if warnings else None,
+                provider_choice_indices=tuple(provider_choice_indices),
             )
         except Exception as exc:
             return _error_batch(

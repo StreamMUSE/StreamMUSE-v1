@@ -45,6 +45,7 @@
 
 - `src/streammuse/application/rap/chunk_orchestration.py`
 - `src/streammuse/application/rap/__init__.py`
+- `src/streammuse/domain/rap/generation.py`
 - `src/streammuse/infrastructure/inference/local_chat_client.py`
 - `src/streammuse/infrastructure/rap/generators.py`
 - `src/streammuse/infrastructure/rap/__init__.py`
@@ -98,3 +99,56 @@ Isolated deployment:
   `589.08 ms`, evaluation `1.19 ms`, planner total `857.26 ms`. Selected lines:
   `neon signs hum while the shadows creep` and
   `cold neon hums while the city wakes`.
+
+## Review Round 1 Fixes
+
+- Added explicit first-wave state so a cutoff reached after request validation
+  but before any wave starts raises `RenderBudgetExpired`. Once a wave has
+  started, an unusable two-bar result retains `NoValidCandidates` semantics.
+- Moved the evaluation clock boundary ahead of prosody analysis and kept it
+  open through accumulated reranking. Planner timings now expose generation,
+  evaluation, total, and the non-negative residual `overhead` explicitly;
+  manifest total timing includes that planning overhead without changing the
+  Task 1 wire-stage keys.
+- Added the backward-compatible optional
+  `CandidateBatch.provider_choice_indices`. The independent-choice adapter
+  preserves the provider index for every accepted choice, including a provider
+  over-return, while planner `source_order` remains a separate deterministic
+  local sequence.
+- Added immutable `generation_warning` ledger rows and propagated those
+  bounded, sanitized warnings into successful manifests ahead of renderer and
+  packaging warnings. Over-returned choices remain in the complete ledger but
+  are excluded from requested-candidate rejection summaries and counts.
+- Wrapped workspace preparation `OSError` failures as `PhraseRenderFailed`
+  with bounded, sanitized diagnostics. The boundary catches only expected
+  filesystem failures there; `SystemExit` and other `BaseException` control
+  flow still propagate.
+- Added the named branch tests for bar 1-only rescue, both-bar rescue,
+  mean-score priority over continuity/rhyme, over-returned choices, and the
+  exact deadline race, plus timing-attribution and end-to-end warning/index
+  retention tests.
+
+The review's maintainability concern is deferred by controller ruling: the
+planner/orchestrator module remains unsplit in this fix round to avoid changing
+the public renderer boundary while Tasks 3/4 build the vertical slice.
+
+## Review Round 1 TDD Evidence
+
+RED evidence:
+
+- Initial review test run: `7 failed, 59 passed in 0.94s`. Failures covered the
+  deadline classification, omitted analysis time, missing provider metadata,
+  missing warning propagation, and untyped workspace failure.
+- After the first GREEN implementation, the over-return branch exposed its
+  previously untested stats invariant: `1 failed, 65 passed in 0.84s`.
+- A separate adapter-level RED proved the fifth provider choice was truncated:
+  `1 failed in 0.55s`.
+
+GREEN evidence:
+
+- Review-specific planner/generator suite: `66 passed in 0.72s`.
+- Adapter over-return regression: `1 passed in 0.49s`.
+- Required three-module focused command after all fixes: `97 passed in 2.04s`.
+- Adjacent alignment/scoring/service/realtime/domain/package regressions:
+  `190 passed in 1.47s`.
+- Ruff on all modified Python paths: `All checks passed!`.
