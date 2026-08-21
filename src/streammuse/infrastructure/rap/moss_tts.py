@@ -25,6 +25,8 @@ from streammuse.experiments.rap_audio_protocols.timing import moss_token_target
 
 RuntimeLoader = Callable[..., object]
 PhraseGenerator = Callable[..., None]
+SeedResolver = Callable[..., int]
+TorchSeeder = Callable[..., None]
 
 
 class MossSynthesisFailed(RuntimeError):
@@ -80,6 +82,10 @@ class PersistentMossSynthesizer:
         reference_wav: Path,
         reference_voice_sha256: str,
         phrase_generator: PhraseGenerator,
+        seed_resolver: SeedResolver,
+        torch_seeder: TorchSeeder,
+        torch_module: object,
+        base_seed: int,
         backend_module: object,
         clock: Callable[[], float],
     ) -> None:
@@ -89,6 +95,10 @@ class PersistentMossSynthesizer:
         self._reference_wav = reference_wav
         self._reference_voice_sha256 = reference_voice_sha256
         self._phrase_generator = phrase_generator
+        self._seed_resolver = seed_resolver
+        self._torch_seeder = torch_seeder
+        self._torch = torch_module
+        self._base_seed = base_seed
         self._backend = backend_module
         self._clock = clock
 
@@ -101,6 +111,7 @@ class PersistentMossSynthesizer:
         reference_wav: Path,
         runtime_loader: RuntimeLoader | None = None,
         phrase_generator: PhraseGenerator | None = None,
+        base_seed: int | None = None,
         clock: Callable[[], float] = time.perf_counter,
         **runtime_options: Any,
     ) -> "PersistentMossSynthesizer":
@@ -117,11 +128,29 @@ class PersistentMossSynthesizer:
         backend = importlib.import_module("scripts.rap_audio_backends.moss_backend")
         load_runtime = runtime_loader or getattr(backend, "create_runtime")
         generate = phrase_generator or getattr(backend, "_generate_chunk")
+        resolve_seed = getattr(backend, "_seed_for_attempt")
+        seed_torch = getattr(backend, "_seed_torch_best_effort")
+        resolved_base_seed = (
+            int(getattr(backend, "DEFAULT_BASE_SEED"))
+            if base_seed is None
+            else base_seed
+        )
+        if isinstance(resolved_base_seed, bool) or not isinstance(
+            resolved_base_seed, int
+        ):
+            raise MossSynthesisFailed("MOSS base seed must be an integer")
         runtime = load_runtime(
             model_id=model_id,
             device=device,
             **runtime_options,
         )
+        torch_module = getattr(runtime, "torch_module", None)
+        if torch_module is None or not callable(
+            getattr(torch_module, "manual_seed", None)
+        ):
+            raise MossSynthesisFailed(
+                "MOSS runtime must expose torch.manual_seed for request seeding"
+            )
         return cls(
             runtime=runtime,
             model_id=model_id,
@@ -129,6 +158,10 @@ class PersistentMossSynthesizer:
             reference_wav=reference_path,
             reference_voice_sha256=hashlib.sha256(reference_bytes).hexdigest(),
             phrase_generator=generate,
+            seed_resolver=resolve_seed,
+            torch_seeder=seed_torch,
+            torch_module=torch_module,
+            base_seed=resolved_base_seed,
             backend_module=backend,
             clock=clock,
         )
@@ -174,7 +207,14 @@ class PersistentMossSynthesizer:
         output_path.unlink(missing_ok=True)
         partial_path.unlink(missing_ok=True)
         started = self._clock()
+        attempt = 1
         try:
+            seed = self._seed_resolver(
+                base_seed=self._base_seed,
+                request=request,
+                attempt=attempt,
+            )
+            self._torch_seeder(self._torch, seed=seed)
             self._phrase_generator(
                 request=request,
                 output_path=partial_path,
@@ -184,9 +224,14 @@ class PersistentMossSynthesizer:
             sample_rate_hz, samples = _read_valid_mono_wav(partial_path)
             frame_count = int(samples.shape[0])
             os.replace(partial_path, output_path)
-        except Exception as exc:
-            partial_path.unlink(missing_ok=True)
-            output_path.unlink(missing_ok=True)
+        except BaseException as exc:
+            for path in (partial_path, output_path):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if not isinstance(exc, Exception):
+                raise
             if isinstance(exc, MossSynthesisFailed):
                 raise
             raise MossSynthesisFailed(f"MOSS phrase synthesis failed: {exc}") from exc
@@ -199,6 +244,9 @@ class PersistentMossSynthesizer:
             "generation_mode": str(getattr(self._backend, "GENERATION_MODE")),
             "generation_kwargs": generation_kwargs,
             "token_target": moss_token_target(request),
+            "base_seed": self._base_seed,
+            "attempt": attempt,
+            "seed": seed,
         }
         warnings = tuple(
             str(value)

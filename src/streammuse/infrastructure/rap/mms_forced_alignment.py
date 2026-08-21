@@ -66,6 +66,11 @@ class MmsAlignmentResult:
     aligner_identity: str
     aligner_version: str
     warnings: tuple[str, ...]
+    source_sample_rate_hz: int | None = None
+    source_frame_count: int | None = None
+    inference_sample_rate_hz: int | None = None
+    inference_frame_count: int | None = None
+    emission_frame_count: int | None = None
 
     @property
     def confidence(self) -> float:
@@ -74,6 +79,25 @@ class MmsAlignmentResult:
         return float(
             sum(span.score for span in self.character_spans) / len(self.character_spans)
         )
+
+    @property
+    def source_duration_seconds(self) -> float:
+        if self.source_sample_rate_hz and self.source_frame_count is not None:
+            return self.source_frame_count / self.source_sample_rate_hz
+        return self.duration_seconds
+
+
+@dataclass(frozen=True)
+class _MmsInferenceWaveform:
+    tensor: object
+    source_sample_rate_hz: int
+    source_frame_count: int
+    inference_sample_rate_hz: int
+    inference_frame_count: int
+
+    @property
+    def inference_duration_seconds(self) -> float:
+        return self.inference_frame_count / self.inference_sample_rate_hz
 
 
 class PhraseForcedAligner(Protocol):
@@ -264,13 +288,15 @@ def _validate_alignment_evidence(
     *,
     source_duration_seconds: float,
 ) -> None:
+    if not isfinite(alignment.duration_seconds) or alignment.duration_seconds <= 0:
+        raise PhraseRenderFailed("MMS alignment duration must be finite and positive")
     if (
-        not isfinite(alignment.duration_seconds)
-        or alignment.duration_seconds <= 0
-        or alignment.duration_seconds > source_duration_seconds + 1e-9
+        alignment.source_sample_rate_hz is not None
+        and alignment.source_frame_count is not None
+        and abs(alignment.source_duration_seconds - source_duration_seconds) > 1e-12
     ):
         raise PhraseRenderFailed(
-            "MMS alignment duration is outside source audio bounds"
+            "MMS alignment source bounds do not match the source WAV"
         )
     flattened: list[CharacterSpan] = []
     previous_end = 0.0
@@ -456,7 +482,7 @@ class MmsForcedAligner:
                     f"MMS transcript contains unsupported labels: {''.join(unsupported)}"
                 )
 
-        waveform, duration_seconds = _load_resampled_waveform(
+        waveform = _load_resampled_waveform(
             Path(source_wav),
             target_sample_rate_hz=self._sample_rate_hz,
             torch_module=self._torch,
@@ -465,7 +491,7 @@ class MmsForcedAligner:
         with self._lock:
             with self._torch.inference_mode():
                 tokens = self._tokenizer(list(words))
-                model_output = self._model(waveform.to(self._device))
+                model_output = self._model(waveform.tensor.to(self._device))
                 emission = model_output[0]
                 aligned_words = self._ctc_aligner(emission[0], tokens)
         alignment_time_ms = max(0.0, (self._clock() - started) * 1000.0)
@@ -473,6 +499,7 @@ class MmsForcedAligner:
         emission_frames = int(emission.shape[1])
         if emission_frames <= 0:
             raise PhraseRenderFailed("MMS model emitted no alignment frames")
+        duration_seconds = waveform.inference_duration_seconds
         seconds_per_emission_frame = duration_seconds / emission_frames
         character_spans, word_spans = _materialize_spans(
             words,
@@ -495,6 +522,11 @@ class MmsForcedAligner:
             aligner_identity=self._identity,
             aligner_version=self._version,
             warnings=warnings,
+            source_sample_rate_hz=waveform.source_sample_rate_hz,
+            source_frame_count=waveform.source_frame_count,
+            inference_sample_rate_hz=waveform.inference_sample_rate_hz,
+            inference_frame_count=waveform.inference_frame_count,
+            emission_frame_count=emission_frames,
         )
 
     def warmup(self, source_wav: Path, transcript: str) -> Mapping[str, object]:
@@ -536,7 +568,7 @@ def _load_resampled_waveform(
     *,
     target_sample_rate_hz: int,
     torch_module: object,
-) -> tuple[object, float]:
+) -> _MmsInferenceWaveform:
     try:
         source_sample_rate_hz, samples = wavfile.read(path)
     except Exception as exc:
@@ -550,7 +582,8 @@ def _load_resampled_waveform(
         raise PhraseRenderFailed("MMS source WAV must not be empty")
     if not np.isfinite(mono).all():
         raise PhraseRenderFailed("MMS source WAV must contain only finite samples")
-    duration_seconds = mono.size / source_sample_rate_hz
+    source_frame_count = int(mono.size)
+    duration_seconds = source_frame_count / source_sample_rate_hz
     if source_sample_rate_hz != target_sample_rate_hz:
         divisor = gcd(source_sample_rate_hz, target_sample_rate_hz)
         mono = resample_poly(
@@ -566,7 +599,13 @@ def _load_resampled_waveform(
     tensor = getattr(torch_module, "from_numpy")(
         np.ascontiguousarray(mono, dtype=np.float32)
     ).unsqueeze(0)
-    return tensor, duration_seconds
+    return _MmsInferenceWaveform(
+        tensor=tensor,
+        source_sample_rate_hz=int(source_sample_rate_hz),
+        source_frame_count=source_frame_count,
+        inference_sample_rate_hz=target_sample_rate_hz,
+        inference_frame_count=int(mono.size),
+    )
 
 
 def _to_mono_float32(samples: np.ndarray) -> np.ndarray:

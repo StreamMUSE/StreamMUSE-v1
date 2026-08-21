@@ -78,10 +78,11 @@ class _FakeTorch:
 
 
 class _FakeModel:
-    def __init__(self) -> None:
+    def __init__(self, *, expected_waveform_frames: int = 16_000) -> None:
         self.to_calls: list[str] = []
         self.eval_calls = 0
         self.call_count = 0
+        self.expected_waveform_frames = expected_waveform_frames
 
     def to(self, device: str) -> "_FakeModel":
         self.to_calls.append(device)
@@ -92,7 +93,7 @@ class _FakeModel:
         return self
 
     def __call__(self, waveform: _FakeTensor) -> tuple[_FakeTensor, None]:
-        assert waveform.shape == (1, 16_000)
+        assert waveform.shape == (1, self.expected_waveform_frames)
         self.call_count += 1
         return _FakeTensor(np.zeros((1, 100, 32), dtype=np.float32)), None
 
@@ -198,6 +199,78 @@ def test_loads_mms_once_and_reuses_it_with_inference_only_resampling(
     assert warmup["aligned"] is True
     assert warmup["normalized_transcript"] == "warm voice"
     assert warmup["confidence"] == pytest.approx(0.9)
+
+
+def test_ctc_seconds_use_actual_post_resample_waveform_and_keep_source_bounds(
+    tmp_path: Path,
+) -> None:
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(
+        source_wav,
+        24_000,
+        np.sin(np.linspace(0.0, 20.0, 24_001, dtype=np.float32)),
+    )
+    torch_module = _FakeTorch()
+    aligner = MmsForcedAligner.load(
+        device="cuda:0",
+        runtime_loader=lambda: SimpleNamespace(
+            model=_FakeModel(expected_waveform_frames=16_001),
+            tokenizer=_FakeTokenizer(),
+            aligner=_FakeCtcAligner(torch_module),
+            torch_module=torch_module,
+            sample_rate_hz=16_000,
+            identity="torchaudio.pipelines.MMS_FA",
+            version="torchaudio 2.8.0 / MMS_FA",
+        ),
+    )
+
+    result = aligner.align(source_wav, "steady motion")
+
+    inference_duration = 16_001 / 16_000
+    assert torch_module.from_numpy_lengths == [16_001]
+    assert result.character_spans[0].start_seconds == pytest.approx(
+        5 * inference_duration / 100,
+        abs=1e-12,
+    )
+    assert result.duration_seconds == inference_duration
+    assert result.source_sample_rate_hz == 24_000
+    assert result.source_frame_count == 24_001
+    assert result.source_duration_seconds == 24_001 / 24_000
+    assert result.inference_sample_rate_hz == 16_000
+    assert result.inference_frame_count == 16_001
+    assert result.emission_frame_count == 100
+
+
+def test_repeated_words_keep_distinct_positional_character_spans(
+    tmp_path: Path,
+) -> None:
+    source_wav = tmp_path / "source.wav"
+    wavfile.write(
+        source_wav,
+        16_000,
+        np.sin(np.linspace(0.0, 20.0, 16_000, dtype=np.float32)),
+    )
+    torch_module = _FakeTorch()
+    aligner = MmsForcedAligner.load(
+        device="cuda:0",
+        runtime_loader=lambda: SimpleNamespace(
+            model=_FakeModel(),
+            tokenizer=_FakeTokenizer(),
+            aligner=_FakeCtcAligner(torch_module),
+            torch_module=torch_module,
+            sample_rate_hz=16_000,
+            identity="torchaudio.pipelines.MMS_FA",
+            version="torchaudio 2.8.0 / MMS_FA",
+        ),
+    )
+
+    result = aligner.align(source_wav, "echo echo")
+
+    assert tuple(span.word for span in result.word_spans) == ("echo", "echo")
+    assert tuple(span.word_index for span in result.word_spans) == (0, 1)
+    assert all(span.word_index == 0 for span in result.word_spans[0].characters)
+    assert all(span.word_index == 1 for span in result.word_spans[1].characters)
+    assert result.word_spans[1].start_seconds > result.word_spans[0].end_seconds
 
 
 def _word_span(
