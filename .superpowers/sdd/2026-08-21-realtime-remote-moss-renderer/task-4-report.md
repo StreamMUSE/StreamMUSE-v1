@@ -108,6 +108,15 @@ All RED failures below were observed before the corresponding production edit.
       included again as the final-pass estimate. The controlled case records
       `packaging=9.0`, `total=24.0`, with byte package, persisted manifest,
       timing metadata, and `Server-Timing` in agreement (`1 passed`).
+13. Proven H200 native loader environment:
+    - RED: the normal launch exported only the nonrecursive Rubber Band parent
+      `rootfs/usr/lib` and FFmpeg library directory. It omitted the align,
+      Rubber Band multiarch, MOSS Torch, and packaged NVIDIA libraries required
+      by the production warmup.
+    - GREEN: the command now sets the proven `ALIGN_ENV`, discovers every
+      Python 3.12 NVIDIA `*/lib` directory into a deterministic colon-separated
+      `NVIDIA_LIBS`, fails fast on an empty result, and composes `PATH` and
+      `LD_LIBRARY_PATH` with all required runtime directories.
 
 ## Request And Idempotency Algorithm
 
@@ -241,6 +250,12 @@ Also passed:
 - `uv run ruff check` on the owned server and test: all checks passed
 - `uv run ruff format --check` on the owned server and test: already formatted
 - `git diff --check` on Task 4-owned files
+- `bash -n` on the exact normal H200 launch block after replacing only the GPU
+  placeholder
+- an isolated two-package construction probe proving `NVIDIA_LIBS` contains
+  both fake `nvidia/*/lib` directories exactly once in sorted colon order
+- required-path grep found align, Rubber Band multiarch, FFmpeg, Torch, and
+  NVIDIA entries; obsolete `rootfs/usr/lib:` grep returned no matches
 
 ## Integration State
 
@@ -262,3 +277,8 @@ verified assets are snapshot
 `/data/home/Andrew.Yang/.cache/huggingface/hub/models--OpenMOSS-Team--MOSS-TTS-v1.5/snapshots/cdd3b911b1585e3f2dbc7775ef10f9926f58850a`
 and reference WAV
 `/data/home/Andrew.Yang/StreamMUSE/audio-protocol-downloads/TED-TTS/datasets/Ref/0011_000001.wav`.
+Its launch environment also includes the proven align library, exact Rubber
+Band `usr/lib/x86_64-linux-gnu` directory, FFmpeg 7 library, MOSS Python 3.12
+Torch library, and every packaged NVIDIA `nvidia/*/lib` directory. The matching
+MOSS, align, Rubber Band, and FFmpeg binary directories are prepended to
+`PATH`.

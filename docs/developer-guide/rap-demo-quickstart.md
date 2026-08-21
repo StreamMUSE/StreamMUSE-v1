@@ -60,6 +60,7 @@ export REPO_ROOT=$PWD
 export ENV_ROOT=/data/home/Andrew.Yang/StreamMUSE/envs/rap-audio-protocols
 export ASSET_ROOT=/data/home/Andrew.Yang/StreamMUSE/assets/rap-audio-protocols
 export MOSS_ENV="$ENV_ROOT/moss"
+export ALIGN_ENV="$ENV_ROOT/align"
 export FFMPEG7_ENV="$ENV_ROOT/ffmpeg7"
 export RUBBERBAND_ROOT="$ASSET_ROOT/rubberband/rootfs"
 export MOSS_REFERENCE=/data/home/Andrew.Yang/StreamMUSE/audio-protocol-downloads/TED-TTS/datasets/Ref/0011_000001.wav
@@ -67,10 +68,22 @@ export MOSS_SNAPSHOT=/data/home/Andrew.Yang/.cache/huggingface/hub/models--OpenM
 export RAP_ARTIFACT_ROOT="$REPO_ROOT/logs/rap/remote_moss_server"
 mkdir -p "$RAP_ARTIFACT_ROOT"
 
+NVIDIA_LIBS="$(
+  find "$MOSS_ENV/lib/python3.12/site-packages/nvidia" \
+    -mindepth 2 -maxdepth 2 -type d -name lib -print \
+    | LC_ALL=C sort \
+    | paste -sd: -
+)"
+if [ -z "$NVIDIA_LIBS" ]; then
+  echo "error: no packaged NVIDIA library directories found" >&2
+  exit 1
+fi
+export NVIDIA_LIBS
+
 "$MOSS_ENV/bin/python" -m pip install --no-deps --editable "$REPO_ROOT"
 
-PATH="$RUBBERBAND_ROOT/usr/bin:$FFMPEG7_ENV/bin:$PATH" \
-LD_LIBRARY_PATH="$RUBBERBAND_ROOT/usr/lib:$FFMPEG7_ENV/lib:${LD_LIBRARY_PATH:-}" \
+PATH="$MOSS_ENV/bin:$ALIGN_ENV/bin:$RUBBERBAND_ROOT/usr/bin:$FFMPEG7_ENV/bin:$PATH" \
+LD_LIBRARY_PATH="$ALIGN_ENV/lib:$RUBBERBAND_ROOT/usr/lib/x86_64-linux-gnu:$FFMPEG7_ENV/lib:$MOSS_ENV/lib/python3.12/site-packages/torch/lib:$NVIDIA_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
 "$MOSS_ENV/bin/streammuse-rap-render-server" \
   --host 127.0.0.1 \
