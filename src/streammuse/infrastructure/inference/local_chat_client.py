@@ -8,7 +8,7 @@ import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from threading import Event, RLock, Thread
-from typing import Any
+from typing import Any, Callable, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -36,12 +36,33 @@ class LocalChatModelClientConfig:
     extra_payload: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class LocalChatChoice:
+    """One independently decoded OpenAI-compatible chat choice."""
+
+    index: int
+    text: str
+
+
+@dataclass(frozen=True)
+class LocalChatChoicesResponse:
+    """All valid independent choices plus bounded response diagnostics."""
+
+    choices: tuple[LocalChatChoice, ...]
+    latency_ms: float
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    raw: dict[str, Any]
+    malformed_choice_indices: tuple[int, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
 @dataclass
 class _ActiveRequest:
     aborted: bool = False
     cancel_sent: bool = False
-    result: Future[ChatModelResponse] = field(default_factory=Future)
-    task: asyncio.Task[ChatModelResponse] | None = None
+    result: Future[Any] = field(default_factory=Future)
+    task: asyncio.Task[Any] | None = None
 
 
 class LocalChatModelClient:
@@ -75,7 +96,9 @@ class LocalChatModelClient:
         self._loop_thread.start()
         self._ready.wait()
         if self._startup_error is not None:
-            raise RuntimeError("failed to initialize local chat HTTP client") from self._startup_error
+            raise RuntimeError(
+                "failed to initialize local chat HTTP client"
+            ) from self._startup_error
 
     def generate(
         self,
@@ -97,8 +120,64 @@ class LocalChatModelClient:
             collisions = sorted(set(payload).intersection(self.config.extra_payload))
             if collisions:
                 joined = ", ".join(collisions)
-                raise ValueError(f"extra_payload cannot override chat completion payload keys: {joined}")
+                raise ValueError(
+                    f"extra_payload cannot override chat completion payload keys: {joined}"
+                )
             payload.update(self.config.extra_payload)
+        return cast(
+            ChatModelResponse,
+            self._submit(
+                payload,
+                timeout_s=timeout_s,
+                parser=self._parse_response,
+            ),
+        )
+
+    def generate_choices(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        n: int,
+        max_tokens: int,
+        temperature: float,
+        timeout_s: float | None = None,
+    ) -> LocalChatChoicesResponse:
+        """Decode every valid API-level choice from one shared prompt."""
+        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+            raise ValueError("n must be a positive integer")
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "n": n,
+        }
+        if self.config.top_p is not None:
+            payload["top_p"] = float(self.config.top_p)
+        if self.config.extra_payload:
+            collisions = sorted(set(payload).intersection(self.config.extra_payload))
+            if collisions:
+                joined = ", ".join(collisions)
+                raise ValueError(
+                    f"extra_payload cannot override chat completion payload keys: {joined}"
+                )
+            payload.update(self.config.extra_payload)
+        return cast(
+            LocalChatChoicesResponse,
+            self._submit(
+                payload,
+                timeout_s=timeout_s,
+                parser=self._parse_choices_response,
+            ),
+        )
+
+    def _submit(
+        self,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float | None,
+        parser: Callable[..., object],
+    ) -> object:
         headers: dict[str, str] = {}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
@@ -118,6 +197,7 @@ class LocalChatModelClient:
                 payload,
                 headers,
                 float(self.config.timeout_s if timeout_s is None else timeout_s),
+                parser,
             )
         except BaseException:
             self._finish_registration_failure(active)
@@ -174,7 +254,9 @@ class LocalChatModelClient:
             if self._close_error is not None:
                 raise self._close_error
             return
-        future = asyncio.run_coroutine_threadsafe(self._close_async_client(), self._loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._close_async_client(), self._loop
+        )
         try:
             future.result()
         except BaseException as exc:
@@ -210,30 +292,37 @@ class LocalChatModelClient:
         payload: dict[str, Any],
         headers: dict[str, str],
         timeout_s: float,
+        parser: Callable[..., object],
     ) -> None:
         task = self._loop.create_task(
-            self._generate_async(payload=payload, headers=headers, timeout_s=timeout_s)
+            self._generate_async(
+                payload=payload, headers=headers, timeout_s=timeout_s, parser=parser
+            )
         )
         with self._lock:
             active.task = task
             should_cancel = active.aborted and not active.cancel_sent
             if should_cancel:
                 active.cancel_sent = True
-        task.add_done_callback(lambda completed: self._finish_request(active, completed))
+        task.add_done_callback(
+            lambda completed: self._finish_request(active, completed)
+        )
         if should_cancel:
             task.cancel()
 
     def _finish_request(
         self,
         active: _ActiveRequest,
-        task: asyncio.Task[ChatModelResponse],
+        task: asyncio.Task[Any],
     ) -> None:
         with self._lock:
             if self._active is active:
                 self._active = None
                 self._active_cleared.set()
         if task.cancelled():
-            active.result.set_exception(LocalChatRequestAborted("local chat request aborted"))
+            active.result.set_exception(
+                LocalChatRequestAborted("local chat request aborted")
+            )
             return
         error = task.exception()
         if error is not None:
@@ -257,7 +346,8 @@ class LocalChatModelClient:
         payload: dict[str, Any],
         headers: dict[str, str],
         timeout_s: float,
-    ) -> ChatModelResponse:
+        parser: Callable[..., object],
+    ) -> object:
         attempts = max(1, int(self.config.max_retries) + 1)
         try:
             assert self._client is not None
@@ -273,7 +363,7 @@ class LocalChatModelClient:
                     response.raise_for_status()
                     data = response.json()
                     latency_ms = (time.perf_counter() - start) * 1000.0
-                    return self._parse_response(data, latency_ms=latency_ms)
+                    return parser(data, latency_ms=latency_ms)
                 except httpx.HTTPError as exc:
                     if attempt < attempts - 1:
                         await _retry_sleep(float(self.config.retry_delay_s))
@@ -293,7 +383,9 @@ class LocalChatModelClient:
         return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
     @staticmethod
-    def _parse_response(data: dict[str, Any], *, latency_ms: float) -> ChatModelResponse:
+    def _parse_response(
+        data: dict[str, Any], *, latency_ms: float
+    ) -> ChatModelResponse:
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ValueError(f"Unexpected chat completion response: {data}")
@@ -310,6 +402,68 @@ class LocalChatModelClient:
             prompt_tokens=_optional_int(usage.get("prompt_tokens")),
             completion_tokens=_optional_int(usage.get("completion_tokens")),
             raw=data,
+        )
+
+    @staticmethod
+    def _parse_choices_response(
+        data: dict[str, Any], *, latency_ms: float
+    ) -> LocalChatChoicesResponse:
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if not isinstance(choices, list) or not choices:
+            raise ValueError(f"Unexpected chat completion response: {data}")
+
+        valid: list[LocalChatChoice] = []
+        malformed_indices: list[int] = []
+        warnings: list[str] = []
+        malformed_count = 0
+        warning_limit = 32
+        for position, choice in enumerate(choices):
+            reported_index = choice.get("index") if isinstance(choice, dict) else None
+            diagnostic_index = (
+                reported_index
+                if isinstance(reported_index, int)
+                and not isinstance(reported_index, bool)
+                and reported_index >= 0
+                else position
+            )
+            message = choice.get("message") if isinstance(choice, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                malformed_count += 1
+                if len(malformed_indices) < warning_limit:
+                    malformed_indices.append(diagnostic_index)
+                    warnings.append(
+                        f"choice[{diagnostic_index}] missing non-empty message content"
+                    )
+                continue
+            if (
+                not isinstance(reported_index, int)
+                or isinstance(reported_index, bool)
+                or reported_index < 0
+            ):
+                if len(warnings) < warning_limit:
+                    warnings.append(
+                        f"choice[{position}] missing a valid index; response order used"
+                    )
+                reported_index = position
+            valid.append(LocalChatChoice(index=reported_index, text=content.strip()))
+
+        if not valid:
+            raise ValueError(f"Unexpected chat completion response: {data}")
+        unreported = malformed_count - len(malformed_indices)
+        if unreported:
+            warnings.append(
+                f"{unreported} additional malformed choices omitted from diagnostics"
+            )
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        return LocalChatChoicesResponse(
+            choices=tuple(valid),
+            latency_ms=latency_ms,
+            prompt_tokens=_optional_int(usage.get("prompt_tokens")),
+            completion_tokens=_optional_int(usage.get("completion_tokens")),
+            raw=data,
+            malformed_choice_indices=tuple(malformed_indices),
+            warnings=tuple(warnings),
         )
 
 

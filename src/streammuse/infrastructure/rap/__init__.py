@@ -1,7 +1,11 @@
 """Infrastructure adapters for rap-alignment candidate generation."""
 
 from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog, PrevalidatedFallbackLine
-from streammuse.infrastructure.rap.generators import LocalChatCandidateGenerator, PhraseBankGenerator
+from streammuse.infrastructure.rap.generators import (
+    IndependentChoiceCandidateGenerator,
+    LocalChatCandidateGenerator,
+    PhraseBankGenerator,
+)
 from streammuse.infrastructure.rap.recorder import (
     RapSessionManifest,
     RapSessionRecorder,
@@ -22,6 +26,7 @@ from streammuse.infrastructure.rap.audio_output import (
 
 __all__ = [
     "LocalChatCandidateGenerator",
+    "IndependentChoiceCandidateGenerator",
     "PhraseBankGenerator",
     "PrevalidatedFallbackCatalog",
     "PrevalidatedFallbackLine",

@@ -10,13 +10,16 @@ import requests
 
 import streammuse.infrastructure.inference.local_chat_client as local_chat_module
 from streammuse.infrastructure.inference.local_chat_client import (
+    LocalChatChoicesResponse,
     LocalChatModelClient,
     LocalChatModelClientConfig,
 )
 
 
 class FakeResponse:
-    def __init__(self, payload: dict[str, object], *, status_error: Exception | None = None) -> None:
+    def __init__(
+        self, payload: dict[str, object], *, status_error: Exception | None = None
+    ) -> None:
         self.payload = payload
         self.status_error = status_error
 
@@ -29,8 +32,12 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, response: FakeResponse | None = None, error: BaseException | None = None) -> None:
-        self.response = response or FakeResponse({"choices": [{"message": {"content": "1"}}]})
+    def __init__(
+        self, response: FakeResponse | None = None, error: BaseException | None = None
+    ) -> None:
+        self.response = response or FakeResponse(
+            {"choices": [{"message": {"content": "1"}}]}
+        )
         self.error = error
         self.calls: list[dict[str, object]] = []
         self.closed = False
@@ -108,9 +115,13 @@ def test_local_chat_client_reads_openai_compatible_response(monkeypatch) -> None
         )
     )
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
-    client = LocalChatModelClient(LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma"))
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma")
+    )
 
-    response = client.generate([{"role": "user", "content": "3:"}], max_tokens=4, temperature=0.0)
+    response = client.generate(
+        [{"role": "user", "content": "3:"}], max_tokens=4, temperature=0.0
+    )
 
     assert response.text == "Zip"
     assert response.prompt_tokens == 10
@@ -127,7 +138,9 @@ def test_local_chat_client_allows_per_call_timeout_override(monkeypatch) -> None
     session = FakeSession()
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
     client = LocalChatModelClient(
-        LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma", timeout_s=30.0)
+        LocalChatModelClientConfig(
+            base_url="http://localhost:8000/v1", model="gemma", timeout_s=30.0
+        )
     )
 
     client.generate([{"role": "user", "content": "1:"}], timeout_s=0.25)
@@ -136,7 +149,9 @@ def test_local_chat_client_allows_per_call_timeout_override(monkeypatch) -> None
     client.close()
 
 
-def test_local_chat_client_blank_timeout_keeps_safe_target_and_exception_diagnostics(monkeypatch) -> None:
+def test_local_chat_client_blank_timeout_keeps_safe_target_and_exception_diagnostics(
+    monkeypatch,
+) -> None:
     request = httpx.Request("POST", "http://127.0.0.1:18001/v1/chat/completions")
     session = FakeSession(error=httpx.ReadTimeout("", request=request))
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
@@ -160,7 +175,9 @@ def test_local_chat_client_blank_timeout_keeps_safe_target_and_exception_diagnos
     client.close()
 
 
-def test_local_chat_client_includes_top_p_and_extra_payload_when_configured(monkeypatch) -> None:
+def test_local_chat_client_includes_top_p_and_extra_payload_when_configured(
+    monkeypatch,
+) -> None:
     session = FakeSession()
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
     client = LocalChatModelClient(
@@ -206,7 +223,9 @@ def test_local_chat_client_reuses_and_closes_session(monkeypatch) -> None:
         return session
 
     monkeypatch.setattr(httpx, "AsyncClient", build_session)
-    client = LocalChatModelClient(LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma"))
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma")
+    )
 
     client.generate([{"role": "user", "content": "1:"}])
     client.generate([{"role": "user", "content": "2:"}])
@@ -220,7 +239,9 @@ def test_local_chat_client_reuses_and_closes_session(monkeypatch) -> None:
 def test_local_chat_client_raises_on_malformed_response(monkeypatch) -> None:
     session = FakeSession(FakeResponse({"choices": []}))
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
-    client = LocalChatModelClient(LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma"))
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma")
+    )
 
     with pytest.raises(ValueError, match="Unexpected chat completion response"):
         client.generate([{"role": "user", "content": "3:"}])
@@ -231,7 +252,9 @@ def test_local_chat_client_retry_disabled_surfaces_request_error(monkeypatch) ->
     session = FakeSession(error=requests.Timeout("slow"))
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
     client = LocalChatModelClient(
-        LocalChatModelClientConfig(base_url="http://localhost:8000/v1", model="gemma", max_retries=0)
+        LocalChatModelClientConfig(
+            base_url="http://localhost:8000/v1", model="gemma", max_retries=0
+        )
     )
 
     with pytest.raises(requests.Timeout):
@@ -239,10 +262,14 @@ def test_local_chat_client_retry_disabled_surfaces_request_error(monkeypatch) ->
     client.close()
 
 
-def test_abort_interrupts_an_inflight_http_request_without_waiting_for_timeout() -> None:
+def test_abort_interrupts_an_inflight_http_request_without_waiting_for_timeout() -> (
+    None
+):
     with ControlledChatServer() as server:
         client = LocalChatModelClient(
-            LocalChatModelClientConfig(base_url=server.base_url, model="gemma", timeout_s=60.0)
+            LocalChatModelClientConfig(
+                base_url=server.base_url, model="gemma", timeout_s=60.0
+            )
         )
         errors: list[BaseException] = []
 
@@ -266,7 +293,9 @@ def test_abort_interrupts_an_inflight_http_request_without_waiting_for_timeout()
         client.close()
 
 
-def test_abort_interrupts_retry_delay_after_retry_sleep_has_started(monkeypatch) -> None:
+def test_abort_interrupts_retry_delay_after_retry_sleep_has_started(
+    monkeypatch,
+) -> None:
     sleep_started = Event()
 
     async def retry_sleep(_delay: float) -> None:
@@ -387,7 +416,9 @@ def test_close_does_not_cancel_request_cleanup_a_second_time() -> None:
     assert "aborted" in str(errors[0]).lower()
 
 
-def test_keyboard_interrupt_cancels_request_before_generate_returns(monkeypatch) -> None:
+def test_keyboard_interrupt_cancels_request_before_generate_returns(
+    monkeypatch,
+) -> None:
     request_started = Event()
     cleanup_finished = Event()
 
@@ -470,3 +501,207 @@ def test_exhausted_httpx_timeout_preserves_requests_timeout_contract() -> None:
     with pytest.raises(requests.Timeout, match="slow"):
         client.generate([{"role": "user", "content": "3:"}])
     client.close()
+
+
+def test_generate_choices_sends_independent_n_and_returns_all_choices(
+    monkeypatch,
+) -> None:
+    session = FakeSession(
+        FakeResponse(
+            {
+                "choices": [
+                    {"index": 0, "message": {"content": "first line"}},
+                    {"index": 1, "message": {"content": "second line"}},
+                ],
+                "usage": {"prompt_tokens": 19, "completion_tokens": 8},
+            }
+        )
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(model="qwen-rap", top_p=0.95)
+    )
+
+    response = client.generate_choices(
+        [{"role": "user", "content": "one line"}],
+        n=2,
+        max_tokens=24,
+        temperature=1.0,
+        timeout_s=2.5,
+    )
+
+    assert isinstance(response, LocalChatChoicesResponse)
+    assert tuple(choice.text for choice in response.choices) == (
+        "first line",
+        "second line",
+    )
+    assert tuple(choice.index for choice in response.choices) == (0, 1)
+    assert response.prompt_tokens == 19
+    assert response.completion_tokens == 8
+    assert response.malformed_choice_indices == ()
+    assert response.warnings == ()
+    payload = session.calls[0]["json"]
+    assert payload == {
+        "model": "qwen-rap",
+        "messages": [{"role": "user", "content": "one line"}],
+        "temperature": 1.0,
+        "max_tokens": 24,
+        "n": 2,
+        "top_p": 0.95,
+    }
+    assert session.calls[0]["timeout"] == 2.5
+    client.close()
+
+
+def test_generate_choices_n_one_is_compatible_without_changing_generate_payload(
+    monkeypatch,
+) -> None:
+    session = FakeSession(
+        FakeResponse({"choices": [{"index": 0, "message": {"content": "one"}}]})
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
+    client = LocalChatModelClient(LocalChatModelClientConfig(model="qwen-rap"))
+
+    choices = client.generate_choices(
+        [{"role": "user", "content": "a"}], n=1, max_tokens=9, temperature=0.3
+    )
+    legacy = client.generate(
+        [{"role": "user", "content": "b"}], max_tokens=9, temperature=0.3
+    )
+
+    assert tuple(item.text for item in choices.choices) == ("one",)
+    assert legacy.text == "one"
+    assert session.calls[0]["json"]["n"] == 1  # type: ignore[index]
+    assert "n" not in session.calls[1]["json"]  # type: ignore[operator]
+    client.close()
+
+
+@pytest.mark.parametrize("n", (0, -1, 1.5, True, "2"))
+def test_generate_choices_rejects_invalid_n_without_transport(
+    monkeypatch, n: object
+) -> None:
+    session = FakeSession()
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
+    client = LocalChatModelClient(LocalChatModelClientConfig(model="qwen-rap"))
+
+    with pytest.raises(ValueError, match="positive integer"):
+        client.generate_choices([], n=n, max_tokens=8, temperature=1.0)  # type: ignore[arg-type]
+
+    assert session.calls == []
+    client.close()
+
+
+def test_generate_choices_retains_valid_partial_response_with_bounded_diagnostics(
+    monkeypatch,
+) -> None:
+    malformed = [{"index": index, "message": {}} for index in range(40)]
+    session = FakeSession(
+        FakeResponse(
+            {
+                "choices": [
+                    {"index": 8, "message": {"content": "  usable one  "}},
+                    *malformed,
+                    {"index": 49, "message": {"content": "usable two"}},
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
+    client = LocalChatModelClient(LocalChatModelClientConfig(model="qwen-rap"))
+
+    response = client.generate_choices([], n=42, max_tokens=12, temperature=1.0)
+
+    assert tuple(item.text for item in response.choices) == ("usable one", "usable two")
+    assert len(response.malformed_choice_indices) == 32
+    assert response.malformed_choice_indices[:2] == (0, 1)
+    assert len(response.warnings) <= 33
+    assert any("8 additional malformed" in warning for warning in response.warnings)
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"choices": []},
+        {"choices": [{"index": 0, "message": {}}]},
+        {"choices": [{"index": 0, "message": {"content": "  "}}]},
+        {"choices": "not-a-list"},
+    ),
+)
+def test_generate_choices_rejects_wholly_malformed_or_empty_responses(
+    monkeypatch, payload
+) -> None:
+    session = FakeSession(FakeResponse(payload))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: session)
+    client = LocalChatModelClient(LocalChatModelClientConfig(model="qwen-rap"))
+
+    with pytest.raises(ValueError, match="Unexpected chat completion response"):
+        client.generate_choices([], n=1, max_tokens=12, temperature=1.0)
+
+    client.close()
+
+
+def test_generate_choices_retries_with_the_same_payload() -> None:
+    attempts: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(dict(__import__("json").loads(request.content)))
+        if len(attempts) == 1:
+            return httpx.Response(503, json={"error": "busy"})
+        return httpx.Response(
+            200, json={"choices": [{"index": 0, "message": {"content": "ready"}}]}
+        )
+
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(model="qwen-rap", max_retries=1, retry_delay_s=0.0),
+        transport=httpx.MockTransport(handler),
+    )
+
+    response = client.generate_choices([], n=1, max_tokens=12, temperature=1.0)
+
+    assert response.choices[0].text == "ready"
+    assert attempts[0] == attempts[1]
+    client.close()
+
+
+def test_generate_choices_preserves_timeout_contract() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("choice timeout", request=request)
+
+    client = LocalChatModelClient(
+        LocalChatModelClientConfig(model="qwen-rap"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(requests.Timeout, match="choice timeout"):
+        client.generate_choices([], n=2, max_tokens=12, temperature=1.0)
+
+    client.close()
+
+
+def test_generate_choices_abort_interrupts_inflight_request() -> None:
+    with ControlledChatServer() as server:
+        client = LocalChatModelClient(
+            LocalChatModelClientConfig(
+                base_url=server.base_url, model="qwen-rap", timeout_s=60.0
+            )
+        )
+        errors: list[BaseException] = []
+
+        def generate() -> None:
+            try:
+                client.generate_choices([], n=4, max_tokens=12, temperature=1.0)
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = Thread(target=generate, daemon=True)
+        worker.start()
+        assert server.request_started.wait(timeout=0.5)
+
+        client.abort()
+        worker.join(timeout=0.5)
+
+        assert not worker.is_alive()
+        assert len(errors) == 1
+        assert "aborted" in str(errors[0]).lower()
+        client.close()

@@ -20,6 +20,17 @@ from streammuse.application.rap.audio_service import DrumRenderer, RapAudioSink,
 from streammuse.application.rap.bar_renderer import DeterministicRapBarRenderer
 from streammuse.application.rap.playback import RapPlaybackService
 from streammuse.application.rap.audio_coordination import BarAudioCoordinator
+from streammuse.application.rap.chunk_orchestration import (
+    ChunkCandidatePlanner,
+    ChunkLyricPlan,
+    NoValidCandidates,
+    PhraseRenderFailed,
+    PhraseRenderResult,
+    PhraseVocalRenderer,
+    RapChunkOrchestrator,
+    RemoteChunkRenderArtifact,
+    RenderBudgetExpired,
+)
 
 __all__ = [
     "RollingRapController",
@@ -50,4 +61,13 @@ __all__ = [
     "DeterministicRapBarRenderer",
     "RapPlaybackService",
     "BarAudioCoordinator",
+    "ChunkCandidatePlanner",
+    "ChunkLyricPlan",
+    "NoValidCandidates",
+    "PhraseRenderFailed",
+    "PhraseRenderResult",
+    "PhraseVocalRenderer",
+    "RapChunkOrchestrator",
+    "RemoteChunkRenderArtifact",
+    "RenderBudgetExpired",
 ]
