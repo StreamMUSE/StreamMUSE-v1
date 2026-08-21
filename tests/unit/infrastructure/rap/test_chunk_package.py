@@ -26,8 +26,12 @@ from streammuse.domain.rap import (
     materialize_flow,
 )
 from streammuse.infrastructure.rap.chunk_package import (
+    DecodedRapChunkPackage,
     RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+    RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
+    decode_opus_chunk_package,
     decode_chunk_package,
+    encode_opus_chunk_package,
     encode_chunk_package,
 )
 
@@ -203,6 +207,13 @@ def test_package_round_trip(manifest: RemoteRapChunkManifest, vocal_wav_bytes: b
     assert decoded.manifest.diagnostics.monitoring_summary["alignment_confidence"] == 0.91
 
 
+def test_decoded_package_rejects_unknown_transport_codec(
+    manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes
+) -> None:
+    with pytest.raises(ValueError, match="transport_codec"):
+        DecodedRapChunkPackage(manifest, vocal_wav_bytes, "lossless")
+
+
 def test_package_uses_deterministic_member_names_and_canonical_manifest_bytes(
     manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes
 ) -> None:
@@ -214,6 +225,61 @@ def test_package_uses_deterministic_member_names_and_canonical_manifest_bytes(
     with zipfile.ZipFile(io.BytesIO(first)) as archive:
         assert archive.namelist() == ["manifest.json", "vocals.wav"]
         assert archive.read("manifest.json") == manifest.canonical_json_bytes()
+
+
+def test_opus_package_is_strict_and_preserves_canonical_manifest_identity(
+    manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes
+) -> None:
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            assert pcm == vocal_wav_bytes[44:]
+            assert expected_frame_count == manifest.expected_frame_count
+            return b"encoded-opus"
+
+        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+            assert encoded == b"encoded-opus"
+            assert expected_frame_count == manifest.expected_frame_count
+            return vocal_wav_bytes[44:]
+
+    encoded = encode_opus_chunk_package(manifest, vocal_wav_bytes, Codec())
+    decoded = decode_opus_chunk_package(encoded, expected_request_id=manifest.request_id, codec=Codec())
+
+    assert RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE == "application/vnd.streammuse.rap-chunk-opus+zip"
+    assert decoded.manifest == manifest
+    assert decoded.vocal_wav == vocal_wav_bytes
+    assert decoded.transport_codec == "opus"
+    with zipfile.ZipFile(io.BytesIO(encoded)) as archive:
+        assert archive.namelist() == ["manifest.json", "transport.json", "vocals.opus"]
+
+
+def test_opus_package_rejects_encoded_hash_tampering_before_decode(
+    manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes
+) -> None:
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            return b"encoded-opus"
+
+        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+            raise AssertionError("hash validation must happen before decoding")
+
+    package = encode_opus_chunk_package(manifest, vocal_wav_bytes, Codec())
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        transport = json.loads(archive.read("transport.json"))
+        transport["encoded_sha256"] = "0" * 64
+        tampered = _archive(
+            [
+                ("manifest.json", archive.read("manifest.json")),
+                ("transport.json", json.dumps(transport).encode("utf-8")),
+                ("vocals.opus", archive.read("vocals.opus")),
+            ]
+        )
+
+    with pytest.raises(ValueError, match="encoded SHA-256"):
+        decode_opus_chunk_package(tampered, expected_request_id=manifest.request_id, codec=Codec())
 
 
 def test_package_rejects_hash_mismatch(manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes) -> None:

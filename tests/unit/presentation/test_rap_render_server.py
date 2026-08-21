@@ -38,6 +38,7 @@ from streammuse.domain.rap import (
 )
 from streammuse.infrastructure.rap.chunk_package import (
     RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+    RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
     decode_chunk_package,
 )
 from streammuse.presentation import rap_render_server
@@ -448,6 +449,51 @@ def test_render_returns_canonical_binary_package_and_atomic_artifacts(
         "packaging timing is provisional" not in decoded.manifest.diagnostics.warnings
     )
     assert response.headers["server-timing"] == f"total;dur={timings['total']:.3f}"
+
+
+def test_opus_enabled_server_returns_separate_variant_without_changing_canonical_cache(
+    tmp_path: Path,
+) -> None:
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            assert len(pcm) == expected_frame_count * 2
+            return b"encoded-opus"
+
+        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+            assert encoded == b"encoded-opus"
+            return struct.pack("<h", 1_000) * expected_frame_count
+
+    request = _request()
+    app = create_rap_render_app(
+        FakeOrchestrator(tmp_path / "worker"),
+        {"ready": True},
+        artifact_root=tmp_path / "artifacts",
+        wire_audio_codec="opus",
+        opus_codec=Codec(),
+    )
+    client = TestClient(app)
+
+    pcm_response = _post(client, request)
+
+    response = client.post(
+        "/v1/rap/chunks/render",
+        content=request.canonical_json_bytes(),
+        headers={
+            "Content-Type": "application/json",
+            "Idempotency-Key": request.request_id,
+            "Accept": f"{RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE}, {RAP_CHUNK_PACKAGE_MEDIA_TYPE};q=0.9",
+        },
+    )
+
+    workspace = tmp_path / "artifacts" / request.request_id
+    assert pcm_response.status_code == 200
+    assert pcm_response.headers["content-type"] == RAP_CHUNK_PACKAGE_MEDIA_TYPE
+    assert response.status_code == 200
+    assert response.headers["content-type"] == RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE
+    assert (workspace / "response.zip").is_file()
+    assert (workspace / "response.opus.zip").read_bytes() == response.content
 
 
 def test_packaging_timing_uses_measured_final_publication_equivalent(

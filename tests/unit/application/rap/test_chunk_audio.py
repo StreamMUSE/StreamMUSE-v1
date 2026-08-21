@@ -592,6 +592,25 @@ def test_remote_chunk_rejects_vocal_hash_mismatch() -> None:
         strategy.prepare(request, deadline_monotonic=10.0)
 
 
+def test_remote_chunk_accepts_lossy_opus_wav_without_canonical_wav_hash_match() -> None:
+    request = _request()
+    package = _package(request)
+    lossy_wav = _wav_bytes(np.full(request.expected_frame_count, 999, dtype=np.int16))
+    opus_package = DecodedRapChunkPackage(package.manifest, lossy_wav, "opus")
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(opus_package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    prepared = strategy.prepare(request, deadline_monotonic=10.0)
+
+    assert prepared.renderer == "moss_aligned_remote"
+
+
 @pytest.mark.parametrize(
     "manifest_change",
     (

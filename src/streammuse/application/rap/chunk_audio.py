@@ -385,7 +385,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             or manifest.diagnostics.resolved_policy != request.policy
         ):
             raise RemoteChunkPreparationError("remote chunk diagnostics do not match the original request")
-        if hashlib.sha256(package.vocal_wav).hexdigest() != manifest.vocal_sha256:
+        if package.transport_codec == "pcm" and hashlib.sha256(package.vocal_wav).hexdigest() != manifest.vocal_sha256:
             raise RemoteChunkPreparationError("remote chunk vocal hash does not match its manifest")
         diagnostics = manifest.diagnostics.audio_diagnostics
         if (

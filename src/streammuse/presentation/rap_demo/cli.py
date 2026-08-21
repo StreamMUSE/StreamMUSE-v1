@@ -61,10 +61,15 @@ class RapAudioFactories:
 
         return ProceduralBoomBapRenderer(seed=seed)
 
-    def create_remote_client(self, *, base_url: str, clock: Callable[[], float]):
+    def create_remote_client(self, *, base_url: str, clock: Callable[[], float], audio_transport: str):
         from streammuse.infrastructure.rap.remote_chunk_client import RemoteChunkClient
 
-        return RemoteChunkClient(base_url, clock=clock)
+        return RemoteChunkClient(base_url, clock=clock, audio_transport=audio_transport)
+
+    def create_opus_codec(self):
+        from streammuse.infrastructure.rap.opus_codec import FFmpegOpusCodec
+
+        return FFmpegOpusCodec()
 
     def create_sink(
         self,
@@ -106,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lookahead-bars", type=int, default=2)
     parser.add_argument("--audio-output", choices=("none", "live", "wav", "composite"), default="none")
     parser.add_argument("--rap-audio-renderer", choices=("espeak", "moss_aligned_remote"), default="espeak")
+    parser.add_argument("--rap-audio-transport", choices=("pcm", "opus"), default="pcm")
     parser.add_argument("--rap-render-url", default="http://127.0.0.1:8020")
     parser.add_argument("--rap-render-profile", choices=("realtime",), default="realtime")
     parser.add_argument("--rap-render-startup-timeout", type=float, default=120.0)
@@ -166,6 +172,8 @@ def build_demo(
             "terminal_detail": args.terminal_detail,
         }
     )
+    if args.rap_audio_transport != "pcm" and args.rap_audio_renderer != "moss_aligned_remote":
+        raise ValueError("rap-audio-transport opus requires moss_aligned_remote")
     if args.rap_audio_renderer == "moss_aligned_remote":
         manifest["generator_config"] = {
             "name": "remote_service",
@@ -322,6 +330,7 @@ def _build_audio_demo(
         "max_compression": args.max_compression,
         "audio_device": args.audio_device,
         "renderer": args.rap_audio_renderer,
+        "transport": args.rap_audio_transport if args.rap_audio_renderer == "moss_aligned_remote" else "pcm",
         "render_url": args.rap_render_url if args.rap_audio_renderer == "moss_aligned_remote" else None,
         "render_profile": args.rap_render_profile if args.rap_audio_renderer == "moss_aligned_remote" else None,
         "render_startup_timeout_seconds": args.rap_render_startup_timeout,
@@ -401,7 +410,13 @@ def _build_audio_demo(
                 monotonic=clock,
             )
         else:
-            remote_client = audio_factories.create_remote_client(base_url=args.rap_render_url, clock=clock)
+            if args.rap_audio_transport == "opus":
+                audio_factories.create_opus_codec().probe()
+            remote_client = audio_factories.create_remote_client(
+                base_url=args.rap_render_url,
+                clock=clock,
+                audio_transport=args.rap_audio_transport,
+            )
             try:
                 health = remote_client.health(timeout_seconds=min(5.0, args.rap_render_startup_timeout))
                 if not health.ready:

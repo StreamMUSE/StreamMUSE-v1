@@ -53,6 +53,7 @@ def test_existing_parser_defaults_remain_text_only() -> None:
     assert args.candidate_count == 8
     assert args.lookahead_bars == 2
     assert args.rap_audio_renderer == "espeak"
+    assert args.rap_audio_transport == "pcm"
     assert args.rap_render_url == "http://127.0.0.1:8020"
     assert args.rap_render_profile == "realtime"
     assert args.rap_render_startup_timeout == 120.0
@@ -72,6 +73,8 @@ def test_parser_accepts_remote_moss_renderer_configuration() -> None:
             "30",
             "--rap-render-rolling-timeout",
             "4.5",
+            "--rap-audio-transport",
+            "opus",
         ]
     )
 
@@ -79,6 +82,7 @@ def test_parser_accepts_remote_moss_renderer_configuration() -> None:
     assert args.rap_render_url == "http://render.test:9000"
     assert args.rap_render_startup_timeout == 30.0
     assert args.rap_render_rolling_timeout == 4.5
+    assert args.rap_audio_transport == "opus"
 
 
 def test_audio_parser_accepts_explicit_research_configuration() -> None:
@@ -290,8 +294,9 @@ def test_remote_audio_build_health_checks_and_creates_no_local_chat_client(tmp_p
         def create_sink(self, *, output, audio_format, audio_file, audio_device):
             return NullAudioSink(audio_format=audio_format)
 
-        def create_remote_client(self, *, base_url, clock):
+        def create_remote_client(self, *, base_url, clock, audio_transport):
             assert base_url == "http://render.test:9000"
+            assert audio_transport == "pcm"
             return client
 
     monkeypatch.setattr(
@@ -323,10 +328,67 @@ def test_remote_audio_build_health_checks_and_creates_no_local_chat_client(tmp_p
         manifest = json.loads((demo.session_dir / "session.json").read_text(encoding="utf-8"))
         assert manifest["audio"]["renderer"] == "moss_aligned_remote"
         assert manifest["audio"]["render_url"] == "http://render.test:9000"
+        assert manifest["audio"]["transport"] == "pcm"
         assert demo.session_metadata["audio"]["render_profile"] == "realtime"
     finally:
         demo.close()
     assert client.close_calls == 1
+
+
+def test_remote_opus_build_preflights_codec_and_records_remote_service_metadata(
+    tmp_path: Path,
+) -> None:
+    class RemoteClient:
+        def health(self, *, timeout_seconds: float):
+            return SimpleNamespace(ready=True, schema_version="streammuse.rap_chunk.v1")
+
+        def abort(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class OpusCodec:
+        probed = False
+
+        def probe(self) -> None:
+            self.probed = True
+
+    codec = OpusCodec()
+
+    class AudioFactories(RapAudioFactories):
+        def create_remote_client(self, *, base_url, clock, audio_transport):
+            assert audio_transport == "opus"
+            return RemoteClient()
+
+        def create_opus_codec(self):
+            return codec
+
+        def create_sink(self, *, output, audio_format, audio_file, audio_device):
+            return NullAudioSink(audio_format=audio_format)
+
+    args = build_parser().parse_args(
+        [
+            "--rap-audio-renderer",
+            "moss_aligned_remote",
+            "--rap-audio-transport",
+            "opus",
+            "--audio-output",
+            "wav",
+            "--max-bars",
+            "2",
+            "--log-dir",
+            str(tmp_path),
+        ]
+    )
+
+    demo = build_demo(args, audio_factories=AudioFactories())
+    try:
+        assert codec.probed is True
+        assert demo.session_metadata["model_config"]["name"] == "remote_service"
+        assert demo.session_metadata["audio"]["transport"] == "opus"
+    finally:
+        demo.close()
 
 
 def test_remote_audio_build_rejects_unready_health_and_closes_client(tmp_path: Path) -> None:
@@ -342,7 +404,7 @@ def test_remote_audio_build_rejects_unready_health_and_closes_client(tmp_path: P
     client = RemoteClient()
 
     class AudioFactories(RapAudioFactories):
-        def create_remote_client(self, *, base_url, clock):
+        def create_remote_client(self, *, base_url, clock, audio_transport):
             return client
 
     args = build_parser().parse_args(

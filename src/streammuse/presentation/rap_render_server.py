@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 
 _RESPONSE_FILE = "response.zip"
+_OPUS_RESPONSE_FILE = "response.opus.zip"
 _REQUEST_FILE = "request.json"
 _FAILURE_FILE = "failure.json"
 _CANDIDATE_LEDGER_FILE = "candidate_ledger.json"
@@ -98,6 +99,7 @@ class RapRenderServerConfig:
     aligner_device: str
     aligner_cache: Path | None
     candidate_profile: str
+    wire_audio_codec: str = "pcm"
 
 
 @dataclass
@@ -119,11 +121,13 @@ class _ArtifactStore:
         orchestrator: _ChunkOrchestrator,
         *,
         clock: Callable[[], float] = time.perf_counter,
+        opus_codec: object | None = None,
     ) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
         self._orchestrator = orchestrator
         self._clock = clock
+        self._opus_codec = opus_codec
         self._lock = Lock()
         self._in_flight: dict[str, tuple[bytes, Future[_StoredResponse]]] = {}
 
@@ -280,6 +284,25 @@ class _ArtifactStore:
         self._publish_response(workspace / _RESPONSE_FILE, package)
         return _StoredResponse(package, server_timing)
 
+    def load_or_create_opus(self, request: RemoteRapChunkRequest, stored: _StoredResponse) -> bytes:
+        """Derive a lossy delivery package without altering canonical cached artifacts."""
+        if self._opus_codec is None:
+            raise RuntimeError("Opus response requested but no Opus codec is configured")
+        workspace = self._workspace(request.request_id)
+        path = workspace / _OPUS_RESPONSE_FILE
+        with self._lock:
+            if path.is_file():
+                return path.read_bytes()
+            from streammuse.infrastructure.rap.chunk_package import (
+                decode_chunk_package,
+                encode_opus_chunk_package,
+            )
+
+            canonical = decode_chunk_package(stored.package, expected_request_id=request.request_id)
+            package = encode_opus_chunk_package(canonical.manifest, canonical.vocal_wav, self._opus_codec)
+            self._publish_response(path, package)
+            return package
+
     def _persist_failure(self, request_id: str, error: BaseException) -> None:
         from streammuse.application.rap.chunk_orchestration import NoValidCandidates
 
@@ -312,6 +335,7 @@ class _ArtifactStore:
             target = destination / relative
             if target.name in {
                 _RESPONSE_FILE,
+                _OPUS_RESPONSE_FILE,
                 _REQUEST_FILE,
                 _FAILURE_FILE,
                 _CANDIDATE_LEDGER_FILE,
@@ -418,13 +442,20 @@ def create_rap_render_app(
     health: Mapping[str, object] | Callable[[], Mapping[str, object]],
     *,
     artifact_root: str | Path = "rap-chunk-artifacts",
+    wire_audio_codec: str = "pcm",
+    opus_codec: object | None = None,
 ) -> FastAPI:
     """Create the testable private render service without composing model dependencies."""
     from streammuse.infrastructure.rap.chunk_package import (
         RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+        RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
     )
 
-    store = _ArtifactStore(Path(artifact_root), orchestrator)
+    if wire_audio_codec not in {"pcm", "opus"}:
+        raise ValueError("wire_audio_codec must be pcm or opus")
+    if wire_audio_codec == "opus" and opus_codec is None:
+        raise ValueError("Opus server mode requires an Opus codec")
+    store = _ArtifactStore(Path(artifact_root), orchestrator, opus_codec=opus_codec)
     app = FastAPI(
         title="StreamMUSE Private Rap Renderer", docs_url=None, redoc_url=None
     )
@@ -475,17 +506,37 @@ def create_rap_render_app(
             )
             return _error_response(code, status, message)
 
+        opus_requested = (
+            wire_audio_codec == "opus"
+            and _accepts_media_type(http_request.headers.get("Accept", ""), RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE)
+        )
+        package = store.load_or_create_opus(request, stored) if opus_requested else stored.package
+        media_type = RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE if opus_requested else RAP_CHUNK_PACKAGE_MEDIA_TYPE
         return Response(
-            content=stored.package,
-            media_type=RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+            content=package,
+            media_type=media_type,
             headers={
                 "X-StreamMUSE-Request-ID": request.request_id,
-                "Content-Length": str(len(stored.package)),
+                "Content-Length": str(len(package)),
                 "Server-Timing": stored.server_timing,
             },
         )
 
     return app
+
+
+def _accepts_media_type(accept: str, expected: str) -> bool:
+    """Only explicit, non-zero-quality media types opt into a lossy response."""
+    for item in accept.lower().split(","):
+        parts = [part.strip() for part in item.split(";")]
+        if not parts or parts[0] != expected:
+            continue
+        for parameter in parts[1:]:
+            if parameter.startswith("q=") and parameter[2:].strip() == "0":
+                break
+        else:
+            return True
+    return False
 
 
 def _parse_request(body: bytes) -> RemoteRapChunkRequest:
@@ -670,6 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--candidate-profile", choices=tuple(_CANDIDATE_PROFILES), default="realtime"
     )
+    parser.add_argument("--wire-audio-codec", choices=("pcm", "opus"), default="pcm")
     return parser
 
 
@@ -695,6 +747,7 @@ def main(
         aligner_device=args.aligner_device,
         aligner_cache=Path(args.aligner_cache) if args.aligner_cache else None,
         candidate_profile=args.candidate_profile,
+        wire_audio_codec=args.wire_audio_codec,
     )
     run_server = serve
     if run_server is None:
@@ -702,6 +755,12 @@ def main(
 
         run_server = uvicorn.run
     compose = composition_factory or _compose_real_worker
+    opus_codec = None
+    if config.wire_audio_codec == "opus":
+        from streammuse.infrastructure.rap.opus_codec import FFmpegOpusCodec
+
+        opus_codec = FFmpegOpusCodec()
+        opus_codec.probe()
     composition = compose(config)
     try:
         run_server(
@@ -709,6 +768,8 @@ def main(
                 composition.orchestrator,
                 composition.health,
                 artifact_root=config.artifact_root,
+                wire_audio_codec=config.wire_audio_codec,
+                opus_codec=opus_codec,
             ),
             host=config.host,
             port=config.port,

@@ -29,6 +29,8 @@ from streammuse.domain.rap import (
 )
 from streammuse.infrastructure.rap.chunk_package import (
     RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+    RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
+    encode_opus_chunk_package,
     encode_chunk_package,
 )
 from streammuse.infrastructure.rap.remote_chunk_client import (
@@ -185,6 +187,54 @@ def test_prepare_sends_canonical_binary_request_and_reports_transfer_timing() ->
     assert result.timing.request_ms == pytest.approx(100.0)
     assert result.timing.first_byte_ms == pytest.approx(200.0)
     assert result.timing.download_ms == pytest.approx(200.0)
+
+
+def test_opus_client_prefers_opus_and_accepts_pcm_fallback_from_pcm_server() -> None:
+    request = _request()
+    package = _package(request)
+    observed: list[httpx.Request] = []
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        observed.append(http_request)
+        return httpx.Response(200, headers={"content-type": RAP_CHUNK_PACKAGE_MEDIA_TYPE}, content=package)
+
+    result = RemoteChunkClient(
+        "http://render.test", transport=httpx.MockTransport(handler), clock=lambda: 0.0, audio_transport="opus"
+    ).prepare(request, timeout_seconds=1.0, deadline_monotonic=2.0)
+
+    assert RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE in observed[0].headers["accept"]
+    assert RAP_CHUNK_PACKAGE_MEDIA_TYPE in observed[0].headers["accept"]
+    assert result.package.transport_codec == "pcm"
+
+
+def test_opus_client_decodes_negotiated_opus_response(monkeypatch) -> None:
+    request = _request()
+    canonical = _package(request)
+    from streammuse.infrastructure.rap.chunk_package import decode_chunk_package
+
+    decoded = decode_chunk_package(canonical, expected_request_id=request.request_id)
+
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            return b"encoded-opus"
+
+        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+            assert encoded == b"encoded-opus"
+            return decoded.vocal_wav[44:]
+
+    monkeypatch.setattr("streammuse.infrastructure.rap.opus_codec.FFmpegOpusCodec", Codec)
+    opus_package = encode_opus_chunk_package(decoded.manifest, decoded.vocal_wav, Codec())
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE}, content=opus_package)
+
+    response = RemoteChunkClient(
+        "http://render.test", transport=httpx.MockTransport(handler), clock=lambda: 0.0, audio_transport="opus"
+    ).prepare(request, timeout_seconds=1.0, deadline_monotonic=2.0)
+
+    assert response.package.transport_codec == "opus"
 
 
 def test_prepare_retries_the_identical_request_before_its_deadline() -> None:

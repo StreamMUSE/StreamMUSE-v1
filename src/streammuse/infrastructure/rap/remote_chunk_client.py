@@ -16,7 +16,9 @@ from streammuse.domain.rap.remote_chunk import REMOTE_CHUNK_SCHEMA_VERSION, Remo
 from streammuse.infrastructure.rap.chunk_package import (
     MAX_RAP_CHUNK_PACKAGE_BYTES,
     RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+    RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
     DecodedRapChunkPackage,
+    decode_opus_chunk_package,
     decode_chunk_package,
 )
 
@@ -115,6 +117,7 @@ class RemoteChunkClient:
         clock: Callable[[], float] = monotonic,
         max_response_bytes: int = MAX_RAP_CHUNK_PACKAGE_BYTES,
         max_health_response_bytes: int = _MAX_HEALTH_RESPONSE_BYTES,
+        audio_transport: str = "pcm",
     ) -> None:
         if not isinstance(base_url, str) or not base_url:
             raise ValueError("base_url must be a non-empty string")
@@ -126,10 +129,14 @@ class RemoteChunkClient:
             or max_health_response_bytes <= 0
         ):
             raise ValueError("max_health_response_bytes must be a positive integer")
+        if audio_transport not in {"pcm", "opus"}:
+            raise ValueError("audio_transport must be pcm or opus")
         self._client = httpx.Client(base_url=base_url.rstrip("/") + "/", transport=transport)
         self._clock = clock
         self._max_response_bytes = max_response_bytes
         self._max_health_response_bytes = max_health_response_bytes
+        self._audio_transport = audio_transport
+        self._opus_codec = None
         self._lock = RLock()
         self._generation = 0
         self._active_operation: _PrepareOperation | None = None
@@ -310,7 +317,7 @@ class RemoteChunkClient:
     ) -> RemoteChunkResponse:
         self._ensure_before_deadline(deadline, operation)
         headers = {
-            "accept": RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+            "accept": self._accept_header(),
             "content-type": "application/json",
             "idempotency-key": request_id,
         }
@@ -326,7 +333,7 @@ class RemoteChunkClient:
                     if response.status_code != 200:
                         raise RemoteChunkProtocolError(f"remote render request failed: HTTP {response.status_code}")
                     content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-                    if content_type != RAP_CHUNK_PACKAGE_MEDIA_TYPE:
+                    if content_type not in self._accepted_media_types():
                         raise RemoteChunkProtocolError("remote render response has an unsupported media type")
                     declared_length = response.headers.get("content-length")
                     if declared_length is not None and (not declared_length.isdigit() or int(declared_length) > self._max_response_bytes):
@@ -345,7 +352,7 @@ class RemoteChunkClient:
         if completed >= deadline:
             raise RemoteChunkDeadlineExceeded("remote chunk deadline elapsed before response preparation")
         try:
-            package = decode_chunk_package(data, expected_request_id=request_id)
+            package = self._decode_package(data, content_type, request_id)
         except ValueError as error:
             raise RemoteChunkProtocolError("remote chunk package is invalid") from error
         self._raise_if_cancelled(operation)
@@ -361,6 +368,31 @@ class RemoteChunkClient:
                 attempts=attempts,
             ),
         )
+
+    def _accept_header(self) -> str:
+        if self._audio_transport == "opus":
+            return f"{RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE}, {RAP_CHUNK_PACKAGE_MEDIA_TYPE};q=0.9"
+        return RAP_CHUNK_PACKAGE_MEDIA_TYPE
+
+    def _accepted_media_types(self) -> frozenset[str]:
+        if self._audio_transport == "opus":
+            return frozenset((RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE, RAP_CHUNK_PACKAGE_MEDIA_TYPE))
+        return frozenset((RAP_CHUNK_PACKAGE_MEDIA_TYPE,))
+
+    def _decode_package(
+        self, data: bytes, content_type: str, request_id: str
+    ) -> DecodedRapChunkPackage:
+        if content_type == RAP_CHUNK_PACKAGE_MEDIA_TYPE:
+            return decode_chunk_package(data, expected_request_id=request_id)
+        if content_type == RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE and self._audio_transport == "opus":
+            if self._opus_codec is None:
+                from streammuse.infrastructure.rap.opus_codec import FFmpegOpusCodec
+
+                self._opus_codec = FFmpegOpusCodec()
+            return decode_opus_chunk_package(
+                data, expected_request_id=request_id, codec=self._opus_codec
+            )
+        raise ValueError("remote render response has an unsupported media type")
 
     def _read_bounded_response(
         self,
