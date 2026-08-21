@@ -16,6 +16,7 @@ from streammuse.domain.rap.models import BeatSlot, ScheduledSyllable, Syllable
 
 REMOTE_CHUNK_SCHEMA_VERSION = "streammuse.rap_chunk.v1"
 REMOTE_CHUNK_SAMPLE_RATE_HZ = 24_000
+MAX_REMOTE_DIAGNOSTIC_SUMMARIES = 8
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -144,6 +145,135 @@ class RemoteCandidatePolicy:
         payload = _mapping(value, "candidate policy")
         _keys(payload, set(cls("x", 1, 0, 1, 1, 0.0, 0).to_payload()), "candidate policy")
         return cls(**payload)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class RemoteCandidateStats:
+    requested_count: int
+    parseable_count: int
+    valid_count: int
+    selectable_count: int
+    top_candidates: tuple[Mapping[str, object], ...]
+    rejections: tuple[Mapping[str, object], ...]
+
+    def __post_init__(self) -> None:
+        counts = (self.requested_count, self.parseable_count, self.valid_count, self.selectable_count)
+        if any(not isinstance(value, int) or value < 0 for value in counts):
+            raise ValueError("candidate counts must be non-negative integers")
+        if not self.selectable_count <= self.valid_count <= self.parseable_count <= self.requested_count:
+            raise ValueError("candidate counts must be monotonically decreasing")
+        for name, values in (("top_candidates", self.top_candidates), ("rejections", self.rejections)):
+            if not isinstance(values, tuple) or len(values) > MAX_REMOTE_DIAGNOSTIC_SUMMARIES:
+                raise ValueError(f"{name} must be a bounded tuple")
+            if not all(isinstance(value, Mapping) for value in values):
+                raise ValueError(f"{name} must contain mappings")
+            object.__setattr__(self, name, tuple(_freeze(value) for value in values))
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "requested_count": self.requested_count,
+            "parseable_count": self.parseable_count,
+            "valid_count": self.valid_count,
+            "selectable_count": self.selectable_count,
+            "top_candidates": [_thaw(value) for value in self.top_candidates],
+            "rejections": [_thaw(value) for value in self.rejections],
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> RemoteCandidateStats:
+        payload = _mapping(value, "candidate stats")
+        _keys(payload, {"requested_count", "parseable_count", "valid_count", "selectable_count", "top_candidates", "rejections"}, "candidate stats")
+        top_candidates, rejections = payload["top_candidates"], payload["rejections"]
+        if not isinstance(top_candidates, list) or not isinstance(rejections, list):
+            raise ValueError("candidate summaries and rejections must be arrays")
+        return cls(
+            payload["requested_count"], payload["parseable_count"], payload["valid_count"], payload["selectable_count"],
+            tuple(_mapping(item, "candidate summary") for item in top_candidates),
+            tuple(_mapping(item, "candidate rejection") for item in rejections),
+        )  # type: ignore[arg-type]
+
+
+_REQUIRED_STAGE_TIMINGS = {"generation", "evaluation", "moss", "mfa", "warp", "packaging", "total"}
+_REQUIRED_ALIGNMENT_DIAGNOSTICS = {"fallback_counts", "source_anchors", "target_anchors", "local_warp_ratios"}
+_REQUIRED_AUDIO_DIAGNOSTICS = {"sample_rate_hz", "frame_count", "duration_seconds", "peak"}
+
+
+@dataclass(frozen=True)
+class RemoteRapChunkDiagnostics:
+    accepted_request_budget_ms: int
+    resolved_policy: RemoteCandidatePolicy
+    candidate_stats: RemoteCandidateStats
+    stage_timings_ms: Mapping[str, float]
+    alignment_diagnostics: Mapping[str, object]
+    audio_diagnostics: Mapping[str, object]
+    model_tool_versions: Mapping[str, str]
+    warnings: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accepted_request_budget_ms, int) or self.accepted_request_budget_ms <= 0:
+            raise ValueError("accepted_request_budget_ms must be a positive integer")
+        if not isinstance(self.resolved_policy, RemoteCandidatePolicy):
+            raise ValueError("resolved_policy must be a RemoteCandidatePolicy")
+        if not isinstance(self.candidate_stats, RemoteCandidateStats):
+            raise ValueError("candidate_stats must be RemoteCandidateStats")
+        if not isinstance(self.stage_timings_ms, Mapping) or set(self.stage_timings_ms) != _REQUIRED_STAGE_TIMINGS:
+            raise ValueError("stage_timings_ms must contain every required stage")
+        if any(not isinstance(value, (int, float)) or not isfinite(value) or value < 0 for value in self.stage_timings_ms.values()):
+            raise ValueError("stage timings must be finite non-negative numbers")
+        alignment = _mapping(self.alignment_diagnostics, "alignment_diagnostics")
+        if set(alignment) != _REQUIRED_ALIGNMENT_DIAGNOSTICS:
+            raise ValueError("alignment_diagnostics must contain every required field")
+        fallback_counts = _mapping(alignment["fallback_counts"], "alignment fallback_counts")
+        anchors = (alignment["source_anchors"], alignment["target_anchors"], alignment["local_warp_ratios"])
+        if any(not isinstance(value, int) or value < 0 for value in fallback_counts.values()):
+            raise ValueError("alignment fallback counts must be non-negative integers")
+        if any(not isinstance(items, (list, tuple)) or any(not isinstance(item, (int, float)) or not isfinite(item) for item in items) for items in anchors):
+            raise ValueError("alignment anchors and ratios must be finite arrays")
+        audio = _mapping(self.audio_diagnostics, "audio_diagnostics")
+        if set(audio) != _REQUIRED_AUDIO_DIAGNOSTICS:
+            raise ValueError("audio_diagnostics must contain every required field")
+        if not isinstance(audio["sample_rate_hz"], int) or audio["sample_rate_hz"] <= 0 or not isinstance(audio["frame_count"], int) or audio["frame_count"] <= 0:
+            raise ValueError("audio diagnostics require positive sample rate and frame count")
+        if any(not isinstance(audio[key], (int, float)) or not isfinite(audio[key]) or audio[key] < 0 for key in ("duration_seconds", "peak")):
+            raise ValueError("audio duration and peak must be finite non-negative numbers")
+        if not isinstance(self.model_tool_versions, Mapping) or not self.model_tool_versions or not all(isinstance(key, str) and key and isinstance(value, str) and value for key, value in self.model_tool_versions.items()):
+            raise ValueError("model_tool_versions must be a non-empty mapping of strings")
+        if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) for item in self.warnings):
+            raise ValueError("warnings must be a tuple of strings")
+        object.__setattr__(self, "stage_timings_ms", _freeze(self.stage_timings_ms))
+        object.__setattr__(self, "alignment_diagnostics", _freeze(alignment))
+        object.__setattr__(self, "audio_diagnostics", _freeze(audio))
+        object.__setattr__(self, "model_tool_versions", _freeze(self.model_tool_versions))
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "accepted_request_budget_ms": self.accepted_request_budget_ms,
+            "resolved_policy": self.resolved_policy.to_payload(),
+            "candidate_stats": self.candidate_stats.to_payload(),
+            "stage_timings_ms": _thaw(self.stage_timings_ms),
+            "alignment_diagnostics": _thaw(self.alignment_diagnostics),
+            "audio_diagnostics": _thaw(self.audio_diagnostics),
+            "model_tool_versions": _thaw(self.model_tool_versions),
+            "warnings": list(self.warnings),
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> RemoteRapChunkDiagnostics:
+        payload = _mapping(value, "remote chunk diagnostics")
+        _keys(payload, {"accepted_request_budget_ms", "resolved_policy", "candidate_stats", "stage_timings_ms", "alignment_diagnostics", "audio_diagnostics", "model_tool_versions", "warnings"}, "remote chunk diagnostics")
+        warnings = payload["warnings"]
+        if not isinstance(warnings, list):
+            raise ValueError("warnings must be an array")
+        return cls(
+            payload["accepted_request_budget_ms"],
+            RemoteCandidatePolicy.from_payload(payload["resolved_policy"]),
+            RemoteCandidateStats.from_payload(payload["candidate_stats"]),
+            _mapping(payload["stage_timings_ms"], "stage_timings_ms"),  # type: ignore[arg-type]
+            _mapping(payload["alignment_diagnostics"], "alignment_diagnostics"),
+            _mapping(payload["audio_diagnostics"], "audio_diagnostics"),
+            _mapping(payload["model_tool_versions"], "model_tool_versions"),  # type: ignore[arg-type]
+            tuple(warnings),  # type: ignore[arg-type]
+        )
 
 
 @dataclass(frozen=True)
@@ -277,6 +407,10 @@ class RemoteRapChunkRequest:
     def canonical_json_bytes(self) -> bytes:
         return _canonical_json_bytes(self.to_payload())
 
+    def transport_attempt(self) -> RemoteRapChunkTransportAttempt:
+        """Capture immutable bytes for this request's initial transport attempt and retries."""
+        return RemoteRapChunkTransportAttempt.from_request(self)
+
     @classmethod
     def from_payload(cls, value: object) -> RemoteRapChunkRequest:
         payload = _mapping(value, "remote chunk request")
@@ -290,6 +424,36 @@ class RemoteRapChunkRequest:
             payload["tempo_bpm"], payload["output_sample_rate_hz"], payload["expected_frame_count"],
             payload["remaining_budget_ms"], RemoteCandidatePolicy.from_payload(payload["policy"]), tuple(lines), payload["seed"],
         )  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class RemoteRapChunkTransportAttempt:
+    """An immutable request body that must be reused verbatim for retries."""
+
+    request_id: str
+    body: bytes
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_id, str) or not self.request_id:
+            raise ValueError("transport attempt request_id must be a non-empty string")
+        if not isinstance(self.body, bytes):
+            raise ValueError("transport attempt body must be bytes")
+        try:
+            request = RemoteRapChunkRequest.from_payload(json.loads(self.body.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            raise ValueError("transport attempt body must be a valid canonical request") from error
+        if request.request_id != self.request_id or request.canonical_json_bytes() != self.body:
+            raise ValueError("transport attempt body does not match its request identity")
+
+    @classmethod
+    def from_request(cls, request: RemoteRapChunkRequest) -> RemoteRapChunkTransportAttempt:
+        if not isinstance(request, RemoteRapChunkRequest):
+            raise ValueError("transport attempts require a RemoteRapChunkRequest")
+        return cls(request.request_id, request.canonical_json_bytes())
+
+    def retry_body(self) -> bytes:
+        """Return the original canonical body, including its original budget, unchanged."""
+        return self.body
 
 
 def _scheduled_payload(item: ScheduledSyllable) -> dict[str, object]:
@@ -340,13 +504,25 @@ class RemoteSelectedBar:
             raise ValueError("selected bar score must be finite")
         if not isinstance(self.diagnostics, Mapping):
             raise ValueError("selected bar diagnostics must be a mapping")
+        component_scores = self.diagnostics.get("component_scores")
+        if not isinstance(component_scores, Mapping) or not component_scores:
+            raise ValueError("selected bar diagnostics must include component_scores")
+        if any(not isinstance(key, str) or not key or not isinstance(value, (int, float)) or not isfinite(value) for key, value in component_scores.items()):
+            raise ValueError("component_scores must be finite named scores")
         object.__setattr__(self, "diagnostics", _freeze(self.diagnostics))
 
     @classmethod
     def create(cls, request: RemoteRapBarRequest, *, text: str, scheduled: tuple[ScheduledSyllable, ...], score: float, diagnostics: Mapping[str, object] | None = None) -> RemoteSelectedBar:
         if tuple(item.slot for item in scheduled) != materialize_flow(request.flow_template, request.bar):
             raise ValueError("selected bar identity must match the requested materialized flow")
-        return cls(request.bar, text, request.flow_template.template_id, scheduled, score, {} if diagnostics is None else diagnostics)
+        return cls(
+            request.bar,
+            text,
+            request.flow_template.template_id,
+            scheduled,
+            score,
+            {"component_scores": {"total": score}} if diagnostics is None else diagnostics,
+        )
 
     def to_payload(self) -> dict[str, object]:
         return {"bar": self.bar, "text": self.text, "flow_template_id": self.flow_template_id, "scheduled": [_scheduled_payload(item) for item in self.scheduled], "score": self.score, "diagnostics": _thaw(self.diagnostics)}
@@ -369,7 +545,7 @@ class RemoteRapChunkManifest:
     output_sample_rate_hz: int
     expected_frame_count: int
     selected_bars: tuple[RemoteSelectedBar, RemoteSelectedBar]
-    diagnostics: Mapping[str, object]
+    diagnostics: RemoteRapChunkDiagnostics
     vocal_sha256: str
     schema_version: str = REMOTE_CHUNK_SCHEMA_VERSION
 
@@ -382,14 +558,15 @@ class RemoteRapChunkManifest:
             raise ValueError("manifest timing does not match the two-bar 24 kHz contract")
         if not isinstance(self.selected_bars, tuple) or len(self.selected_bars) != 2 or not all(isinstance(item, RemoteSelectedBar) for item in self.selected_bars) or self.selected_bars[1].bar != self.selected_bars[0].bar + 1:
             raise ValueError("manifest requires two consecutive selected bars")
-        if not isinstance(self.diagnostics, Mapping):
-            raise ValueError("manifest diagnostics must be a mapping")
+        if not isinstance(self.diagnostics, RemoteRapChunkDiagnostics):
+            raise ValueError("manifest diagnostics must be RemoteRapChunkDiagnostics")
+        if self.diagnostics.audio_diagnostics["sample_rate_hz"] != self.output_sample_rate_hz or self.diagnostics.audio_diagnostics["frame_count"] != self.expected_frame_count:
+            raise ValueError("manifest audio diagnostics must match the declared audio format")
         if not isinstance(self.vocal_sha256, str) or len(self.vocal_sha256) != 64 or any(item not in "0123456789abcdef" for item in self.vocal_sha256):
             raise ValueError("manifest vocal_sha256 must be a lowercase SHA-256 hex digest")
-        object.__setattr__(self, "diagnostics", _freeze(self.diagnostics))
 
     def to_payload(self) -> dict[str, object]:
-        return {"schema_version": self.schema_version, "request_id": self.request_id, "chunk_index": self.chunk_index, "tempo_bpm": self.tempo_bpm, "output_sample_rate_hz": self.output_sample_rate_hz, "expected_frame_count": self.expected_frame_count, "selected_bars": [item.to_payload() for item in self.selected_bars], "diagnostics": _thaw(self.diagnostics), "vocal_sha256": self.vocal_sha256}
+        return {"schema_version": self.schema_version, "request_id": self.request_id, "chunk_index": self.chunk_index, "tempo_bpm": self.tempo_bpm, "output_sample_rate_hz": self.output_sample_rate_hz, "expected_frame_count": self.expected_frame_count, "selected_bars": [item.to_payload() for item in self.selected_bars], "diagnostics": self.diagnostics.to_payload(), "vocal_sha256": self.vocal_sha256}
 
     def canonical_json_bytes(self) -> bytes:
         return _canonical_json_bytes(self.to_payload())
@@ -401,7 +578,7 @@ class RemoteRapChunkManifest:
         bars = payload["selected_bars"]
         if not isinstance(bars, list) or len(bars) != 2:
             raise ValueError("manifest selected_bars must be a two-item array")
-        return cls(payload["request_id"], payload["chunk_index"], payload["tempo_bpm"], payload["output_sample_rate_hz"], payload["expected_frame_count"], (RemoteSelectedBar.from_payload(bars[0]), RemoteSelectedBar.from_payload(bars[1])), _mapping(payload["diagnostics"], "manifest diagnostics"), payload["vocal_sha256"], payload["schema_version"])  # type: ignore[arg-type]
+        return cls(payload["request_id"], payload["chunk_index"], payload["tempo_bpm"], payload["output_sample_rate_hz"], payload["expected_frame_count"], (RemoteSelectedBar.from_payload(bars[0]), RemoteSelectedBar.from_payload(bars[1])), RemoteRapChunkDiagnostics.from_payload(payload["diagnostics"]), payload["vocal_sha256"], payload["schema_version"])  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

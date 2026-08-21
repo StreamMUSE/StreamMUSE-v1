@@ -13,8 +13,11 @@ from streammuse.domain.rap import (
     PcmAudio,
     PreparedRapBar,
     RemoteCandidatePolicy,
+    RemoteCandidateStats,
     RemoteRapBarRequest,
+    RemoteRapChunkDiagnostics,
     RemoteRapChunkRequest,
+    RemoteRapChunkTransportAttempt,
     RemoteRapChunkManifest,
     RemoteSelectedBar,
     ScheduledSyllable,
@@ -58,6 +61,44 @@ def remote_request(
         policy=RemoteCandidatePolicy.realtime_default(),
         context_lines=("previous line",),
         seed=7,
+    )
+
+
+def diagnostics(flow: FlowTemplate) -> RemoteRapChunkDiagnostics:
+    return RemoteRapChunkDiagnostics(
+        accepted_request_budget_ms=5_000,
+        resolved_policy=RemoteCandidatePolicy.realtime_default(),
+        candidate_stats=RemoteCandidateStats(
+            requested_count=6,
+            parseable_count=5,
+            valid_count=3,
+            selectable_count=2,
+            top_candidates=({"text": "orbit", "score": 0.9},),
+            rejections=({"text": "noise", "reason": "flow_mismatch"},),
+        ),
+        stage_timings_ms={
+            "generation": 1.0,
+            "evaluation": 1.0,
+            "moss": 1.0,
+            "mfa": 1.0,
+            "warp": 1.0,
+            "packaging": 1.0,
+            "total": 7.0,
+        },
+        alignment_diagnostics={
+            "fallback_counts": {"word": 0},
+            "source_anchors": [0.0],
+            "target_anchors": [0.0],
+            "local_warp_ratios": [1.0],
+        },
+        audio_diagnostics={
+            "sample_rate_hz": 24_000,
+            "frame_count": 128_000,
+            "duration_seconds": 128_000 / 24_000,
+            "peak": 0.5,
+        },
+        model_tool_versions={"moss": "test", "mfa": "test", "rubberband": "test"},
+        warnings=(),
     )
 
 
@@ -131,6 +172,18 @@ def test_remote_request_id_excludes_budget_while_retry_body_keeps_original_budge
     assert RemoteRapChunkRequest.from_payload(original.to_payload()) == original
 
 
+def test_transport_attempt_reuses_original_bytes_when_equivalent_request_has_lower_budget(flow: FlowTemplate) -> None:
+    original = remote_request(flow, remaining_budget_ms=5_000)
+    attempt = RemoteRapChunkTransportAttempt.from_request(original)
+    equivalent_lower_budget = remote_request(flow, remaining_budget_ms=1_000)
+
+    assert equivalent_lower_budget.request_id == original.request_id
+    assert equivalent_lower_budget.canonical_json_bytes() != attempt.body
+    assert attempt.request_id == original.request_id
+    assert attempt.body == original.canonical_json_bytes()
+    assert attempt.retry_body() == attempt.body
+
+
 def test_remote_request_derives_exact_24khz_two_bar_frame_count(flow: FlowTemplate) -> None:
     request = remote_request(flow)
 
@@ -176,7 +229,7 @@ def test_manifest_and_prepared_chunk_keep_diagnostics_immutable(flow: FlowTempla
         output_sample_rate_hz=request.output_sample_rate_hz,
         expected_frame_count=request.expected_frame_count,
         selected_bars=(selected, second_selected),
-        diagnostics={"timings": {"total_ms": 10}},
+        diagnostics=diagnostics(flow),
         vocal_sha256="a" * 64,
     )
     prepared_bar = PreparedRapBar(
@@ -209,14 +262,58 @@ def test_manifest_and_prepared_chunk_keep_diagnostics_immutable(flow: FlowTempla
         diagnostics={"source": "remote"},
     )
 
-    with pytest.raises(TypeError):
-        manifest.diagnostics["new"] = "value"  # type: ignore[index]
-    with pytest.raises(TypeError):
-        manifest.diagnostics["timings"]["total_ms"] = 11  # type: ignore[index]
+    with pytest.raises(FrozenInstanceError):
+        manifest.diagnostics.accepted_request_budget_ms = 1  # type: ignore[misc]
     with pytest.raises(TypeError):
         chunk.diagnostics["source"] = "local"  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         chunk.renderer = "espeak"  # type: ignore[misc]
+
+
+def test_manifest_requires_complete_diagnostic_envelope(flow: FlowTemplate) -> None:
+    request = remote_request(flow)
+    selected = tuple(
+        RemoteSelectedBar.create(
+            request.bars[bar],
+            text="orbit orbit",
+            scheduled=tuple(
+                ScheduledSyllable(slot=slot, syllable=Syllable("orbit", 0, 1, 1))
+                for slot in materialize_flow(flow, bar=bar)
+            ),
+            score=0.9,
+        )
+        for bar in range(2)
+    )
+
+    with pytest.raises(ValueError, match="diagnostics"):
+        RemoteRapChunkManifest(
+            request_id=request.request_id,
+            chunk_index=request.chunk_index,
+            tempo_bpm=request.tempo_bpm,
+            output_sample_rate_hz=request.output_sample_rate_hz,
+            expected_frame_count=request.expected_frame_count,
+            selected_bars=selected,
+            diagnostics={},  # type: ignore[arg-type]
+            vocal_sha256="a" * 64,
+        )
+
+
+def test_selected_bar_requires_component_scores(flow: FlowTemplate) -> None:
+    request = remote_request(flow)
+    scheduled = tuple(
+        ScheduledSyllable(slot=slot, syllable=Syllable("orbit", 0, 1, 1))
+        for slot in materialize_flow(flow, bar=0)
+    )
+
+    with pytest.raises(ValueError, match="component_scores"):
+        RemoteSelectedBar(
+            bar=0,
+            text="orbit orbit",
+            flow_template_id=flow.template_id,
+            scheduled=scheduled,
+            score=0.9,
+            diagnostics={},
+        )
 
 
 def test_prepared_chunk_requires_exactly_two_consecutive_bars() -> None:

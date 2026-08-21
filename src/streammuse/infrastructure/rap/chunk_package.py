@@ -48,8 +48,12 @@ def _validate_wav(vocal_wav: bytes, manifest: RemoteRapChunkManifest) -> None:
             if wav.getnframes() != manifest.expected_frame_count:
                 raise ValueError("vocals WAV frame count does not match the manifest")
             samples_bytes = wav.readframes(wav.getnframes())
-    except wave.Error as error:
+    except (EOFError, wave.Error) as error:
         raise ValueError("invalid vocals WAV") from error
+
+    expected_bytes = manifest.expected_frame_count * 2
+    if len(samples_bytes) != expected_bytes:
+        raise ValueError("vocals WAV data payload is truncated")
 
     samples = array("h")
     samples.frombytes(samples_bytes)

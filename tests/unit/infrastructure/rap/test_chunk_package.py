@@ -15,7 +15,9 @@ from streammuse.domain.rap import (
     FlowSlot,
     FlowTemplate,
     RemoteCandidatePolicy,
+    RemoteCandidateStats,
     RemoteRapBarRequest,
+    RemoteRapChunkDiagnostics,
     RemoteRapChunkManifest,
     RemoteRapChunkRequest,
     RemoteSelectedBar,
@@ -96,7 +98,34 @@ def manifest() -> RemoteRapChunkManifest:
         output_sample_rate_hz=request.output_sample_rate_hz,
         expected_frame_count=request.expected_frame_count,
         selected_bars=selected,
-        diagnostics={"timings": {"total_ms": 10}},
+        diagnostics=RemoteRapChunkDiagnostics(
+            accepted_request_budget_ms=5_000,
+            resolved_policy=RemoteCandidatePolicy.realtime_default(),
+            candidate_stats=RemoteCandidateStats(6, 5, 3, 2, ({"text": "orbit", "score": 0.9},), ()),
+            stage_timings_ms={
+                "generation": 1.0,
+                "evaluation": 1.0,
+                "moss": 1.0,
+                "mfa": 1.0,
+                "warp": 1.0,
+                "packaging": 1.0,
+                "total": 7.0,
+            },
+            alignment_diagnostics={
+                "fallback_counts": {"word": 0},
+                "source_anchors": [0.0],
+                "target_anchors": [0.0],
+                "local_warp_ratios": [1.0],
+            },
+            audio_diagnostics={
+                "sample_rate_hz": 24_000,
+                "frame_count": 128_000,
+                "duration_seconds": 128_000 / 24_000,
+                "peak": 0.5,
+            },
+            model_tool_versions={"moss": "test", "mfa": "test", "rubberband": "test"},
+            warnings=(),
+        ),
         vocal_sha256=hashlib.sha256(vocal_wav).hexdigest(),
     )
 
@@ -169,6 +198,25 @@ def test_package_rejects_oversized_archive() -> None:
         decode_chunk_package(b"x" * (4 * 1024 * 1024 + 1), expected_request_id="request-1")
 
 
+def test_package_rejects_oversized_compressed_member() -> None:
+    encoded = _archive([("manifest.json", b"{}"), ("vocals.wav", b"\0" * (4 * 1024 * 1024 + 1))])
+
+    with pytest.raises(ValueError, match="member exceeds 4 MiB"):
+        decode_chunk_package(encoded, expected_request_id="request-1")
+
+
+def test_package_rejects_oversized_combined_uncompressed_contents() -> None:
+    encoded = _archive(
+        [
+            ("manifest.json", b"\0" * (2 * 1024 * 1024 + 1)),
+            ("vocals.wav", b"\0" * (2 * 1024 * 1024)),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="contents exceed 4 MiB"):
+        decode_chunk_package(encoded, expected_request_id="request-1")
+
+
 def test_package_rejects_malformed_manifest_json(vocal_wav_bytes: bytes) -> None:
     encoded = _archive([("manifest.json", b"{"), ("vocals.wav", vocal_wav_bytes)])
 
@@ -207,4 +255,22 @@ def test_package_rejects_non_finite_decoded_samples(manifest: RemoteRapChunkMani
     )
 
     with pytest.raises(ValueError, match="PCM16|non-finite"):
+        decode_chunk_package(encoded, expected_request_id=manifest.request_id)
+
+
+def test_package_rejects_wav_with_truncated_data_payload(
+    manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes
+) -> None:
+    encoded = _archive(
+        [("manifest.json", manifest.canonical_json_bytes()), ("vocals.wav", vocal_wav_bytes[:-2])]
+    )
+
+    with pytest.raises(ValueError, match="truncated"):
+        decode_chunk_package(encoded, expected_request_id=manifest.request_id)
+
+
+def test_package_normalizes_truncated_riff_header_to_value_error(manifest: RemoteRapChunkManifest) -> None:
+    encoded = _archive([("manifest.json", manifest.canonical_json_bytes()), ("vocals.wav", b"RIFF")])
+
+    with pytest.raises(ValueError, match="invalid vocals WAV"):
         decode_chunk_package(encoded, expected_request_id=manifest.request_id)
