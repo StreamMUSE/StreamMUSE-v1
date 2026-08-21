@@ -101,7 +101,23 @@ def manifest() -> RemoteRapChunkManifest:
         diagnostics=RemoteRapChunkDiagnostics(
             accepted_request_budget_ms=5_000,
             resolved_policy=RemoteCandidatePolicy.realtime_default(),
-            candidate_stats=RemoteCandidateStats(6, 5, 3, 2, ({"text": "orbit", "score": 0.9},), ()),
+            candidate_stats=RemoteCandidateStats(
+                6,
+                5,
+                3,
+                2,
+                (
+                    {
+                        "bar": 0,
+                        "candidate_id": "candidate-1",
+                        "text": "orbit",
+                        "score": 0.9,
+                        "component_scores": {"flow": 0.9},
+                        "source_order": 0,
+                    },
+                ),
+                (),
+            ),
             stage_timings_ms={
                 "generation": 1.0,
                 "evaluation": 1.0,
@@ -142,6 +158,15 @@ def _archive(members: list[tuple[str, bytes]]) -> bytes:
             for name, data in members:
                 archive.writestr(name, data)
     return buffer.getvalue()
+
+
+def _with_unsupported_compression(package: bytes) -> bytes:
+    modified = bytearray(package)
+    local_header = modified.index(b"PK\x03\x04")
+    central_header = modified.index(b"PK\x01\x02")
+    struct.pack_into("<H", modified, local_header + 8, zipfile.ZIP_BZIP2)
+    struct.pack_into("<H", modified, central_header + 10, zipfile.ZIP_BZIP2)
+    return bytes(modified)
 
 
 def test_package_round_trip(manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes) -> None:
@@ -219,6 +244,23 @@ def test_package_rejects_oversized_combined_uncompressed_contents() -> None:
 
 def test_package_rejects_malformed_manifest_json(vocal_wav_bytes: bytes) -> None:
     encoded = _archive([("manifest.json", b"{"), ("vocals.wav", vocal_wav_bytes)])
+
+    with pytest.raises(ValueError, match="manifest JSON"):
+        decode_chunk_package(encoded, expected_request_id="request-1")
+
+
+def test_package_rejects_unsupported_member_compression(
+    manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes
+) -> None:
+    encoded = _with_unsupported_compression(encode_chunk_package(manifest, vocal_wav_bytes))
+
+    with pytest.raises(ValueError, match="compression"):
+        decode_chunk_package(encoded, expected_request_id=manifest.request_id)
+
+
+def test_package_normalizes_excessively_nested_manifest_json(vocal_wav_bytes: bytes) -> None:
+    nested_json = b"[" * 1_100 + b"0" + b"]" * 1_100
+    encoded = _archive([("manifest.json", nested_json), ("vocals.wav", vocal_wav_bytes)])
 
     with pytest.raises(ValueError, match="manifest JSON"):
         decode_chunk_package(encoded, expected_request_id="request-1")

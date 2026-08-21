@@ -170,3 +170,108 @@ Outcome: `54 passed in 0.64s`.
 ### Follow-Up Commit
 
 `harden remote rap chunk contracts` (follow-up commit)
+
+## Second Review-Fix Loop (2026-08-21)
+
+### Implementation
+
+- Rejected JSON booleans in all numeric request, policy, flow, selected-bar,
+  manifest, candidate-summary, timing, alignment, audio, and fallback-count
+  fields. Wire diagnostics now recursively accept only finite JSON values and
+  immutable mappings/sequences.
+- Made successful selected bars structurally valid: nonblank text, nonempty
+  ordered unique slots, consistent bar/template identity, bounded slot fields,
+  and validated syllable word/index/count/stress/phoneme/source primitives.
+  The contract intentionally does not compare the entire schedule to an
+  originating request; that remains Task 5 behavior.
+- Replaced arbitrary candidate/rejection diagnostic mappings with strict
+  required-key records. Summaries have finite component scores, nonblank IDs
+  and top text, nonempty rejection reasons, immutable JSON-safe values, and
+  count-derived plus maximum-eight bounds.
+- Enforced the re-review diagnostic invariants: nonempty equal anchor arrays,
+  positive finite warp ratios, duration within one sample of frames/rate, peak
+  in `[0, 1]`, nonempty `moss`/`mfa`/`rubberband` versions, and total timing no
+  smaller than any component timing.
+- Restricted package members to `ZIP_STORED` and `ZIP_DEFLATED`; unsupported
+  compression and ZIP/JSON bounded-parser failures now normalize to
+  `ValueError`.
+- Preserved the existing request identity and immutable transport attempt:
+  `remaining_budget_ms` remains excluded from `request_id`, while retry bytes
+  retain the original canonical request body and budget exactly.
+
+### Changed Paths
+
+- `src/streammuse/domain/rap/remote_chunk.py`
+- `src/streammuse/infrastructure/rap/chunk_package.py`
+- `tests/unit/domain/rap/test_remote_chunk.py`
+- `tests/unit/infrastructure/rap/test_chunk_package.py`
+- `.superpowers/sdd/2026-08-21-realtime-remote-moss-renderer/task-1-report.md`
+
+### TDD Evidence
+
+RED command:
+
+```bash
+uv run pytest tests/unit/domain/rap/test_remote_chunk.py -q --tb=short
+```
+
+Outcome: `19 failed, 23 passed`; the new numeric-wire rejection cases exposed
+boolean acceptance across the transport contract.
+
+Complete RED command:
+
+```bash
+uv run pytest tests/unit/domain/rap/test_remote_chunk.py tests/unit/infrastructure/rap/test_chunk_package.py -q --tb=short
+```
+
+Outcome: `45 failed, 42 passed`; additionally exposed empty/malformed selected
+bars, unconstrained diagnostic summaries, unsupported ZIP compression escaping
+the boundary, and nested JSON `RecursionError` leakage.
+
+GREEN focused command:
+
+```bash
+uv run pytest tests/unit/domain/rap/test_remote_chunk.py tests/unit/infrastructure/rap/test_chunk_package.py -q --tb=short
+```
+
+Outcome: `89 passed in 0.68s`.
+
+Adjacent regression command:
+
+```bash
+uv run pytest tests/unit/domain/rap tests/unit/infrastructure/rap -q --tb=short
+```
+
+Outcome: `374 passed in 1.38s`.
+
+Quality command:
+
+```bash
+git diff --check
+```
+
+Outcome: no whitespace errors.
+
+### Self-Review
+
+- Verified all response mappings that reach canonical JSON are frozen and
+  recursively JSON-safe with finite numbers; `json.dumps(..., allow_nan=False)`
+  remains used for canonical request and manifest serialization.
+- Verified ZIP validation occurs before member reads, so unsupported methods do
+  not reach decompression; malformed ZIP/JSON decoding now has a stable
+  `ValueError` boundary.
+- Verified no request-ID field was added or removed. The original transport
+  attempt behavior and byte-for-byte retry test remain intact.
+- Verified only Task 1 production/tests/report paths will be staged. In
+  particular, coordinator-owned `progress.md` and `task-2-brief.md` are not
+  part of this follow-up commit.
+
+### Concerns
+
+- Full-repository tests were not run because the worktree contains extensive
+  unrelated uncommitted work. Focused and adjacent Task 1 rap modules are
+  green.
+
+### Follow-Up Commit
+
+`tighten remote rap chunk wire contracts` (follow-up commit)

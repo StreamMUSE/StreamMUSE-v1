@@ -11,6 +11,7 @@ from math import isfinite
 from pathlib import PurePosixPath
 import wave
 import zipfile
+import zlib
 
 from streammuse.domain.rap.remote_chunk import REMOTE_CHUNK_SAMPLE_RATE_HZ, RemoteRapChunkManifest
 
@@ -20,6 +21,7 @@ MAX_RAP_CHUNK_PACKAGE_BYTES = 4 * 1024 * 1024
 _MANIFEST_MEMBER = "manifest.json"
 _VOCALS_MEMBER = "vocals.wav"
 _MEMBERS = (_MANIFEST_MEMBER, _VOCALS_MEMBER)
+_ALLOWED_COMPRESSIONS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 
 
 @dataclass(frozen=True)
@@ -108,18 +110,20 @@ def decode_chunk_package(package: bytes, *, expected_request_id: str) -> Decoded
                 raise ValueError("package contains unexpected or missing members")
             if any(member.flag_bits & 0x1 for member in members):
                 raise ValueError("package members must not be encrypted")
+            if any(member.compress_type not in _ALLOWED_COMPRESSIONS for member in members):
+                raise ValueError("package members use unsupported compression")
             if any(member.file_size > MAX_RAP_CHUNK_PACKAGE_BYTES for member in members):
                 raise ValueError("package member exceeds 4 MiB")
             if sum(member.file_size for member in members) > MAX_RAP_CHUNK_PACKAGE_BYTES:
                 raise ValueError("package contents exceed 4 MiB")
             manifest_bytes = archive.read(_MANIFEST_MEMBER)
             vocal_wav = archive.read(_VOCALS_MEMBER)
-    except zipfile.BadZipFile as error:
+    except (zipfile.BadZipFile, EOFError, NotImplementedError, OSError, RuntimeError, zlib.error) as error:
         raise ValueError("invalid rap chunk package ZIP") from error
 
     try:
         payload = json.loads(manifest_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
         raise ValueError("invalid manifest JSON") from error
     try:
         manifest = RemoteRapChunkManifest.from_payload(payload)

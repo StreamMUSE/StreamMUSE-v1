@@ -73,8 +73,25 @@ def diagnostics(flow: FlowTemplate) -> RemoteRapChunkDiagnostics:
             parseable_count=5,
             valid_count=3,
             selectable_count=2,
-            top_candidates=({"text": "orbit", "score": 0.9},),
-            rejections=({"text": "noise", "reason": "flow_mismatch"},),
+            top_candidates=(
+                {
+                    "bar": 0,
+                    "candidate_id": "candidate-1",
+                    "text": "orbit",
+                    "score": 0.9,
+                    "component_scores": {"flow": 0.9},
+                    "source_order": 0,
+                },
+            ),
+            rejections=(
+                {
+                    "bar": 0,
+                    "candidate_id": "candidate-2",
+                    "text": "noise",
+                    "reasons": ("flow_mismatch",),
+                    "source_order": 1,
+                },
+            ),
         ),
         stage_timings_ms={
             "generation": 1.0,
@@ -100,6 +117,194 @@ def diagnostics(flow: FlowTemplate) -> RemoteRapChunkDiagnostics:
         model_tool_versions={"moss": "test", "mfa": "test", "rubberband": "test"},
         warnings=(),
     )
+
+
+def _request_payload(flow: FlowTemplate) -> dict[str, object]:
+    return remote_request(flow).to_payload()
+
+
+def _refresh_request_id(payload: dict[str, object]) -> None:
+    identity = {key: value for key, value in payload.items() if key not in {"request_id", "remaining_budget_ms"}}
+    payload["request_id"] = RemoteRapChunkRequest.request_id_for(identity)
+
+
+def _selected_payload(flow: FlowTemplate) -> dict[str, object]:
+    request = remote_request(flow)
+    selected = RemoteSelectedBar.create(
+        request.bars[0],
+        text="orbit orbit",
+        scheduled=tuple(
+            ScheduledSyllable(slot=slot, syllable=Syllable("orbit", 0, 1, 1, ("AO1",), "cmu"))
+            for slot in materialize_flow(flow, bar=0)
+        ),
+        score=0.9,
+    )
+    return selected.to_payload()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.__setitem__("remaining_budget_ms", True),
+        lambda payload: payload.__setitem__("chunk_index", True),
+        lambda payload: payload.__setitem__("tempo_bpm", True),
+        lambda payload: payload.__setitem__("output_sample_rate_hz", True),
+        lambda payload: payload.__setitem__("expected_frame_count", True),
+        lambda payload: payload.__setitem__("seed", True),
+        lambda payload: payload["policy"].__setitem__("initial_candidates", True),  # type: ignore[union-attr]
+        lambda payload: payload["policy"].__setitem__("minimum_score", True),  # type: ignore[union-attr]
+    ),
+)
+def test_request_and_policy_wire_numbers_reject_booleans(flow: FlowTemplate, mutate) -> None:
+    payload = _request_payload(flow)
+    mutate(payload)
+    _refresh_request_id(payload)
+
+    with pytest.raises(ValueError):
+        RemoteRapChunkRequest.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload["bars"][0].__setitem__("bar", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["bars"][0]["flow_template"].__setitem__("ticks_per_beat", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["bars"][0]["flow_template"]["slots"][0].__setitem__("tick_in_bar", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["bars"][0]["flow_template"]["slots"][0].__setitem__("target_stress", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["bars"][0]["flow_template"]["provenance"].__setitem__("quantization_error_ticks", True),  # type: ignore[index,union-attr]
+    ),
+)
+def test_flow_wire_numbers_reject_booleans(flow: FlowTemplate, mutate) -> None:
+    payload = _request_payload(flow)
+    mutate(payload)
+    _refresh_request_id(payload)
+
+    with pytest.raises(ValueError):
+        RemoteRapChunkRequest.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "flow_slot",
+    (
+        FlowSlot(tick_in_bar=0, duration_ticks=1, target_stress=True),
+        FlowSlot(tick_in_bar=0, duration_ticks=1, target_stress=0.5, boundary_strength=True),
+    ),
+)
+def test_locally_created_flow_wire_numbers_reject_booleans(flow_slot: FlowSlot) -> None:
+    invalid_flow = FlowTemplate(
+        template_id="test_flow",
+        name="Test flow",
+        ticks_per_beat=4,
+        beats_per_bar=4,
+        slots=(flow_slot,),
+        provenance=FlowProvenance(kind="test", source="unit-test"),
+    )
+
+    with pytest.raises(ValueError):
+        RemoteRapBarRequest(0, "space", invalid_flow)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.__setitem__("bar", True),
+        lambda payload: payload.__setitem__("score", True),
+        lambda payload: payload["scheduled"][0]["slot"].__setitem__("tick", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["slot"].__setitem__("accent", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["syllable"].__setitem__("index_in_word", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["diagnostics"]["component_scores"].__setitem__("total", True),  # type: ignore[index,union-attr]
+    ),
+)
+def test_selected_bar_wire_numbers_reject_booleans(flow: FlowTemplate, mutate) -> None:
+    payload = _selected_payload(flow)
+    mutate(payload)
+
+    with pytest.raises(ValueError):
+        RemoteSelectedBar.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.__setitem__("accepted_request_budget_ms", True),
+        lambda payload: payload["candidate_stats"].__setitem__("requested_count", True),  # type: ignore[union-attr]
+        lambda payload: payload["candidate_stats"]["top_candidates"][0].__setitem__("score", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["stage_timings_ms"].__setitem__("moss", True),  # type: ignore[union-attr]
+        lambda payload: payload["alignment_diagnostics"]["fallback_counts"].__setitem__("word", True),  # type: ignore[index,union-attr]
+        lambda payload: payload["alignment_diagnostics"]["source_anchors"].__setitem__(0, True),  # type: ignore[index,union-attr]
+        lambda payload: payload["audio_diagnostics"].__setitem__("frame_count", True),  # type: ignore[union-attr]
+    ),
+)
+def test_diagnostic_wire_numbers_reject_booleans(flow: FlowTemplate, mutate) -> None:
+    payload = diagnostics(flow).to_payload()
+    mutate(payload)
+
+    with pytest.raises(ValueError):
+        RemoteRapChunkDiagnostics.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.__setitem__("text", " "),
+        lambda payload: payload.__setitem__("scheduled", []),
+        lambda payload: payload.__setitem__("scheduled", list(reversed(payload["scheduled"]))),
+        lambda payload: payload["scheduled"].__setitem__(1, payload["scheduled"][0]),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["slot"].__setitem__("duration_ticks", 0),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["slot"].__setitem__("accent", 1.1),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["syllable"].__setitem__("word", ""),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["syllable"].__setitem__("index_in_word", 1),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["syllable"].__setitem__("syllable_count", 0),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["syllable"].__setitem__("stress", 3),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["syllable"].__setitem__("phonemes", [""]),  # type: ignore[index,union-attr]
+        lambda payload: payload["scheduled"][0]["syllable"].__setitem__("analysis_source", ""),  # type: ignore[index,union-attr]
+    ),
+)
+def test_selected_bar_rejects_invalid_success_payload(flow: FlowTemplate, mutate) -> None:
+    payload = _selected_payload(flow)
+    mutate(payload)
+
+    with pytest.raises(ValueError):
+        RemoteSelectedBar.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload["candidate_stats"]["top_candidates"][0].pop("component_scores"),  # type: ignore[index,union-attr]
+        lambda payload: payload["candidate_stats"].__setitem__("top_candidates", payload["candidate_stats"]["top_candidates"] * 3),  # type: ignore[index,union-attr]
+        lambda payload: payload["candidate_stats"].__setitem__("rejections", payload["candidate_stats"]["rejections"] * 5),  # type: ignore[index,union-attr]
+        lambda payload: payload["candidate_stats"]["top_candidates"][0]["component_scores"].__setitem__("flow", nan),  # type: ignore[index,union-attr]
+        lambda payload: payload["candidate_stats"]["top_candidates"][0]["component_scores"].__setitem__("flow", {"not_json_safe"}),  # type: ignore[index,union-attr]
+    ),
+)
+def test_candidate_summaries_require_bounded_json_safe_contract(flow: FlowTemplate, mutate) -> None:
+    payload = diagnostics(flow).to_payload()
+    mutate(payload)
+
+    with pytest.raises(ValueError):
+        RemoteRapChunkDiagnostics.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload["alignment_diagnostics"].__setitem__("source_anchors", []),  # type: ignore[union-attr]
+        lambda payload: payload["alignment_diagnostics"].__setitem__("target_anchors", [0.0, 1.0]),  # type: ignore[union-attr]
+        lambda payload: payload["alignment_diagnostics"].__setitem__("local_warp_ratios", [0.0]),  # type: ignore[union-attr]
+        lambda payload: payload["audio_diagnostics"].__setitem__("duration_seconds", 0.0),  # type: ignore[union-attr]
+        lambda payload: payload["audio_diagnostics"].__setitem__("peak", 1.1),  # type: ignore[union-attr]
+        lambda payload: payload["model_tool_versions"].pop("mfa"),  # type: ignore[union-attr]
+        lambda payload: payload["stage_timings_ms"].__setitem__("total", 0.0),  # type: ignore[union-attr]
+        lambda payload: payload["warnings"].append({"not_json_safe"}),  # type: ignore[union-attr]
+    ),
+)
+def test_diagnostics_enforce_cross_field_and_json_safety(flow: FlowTemplate, mutate) -> None:
+    payload = diagnostics(flow).to_payload()
+    mutate(payload)
+
+    with pytest.raises(ValueError):
+        RemoteRapChunkDiagnostics.from_payload(payload)
 
 
 def test_remote_request_requires_two_consecutive_bars(flow: FlowTemplate) -> None:

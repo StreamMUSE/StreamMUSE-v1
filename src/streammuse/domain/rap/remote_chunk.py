@@ -23,12 +23,39 @@ def _canonical_json_bytes(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
+def _is_int(value: object) -> bool:
+    return type(value) is int
+
+
+def _is_real(value: object) -> bool:
+    return type(value) in (int, float) and isfinite(value)
+
+
+def _nonblank(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _freeze(value: object) -> object:
     if isinstance(value, Mapping):
         return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
     return value
+
+
+def _freeze_json(value: object, name: str) -> object:
+    """Freeze a recursively JSON-safe value before it becomes wire diagnostics."""
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if _is_real(value):
+        return value
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError(f"{name} object keys must be strings")
+        return MappingProxyType({key: _freeze_json(item, name) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item, name) for item in value)
+    raise ValueError(f"{name} must contain only finite JSON values")
 
 
 def _thaw(value: object) -> object:
@@ -81,13 +108,32 @@ def _flow_from_payload(value: object) -> FlowTemplate:
     slots = payload["slots"]
     if not isinstance(slots, list):
         raise ValueError("flow_template slots must be an array")
+    if not _nonblank(payload["template_id"]) or not _nonblank(payload["name"]):
+        raise ValueError("flow template identity must be non-empty strings")
+    if not _is_int(payload["ticks_per_beat"]) or not _is_int(payload["beats_per_bar"]):
+        raise ValueError("flow template timing must use integers")
     flow_slots = []
     for value in slots:
         slot = _mapping(value, "flow slot")
         _keys(slot, {"tick_in_bar", "duration_ticks", "target_stress", "boundary_strength", "rhyme_group"}, "flow slot")
+        if (
+            not _is_int(slot["tick_in_bar"])
+            or not _is_int(slot["duration_ticks"])
+            or not _is_real(slot["target_stress"])
+            or not _is_int(slot["boundary_strength"])
+            or (slot["rhyme_group"] is not None and not _nonblank(slot["rhyme_group"]))
+        ):
+            raise ValueError("flow slot primitives are invalid")
         flow_slots.append(FlowSlot(**slot))  # type: ignore[arg-type]
     provenance = _mapping(payload["provenance"], "flow provenance")
     _keys(provenance, {"kind", "source", "source_hash", "quantization_error_ticks"}, "flow provenance")
+    if (
+        not _nonblank(provenance["kind"])
+        or not _nonblank(provenance["source"])
+        or (provenance["source_hash"] is not None and not _nonblank(provenance["source_hash"]))
+        or not _is_real(provenance["quantization_error_ticks"])
+    ):
+        raise ValueError("flow provenance primitives are invalid")
     return FlowTemplate(
         template_id=payload["template_id"],  # type: ignore[arg-type]
         name=payload["name"],  # type: ignore[arg-type]
@@ -112,7 +158,7 @@ class RemoteCandidatePolicy:
         if not isinstance(self.profile, str) or not self.profile:
             raise ValueError("policy profile must be a non-empty string")
         values = (self.initial_candidates, self.rescue_candidates, self.maximum_candidates, self.minimum_valid_candidates)
-        if any(not isinstance(value, int) or value < 0 for value in values):
+        if any(not _is_int(value) or value < 0 for value in values):
             raise ValueError("candidate policy counts must be non-negative integers")
         if self.maximum_candidates <= 0 or self.minimum_valid_candidates <= 0:
             raise ValueError("maximum and minimum valid candidate counts must be positive")
@@ -120,9 +166,9 @@ class RemoteCandidatePolicy:
             raise ValueError("minimum_valid_candidates cannot exceed maximum_candidates")
         if self.initial_candidates + self.rescue_candidates > self.maximum_candidates:
             raise ValueError("candidate policy waves cannot exceed maximum_candidates")
-        if not isinstance(self.render_reserve_ms, int) or self.render_reserve_ms < 0:
+        if not _is_int(self.render_reserve_ms) or self.render_reserve_ms < 0:
             raise ValueError("render_reserve_ms must be a non-negative integer")
-        if not isfinite(self.minimum_score):
+        if not _is_real(self.minimum_score):
             raise ValueError("minimum_score must be finite")
 
     @classmethod
@@ -158,16 +204,23 @@ class RemoteCandidateStats:
 
     def __post_init__(self) -> None:
         counts = (self.requested_count, self.parseable_count, self.valid_count, self.selectable_count)
-        if any(not isinstance(value, int) or value < 0 for value in counts):
+        if any(not _is_int(value) or value < 0 for value in counts):
             raise ValueError("candidate counts must be non-negative integers")
         if not self.selectable_count <= self.valid_count <= self.parseable_count <= self.requested_count:
             raise ValueError("candidate counts must be monotonically decreasing")
-        for name, values in (("top_candidates", self.top_candidates), ("rejections", self.rejections)):
+        if len(self.top_candidates) > min(MAX_REMOTE_DIAGNOSTIC_SUMMARIES, self.selectable_count):
+            raise ValueError("top_candidates must not exceed selectable_count")
+        if len(self.rejections) > min(MAX_REMOTE_DIAGNOSTIC_SUMMARIES, self.requested_count - self.selectable_count):
+            raise ValueError("rejections must not exceed rejected candidates")
+        for name, values, validator in (
+            ("top_candidates", self.top_candidates, _validate_top_candidate),
+            ("rejections", self.rejections, _validate_rejection),
+        ):
             if not isinstance(values, tuple) or len(values) > MAX_REMOTE_DIAGNOSTIC_SUMMARIES:
                 raise ValueError(f"{name} must be a bounded tuple")
             if not all(isinstance(value, Mapping) for value in values):
                 raise ValueError(f"{name} must contain mappings")
-            object.__setattr__(self, name, tuple(_freeze(value) for value in values))
+            object.__setattr__(self, name, tuple(validator(value) for value in values))
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -193,6 +246,46 @@ class RemoteCandidateStats:
         )  # type: ignore[arg-type]
 
 
+def _validate_component_scores(value: object, name: str) -> Mapping[str, object]:
+    scores = _mapping(value, name)
+    if not scores or not all(_nonblank(key) and _is_real(score) for key, score in scores.items()):
+        raise ValueError(f"{name} must be non-empty finite named scores")
+    return _freeze_json(scores, name)  # type: ignore[return-value]
+
+
+def _validate_top_candidate(value: Mapping[str, object]) -> Mapping[str, object]:
+    _keys(value, {"bar", "candidate_id", "text", "score", "component_scores", "source_order"}, "top candidate")
+    if (
+        not _is_int(value["bar"])
+        or value["bar"] < 0
+        or not _nonblank(value["candidate_id"])
+        or not _nonblank(value["text"])
+        or not _is_real(value["score"])
+        or not _is_int(value["source_order"])
+        or value["source_order"] < 0
+    ):
+        raise ValueError("top candidate primitives are invalid")
+    return _freeze_json({**value, "component_scores": _validate_component_scores(value["component_scores"], "top candidate component_scores")}, "top candidate")  # type: ignore[return-value]
+
+
+def _validate_rejection(value: Mapping[str, object]) -> Mapping[str, object]:
+    _keys(value, {"bar", "candidate_id", "text", "reasons", "source_order"}, "candidate rejection")
+    reasons = value["reasons"]
+    if (
+        not _is_int(value["bar"])
+        or value["bar"] < 0
+        or not _nonblank(value["candidate_id"])
+        or not isinstance(value["text"], str)
+        or not _is_int(value["source_order"])
+        or value["source_order"] < 0
+        or not isinstance(reasons, (list, tuple))
+        or not reasons
+        or not all(_nonblank(reason) for reason in reasons)
+    ):
+        raise ValueError("candidate rejection primitives are invalid")
+    return _freeze_json(value, "candidate rejection")  # type: ignore[return-value]
+
+
 _REQUIRED_STAGE_TIMINGS = {"generation", "evaluation", "moss", "mfa", "warp", "packaging", "total"}
 _REQUIRED_ALIGNMENT_DIAGNOSTICS = {"fallback_counts", "source_anchors", "target_anchors", "local_warp_ratios"}
 _REQUIRED_AUDIO_DIAGNOSTICS = {"sample_rate_hz", "frame_count", "duration_seconds", "peak"}
@@ -210,7 +303,7 @@ class RemoteRapChunkDiagnostics:
     warnings: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.accepted_request_budget_ms, int) or self.accepted_request_budget_ms <= 0:
+        if not _is_int(self.accepted_request_budget_ms) or self.accepted_request_budget_ms <= 0:
             raise ValueError("accepted_request_budget_ms must be a positive integer")
         if not isinstance(self.resolved_policy, RemoteCandidatePolicy):
             raise ValueError("resolved_policy must be a RemoteCandidatePolicy")
@@ -218,32 +311,50 @@ class RemoteRapChunkDiagnostics:
             raise ValueError("candidate_stats must be RemoteCandidateStats")
         if not isinstance(self.stage_timings_ms, Mapping) or set(self.stage_timings_ms) != _REQUIRED_STAGE_TIMINGS:
             raise ValueError("stage_timings_ms must contain every required stage")
-        if any(not isinstance(value, (int, float)) or not isfinite(value) or value < 0 for value in self.stage_timings_ms.values()):
+        if any(not _is_real(value) or value < 0 for value in self.stage_timings_ms.values()):
             raise ValueError("stage timings must be finite non-negative numbers")
+        if any(self.stage_timings_ms["total"] < value for key, value in self.stage_timings_ms.items() if key != "total"):
+            raise ValueError("total stage timing must cover every component stage")
         alignment = _mapping(self.alignment_diagnostics, "alignment_diagnostics")
         if set(alignment) != _REQUIRED_ALIGNMENT_DIAGNOSTICS:
             raise ValueError("alignment_diagnostics must contain every required field")
         fallback_counts = _mapping(alignment["fallback_counts"], "alignment fallback_counts")
-        anchors = (alignment["source_anchors"], alignment["target_anchors"], alignment["local_warp_ratios"])
-        if any(not isinstance(value, int) or value < 0 for value in fallback_counts.values()):
+        source_anchors = alignment["source_anchors"]
+        target_anchors = alignment["target_anchors"]
+        ratios = alignment["local_warp_ratios"]
+        if not all(_nonblank(key) and _is_int(value) and value >= 0 for key, value in fallback_counts.items()):
             raise ValueError("alignment fallback counts must be non-negative integers")
-        if any(not isinstance(items, (list, tuple)) or any(not isinstance(item, (int, float)) or not isfinite(item) for item in items) for items in anchors):
-            raise ValueError("alignment anchors and ratios must be finite arrays")
+        if (
+            not isinstance(source_anchors, (list, tuple))
+            or not isinstance(target_anchors, (list, tuple))
+            or not source_anchors
+            or len(source_anchors) != len(target_anchors)
+            or any(not _is_real(item) for item in source_anchors)
+            or any(not _is_real(item) for item in target_anchors)
+            or not isinstance(ratios, (list, tuple))
+            or any(not _is_real(item) or item <= 0 for item in ratios)
+        ):
+            raise ValueError("alignment anchors and ratios must be finite consistent arrays")
         audio = _mapping(self.audio_diagnostics, "audio_diagnostics")
         if set(audio) != _REQUIRED_AUDIO_DIAGNOSTICS:
             raise ValueError("audio_diagnostics must contain every required field")
-        if not isinstance(audio["sample_rate_hz"], int) or audio["sample_rate_hz"] <= 0 or not isinstance(audio["frame_count"], int) or audio["frame_count"] <= 0:
+        if not _is_int(audio["sample_rate_hz"]) or audio["sample_rate_hz"] <= 0 or not _is_int(audio["frame_count"]) or audio["frame_count"] <= 0:
             raise ValueError("audio diagnostics require positive sample rate and frame count")
-        if any(not isinstance(audio[key], (int, float)) or not isfinite(audio[key]) or audio[key] < 0 for key in ("duration_seconds", "peak")):
-            raise ValueError("audio duration and peak must be finite non-negative numbers")
-        if not isinstance(self.model_tool_versions, Mapping) or not self.model_tool_versions or not all(isinstance(key, str) and key and isinstance(value, str) and value for key, value in self.model_tool_versions.items()):
-            raise ValueError("model_tool_versions must be a non-empty mapping of strings")
+        if not _is_real(audio["duration_seconds"]) or not _is_real(audio["peak"]) or not 0 <= audio["peak"] <= 1:
+            raise ValueError("audio duration and peak must be finite normalized numbers")
+        sample_tolerance = 1 / audio["sample_rate_hz"]
+        if abs(audio["duration_seconds"] - audio["frame_count"] / audio["sample_rate_hz"]) > sample_tolerance:
+            raise ValueError("audio duration must match frame count within one sample")
+        required_versions = {"moss", "mfa", "rubberband"}
+        if not isinstance(self.model_tool_versions, Mapping) or not required_versions.issubset(self.model_tool_versions) or not all(_nonblank(key) and _nonblank(value) for key, value in self.model_tool_versions.items()):
+            raise ValueError("model_tool_versions must include non-empty moss, mfa, and rubberband versions")
         if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) for item in self.warnings):
             raise ValueError("warnings must be a tuple of strings")
-        object.__setattr__(self, "stage_timings_ms", _freeze(self.stage_timings_ms))
-        object.__setattr__(self, "alignment_diagnostics", _freeze(alignment))
-        object.__setattr__(self, "audio_diagnostics", _freeze(audio))
-        object.__setattr__(self, "model_tool_versions", _freeze(self.model_tool_versions))
+        object.__setattr__(self, "stage_timings_ms", _freeze_json(self.stage_timings_ms, "stage_timings_ms"))
+        object.__setattr__(self, "alignment_diagnostics", _freeze_json(alignment, "alignment_diagnostics"))
+        object.__setattr__(self, "audio_diagnostics", _freeze_json(audio, "audio_diagnostics"))
+        object.__setattr__(self, "model_tool_versions", _freeze_json(self.model_tool_versions, "model_tool_versions"))
+        object.__setattr__(self, "warnings", _freeze_json(self.warnings, "warnings"))
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -283,12 +394,18 @@ class RemoteRapBarRequest:
     flow_template: FlowTemplate
 
     def __post_init__(self) -> None:
-        if not isinstance(self.bar, int) or self.bar < 0:
+        if not _is_int(self.bar) or self.bar < 0:
             raise ValueError("bar must be a non-negative integer")
         if not isinstance(self.topic, str) or not self.topic:
             raise ValueError("topic must be a non-empty string")
         if not isinstance(self.flow_template, FlowTemplate):
             raise ValueError("flow_template must be a FlowTemplate")
+        try:
+            object.__setattr__(self, "flow_template", _flow_from_payload(_flow_payload(self.flow_template)))
+        except ValueError as error:
+            if self.flow_template.ticks_per_beat != 4 or self.flow_template.beats_per_bar != 4:
+                raise ValueError("remote chunk flow templates must use 4/4 timing") from error
+            raise
 
     def to_payload(self) -> dict[str, object]:
         return {"bar": self.bar, "topic": self.topic, "flow_template": _flow_payload(self.flow_template)}
@@ -320,7 +437,7 @@ class RemoteRapChunkRequest:
             raise ValueError("unsupported remote chunk schema version")
         if not isinstance(self.session_id, str) or not self.session_id:
             raise ValueError("session_id must be a non-empty string")
-        if not isinstance(self.chunk_index, int) or self.chunk_index < 0:
+        if not _is_int(self.chunk_index) or self.chunk_index < 0:
             raise ValueError("chunk_index must be a non-negative integer")
         if not isinstance(self.bars, tuple) or len(self.bars) != 2 or not all(isinstance(bar, RemoteRapBarRequest) for bar in self.bars):
             raise ValueError("remote chunk requests require two consecutive bars")
@@ -328,25 +445,27 @@ class RemoteRapChunkRequest:
             raise ValueError("remote chunk requests require two consecutive bars")
         if any(bar.flow_template.ticks_per_beat != 4 or bar.flow_template.beats_per_bar != 4 for bar in self.bars):
             raise ValueError("remote chunk flow templates must use 4/4 timing")
-        if not isfinite(self.tempo_bpm) or self.tempo_bpm <= 0:
+        if not _is_real(self.tempo_bpm) or self.tempo_bpm <= 0:
             raise ValueError("tempo_bpm must be positive and finite")
-        if self.output_sample_rate_hz != REMOTE_CHUNK_SAMPLE_RATE_HZ:
+        if not _is_int(self.output_sample_rate_hz) or self.output_sample_rate_hz != REMOTE_CHUNK_SAMPLE_RATE_HZ:
             raise ValueError("output_sample_rate_hz must be 24000")
-        if self.expected_frame_count != self.frame_count_for(self.tempo_bpm, self.output_sample_rate_hz):
+        if not _is_int(self.expected_frame_count) or self.expected_frame_count != self.frame_count_for(self.tempo_bpm, self.output_sample_rate_hz):
             raise ValueError("expected_frame_count must match the two-bar timing contract")
-        if not isinstance(self.remaining_budget_ms, int) or self.remaining_budget_ms <= 0:
+        if not _is_int(self.remaining_budget_ms) or self.remaining_budget_ms <= 0:
             raise ValueError("remaining_budget_ms must be a positive integer")
         if not isinstance(self.policy, RemoteCandidatePolicy):
             raise ValueError("policy must be a RemoteCandidatePolicy")
         if not isinstance(self.context_lines, tuple) or not all(isinstance(item, str) for item in self.context_lines):
             raise ValueError("context_lines must be a tuple of strings")
-        if not isinstance(self.seed, int):
+        if not _is_int(self.seed):
             raise ValueError("seed must be an integer")
         if self.request_id != self.request_id_for(self.identity_payload()):
             raise ValueError("request_id does not match the canonical request body")
 
     @staticmethod
     def frame_count_for(tempo_bpm: float, sample_rate_hz: int = REMOTE_CHUNK_SAMPLE_RATE_HZ) -> int:
+        if not _is_real(tempo_bpm) or tempo_bpm <= 0 or not _is_int(sample_rate_hz) or sample_rate_hz <= 0:
+            raise ValueError("tempo_bpm and sample_rate_hz must be positive finite wire numbers")
         return round(sample_rate_hz * 8 * 60 / tempo_bpm)
 
     @staticmethod
@@ -367,7 +486,7 @@ class RemoteRapChunkRequest:
         seed: int,
         output_sample_rate_hz: int = REMOTE_CHUNK_SAMPLE_RATE_HZ,
     ) -> RemoteRapChunkRequest:
-        if not isfinite(tempo_bpm) or tempo_bpm <= 0:
+        if not _is_real(tempo_bpm) or tempo_bpm <= 0:
             raise ValueError("tempo_bpm must be positive and finite")
         expected_frame_count = cls.frame_count_for(tempo_bpm, output_sample_rate_hz)
         identity = {
@@ -482,6 +601,48 @@ def _scheduled_from_payload(value: object) -> ScheduledSyllable:
     return ScheduledSyllable(BeatSlot(**slot), Syllable(syllable["word"], syllable["index_in_word"], syllable["syllable_count"], syllable["stress"], tuple(phonemes), syllable["analysis_source"]))  # type: ignore[arg-type]
 
 
+def _validate_scheduled_syllable(item: ScheduledSyllable, bar: int, template_id: str) -> None:
+    if not isinstance(item, ScheduledSyllable) or not isinstance(item.slot, BeatSlot) or not isinstance(item.syllable, Syllable):
+        raise ValueError("selected bar scheduled must contain ScheduledSyllable values")
+    slot = item.slot
+    if (
+        not _is_int(slot.bar)
+        or slot.bar != bar
+        or not _is_int(slot.tick)
+        or slot.tick < 0
+        or not _is_int(slot.beat)
+        or not 0 <= slot.beat < 4
+        or not _is_int(slot.tick_in_beat)
+        or not 0 <= slot.tick_in_beat < 4
+        or slot.tick != slot.bar * 16 + slot.beat * 4 + slot.tick_in_beat
+        or not _is_real(slot.accent)
+        or not 0 <= slot.accent <= 1
+        or not _is_int(slot.duration_ticks)
+        or slot.duration_ticks <= 0
+        or not _is_int(slot.boundary_strength)
+        or not 0 <= slot.boundary_strength <= 5
+        or (slot.rhyme_group is not None and not _nonblank(slot.rhyme_group))
+        or slot.template_id != template_id
+        or not _is_int(slot.slot_index)
+        or slot.slot_index < 0
+    ):
+        raise ValueError("selected bar slot primitives are invalid")
+    syllable = item.syllable
+    if (
+        not _nonblank(syllable.word)
+        or not _is_int(syllable.index_in_word)
+        or not _is_int(syllable.syllable_count)
+        or syllable.syllable_count <= 0
+        or not 0 <= syllable.index_in_word < syllable.syllable_count
+        or not _is_int(syllable.stress)
+        or not 0 <= syllable.stress <= 2
+        or not isinstance(syllable.phonemes, tuple)
+        or not all(_nonblank(phoneme) for phoneme in syllable.phonemes)
+        or not _nonblank(syllable.analysis_source)
+    ):
+        raise ValueError("selected bar syllable primitives are invalid")
+
+
 @dataclass(frozen=True)
 class RemoteSelectedBar:
     bar: int
@@ -492,24 +653,26 @@ class RemoteSelectedBar:
     diagnostics: Mapping[str, object] = MappingProxyType({})
 
     def __post_init__(self) -> None:
-        if not isinstance(self.bar, int) or self.bar < 0:
+        if not _is_int(self.bar) or self.bar < 0:
             raise ValueError("selected bar must have a non-negative bar identity")
-        if not isinstance(self.text, str) or not isinstance(self.flow_template_id, str) or not self.flow_template_id:
+        if not _nonblank(self.text) or not _nonblank(self.flow_template_id):
             raise ValueError("selected bar identity must be valid")
-        if not isinstance(self.scheduled, tuple) or not all(isinstance(item, ScheduledSyllable) for item in self.scheduled):
+        if not isinstance(self.scheduled, tuple) or not self.scheduled:
             raise ValueError("selected bar scheduled must be a tuple of ScheduledSyllable values")
-        if any(item.slot.bar != self.bar or item.slot.template_id != self.flow_template_id for item in self.scheduled):
-            raise ValueError("selected bar scheduled events must preserve bar identity and flow template")
-        if not isfinite(self.score):
+        for item in self.scheduled:
+            _validate_scheduled_syllable(item, self.bar, self.flow_template_id)
+        ticks = [item.slot.tick for item in self.scheduled]
+        if ticks != sorted(ticks) or len(ticks) != len(set(ticks)):
+            raise ValueError("selected bar scheduled slots must be ordered and unique")
+        if not _is_real(self.score):
             raise ValueError("selected bar score must be finite")
         if not isinstance(self.diagnostics, Mapping):
             raise ValueError("selected bar diagnostics must be a mapping")
         component_scores = self.diagnostics.get("component_scores")
         if not isinstance(component_scores, Mapping) or not component_scores:
             raise ValueError("selected bar diagnostics must include component_scores")
-        if any(not isinstance(key, str) or not key or not isinstance(value, (int, float)) or not isfinite(value) for key, value in component_scores.items()):
-            raise ValueError("component_scores must be finite named scores")
-        object.__setattr__(self, "diagnostics", _freeze(self.diagnostics))
+        _validate_component_scores(component_scores, "component_scores")
+        object.__setattr__(self, "diagnostics", _freeze_json(self.diagnostics, "selected bar diagnostics"))
 
     @classmethod
     def create(cls, request: RemoteRapBarRequest, *, text: str, scheduled: tuple[ScheduledSyllable, ...], score: float, diagnostics: Mapping[str, object] | None = None) -> RemoteSelectedBar:
@@ -552,9 +715,14 @@ class RemoteRapChunkManifest:
     def __post_init__(self) -> None:
         if self.schema_version != REMOTE_CHUNK_SCHEMA_VERSION or not isinstance(self.request_id, str) or not self.request_id:
             raise ValueError("manifest schema_version and request_id must be valid")
-        if not isinstance(self.chunk_index, int) or self.chunk_index < 0 or not isfinite(self.tempo_bpm) or self.tempo_bpm <= 0:
+        if not _is_int(self.chunk_index) or self.chunk_index < 0 or not _is_real(self.tempo_bpm) or self.tempo_bpm <= 0:
             raise ValueError("manifest chunk_index and tempo_bpm must be valid")
-        if self.output_sample_rate_hz != REMOTE_CHUNK_SAMPLE_RATE_HZ or self.expected_frame_count != RemoteRapChunkRequest.frame_count_for(self.tempo_bpm):
+        if (
+            not _is_int(self.output_sample_rate_hz)
+            or not _is_int(self.expected_frame_count)
+            or self.output_sample_rate_hz != REMOTE_CHUNK_SAMPLE_RATE_HZ
+            or self.expected_frame_count != RemoteRapChunkRequest.frame_count_for(self.tempo_bpm)
+        ):
             raise ValueError("manifest timing does not match the two-bar 24 kHz contract")
         if not isinstance(self.selected_bars, tuple) or len(self.selected_bars) != 2 or not all(isinstance(item, RemoteSelectedBar) for item in self.selected_bars) or self.selected_bars[1].bar != self.selected_bars[0].bar + 1:
             raise ValueError("manifest requires two consecutive selected bars")
