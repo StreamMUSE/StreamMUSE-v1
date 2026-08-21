@@ -1,0 +1,27 @@
+group,metric,scope,phase,input_source,definition
+hard_input,first8_note_count,first8,v1,input_melody,Number of note onsets in the first 8 beats
+hard_input,first8_coverage,first8,v1,input_melody,Fraction of the first 8 beats covered by notes
+hard_input,first8_leading_blank_beats,first8,v1,input_melody,Number of blank beats before the first note onset in the first 8 beats
+hard_input,chord_onset_ratio,first8,v1,input_melody,Fraction of first-8 onset positions containing multiple simultaneous notes
+hard_input,polyphonic_active_ratio,first8,v1,input_melody,Fraction of the first 8 beats with more than one active note
+melody,note_density,both,v1,input_melody,Note onsets per beat
+melody,local_peak_rate,both,v1,input_melody,Maximum note-on rate in sliding one-bar and two-bar windows
+melody,ioi_stats,both,v1,input_melody,Mean and dispersion of inter-onset intervals in beats
+melody,duration_stats,both,v1,input_melody,Mean and dispersion of note durations in beats
+melody,rest_coverage,both,v1,input_melody,Fraction of the melody span not covered by notes
+melody,pitch_range,both,v1,input_melody,Maximum MIDI pitch minus minimum MIDI pitch
+melody,large_leap_rate,both,v1,input_melody,Fraction of adjacent intervals larger than 7 semitones
+melody,pitch_class_entropy,both,v1,input_melody,Entropy of duration-weighted pitch classes
+melody,onset_entropy,both,v1,input_melody,Entropy of onset positions within the beat
+prompt,note_density,first8,v2,selected_prompt,Prompt note onsets per beat
+prompt,pitch_range,first8,v2,selected_prompt,Maximum prompt MIDI pitch minus minimum prompt MIDI pitch
+prompt,pitch_class_entropy,first8,v2,selected_prompt,Entropy of duration-weighted prompt pitch classes
+prompt,median_duration,first8,v2,selected_prompt,Median prompt note duration in beats
+prompt,groove_consistency,first8,v2,selected_prompt,Consistency of prompt onset patterns across bars
+prompt,ppl,first8,v2,prompt_model_log,Per-token perplexity computed from raw prompt token logits
+prompt,empty_beat_rate,first8,v2,selected_prompt,Fraction of prompt beats with no active note
+prompt,voice_number,first8,v2,selected_prompt,Mean number of simultaneously active prompt voices
+relation,density_ratio,first8,v2,input_melody+selected_prompt,Prompt note density divided by melody note density
+relation,duration_log_mismatch,first8,v2,input_melody+selected_prompt,Absolute difference between log mean note durations
+relation,tonal_relation,first8,v2,input_melody+selected_prompt,Pitch-class distribution compatibility between melody and prompt
+relation,rhythm_relation,first8,v2,input_melody+selected_prompt,Onset-position distribution compatibility between melody and prompt
