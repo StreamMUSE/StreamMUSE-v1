@@ -496,6 +496,165 @@ def test_opus_enabled_server_returns_separate_variant_without_changing_canonical
     assert (workspace / "response.opus.zip").read_bytes() == response.content
 
 
+@pytest.mark.parametrize("quality", ("0", "0.0", "0.00", "not-a-number"))
+def test_opus_accept_zero_or_malformed_quality_falls_back_to_pcm(
+    tmp_path: Path, quality: str
+) -> None:
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            return b"encoded-opus"
+
+    request = _request()
+    app = create_rap_render_app(
+        FakeOrchestrator(tmp_path / "worker"),
+        {"ready": True},
+        artifact_root=tmp_path / "artifacts",
+        wire_audio_codec="opus",
+        opus_codec=Codec(),
+    )
+
+    response = TestClient(app).post(
+        "/v1/rap/chunks/render",
+        content=request.canonical_json_bytes(),
+        headers={
+            "Content-Type": "application/json",
+            "Idempotency-Key": request.request_id,
+            "Accept": f"{RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE};q={quality}",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == RAP_CHUNK_PACKAGE_MEDIA_TYPE
+
+
+def test_opus_variant_encoding_uses_threadpool_and_sanitizes_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    original_run_in_threadpool = rap_render_server.run_in_threadpool
+
+    async def observed_run_in_threadpool(func, *args, **kwargs):
+        calls.append(func.__name__)
+        return await original_run_in_threadpool(func, *args, **kwargs)
+
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            raise RuntimeError("private encoder path=/secret")
+
+    monkeypatch.setattr(rap_render_server, "run_in_threadpool", observed_run_in_threadpool)
+    request = _request()
+    app = create_rap_render_app(
+        FakeOrchestrator(tmp_path / "worker"),
+        {"ready": True},
+        artifact_root=tmp_path / "artifacts",
+        wire_audio_codec="opus",
+        opus_codec=Codec(),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/v1/rap/chunks/render",
+        content=request.canonical_json_bytes(),
+        headers={
+            "Content-Type": "application/json",
+            "Idempotency-Key": request.request_id,
+            "Accept": RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
+        },
+    )
+
+    assert calls == ["render_or_load", "load_or_create_opus"]
+    assert response.status_code == 500
+    assert "secret" not in response.text
+
+
+def test_first_opus_encodes_for_unrelated_requests_do_not_share_global_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_entered = Event()
+    second_entered = Event()
+    same_request_waiting = Event()
+    release = Event()
+    encode_calls = 0
+
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            nonlocal encode_calls
+            encode_calls += 1
+            (first_entered if encode_calls == 1 else second_entered).set()
+            assert release.wait(timeout=5)
+            return b"encoded-opus"
+
+    store = rap_render_server._ArtifactStore(
+        tmp_path / "artifacts",
+        FakeOrchestrator(tmp_path / "worker"),
+        opus_codec=Codec(),
+    )
+    first_request = _request(session_id="first")
+    second_request = _request(session_id="second")
+    first_stored = store.render_or_load(
+        first_request, first_request.canonical_json_bytes()
+    )
+    second_stored = store.render_or_load(
+        second_request, second_request.canonical_json_bytes()
+    )
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            same_request_waiting.set()
+            return super().result(timeout=timeout)
+
+    monkeypatch.setattr(rap_render_server, "Future", ObservedFuture)
+    first = Thread(target=store.load_or_create_opus, args=(first_request, first_stored))
+    same_request = Thread(
+        target=store.load_or_create_opus, args=(first_request, first_stored)
+    )
+    second = Thread(target=store.load_or_create_opus, args=(second_request, second_stored))
+    first.start()
+    assert first_entered.wait(timeout=1)
+    same_request.start()
+    assert same_request_waiting.wait(timeout=1)
+    second.start()
+    second_started_while_first_blocked = second_entered.wait(timeout=0.5)
+    release.set()
+    first.join(timeout=5)
+    same_request.join(timeout=5)
+    second.join(timeout=5)
+
+    assert second_started_while_first_blocked
+    assert encode_calls == 2
+    assert not first.is_alive()
+    assert not same_request.is_alive()
+    assert not second.is_alive()
+
+
+def test_canonical_regeneration_invalidates_stale_opus_derivative(tmp_path: Path) -> None:
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            return b"encoded-opus"
+
+    request = _request()
+    orchestrator = FakeOrchestrator(tmp_path / "worker")
+    store = rap_render_server._ArtifactStore(
+        tmp_path / "artifacts", orchestrator, opus_codec=Codec()
+    )
+    stored = store.render_or_load(request, request.canonical_json_bytes())
+    store.load_or_create_opus(request, stored)
+    workspace = tmp_path / "artifacts" / request.request_id
+    (workspace / "response.zip").unlink()
+
+    store.render_or_load(request, request.canonical_json_bytes())
+
+    assert not (workspace / "response.opus.zip").exists()
+    assert orchestrator.calls == 2
+
+
 def test_packaging_timing_uses_measured_final_publication_equivalent(
     tmp_path: Path,
 ) -> None:

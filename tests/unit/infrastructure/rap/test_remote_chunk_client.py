@@ -6,7 +6,7 @@ import json
 import struct
 import wave
 from threading import Event, Lock, Thread
-from time import monotonic
+from time import monotonic, sleep
 
 import httpx
 import pytest
@@ -220,8 +220,17 @@ def test_opus_client_decodes_negotiated_opus_response(monkeypatch) -> None:
         def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
             return b"encoded-opus"
 
-        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+        def decode_to_pcm16_mono_24khz(
+            self,
+            encoded: bytes,
+            *,
+            expected_frame_count: int,
+            timeout_seconds: float | None = None,
+            cancelled=None,
+        ) -> bytes:
             assert encoded == b"encoded-opus"
+            assert timeout_seconds == pytest.approx(2.0)
+            assert not cancelled()
             return decoded.vocal_wav[44:]
 
     monkeypatch.setattr("streammuse.infrastructure.rap.opus_codec.FFmpegOpusCodec", Codec)
@@ -235,6 +244,130 @@ def test_opus_client_decodes_negotiated_opus_response(monkeypatch) -> None:
     ).prepare(request, timeout_seconds=1.0, deadline_monotonic=2.0)
 
     assert response.package.transport_codec == "opus"
+
+
+def test_abort_during_opus_decode_stops_decoder_and_reports_cancelled(monkeypatch) -> None:
+    request = _request()
+    canonical = _package(request)
+    from streammuse.infrastructure.rap.chunk_package import decode_chunk_package
+
+    decoded = decode_chunk_package(canonical, expected_request_id=request.request_id)
+    entered = Event()
+    stopped = Event()
+
+    class PackageCodec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            return b"encoded-opus"
+
+        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+            return decoded.vocal_wav[44:]
+
+    opus_package = encode_opus_chunk_package(decoded.manifest, decoded.vocal_wav, PackageCodec())
+
+    class BlockingCodec:
+        def decode_to_pcm16_mono_24khz(
+            self, encoded: bytes, *, expected_frame_count: int, timeout_seconds: float, cancelled
+        ) -> bytes:
+            entered.set()
+            while not cancelled():
+                sleep(0.005)
+            stopped.set()
+            raise RuntimeError("decoder stopped")
+
+    monkeypatch.setattr("streammuse.infrastructure.rap.opus_codec.FFmpegOpusCodec", BlockingCodec)
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE},
+            content=opus_package,
+        )
+
+    client = RemoteChunkClient(
+        "http://render.test",
+        transport=httpx.MockTransport(handler),
+        clock=monotonic,
+        audio_transport="opus",
+    )
+    outcome: list[BaseException | object] = []
+    worker = Thread(
+        target=lambda: _capture_prepare(outcome, client, request, monotonic() + 2.0)
+    )
+    worker.start()
+    assert entered.wait(1.0)
+    client.abort()
+    worker.join(0.5)
+
+    assert not worker.is_alive()
+    assert stopped.wait(0.5)
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], RemoteChunkCancelled)
+    client.close()
+
+
+def test_deadline_during_opus_decode_reports_deadline_instead_of_protocol_error(
+    monkeypatch,
+) -> None:
+    request = _request()
+    canonical = _package(request)
+    from streammuse.infrastructure.rap.chunk_package import decode_chunk_package
+
+    decoded = decode_chunk_package(canonical, expected_request_id=request.request_id)
+    now = [0.0]
+
+    class PackageCodec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            return b"encoded-opus"
+
+        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+            return decoded.vocal_wav[44:]
+
+    opus_package = encode_opus_chunk_package(decoded.manifest, decoded.vocal_wav, PackageCodec())
+
+    class DeadlineCodec:
+        def decode_to_pcm16_mono_24khz(
+            self, encoded: bytes, *, expected_frame_count: int, timeout_seconds: float, cancelled
+        ) -> bytes:
+            assert timeout_seconds == pytest.approx(5.0)
+            assert not cancelled()
+            now[0] = 5.0
+            raise RuntimeError("ffmpeg deadline")
+
+    monkeypatch.setattr("streammuse.infrastructure.rap.opus_codec.FFmpegOpusCodec", DeadlineCodec)
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE},
+            content=opus_package,
+        )
+
+    client = RemoteChunkClient(
+        "http://render.test",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: now[0],
+        audio_transport="opus",
+    )
+    with pytest.raises(RemoteChunkDeadlineExceeded, match="decode"):
+        client.prepare(request, timeout_seconds=5.0, deadline_monotonic=5.0)
+
+
+def _capture_prepare(
+    outcome: list[BaseException | object],
+    client: RemoteChunkClient,
+    request: RemoteRapChunkRequest,
+    deadline: float,
+) -> None:
+    try:
+        outcome.append(
+            client.prepare(request, timeout_seconds=2.0, deadline_monotonic=deadline)
+        )
+    except BaseException as error:
+        outcome.append(error)
 
 
 def test_prepare_retries_the_identical_request_before_its_deadline() -> None:

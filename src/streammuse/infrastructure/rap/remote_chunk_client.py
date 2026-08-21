@@ -352,8 +352,16 @@ class RemoteChunkClient:
         if completed >= deadline:
             raise RemoteChunkDeadlineExceeded("remote chunk deadline elapsed before response preparation")
         try:
-            package = self._decode_package(data, content_type, request_id)
+            package = self._decode_package(
+                data, content_type, request_id, deadline, operation
+            )
         except ValueError as error:
+            if operation.is_cancelled():
+                raise RemoteChunkCancelled("remote chunk request was cancelled during decode") from error
+            if self._clock() >= deadline:
+                raise RemoteChunkDeadlineExceeded(
+                    "remote chunk deadline elapsed during decode"
+                ) from error
             raise RemoteChunkProtocolError("remote chunk package is invalid") from error
         self._raise_if_cancelled(operation)
         if self._clock() >= deadline:
@@ -380,7 +388,12 @@ class RemoteChunkClient:
         return frozenset((RAP_CHUNK_PACKAGE_MEDIA_TYPE,))
 
     def _decode_package(
-        self, data: bytes, content_type: str, request_id: str
+        self,
+        data: bytes,
+        content_type: str,
+        request_id: str,
+        deadline: float,
+        operation: _PrepareOperation,
     ) -> DecodedRapChunkPackage:
         if content_type == RAP_CHUNK_PACKAGE_MEDIA_TYPE:
             return decode_chunk_package(data, expected_request_id=request_id)
@@ -390,7 +403,13 @@ class RemoteChunkClient:
 
                 self._opus_codec = FFmpegOpusCodec()
             return decode_opus_chunk_package(
-                data, expected_request_id=request_id, codec=self._opus_codec
+                data,
+                expected_request_id=request_id,
+                codec=self._opus_codec,
+                timeout_seconds=deadline - self._ensure_before_deadline(
+                    deadline, operation
+                ),
+                cancelled=operation.is_cancelled,
             )
         raise ValueError("remote render response has an unsupported media type")
 

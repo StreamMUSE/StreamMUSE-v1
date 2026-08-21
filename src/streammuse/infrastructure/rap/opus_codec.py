@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+from time import monotonic
+from typing import Callable
 
 
 _SAMPLE_WIDTH_BYTES = 2
@@ -62,7 +64,14 @@ class FFmpegOpusCodec:
             raise FFmpegOpusCodecError("ffmpeg Opus output exceeds configured limit")
         return result
 
-    def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+    def decode_to_pcm16_mono_24khz(
+        self,
+        encoded: bytes,
+        *,
+        expected_frame_count: int,
+        timeout_seconds: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> bytes:
         if not encoded or len(encoded) > self._max_encoded_bytes:
             raise FFmpegOpusCodecError("Opus input exceeds configured limit or is empty")
         if type(expected_frame_count) is not int or expected_frame_count <= 0:
@@ -70,14 +79,20 @@ class FFmpegOpusCodec:
         expected_bytes = expected_frame_count * _SAMPLE_WIDTH_BYTES
         if expected_bytes > self._max_decoded_bytes:
             raise FFmpegOpusCodecError("manifest decoded output exceeds configured limit")
-        output = self._run(
-            [
-                self._executable, "-hide_banner", "-loglevel", "error", "-f", "ogg", "-i", "pipe:0",
-                "-ar", "24000", "-ac", "1", "-t", f"{expected_frame_count / 24_000:.9f}",
-                "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1",
-            ],
-            encoded,
-        ).stdout
+        command = [
+            self._executable, "-hide_banner", "-loglevel", "error", "-c:a", "libopus", "-f", "ogg",
+            "-i", "pipe:0", "-ar", "24000", "-ac", "1", "-t", f"{expected_frame_count / 24_000:.9f}",
+            "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1",
+        ]
+        if cancelled is None:
+            output = self._run(command, encoded, timeout_seconds=timeout_seconds).stdout
+        else:
+            output = self._run_cancellable(
+                command,
+                encoded,
+                timeout_seconds=timeout_seconds,
+                cancelled=cancelled,
+            ).stdout
         if len(output) != expected_bytes:
             raise FFmpegOpusCodecError("ffmpeg decoded Opus frame count does not match the manifest")
         return output
@@ -91,14 +106,21 @@ class FFmpegOpusCodec:
         if len(pcm) != expected_frame_count * _SAMPLE_WIDTH_BYTES:
             raise ValueError("PCM input frame count does not match the manifest")
 
-    def _run(self, command: list[str], data: bytes) -> subprocess.CompletedProcess[bytes]:
+    def _run(
+        self,
+        command: list[str],
+        data: bytes,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        timeout = self._effective_timeout(timeout_seconds)
         try:
             completed = subprocess.run(
                 command,
                 input=data,
                 capture_output=True,
                 check=False,
-                timeout=self._timeout_seconds,
+                timeout=timeout,
             )
         except FileNotFoundError as error:
             raise FFmpegOpusCodecError("ffmpeg is required for Opus transport but was not found on PATH") from error
@@ -107,7 +129,77 @@ class FFmpegOpusCodec:
         except OSError as error:
             raise FFmpegOpusCodecError("ffmpeg Opus operation could not be started") from error
         if completed.returncode != 0:
-            detail = completed.stderr.decode("utf-8", "replace").strip().splitlines()
-            suffix = f": {detail[-1][:200]}" if detail else ""
-            raise FFmpegOpusCodecError(f"ffmpeg Opus operation failed{suffix}")
+            self._raise_process_failure(completed.stderr)
         return completed
+
+    def _run_cancellable(
+        self,
+        command: list[str],
+        data: bytes,
+        *,
+        timeout_seconds: float | None,
+        cancelled: Callable[[], bool],
+    ) -> subprocess.CompletedProcess[bytes]:
+        timeout = self._effective_timeout(timeout_seconds)
+        deadline = monotonic() + timeout
+        if cancelled():
+            raise FFmpegOpusCodecError("ffmpeg Opus operation was cancelled")
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as error:
+            raise FFmpegOpusCodecError(
+                "ffmpeg is required for Opus transport but was not found on PATH"
+            ) from error
+        except OSError as error:
+            raise FFmpegOpusCodecError("ffmpeg Opus operation could not be started") from error
+
+        first_communicate = True
+        while True:
+            if cancelled():
+                self._stop_process(process)
+                raise FFmpegOpusCodecError("ffmpeg Opus operation was cancelled")
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                self._stop_process(process)
+                raise FFmpegOpusCodecError("ffmpeg Opus operation exceeded its timeout")
+            try:
+                stdout, stderr = process.communicate(
+                    input=data if first_communicate else None,
+                    timeout=min(remaining, 0.05),
+                )
+                break
+            except subprocess.TimeoutExpired:
+                first_communicate = False
+
+        if process.returncode != 0:
+            self._raise_process_failure(stderr)
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+    def _effective_timeout(self, timeout_seconds: float | None) -> float:
+        if timeout_seconds is None:
+            return self._timeout_seconds
+        if timeout_seconds <= 0:
+            raise FFmpegOpusCodecError("ffmpeg Opus operation exceeded its timeout")
+        return min(self._timeout_seconds, float(timeout_seconds))
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen[bytes]) -> None:
+        if process.returncode is not None:
+            return
+        process.terminate()
+        try:
+            process.communicate(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+
+    @staticmethod
+    def _raise_process_failure(stderr: bytes) -> None:
+        detail = stderr.decode("utf-8", "replace").strip().splitlines()
+        suffix = f": {detail[-1][:200]}" if detail else ""
+        raise FFmpegOpusCodecError(f"ffmpeg Opus operation failed{suffix}")

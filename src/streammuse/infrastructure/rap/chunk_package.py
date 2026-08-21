@@ -9,7 +9,7 @@ import io
 import json
 from math import isfinite
 from pathlib import PurePosixPath
-from typing import Protocol
+from typing import Callable, Protocol
 import wave
 import zipfile
 import zlib
@@ -50,7 +50,14 @@ class _OpusCodec(Protocol):
 
     def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes: ...
 
-    def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes: ...
+    def decode_to_pcm16_mono_24khz(
+        self,
+        encoded: bytes,
+        *,
+        expected_frame_count: int,
+        timeout_seconds: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> bytes: ...
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -218,7 +225,12 @@ def decode_chunk_package(package: bytes, *, expected_request_id: str) -> Decoded
 
 
 def decode_opus_chunk_package(
-    package: bytes, *, expected_request_id: str, codec: _OpusCodec
+    package: bytes,
+    *,
+    expected_request_id: str,
+    codec: _OpusCodec,
+    timeout_seconds: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> DecodedRapChunkPackage:
     """Validate a strict Opus ZIP before decoding it into canonical PCM WAV bytes."""
     manifest_bytes, transport_bytes, encoded = _read_strict_members(package, _OPUS_MEMBERS)
@@ -231,7 +243,17 @@ def decode_opus_chunk_package(
     if hashlib.sha256(encoded).hexdigest() != transport["encoded_sha256"]:
         raise ValueError("Opus encoded SHA-256 does not match transport metadata")
     try:
-        pcm = codec.decode_to_pcm16_mono_24khz(encoded, expected_frame_count=manifest.expected_frame_count)
+        if timeout_seconds is None and cancelled is None:
+            pcm = codec.decode_to_pcm16_mono_24khz(
+                encoded, expected_frame_count=manifest.expected_frame_count
+            )
+        else:
+            pcm = codec.decode_to_pcm16_mono_24khz(
+                encoded,
+                expected_frame_count=manifest.expected_frame_count,
+                timeout_seconds=timeout_seconds,
+                cancelled=cancelled,
+            )
     except Exception as error:
         raise ValueError("Opus payload could not be decoded") from error
     return DecodedRapChunkPackage(manifest, _wav_from_pcm(pcm, manifest), "opus")

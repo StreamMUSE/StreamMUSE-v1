@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
@@ -52,15 +53,99 @@ def test_decode_rejects_non_exact_manifest_frame_count(monkeypatch) -> None:
 
 
 def test_real_ffmpeg_round_trip_preserves_exact_128000_frame_count() -> None:
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        pytest.skip("ffmpeg is unavailable")
     frame_count = 128_000
     pcm = b"\x01\x00" * frame_count
-    codec = FFmpegOpusCodec(executable="/opt/homebrew/bin/ffmpeg", timeout_seconds=15.0)
+    codec = FFmpegOpusCodec(executable=executable, timeout_seconds=15.0)
 
     encoded = codec.encode_pcm16_mono_24khz(pcm, expected_frame_count=frame_count)
     decoded = codec.decode_to_pcm16_mono_24khz(encoded, expected_frame_count=frame_count)
 
     assert encoded
     assert len(decoded) == frame_count * 2
+
+
+def test_real_ffmpeg_decode_rejects_non_opus_ogg() -> None:
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        pytest.skip("ffmpeg is unavailable")
+    frame_count = 2_400
+    encoded = subprocess.run(
+        [
+            executable,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "s16le",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            "-i",
+            "pipe:0",
+            "-c:a",
+            "flac",
+            "-f",
+            "ogg",
+            "pipe:1",
+        ],
+        input=b"\x01\x00" * frame_count,
+        capture_output=True,
+        check=True,
+    ).stdout
+
+    with pytest.raises(FFmpegOpusCodecError, match="failed"):
+        FFmpegOpusCodec(executable=executable).decode_to_pcm16_mono_24khz(
+            encoded, expected_frame_count=frame_count
+        )
+
+
+def test_decode_terminates_ffmpeg_when_cancelled(monkeypatch) -> None:
+    cancelled = False
+
+    class Process:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.terminated = False
+            self.killed = False
+
+        def communicate(self, input=None, timeout=None):
+            nonlocal cancelled
+            self.calls += 1
+            if self.calls == 1:
+                cancelled = True
+                raise subprocess.TimeoutExpired("ffmpeg", timeout)
+            return b"", b""
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+    process = Process()
+    monkeypatch.setattr(
+        "streammuse.infrastructure.rap.opus_codec.subprocess.Popen",
+        lambda *args, **kwargs: process,
+    )
+
+    with pytest.raises(FFmpegOpusCodecError, match="cancelled"):
+        FFmpegOpusCodec().decode_to_pcm16_mono_24khz(
+            b"opus",
+            expected_frame_count=1,
+            timeout_seconds=1.0,
+            cancelled=lambda: cancelled,
+        )
+
+    assert process.terminated
+    assert not process.killed
 
 
 def test_missing_ffmpeg_has_a_clear_error(monkeypatch) -> None:

@@ -130,6 +130,7 @@ class _ArtifactStore:
         self._opus_codec = opus_codec
         self._lock = Lock()
         self._in_flight: dict[str, tuple[bytes, Future[_StoredResponse]]] = {}
+        self._opus_in_flight: dict[str, Future[bytes]] = {}
 
     def render_or_load(
         self, request: RemoteRapChunkRequest, canonical_request: bytes
@@ -281,6 +282,7 @@ class _ArtifactStore:
             workspace / _SERVER_TIMING_FILE, {"server_timing": server_timing}
         )
         # The final atomic replacement is the sole successful-cache marker.
+        self._durably_unpublish(workspace / _OPUS_RESPONSE_FILE)
         self._publish_response(workspace / _RESPONSE_FILE, package)
         return _StoredResponse(package, server_timing)
 
@@ -291,17 +293,43 @@ class _ArtifactStore:
         workspace = self._workspace(request.request_id)
         path = workspace / _OPUS_RESPONSE_FILE
         with self._lock:
-            if path.is_file():
-                return path.read_bytes()
-            from streammuse.infrastructure.rap.chunk_package import (
-                decode_chunk_package,
-                encode_opus_chunk_package,
-            )
+            future = self._opus_in_flight.get(request.request_id)
+            if future is None:
+                future = Future()
+                self._opus_in_flight[request.request_id] = future
+                owner = True
+            else:
+                owner = False
 
-            canonical = decode_chunk_package(stored.package, expected_request_id=request.request_id)
-            package = encode_opus_chunk_package(canonical.manifest, canonical.vocal_wav, self._opus_codec)
-            self._publish_response(path, package)
+        if not owner:
+            return future.result()
+
+        try:
+            if path.is_file():
+                package = path.read_bytes()
+            else:
+                from streammuse.infrastructure.rap.chunk_package import (
+                    decode_chunk_package,
+                    encode_opus_chunk_package,
+                )
+
+                canonical = decode_chunk_package(
+                    stored.package, expected_request_id=request.request_id
+                )
+                package = encode_opus_chunk_package(
+                    canonical.manifest, canonical.vocal_wav, self._opus_codec
+                )
+                self._publish_response(path, package)
+        except BaseException as error:
+            future.set_exception(error)
+            raise
+        else:
+            future.set_result(package)
             return package
+        finally:
+            with self._lock:
+                if self._opus_in_flight.get(request.request_id) is future:
+                    self._opus_in_flight.pop(request.request_id, None)
 
     def _persist_failure(self, request_id: str, error: BaseException) -> None:
         from streammuse.application.rap.chunk_orchestration import NoValidCandidates
@@ -487,9 +515,18 @@ def create_rap_render_app(
         ):
             return _error_response("invalid_request", 422, "invalid rap chunk request")
 
+        opus_requested = (
+            wire_audio_codec == "opus"
+            and _accepts_media_type(http_request.headers.get("Accept", ""), RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE)
+        )
         try:
             stored = await run_in_threadpool(
                 store.render_or_load, request, request.canonical_json_bytes()
+            )
+            package = (
+                await run_in_threadpool(store.load_or_create_opus, request, stored)
+                if opus_requested
+                else stored.package
             )
         except _IdempotencyConflict:
             return _error_response(
@@ -506,11 +543,6 @@ def create_rap_render_app(
             )
             return _error_response(code, status, message)
 
-        opus_requested = (
-            wire_audio_codec == "opus"
-            and _accepts_media_type(http_request.headers.get("Accept", ""), RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE)
-        )
-        package = store.load_or_create_opus(request, stored) if opus_requested else stored.package
         media_type = RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE if opus_requested else RAP_CHUNK_PACKAGE_MEDIA_TYPE
         return Response(
             content=package,
@@ -531,11 +563,20 @@ def _accepts_media_type(accept: str, expected: str) -> bool:
         parts = [part.strip() for part in item.split(";")]
         if not parts or parts[0] != expected:
             continue
+        quality = 1.0
         for parameter in parts[1:]:
-            if parameter.startswith("q=") and parameter[2:].strip() == "0":
-                break
-        else:
-            return True
+            name, separator, value = parameter.partition("=")
+            if name.strip() != "q":
+                continue
+            if not separator:
+                return False
+            try:
+                quality = float(value.strip())
+            except ValueError:
+                return False
+            if not math.isfinite(quality) or not 0.0 <= quality <= 1.0:
+                return False
+        return quality > 0.0
     return False
 
 
