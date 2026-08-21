@@ -1,133 +1,134 @@
 # Real-Time Remote MOSS Acceptance Record
 
-## Status And Evidence Boundary
+## Result
 
-Task 7 implements and locally verifies the bounded monitoring, terminal, Mac
-website, and operations surfaces. It does not claim a real H200 run. Task 8
-must replace every `TODO (Task 8)` entry below with retained evidence from the
-designated H200 and Mac environments. Synthetic fixtures and local fake-service
-results are not performance measurements.
+The complete Mac-client/H200-server vertical slice is implemented and verified
+at revision `9c285aa2ba75f85c26cf14cd83b7394664da225c`. Candidate generation,
+selection, MOSS synthesis, MMS alignment, R3 warping, package validation, local
+drum mixing, continuous playback, recording, terminal monitoring, and the Mac
+website all ran together.
 
-- Accepted Task 6 base: `0af9f57c8e3046326b6cd7aa47e65310fcd3d60c`.
-- Task 7 review repair began at integrated revision
-  `5bf9ff84cea9cf9814ee629fc0d704ea50de9082`; final local verification also
-  includes Task 4 publication revision
-  `05fa3d84e6244c3d24fc60c60cc88d962bf8c3de`.
-- Task 7 revision: the commit containing this file; record `git rev-parse HEAD`
-  before Task 8 deployment.
-- Runtime artifact root: `logs/rap/remote_moss_acceptance_20260821/`.
-- Exact startup, health, Mac control, artifact, and shutdown commands:
-  `docs/developer-guide/rap-demo-quickstart.md`.
+Acceptance is qualified by one measured deployment constraint: **90 BPM with
+only two bars of lookahead does not meet its deadline over the tested Mac-H200
+SSH path**. The H200 pipeline is fast enough in isolation, but the approximately
+194-198 KB PCM response takes too long to return on this link. The prepared
+local eSpeak fallback kept playback continuous, with no underruns or missing
+frames. This is a transport/lookahead result, not a hidden generation failure.
 
-## Task 7 Local Acceptance
+Local verification at the final revision: `1753 passed, 4 skipped` in 44.94 s,
+plus fresh independent reviews of the digit-normalization and monitoring fixes.
 
-| Check | Result |
-| --- | --- |
-| Chunk events and projector state are bounded | PASS: two lines, two flows, bounded maps/lists, fixed timing keys, safe numeric ranges, and a 24,000-byte serialized ceiling |
-| Production evidence path | PASS: actual `PreparedRapChunk` survives controller, canonical publisher, recorder conversion, and terminal/browser projectors |
-| Versioned wire evidence | PASS: strict `streammuse.rap_chunk_monitor.v1` summary carries alignment identity/confidence, source hash, and stable request-relative artifact IDs |
-| Event and browser state exclude raw WAV, full candidate ledgers, anchors, and character spans | PASS |
-| Terminal reports commitment, lifecycle, lines, target and selected schedules, counts, scores, deterministic generation-input/context summary, timings, slack, alignment, warnings, hashes, artifacts, and failure | PASS |
-| Website reports the same evidence without adding runtime controls | PASS |
-| Existing dense desktop layout remains two columns | PASS: browser inspection at 1440 x 900 |
-| Responsive audit panel has no horizontal overflow | PASS: browser inspection at 390 x 844 |
-| Existing eSpeak snapshots and regressions remain unchanged | PASS |
-| Normal Mac runtime forwards only H200 port 8020; website remains Mac-local | PASS: documented |
-| Direct vLLM forwarding is optional diagnostics only | PASS: documented |
-
-Local verification commands and exact counts are retained in
-`.superpowers/sdd/2026-08-21-realtime-remote-moss-renderer/task-7-report.md`.
-
-## Task 8 Deployment Record
+## Deployment Evidence
 
 | Item | Evidence |
 | --- | --- |
-| Mac revision | TODO (Task 8) |
-| H200 revision | TODO (Task 8) |
-| vLLM physical GPU / UUID / logical mapping | TODO (Task 8) |
-| MOSS and MMS physical GPU / UUID / logical mapping | TODO (Task 8) |
-| vLLM PID and retained log | TODO (Task 8) |
-| Chunk-service PID and retained log | TODO (Task 8) |
-| `/v1/models` response artifact | TODO (Task 8) |
-| `/health` response artifact and schema revision | TODO (Task 8) |
-| Cold two-bar request ID and artifact directory | TODO (Task 8) |
-| Warm two-bar request ID and artifact directory | TODO (Task 8) |
-| Exact 24 kHz mono PCM16 frame validation | TODO (Task 8) |
-| MFA reference comparison | TODO (Task 8) |
+| Mac revision | `9c285aa2ba75f85c26cf14cd83b7394664da225c` |
+| H200 revision | Same revision, isolated deployment `/data/home/Andrew.Yang/StreamMUSE/deploy/real_rap_audio_9c285aa2` |
+| vLLM | Physical GPU 1, UUID `GPU-74ee34a6-23bd-7e60-e012-6bf3d30b4c3a`, PID `1787400`, `Qwen/Qwen2.5-7B-Instruct` served as `qwen-rap` |
+| MOSS and MMS | Physical GPU 0, UUID `GPU-4f4e1a5f-dfd1-e747-40d2-993bf2548918`, PID `2271239` |
+| Chunk service | Loopback `127.0.0.1:8020`, schema `streammuse.rap_chunk.v1`, all warmup checks ready |
+| Final direct request | `b5cc1cc92e0bde3881db24caf3cf56d8e2f344de5ef339c9485d84cce7fd920a`, H200 wall time 3.473 s, 194,347-byte response |
+| Final direct audio | 128,000 frames, 24 kHz, mono PCM16, exactly 5.333333 s |
+| Final direct candidates | 36 requested, 28 parseable, 6 valid/selectable |
+| Final direct alignment | `torchaudio.pipelines.MMS_FA`, confidence 0.8405, no alignment fallback |
+| MFA reference comparison | Earlier retained probe: MMS word starts differed from the accepted MFA reference by 49.46 ms mean absolute and 102.44 ms maximum |
 
-Do not replace GPU entries until `nvidia-smi` is captured immediately before
-service launch. Do not terminate or repurpose unrelated H200 processes.
+Local retained evidence is under
+`logs/rap/remote_moss_acceptance_20260821/h200_evidence/`. It includes health,
+model, GPU, process, profile-sweep, headers, ZIP, manifest, and vocal WAV files.
+The H200 server-side artifact root is
+`/data/home/Andrew.Yang/StreamMUSE/deploy/acceptance_20260821_remote_moss_live/server_9c285aa2/`.
 
-## Warm Latency Distribution
+## Warm H200 Profile
 
-Task 8 must run at least ten warm requests across the three existing flow
-templates. Record milliseconds from retained manifests and Mac logs.
+The robust policy used 16 initial choices per bar, 4 rescue choices, 20 maximum,
+3 minimum valid choices, and a 3000 ms render reserve. Nine of ten requests
+completed; the sole failure was a digit-bearing transcript rejected by MMS.
+Revision `d67360ba` fixed that preflight mismatch by verbalizing ASCII digits
+before prosody, scoring, selection, and rendering. The final direct request
+then completed with six selectable candidates.
 
 | Stage | Samples | p50 ms | p95 ms | max ms |
 | --- | ---: | ---: | ---: | ---: |
-| Candidate generation | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| Candidate evaluation | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| MOSS synthesis | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| MMS alignment | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| Rubber Band R3 | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| Package creation | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| SSH transfer | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| Mac validation and mix | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
-| End to end | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) | TODO (Task 8) |
+| Candidate generation | 9 | 461.274 | 580.230 | 580.230 |
+| Candidate evaluation | 9 | 7.057 | 8.357 | 8.357 |
+| MOSS synthesis | 9 | 2700.570 | 2767.975 | 2767.975 |
+| MMS alignment | 9 | 20.902 | 25.139 | 25.139 |
+| Rubber Band R3 | 9 | 89.576 | 101.917 | 101.917 |
+| Package creation | 9 | 45.673 | 47.600 | 47.600 |
+| H200 server total | 9 | 3336.136 | 3441.980 | 3441.980 |
+| Direct HTTP wall time | 9 | 3361.011 | 3466.499 | 3466.499 |
 
-## Candidate And Alignment Results
+Across successful profile requests, valid/selectable candidates averaged 8.11
+per two-bar request, with a minimum of 4. The mean selected score was 0.5085.
+Candidate ranking was not a latency bottleneck: evaluation stayed below 9 ms
+while MOSS synthesis dominated the server budget.
 
-| Measure | Result |
-| --- | --- |
-| Requested candidates | TODO (Task 8) |
-| Parseable candidates | TODO (Task 8) |
-| Valid candidates | TODO (Task 8) |
-| Selectable candidates | TODO (Task 8) |
-| Failure counts by stage and reason | TODO (Task 8) |
-| Alignment method distribution | TODO (Task 8) |
-| Alignment confidence distribution | TODO (Task 8) |
-| Alignment fallback counts by method | TODO (Task 8) |
-| Stretch-ratio warning counts | TODO (Task 8) |
+## Mac 20-Bar Run
 
-## Continuous Mac Run
+Session `rap-20260821T122702Z-782db4bd` ran at 90 BPM with exactly two bars of
+lookahead. Retained outputs:
 
-Run 20 bars at 90 BPM through the normal port-8020 tunnel. Retain the mixed
-WAV, event stream, session manifest, per-chunk manifests, and service logs.
+- `logs/rap/remote_moss_acceptance_20260821/mac_final_20bar_9c285aa2.wav`
+- `logs/rap/remote_moss_acceptance_20260821/mac_final_20bar_9c285aa2/rap-20260821T122702Z-782db4bd/`
 
 | Measure | Result |
 | --- | --- |
-| Session ID and artifact paths | TODO (Task 8) |
-| Expected frames and duration | TODO (Task 8) |
-| Observed frames and duration | TODO (Task 8) |
-| Application-level gaps | TODO (Task 8) |
-| Remote MOSS committed chunks / bars | TODO (Task 8) |
-| Local eSpeak fallback chunks / bars | TODO (Task 8) |
-| Primary MOSS acceptance rate | TODO (Task 8) |
-| Fallback rate and reason distribution | TODO (Task 8) |
-| Deadline slack p50 / p95 / min | TODO (Task 8) |
-| Playback underruns | TODO (Task 8) |
-| Hash verification failures | TODO (Task 8) |
+| Expected / observed frames | 2,560,000 / 2,560,000 |
+| Expected / observed duration | 53.333333 s / 53.333333 s |
+| Format | 48 kHz, stereo float32 |
+| Finite samples / peak / RMS | yes / 0.6864 / 0.0721 |
+| Per-bar RMS | 0.0296 minimum, 0.0772 maximum; every bar contains audio |
+| Application-level gaps | 0 |
+| Playback underruns | 0 |
+| Hash or package validation failures | 0 |
+| Remote MOSS bars | 2 of 20 |
+| Local fallback bars | 18 of 20 |
+| Primary acceptance / fallback rate | 10% / 90% |
+| Fallback reason | 9 rolling chunk requests exceeded the useful transport deadline |
+| Startup pair end to end | 8.228 s including 8.215 s Mac-observed request/transfer time |
 
-## Listening Comparison
+The first pair is allowed the 120 s startup budget and therefore used real MOSS.
+Every rolling pair had only the musical two-bar deadline. A cached 196,136-byte
+response through the same SSH tunnel took 5.245 s even with no rendering. The
+same class of request took 3.473 s to generate and package on H200. These costs
+cannot fit inside the approximately 5.333 s two-bar window when added together.
 
-Render at least three identical accepted lyric pairs through remote MOSS and
-local eSpeak. Retain both outputs and document human listening observations;
-alignment confidence is not a substitute for perceptual evaluation.
+## Website And Controls
 
-| Item | Result |
-| --- | --- |
-| Compared request IDs and artifact pairs | TODO (Task 8) |
-| Review conditions and listener | TODO (Task 8) |
-| Word coherence and intelligibility | TODO (Task 8) |
-| Rhythmic placement and bar transitions | TODO (Task 8) |
-| Recommendation | TODO (Task 8) |
+The final Mac website was exercised against the real H200 service at
+`http://127.0.0.1:8012/`:
 
-## Known Limitations And Next Decision
+- Start produced and displayed real MOSS bars.
+- The UI showed the selected lyrics, exact flow slots/stresses, deterministic
+  generation input summary, committed context, chunk state, and audio evidence.
+- The dense two-column desktop layout had zero document-level horizontal
+  overflow.
+- Stop completed exactly the bar active when clicked, then disabled Stop and
+  enabled Start/Reset.
+- Reset cleared the live bar and monitoring state.
 
-- Real H200 availability, GPU isolation, persistent-worker warm behavior,
-  transfer cost, Mac mix cost, and perceptual quality are unmeasured in Task 7.
-- Task 8 must tune only from retained evidence and must not relabel service
-  fallback output as primary MOSS acceptance.
-- Final acceptance remains pending until the real request, warm distribution,
-  exact-duration 20-bar run, zero-gap check, and listening comparison are
-  complete.
+## Listening Result
+
+Earlier listening in this project found MOSS plus forced alignment substantially
+more word-like and rap-like than the local robotic syllable/eSpeak path. The
+local renderer remains the correct timing-safe fallback, not the preferred
+voice. This was an informal engineering comparison, not a blinded perceptual
+study. Alignment confidence and exact timing should not be treated as a proxy
+for intelligibility.
+
+## Decision And Next Work
+
+The implementation is accepted as a complete research prototype with an
+explicit transport limitation. Server-side candidate evaluation is no longer a
+concern, and the audio scheduler demonstrably preserves timing under fallback.
+For real MOSS on every rolling pair at 90 BPM, the next experiment must change
+one of the constraints:
+
+1. Return a low-bitrate speech codec instead of full PCM-in-ZIP.
+2. Use a persistent streaming/push transport and begin transfer earlier.
+3. Permit three or four bars of buffering on this network path.
+4. Run the client on a lower-latency network path to H200.
+
+The current code intentionally does not pretend that increasing a timeout can
+solve a musical deadline. It falls back visibly and records the reason.
