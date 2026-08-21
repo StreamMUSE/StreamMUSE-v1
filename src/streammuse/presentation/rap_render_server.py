@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
+import time
 import uuid
 from concurrent.futures import Future
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
 from typing import Callable, Mapping, Protocol
@@ -23,7 +27,11 @@ from streammuse.application.rap.chunk_orchestration import (
     RemoteChunkRenderArtifact,
     RenderBudgetExpired,
 )
-from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION, RemoteRapChunkRequest
+from streammuse.domain.rap import (
+    REMOTE_CHUNK_SCHEMA_VERSION,
+    RemoteRapChunkManifest,
+    RemoteRapChunkRequest,
+)
 from streammuse.infrastructure.rap.chunk_package import (
     RAP_CHUNK_PACKAGE_MEDIA_TYPE,
     encode_chunk_package,
@@ -35,30 +43,17 @@ _REQUEST_FILE = "request.json"
 _FAILURE_FILE = "failure.json"
 _CANDIDATE_LEDGER_FILE = "candidate_ledger.json"
 _ALIGNMENT_FILE = "alignment.json"
+_MMS_ALIGNMENT_FILE = "mms_alignment.json"
 _ALIGNED_WAV_FILE = "aligned.wav"
 _SOURCE_WAV_FILE = "source.wav"
+_SERVER_TIMING_FILE = "server_timing.json"
+_MEASUREMENT_PACKAGE_FILE = ".response.measurement.zip"
+MAX_RAP_CHUNK_REQUEST_BYTES = 64 * 1024
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
-_HEALTH_KEYS = {
-    "protocol_version",
-    "schema_version",
-    "ready",
-    "vllm",
-    "moss",
-    "aligner",
-    "rubberband",
-    "candidate_profile",
-    "warmup",
-}
-_SENSITIVE_HEALTH_KEYS = {
-    "authorization",
-    "cache",
-    "credential",
-    "password",
-    "path",
-    "reference_wav",
-    "secret",
-    "token",
-    "url",
+_HEALTH_COMPONENT_KEYS = {"vllm", "moss", "aligner", "rubberband"}
+_HEALTH_SUMMARY_KEYS = {"ready", "status", "identity", "version", "model", "profile"}
+_CANDIDATE_PROFILES = {
+    "realtime": {"max_tokens_per_choice": 32, "temperature": 1.0},
 }
 
 
@@ -68,6 +63,10 @@ class _ChunkOrchestrator(Protocol):
 
 
 class _IdempotencyConflict(RuntimeError):
+    pass
+
+
+class _RequestTooLarge(RuntimeError):
     pass
 
 
@@ -92,13 +91,30 @@ class RapRenderServerConfig:
     candidate_profile: str
 
 
+@dataclass
+class _WorkerComposition:
+    orchestrator: _ChunkOrchestrator
+    health: Mapping[str, object]
+    _resources: ExitStack
+
+    def close(self) -> None:
+        self._resources.close()
+
+
 class _ArtifactStore:
     """Coordinates idempotent responses while keeping render work outside its lock."""
 
-    def __init__(self, root: Path, orchestrator: _ChunkOrchestrator) -> None:
+    def __init__(
+        self,
+        root: Path,
+        orchestrator: _ChunkOrchestrator,
+        *,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
         self._orchestrator = orchestrator
+        self._clock = clock
         self._lock = Lock()
         self._in_flight: dict[str, tuple[bytes, Future[_StoredResponse]]] = {}
 
@@ -107,9 +123,6 @@ class _ArtifactStore:
     ) -> _StoredResponse:
         request_id = request.request_id
         with self._lock:
-            cached = self._load_completed_locked(request_id, canonical_request)
-            if cached is not None:
-                return cached
             existing = self._in_flight.get(request_id)
             if existing is not None:
                 existing_request, future = existing
@@ -125,12 +138,19 @@ class _ArtifactStore:
             return future.result()
 
         try:
-            self._write_request(request_id, canonical_request)
-            artifact = self._orchestrator.render(request)
-            response = self._persist_success(request, artifact)
-        except Exception as error:
-            self._persist_failure(request_id, error)
-            future.set_exception(error)
+            response = self._load_completed(request_id, canonical_request)
+            if response is None:
+                self._write_request(request_id, canonical_request)
+                artifact = self._orchestrator.render(request)
+                response = self._persist_success(request, artifact)
+        except BaseException as error:
+            try:
+                if not isinstance(error, _IdempotencyConflict):
+                    self._persist_failure(request_id, error)
+            except BaseException:
+                pass
+            finally:
+                future.set_exception(error)
             raise
         else:
             future.set_result(response)
@@ -140,7 +160,7 @@ class _ArtifactStore:
                 if self._in_flight.get(request_id, (None, None))[1] is future:
                     self._in_flight.pop(request_id, None)
 
-    def _load_completed_locked(
+    def _load_completed(
         self, request_id: str, canonical_request: bytes
     ) -> _StoredResponse | None:
         workspace = self._workspace(request_id)
@@ -154,15 +174,29 @@ class _ArtifactStore:
                 raise _IdempotencyConflict
         package_path = workspace / _RESPONSE_FILE
         if request_path.exists() and package_path.is_file():
-            return _StoredResponse(package_path.read_bytes(), "cache;dur=0")
+            server_timing = "cache;dur=0"
+            timing_path = workspace / _SERVER_TIMING_FILE
+            if timing_path.is_file():
+                try:
+                    timing_payload = json.loads(timing_path.read_bytes())
+                    recorded_timing = timing_payload.get("server_timing")
+                    if isinstance(recorded_timing, str):
+                        server_timing = recorded_timing
+                except (AttributeError, json.JSONDecodeError, OSError):
+                    pass
+            return _StoredResponse(package_path.read_bytes(), server_timing)
         return None
 
     def _persist_success(
-        self, request: RemoteRapChunkRequest, artifact: RemoteChunkRenderArtifact) -> _StoredResponse:
+        self, request: RemoteRapChunkRequest, artifact: RemoteChunkRenderArtifact
+    ) -> _StoredResponse:
         if artifact.manifest.request_id != request.request_id:
             raise PhraseRenderFailed("render artifact request identity mismatch")
+        packaging_started = self._clock()
         workspace = self._workspace(request.request_id)
         self._copy_renderer_artifacts(artifact.workspace, workspace)
+        self._preserve_source_wav(artifact.workspace, workspace)
+        self._preserve_mms_alignment(artifact.workspace, workspace)
         if not (workspace / _SOURCE_WAV_FILE).is_file():
             raise PhraseRenderFailed("render artifact is missing source WAV")
 
@@ -171,14 +205,29 @@ class _ArtifactStore:
             workspace / _ALIGNMENT_FILE,
             artifact.manifest.diagnostics.alignment_diagnostics,
         )
-        self._write_json(workspace / "manifest.json", artifact.manifest.to_payload())
         self._atomic_write(workspace / _ALIGNED_WAV_FILE, artifact.vocal_wav)
-        package = encode_chunk_package(artifact.manifest, artifact.vocal_wav)
+        measurement_package = encode_chunk_package(
+            artifact.manifest, artifact.vocal_wav
+        )
+        measurement_path = workspace / _MEASUREMENT_PACKAGE_FILE
+        try:
+            self._atomic_write(measurement_path, measurement_package)
+            packaging_ms = max(0.001, (self._clock() - packaging_started) * 1000.0)
+        finally:
+            measurement_path.unlink(missing_ok=True)
+
+        final_manifest = _finalize_manifest_timing(artifact.manifest, packaging_ms)
+        self._write_json(workspace / "manifest.json", final_manifest.to_payload())
+        package = encode_chunk_package(final_manifest, artifact.vocal_wav)
+        server_timing = _server_timing(final_manifest)
+        self._write_json(
+            workspace / _SERVER_TIMING_FILE, {"server_timing": server_timing}
+        )
         # The final atomic replacement is the sole successful-cache marker.
         self._atomic_write(workspace / _RESPONSE_FILE, package)
-        return _StoredResponse(package, _server_timing(artifact))
+        return _StoredResponse(package, server_timing)
 
-    def _persist_failure(self, request_id: str, error: Exception) -> None:
+    def _persist_failure(self, request_id: str, error: BaseException) -> None:
         workspace = self._workspace(request_id)
         if isinstance(error, NoValidCandidates):
             self._write_json(workspace / _CANDIDATE_LEDGER_FILE, error.candidate_ledger)
@@ -186,7 +235,9 @@ class _ArtifactStore:
         self._write_json(workspace / _FAILURE_FILE, {"code": code})
 
     def _write_request(self, request_id: str, canonical_request: bytes) -> None:
-        self._atomic_write(self._workspace(request_id) / _REQUEST_FILE, canonical_request)
+        self._atomic_write(
+            self._workspace(request_id) / _REQUEST_FILE, canonical_request
+        )
 
     def _workspace(self, request_id: str) -> Path:
         path = self._root / request_id
@@ -210,10 +261,30 @@ class _ArtifactStore:
                 _FAILURE_FILE,
                 _CANDIDATE_LEDGER_FILE,
                 _ALIGNMENT_FILE,
+                _MMS_ALIGNMENT_FILE,
                 _ALIGNED_WAV_FILE,
+                _SOURCE_WAV_FILE,
+                _SERVER_TIMING_FILE,
+                _MEASUREMENT_PACKAGE_FILE,
             }:
                 continue
             self._atomic_copy(path, target)
+
+    def _preserve_mms_alignment(self, source: Path, destination: Path) -> None:
+        full_alignment = Path(source) / _MMS_ALIGNMENT_FILE
+        if not full_alignment.is_file():
+            raise PhraseRenderFailed("render artifact is missing MMS alignment JSON")
+        target = destination / _MMS_ALIGNMENT_FILE
+        if full_alignment.resolve() != target.resolve():
+            self._atomic_copy(full_alignment, target)
+
+    def _preserve_source_wav(self, source: Path, destination: Path) -> None:
+        source_wav = Path(source) / _SOURCE_WAV_FILE
+        if not source_wav.is_file():
+            raise PhraseRenderFailed("render artifact is missing source WAV")
+        target = destination / _SOURCE_WAV_FILE
+        if source_wav.resolve() != target.resolve():
+            self._atomic_copy(source_wav, target)
 
     @staticmethod
     def _atomic_copy(source: Path, destination: Path) -> None:
@@ -225,7 +296,10 @@ class _ArtifactStore:
         _ArtifactStore._atomic_write(
             path,
             json.dumps(
-                _json_value(value), ensure_ascii=True, separators=(",", ":"), sort_keys=True
+                _json_value(value),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
             ).encode("utf-8"),
         )
 
@@ -239,8 +313,18 @@ class _ArtifactStore:
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, path)
+            _ArtifactStore._fsync_directory(path.parent)
         finally:
             temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_fd = os.open(path, flags)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
 
 def create_rap_render_app(
@@ -251,7 +335,9 @@ def create_rap_render_app(
 ) -> FastAPI:
     """Create the testable private render service without composing model dependencies."""
     store = _ArtifactStore(Path(artifact_root), orchestrator)
-    app = FastAPI(title="StreamMUSE Private Rap Renderer", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="StreamMUSE Private Rap Renderer", docs_url=None, redoc_url=None
+    )
 
     @app.get("/health")
     async def get_health() -> dict[str, object]:
@@ -261,11 +347,23 @@ def create_rap_render_app(
     @app.post("/v1/rap/chunks/render")
     async def render_chunk(http_request: Request) -> Response:
         try:
-            request = _parse_request(await http_request.body())
+            request_body = await _read_bounded_request_body(http_request)
+        except _RequestTooLarge:
+            return _error_response(
+                "request_too_large", 413, "rap chunk request exceeds size limit"
+            )
+        try:
+            request = _parse_request(request_body)
             idempotency_key = http_request.headers.get("Idempotency-Key")
             if idempotency_key != request.request_id:
                 raise ValueError("Idempotency-Key must equal request_id")
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, TypeError, ValueError):
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            RecursionError,
+            TypeError,
+            ValueError,
+        ):
             return _error_response("invalid_request", 422, "invalid rap chunk request")
 
         try:
@@ -274,7 +372,9 @@ def create_rap_render_app(
             )
         except _IdempotencyConflict:
             return _error_response(
-                "idempotency_conflict", 409, "request ID is already bound to another request"
+                "idempotency_conflict",
+                409,
+                "request ID is already bound to another request",
             )
         except Exception as error:
             code, status = _error_spec(error)
@@ -300,10 +400,24 @@ def create_rap_render_app(
 
 def _parse_request(body: bytes) -> RemoteRapChunkRequest:
     payload = json.loads(body.decode("utf-8"))
-    parser = getattr(RemoteRapChunkRequest, "from_dict", None)
-    if callable(parser):
-        return parser(payload)
     return RemoteRapChunkRequest.from_payload(payload)
+
+
+async def _read_bounded_request_body(request: Request) -> bytes:
+    content_length = request.headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_RAP_CHUNK_REQUEST_BYTES:
+                raise _RequestTooLarge
+        except ValueError:
+            pass
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_RAP_CHUNK_REQUEST_BYTES:
+            raise _RequestTooLarge
+        body.extend(chunk)
+    return bytes(body)
 
 
 def _json_value(value: object) -> object:
@@ -327,11 +441,36 @@ def _error_spec(error: Exception) -> tuple[str, int]:
 
 
 def _error_response(code: str, status: int, message: str) -> JSONResponse:
-    return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
+    return JSONResponse(
+        status_code=status, content={"error": {"code": code, "message": message}}
+    )
 
 
-def _server_timing(artifact: RemoteChunkRenderArtifact) -> str:
-    total = artifact.manifest.diagnostics.stage_timings_ms["total"]
+def _finalize_manifest_timing(
+    manifest: RemoteRapChunkManifest, packaging_ms: float
+) -> RemoteRapChunkManifest:
+    timings = dict(manifest.diagnostics.stage_timings_ms)
+    previous_total = float(timings["total"])
+    timings["packaging"] = packaging_ms
+    timings["total"] = max(
+        previous_total + packaging_ms,
+        sum(value for name, value in timings.items() if name != "total"),
+    )
+    warnings = tuple(
+        warning
+        for warning in manifest.diagnostics.warnings
+        if warning != "packaging timing is provisional"
+    )
+    diagnostics = replace(
+        manifest.diagnostics,
+        stage_timings_ms=timings,
+        warnings=warnings,
+    )
+    return replace(manifest, diagnostics=diagnostics)
+
+
+def _server_timing(manifest: RemoteRapChunkManifest) -> str:
+    total = manifest.diagnostics.stage_timings_ms["total"]
     return f"total;dur={total:.3f}"
 
 
@@ -341,24 +480,39 @@ def _public_health(value: Mapping[str, object]) -> dict[str, object]:
         "schema_version": REMOTE_CHUNK_SCHEMA_VERSION,
         "ready": False,
     }
-    for key in _HEALTH_KEYS:
-        if key in value:
-            public[key] = _sanitize_health_value(value[key])
+    for key in ("protocol_version", "schema_version", "ready", "candidate_profile"):
+        if key in value and _is_health_scalar(item := value[key]):
+            public[key] = item
+    for key in _HEALTH_COMPONENT_KEYS:
+        item = value.get(key)
+        if isinstance(item, Mapping):
+            public[key] = _public_health_summary(item)
+    if "warmup" in value:
+        warmup = value["warmup"]
+        if _is_health_scalar(warmup):
+            public["warmup"] = warmup
+        elif isinstance(warmup, Mapping):
+            public["warmup"] = _public_health_summary(warmup)
     return public
 
 
-def _sanitize_health_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _sanitize_health_value(item)
-            for key, item in value.items()
-            if str(key).lower() not in _SENSITIVE_HEALTH_KEYS
-        }
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    if isinstance(value, (list, tuple)):
-        return [_sanitize_health_value(item) for item in value]
-    return str(value)
+def _public_health_summary(value: Mapping[str, object]) -> dict[str, object]:
+    summary = {
+        key: item
+        for key in _HEALTH_SUMMARY_KEYS
+        if key in value and _is_health_scalar(item := value[key])
+    }
+    if "warmup" in value:
+        warmup = value["warmup"]
+        if _is_health_scalar(warmup):
+            summary["warmup"] = warmup
+        elif isinstance(warmup, Mapping):
+            summary["warmup"] = _public_health_summary(warmup)
+    return summary
+
+
+def _is_health_scalar(value: object) -> bool:
+    return isinstance(value, (str, int, float, bool)) or value is None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -367,21 +521,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8020)
     parser.add_argument("--allow-public-bind", action="store_true")
     parser.add_argument("--artifact-root", default="rap-chunk-artifacts")
-    parser.add_argument("--vllm-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--vllm-url", default="http://127.0.0.1:8000/v1")
     parser.add_argument("--vllm-model", required=True)
     parser.add_argument("--moss-model", required=True)
     parser.add_argument("--moss-device", default="cuda")
     parser.add_argument("--moss-reference-wav", required=True)
     parser.add_argument("--aligner-device", default="cuda")
     parser.add_argument("--aligner-cache")
-    parser.add_argument("--candidate-profile", default="realtime")
+    parser.add_argument(
+        "--candidate-profile", choices=tuple(_CANDIDATE_PROFILES), default="realtime"
+    )
     return parser
 
 
 def main(
     argv: list[str] | None = None,
     *,
-    composition_factory: Callable[[RapRenderServerConfig], tuple[_ChunkOrchestrator, Mapping[str, object]]] | None = None,
+    composition_factory: Callable[[RapRenderServerConfig], object] | None = None,
     serve: Callable[..., object] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
@@ -401,33 +557,247 @@ def main(
         aligner_cache=Path(args.aligner_cache) if args.aligner_cache else None,
         candidate_profile=args.candidate_profile,
     )
-    compose = composition_factory or _compose_real_worker
-    orchestrator, health = compose(config)
     run_server = serve
     if run_server is None:
         import uvicorn
 
         run_server = uvicorn.run
-    run_server(
-        create_rap_render_app(orchestrator, health, artifact_root=config.artifact_root),
-        host=config.host,
-        port=config.port,
-        log_level="info",
-    )
+    compose = composition_factory or _compose_real_worker
+    composition = compose(config)
+    try:
+        run_server(
+            create_rap_render_app(
+                composition.orchestrator,
+                composition.health,
+                artifact_root=config.artifact_root,
+            ),
+            host=config.host,
+            port=config.port,
+            log_level="info",
+        )
+    finally:
+        composition.close()
     return 0
 
 
 def _compose_real_worker(
     config: RapRenderServerConfig,
-) -> tuple[_ChunkOrchestrator, Mapping[str, object]]:
-    """Late-bound seam for Task 3's resident MOSS/MMS composition.
+) -> _WorkerComposition:
+    """Load, warm, and own one resident H200 render composition."""
+    dependencies = _load_worker_dependencies()
+    resources = ExitStack()
+    try:
+        config.artifact_root.mkdir(parents=True, exist_ok=True)
+        client_config = dependencies.LocalChatModelClientConfig(
+            base_url=config.vllm_url,
+            model=config.vllm_model,
+            timeout_s=30.0,
+        )
+        client = dependencies.LocalChatModelClient(client_config)
+        _register_close(resources, client)
+        vllm_health = _probe_vllm(config.vllm_url, config.vllm_model)
 
-    Keeping this import boundary local lets the server module and CLI remain
-    importable on the Mac, where MOSS and MMS are intentionally unavailable.
-    """
-    del config
-    raise RuntimeError(
-        "real H200 composition requires the Task 3 MOSS/MMS renderer factory"
+        profile = _CANDIDATE_PROFILES[config.candidate_profile]
+        generator = dependencies.IndependentChoiceCandidateGenerator(
+            client,
+            max_tokens_per_choice=profile["max_tokens_per_choice"],
+            temperature=profile["temperature"],
+        )
+        analyzer = dependencies.CmuProsodyAnalyzer()
+        planner = dependencies.ChunkCandidatePlanner(
+            generator,
+            analyzer,
+            dependencies.ScoreWeights(),
+        )
+
+        synthesizer = dependencies.PersistentMossSynthesizer.load(
+            model_id=config.moss_model,
+            device=config.moss_device,
+            reference_wav=config.moss_reference_wav,
+        )
+        _register_close(resources, synthesizer)
+        if config.aligner_cache is not None:
+            _configure_aligner_cache(config.aligner_cache)
+        aligner = dependencies.MmsForcedAligner.load(device=config.aligner_device)
+        _register_close(resources, aligner)
+        rubberband_health = _probe_rubberband()
+
+        warmup_request = _warmup_render_request()
+        with tempfile.TemporaryDirectory(
+            prefix=".streammuse-rap-warmup-", dir=config.artifact_root
+        ) as temporary_directory:
+            warmup_wav = Path(temporary_directory) / "moss-warmup.wav"
+            moss_warmup = synthesizer.synthesize(warmup_request, warmup_wav)
+            aligner_warmup = aligner.warmup(warmup_wav, warmup_request.text)
+
+        renderer = dependencies.MossAlignedPhraseRenderer(
+            synthesizer=synthesizer,
+            aligner=aligner,
+            rubberband_version=str(rubberband_health["version"]),
+        )
+        _register_close(resources, renderer)
+        orchestrator = dependencies.RapChunkOrchestrator(
+            planner,
+            renderer,
+            workspace_root=config.artifact_root,
+        )
+        moss_version = str(getattr(moss_warmup, "model_revision", "unknown"))
+        health = {
+            "protocol_version": "remote-rap-chunk/v1",
+            "schema_version": REMOTE_CHUNK_SCHEMA_VERSION,
+            "ready": True,
+            "vllm": dict(vllm_health),
+            "moss": {
+                "ready": True,
+                "status": "warmed",
+                "identity": "PersistentMossSynthesizer",
+                "version": moss_version,
+                "model": config.moss_model,
+                "warmup": "complete",
+            },
+            "aligner": {
+                "ready": True,
+                "status": "warmed",
+                "identity": str(aligner_warmup["aligner"]),
+                "version": str(aligner_warmup["version"]),
+                "warmup": "complete",
+            },
+            "rubberband": dict(rubberband_health),
+            "candidate_profile": config.candidate_profile,
+            "warmup": {"ready": True, "status": "complete"},
+        }
+        return _WorkerComposition(orchestrator, health, resources)
+    except BaseException:
+        resources.close()
+        raise
+
+
+def _load_worker_dependencies() -> object:
+    """Import H200-only dependencies only while composing the real worker."""
+    from types import SimpleNamespace
+
+    from streammuse.application.rap.chunk_orchestration import (
+        ChunkCandidatePlanner,
+        RapChunkOrchestrator,
+    )
+    from streammuse.domain.rap import ScoreWeights
+    from streammuse.infrastructure.inference.local_chat_client import (
+        LocalChatModelClient,
+        LocalChatModelClientConfig,
+    )
+    from streammuse.infrastructure.rap.generators import (
+        IndependentChoiceCandidateGenerator,
+    )
+    from streammuse.infrastructure.rap.mms_forced_alignment import MmsForcedAligner
+    from streammuse.infrastructure.rap.moss_aligned_phrase import (
+        MossAlignedPhraseRenderer,
+    )
+    from streammuse.infrastructure.rap.moss_tts import PersistentMossSynthesizer
+    from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
+
+    return SimpleNamespace(
+        LocalChatModelClient=LocalChatModelClient,
+        LocalChatModelClientConfig=LocalChatModelClientConfig,
+        IndependentChoiceCandidateGenerator=IndependentChoiceCandidateGenerator,
+        CmuProsodyAnalyzer=CmuProsodyAnalyzer,
+        ScoreWeights=ScoreWeights,
+        ChunkCandidatePlanner=ChunkCandidatePlanner,
+        PersistentMossSynthesizer=PersistentMossSynthesizer,
+        MmsForcedAligner=MmsForcedAligner,
+        MossAlignedPhraseRenderer=MossAlignedPhraseRenderer,
+        RapChunkOrchestrator=RapChunkOrchestrator,
+    )
+
+
+def _register_close(resources: ExitStack, owner: object) -> None:
+    close = getattr(owner, "close", None)
+    if callable(close):
+        resources.callback(close)
+
+
+def _configure_aligner_cache(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    import torch
+
+    torch.hub.set_dir(str(path))
+
+
+def _probe_vllm(base_url: str, model: str) -> Mapping[str, object]:
+    import httpx
+
+    response = httpx.get(f"{base_url.rstrip('/')}/models", timeout=5.0)
+    response.raise_for_status()
+    payload = response.json()
+    models = payload.get("data") if isinstance(payload, Mapping) else None
+    model_ids = {
+        item.get("id")
+        for item in models or ()
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    if model not in model_ids:
+        raise RuntimeError("configured vLLM model is not ready")
+    return {
+        "ready": True,
+        "status": "serving",
+        "identity": "vLLM",
+        "version": response.headers.get("server", "unknown"),
+        "model": model,
+    }
+
+
+def _probe_rubberband() -> Mapping[str, object]:
+    completed = subprocess.run(
+        ["rubberband", "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+    version = (completed.stdout or completed.stderr).strip().splitlines()
+    return {
+        "ready": True,
+        "status": "available",
+        "identity": "Rubber Band",
+        "version": (version[0] if version else "unknown")[:128],
+    }
+
+
+def _warmup_render_request() -> object:
+    from streammuse.experiments.rap_audio_protocols.contracts import (
+        SyllableTarget,
+        TwoBarRenderRequest,
+    )
+
+    return TwoBarRenderRequest(
+        song_id="streammuse-h200-warmup",
+        chunk_index=0,
+        start_bar=0,
+        end_bar=2,
+        text="warm voice",
+        syllables=(
+            SyllableTarget(
+                word="warm",
+                index_in_word=0,
+                phonemes=("W", "AO1", "R", "M"),
+                lexical_stress=1,
+                target_stress=1.0,
+                boundary_strength=0,
+                absolute_tick=1,
+                tick_in_chunk=1,
+                target_seconds=0.25,
+            ),
+            SyllableTarget(
+                word="voice",
+                index_in_word=0,
+                phonemes=("V", "OY1", "S"),
+                lexical_stress=1,
+                target_stress=1.0,
+                boundary_strength=2,
+                absolute_tick=4,
+                tick_in_chunk=4,
+                target_seconds=0.75,
+            ),
+        ),
     )
 
 
