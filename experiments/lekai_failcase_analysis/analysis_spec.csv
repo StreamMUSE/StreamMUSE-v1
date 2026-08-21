@@ -1,0 +1,41 @@
+layer,feature,role,family,rationale
+melody,first8_onset_note_density,primary,density,Prompt-window onset density may expose input overload or underspecification.
+melody,first8_peak_onset_rate_4beat,primary,density,Local one-bar peak rate captures bursts hidden by the prefix average.
+melody,first8_ioi_p10,primary,rhythm,Short inter-onset intervals measure locally rapid Melody input.
+melody,first8_ioi_cv,primary,rhythm,IOI variation describes irregular onset spacing.
+melody,first8_duration_median,primary,duration,Typical Melody note duration may affect accompaniment duration matching.
+melody,first8_duration_cv,primary,duration,Duration variation describes articulation irregularity.
+melody,first8_one_step_duration_rate,primary,duration,Fraction of notes quantized to one 0.25-beat step captures very short notes.
+melody,first8_active_coverage,primary,coverage,Fraction of the first eight beats occupied by Melody notes.
+melody,first8_longest_onset_gap,primary,coverage,Longest onset-free interval measures sparse Prompt-window regions.
+melody,first8_robust_pitch_range,primary,pitch,Pitch p95 minus p05 limits sensitivity to isolated outliers.
+melody,first8_abs_interval_p90,primary,pitch,Upper-tail melodic leap size measures difficult local motion.
+melody,first8_pitch_class_entropy,primary,tonal,Duration-weighted normalized pitch-class entropy describes tonal dispersion.
+melody,first8_onset_phase_entropy,primary,rhythm,Normalized entropy of onset positions on the four-step beat grid.
+melody,prefix_full_abs_density_log_ratio,primary,representativeness,Absolute log density mismatch between first eight beats and full Melody.
+melody,prefix_full_abs_median_duration_log_ratio,primary,representativeness,Absolute log median-duration mismatch between prefix and full Melody.
+melody,prefix_full_abs_robust_pitch_range_difference,primary,representativeness,Absolute robust pitch-range difference between prefix and full Melody.
+melody,prefix_full_pitch_class_js_divergence,primary,representativeness,Pitch-class Jensen-Shannon divergence between prefix and full Melody.
+melody,prefix_full_onset_phase_js_divergence,primary,representativeness,Onset-phase Jensen-Shannon divergence between prefix and full Melody.
+melody,first8_leading_blank_beats,diagnostic,diagnostic_input,Leading silence is a diagnostic system-input property rather than a musical predictor.
+melody,first8_chord_onset_ratio,diagnostic,diagnostic_input,Fraction of Melody onsets containing simultaneous notes checks monophony.
+melody,first8_polyphonic_active_ratio,diagnostic,diagnostic_input,Fraction of active grid cells with more than one Melody voice checks monophony.
+prompt,prompt_has_accompaniment,primary,prompt_coverage,Accompaniment track exists.
+prompt,prompt_onset_note_density,primary,prompt_density,Accompaniment Prompt note onsets per beat.
+prompt,prompt_distinct_onset_density,primary,prompt_density,Distinct accompaniment onset times per beat.
+prompt,prompt_active_coverage,primary,prompt_coverage,Fraction of Prompt-window time occupied by accompaniment notes.
+prompt,prompt_empty_beat_rate,primary,prompt_coverage,Fraction of beats without accompaniment activity.
+prompt,prompt_duration_median,primary,prompt_duration,Median accompaniment Prompt note duration in beats.
+prompt,prompt_duration_cv,primary,prompt_duration,Coefficient of variation of accompaniment note durations.
+prompt,prompt_one_step_duration_rate,primary,prompt_duration,Fraction of accompaniment notes quantized to one 0.25-beat step.
+prompt,prompt_robust_pitch_range,primary,prompt_pitch,Accompaniment pitch p95 minus p05.
+prompt,prompt_pitch_class_entropy,primary,prompt_tonal,Duration-weighted normalized accompaniment pitch-class entropy.
+prompt,prompt_onset_phase_entropy,primary,prompt_rhythm,Normalized accompaniment onset-position entropy on the four-step beat grid.
+prompt,prompt_average_voice_number,primary,prompt_texture,Mean simultaneous accompaniment voice count over all 32 quarter-beat cells.
+prompt,prompt_groove_consistency,primary,prompt_rhythm,Jaccard between two 16-step 4-beat bar onset vectors.
+prompt,relation_abs_log_density_ratio,primary,melody_prompt_relation,Absolute log onset-density ratio between accompaniment Prompt and Melody prefix.
+prompt,relation_abs_median_duration_log_mismatch,primary,melody_prompt_relation,Absolute log median-duration mismatch between accompaniment and Melody prefix.
+prompt,relation_pitch_class_js_divergence,primary,melody_prompt_relation,Pitch-class Jensen-Shannon divergence between accompaniment and Melody prefix.
+prompt,relation_onset_phase_js_divergence,primary,melody_prompt_relation,Onset-phase Jensen-Shannon divergence between accompaniment and Melody prefix.
+prompt,relation_abs_pitch_median_gap,primary,melody_prompt_relation,Absolute median-pitch gap between accompaniment and Melody prefix in semitones.
+prompt,PPL,unavailable,not_analyzed,Unavailable in v1 because raw Prompt token log probabilities were not retained; it is not analyzed or imputed.

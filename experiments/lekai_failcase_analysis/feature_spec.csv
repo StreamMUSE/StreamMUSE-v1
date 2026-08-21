@@ -1,27 +1,43 @@
-group,metric,scope,phase,input_source,definition
-hard_input,first8_note_count,first8,v1,input_melody,Number of note onsets in the first 8 beats
-hard_input,first8_coverage,first8,v1,input_melody,Fraction of the first 8 beats covered by notes
-hard_input,first8_leading_blank_beats,first8,v1,input_melody,Number of blank beats before the first note onset in the first 8 beats
-hard_input,chord_onset_ratio,first8,v1,input_melody,Fraction of first-8 onset positions containing multiple simultaneous notes
-hard_input,polyphonic_active_ratio,first8,v1,input_melody,Fraction of the first 8 beats with more than one active note
-melody,note_density,both,v1,input_melody,Note onsets per beat
-melody,local_peak_rate,both,v1,input_melody,Maximum note-on rate in sliding one-bar and two-bar windows
-melody,ioi_stats,both,v1,input_melody,Mean and dispersion of inter-onset intervals in beats
-melody,duration_stats,both,v1,input_melody,Mean and dispersion of note durations in beats
-melody,rest_coverage,both,v1,input_melody,Fraction of the melody span not covered by notes
-melody,pitch_range,both,v1,input_melody,Maximum MIDI pitch minus minimum MIDI pitch
-melody,large_leap_rate,both,v1,input_melody,Fraction of adjacent intervals larger than 7 semitones
-melody,pitch_class_entropy,both,v1,input_melody,Entropy of duration-weighted pitch classes
-melody,onset_entropy,both,v1,input_melody,Entropy of onset positions within the beat
-prompt,note_density,first8,v2,selected_prompt,Prompt note onsets per beat
-prompt,pitch_range,first8,v2,selected_prompt,Maximum prompt MIDI pitch minus minimum prompt MIDI pitch
-prompt,pitch_class_entropy,first8,v2,selected_prompt,Entropy of duration-weighted prompt pitch classes
-prompt,median_duration,first8,v2,selected_prompt,Median prompt note duration in beats
-prompt,groove_consistency,first8,v2,selected_prompt,Consistency of prompt onset patterns across bars
-prompt,ppl,first8,v2,prompt_model_log,Per-token perplexity computed from raw prompt token logits
-prompt,empty_beat_rate,first8,v2,selected_prompt,Fraction of prompt beats with no active note
-prompt,voice_number,first8,v2,selected_prompt,Mean number of simultaneously active prompt voices
-relation,density_ratio,first8,v2,input_melody+selected_prompt,Prompt note density divided by melody note density
-relation,duration_log_mismatch,first8,v2,input_melody+selected_prompt,Absolute difference between log mean note durations
-relation,tonal_relation,first8,v2,input_melody+selected_prompt,Pitch-class distribution compatibility between melody and prompt
-relation,rhythm_relation,first8,v2,input_melody+selected_prompt,Onset-position distribution compatibility between melody and prompt
+group,metric,analysis_role,scope,phase,input_source,output_column_or_pattern,exact_formula,unit,undefined_policy
+hard_input,note_count,gate,first8,v1,input_melody,first8_note_count,Count quantized note starts t with 0<=t<8,notes,Always defined; zero for no onsets
+hard_input,active_coverage,gate,first8,v1,input_melody,first8_active_coverage,Length of union of clipped note intervals intersecting [0;8) divided by 8,fraction,Always defined; zero for no active notes
+hard_input,leading_blank,gate,first8,v1,input_melody,first8_leading_blank_beats,Minimum quantized onset in [0;8); 8 when there is no onset,quarter-note beats,Always defined
+hard_input,chord_onset_ratio,gate,first8,v1,input_melody,first8_chord_onset_ratio,Number of distinct quantized onset positions carrying more than one note divided by number of nonempty onset positions,fraction,NaN when there is no onset
+hard_input,polyphonic_active_ratio,gate,first8,v1,input_melody,first8_polyphonic_active_ratio,Number of 0.25-beat cells overlapped by more than one active note divided by 32,fraction,Always defined
+melody,horizon,secondary,full,v1,input_melody,full_horizon_beats,Maximum quantized Melody note end measured from MIDI beat zero,quarter-note beats,Zero when there are no notes
+melody,onset_note_density,primary,first8,v1,input_melody,first8_onset_note_density,Number of note starts in [0;8) divided by 8,notes per beat,Always defined
+melody,distinct_onset_density,primary,first8,v1,input_melody,first8_distinct_onset_density,Number of distinct quantized onset positions in [0;8) divided by 8,onsets per beat,Always defined
+melody,peak_onset_rate_4beat,primary,first8,v1,input_melody,first8_peak_onset_rate_4beat,Maximum note-start count in any 4-beat window stepped by 0.25 beat divided by 4,notes per beat,Always defined
+melody,peak_onset_rate_8beat,primary,first8,v1,input_melody,first8_peak_onset_rate_8beat,Maximum note-start count in any 8-beat window stepped by 0.25 beat divided by 8,notes per beat,Always defined
+melody,ioi_stats,primary,first8,v1,input_melody,first8_{ioi_median|ioi_p10|ioi_p90|ioi_cv},Median and 10th/90th percentiles of positive differences between successive distinct quantized onsets plus population SD divided by mean,quarter-note beats or CV ratio,NaN with fewer than two distinct onsets; CV also NaN for nonpositive mean
+melody,duration_stats,primary,first8,v1,input_melody,first8_{duration_median|duration_p10|duration_p90|duration_cv},Median and 10th/90th percentiles of note durations clipped to [0;8) plus population SD divided by mean,quarter-note beats or CV ratio,NaN with no overlapping notes; CV also NaN for nonpositive mean
+melody,one_step_duration_rate,primary,first8,v1,input_melody,first8_one_step_duration_rate,Fraction of clipped note durations less than or equal to 0.25 beat,fraction,NaN with no overlapping notes
+melody,active_coverage,primary,first8,v1,input_melody,first8_active_coverage,Length of union of clipped note intervals intersecting [0;8) divided by 8,fraction,Always defined
+melody,empty_beat_rate,primary,first8,v1,input_melody,first8_empty_beat_rate,Number of integer beat cells in [0;8) with no active note overlap divided by 8,fraction,Always defined
+melody,longest_onset_gap,primary,first8,v1,input_melody,first8_longest_onset_gap,Maximum gap after adding window edges 0 and 8 to distinct onset positions,quarter-note beats,Equals 8 with no onset
+melody,pitch_stats,primary,first8,v1,input_melody,first8_{pitch_range|robust_pitch_range|pitch_median|pitch_std},Max-minus-min; p95-minus-p05; median; and population SD of pitches starting in [0;8),semitones or MIDI pitch,NaN with no onset notes
+melody,interval_stats,primary,first8,v1,input_melody,first8_{abs_interval_median|abs_interval_p90|leap_gt7_rate|leap_gt12_rate},Median and p90 of absolute intervals between median pitches at successive onset positions plus fractions strictly over 7 and 12 semitones,semitones or fraction,NaN with fewer than two distinct onsets; leap rates are descriptive only
+melody,pitch_class_entropy,primary,first8,v1,input_melody,first8_pitch_class_entropy,Shannon entropy of duration-weighted pitch-class probabilities after clipping divided by log(12),normalized entropy [0;1],NaN with zero active duration
+melody,onset_phase_entropy,primary,first8,v1,input_melody,first8_onset_phase_entropy,Shannon entropy of distinct onset counts over four 0.25-beat phases divided by log(4),normalized entropy [0;1],NaN with no onset
+melody,full_window_family,secondary,full,v1,input_melody,full_{onset_note_density|distinct_onset_density|peak_onset_rate_4beat|peak_onset_rate_8beat|ioi_median|ioi_p10|ioi_p90|ioi_cv|duration_median|duration_p10|duration_p90|duration_cv|one_step_duration_rate|active_coverage|empty_beat_rate|longest_onset_gap|pitch_range|robust_pitch_range|pitch_median|pitch_std|abs_interval_median|abs_interval_p90|leap_gt7_rate|leap_gt12_rate|pitch_class_entropy|onset_phase_entropy},Same formula as corresponding first8 metric with window [0;full_horizon_beats),same as corresponding first8 metric,Same condition as corresponding first8 metric; all NaN if Melody is empty
+representativeness,density_log_ratio,primary,prefix_vs_full,v1,input_melody,prefix_full_abs_density_log_ratio,Absolute natural log of ((first8 onset density+1e-8)/(full onset density+1e-8)),absolute log ratio,NaN if either source value is undefined
+representativeness,duration_log_ratio,primary,prefix_vs_full,v1,input_melody,prefix_full_abs_median_duration_log_ratio,Absolute natural log of ((first8 median duration+1e-8)/(full median duration+1e-8)),absolute log ratio,NaN if either median is undefined
+representativeness,robust_pitch_range_difference,primary,prefix_vs_full,v1,input_melody,prefix_full_abs_robust_pitch_range_difference,Absolute first8 robust pitch range minus full robust pitch range,semitones,NaN if either range is undefined
+representativeness,pitch_class_js,primary,prefix_vs_full,v1,input_melody,prefix_full_pitch_class_js_divergence,Jensen-Shannon divergence between first8 and full duration-weighted pitch-class distributions divided by log(2),normalized divergence [0;1],NaN if either distribution has zero mass
+representativeness,onset_phase_js,primary,prefix_vs_full,v1,input_melody,prefix_full_onset_phase_js_divergence,Jensen-Shannon divergence between first8 and full four-phase distinct-onset distributions divided by log(2),normalized divergence [0;1],NaN if either distribution has zero mass
+prompt,has_accompaniment,primary,first8,v1,selected_prompt,prompt_has_accompaniment,One when an exactly named Accompaniment track exists; zero for a valid Melody-only empty prompt,binary,Blank only for missing invalid or ambiguous prompt MIDI
+prompt,note_count,primary,first8,v1,selected_prompt,prompt_note_count,Count accompaniment note starts in [0;8),notes,Zero for empty prompt
+prompt,onset_density,primary,first8,v1,selected_prompt,prompt_{onset_note_density|distinct_onset_density},Prompt note starts and distinct quantized prompt onset positions in [0;8) divided by 8,notes or onsets per beat,Zero for empty prompt
+prompt,coverage,primary,first8,v1,selected_prompt,prompt_{active_coverage|empty_beat_rate},Union duration divided by 8 and fraction of eight integer beat cells without active prompt overlap,fraction,For empty prompt active coverage is zero and empty beat rate is one
+prompt,duration_stats,primary,first8,v1,selected_prompt,prompt_{duration_median|duration_p10|duration_p90|duration_cv|one_step_duration_rate},Median/p10/p90/CV of prompt intervals clipped to [0;8) and fraction of durations <=0.25 beat,quarter-note beats or ratio,NaN for empty prompt
+prompt,pitch_stats,primary,first8,v1,selected_prompt,prompt_{pitch_range|robust_pitch_range|pitch_median},Max-minus-min; p95-minus-p05; and median of pitches whose notes start in [0;8),semitones or MIDI pitch,NaN for empty prompt
+prompt,pitch_class_entropy,primary,first8,v1,selected_prompt,prompt_pitch_class_entropy,Duration-weighted prompt pitch-class Shannon entropy divided by log(12),normalized entropy [0;1],NaN for empty prompt
+prompt,onset_phase_entropy,primary,first8,v1,selected_prompt,prompt_onset_phase_entropy,Distinct prompt-onset four-phase Shannon entropy divided by log(4),normalized entropy [0;1],NaN for empty prompt
+prompt,average_voice_number,primary,first8,v1,selected_prompt,prompt_average_voice_number,Mean count of active prompt notes over 32 quantized 0.25-beat cells,voices,Zero for empty prompt
+prompt,groove_consistency,primary,first8,v1,selected_prompt,prompt_groove_consistency,Jaccard similarity of binary 16-step onset vectors for beats [0;4) and [4;8),similarity [0;1],NaN when both bars contain no onset
+relation,density_log_ratio,primary,first8,v1,input_melody+selected_prompt,relation_{log_density_ratio|abs_log_density_ratio},Natural log of ((prompt onset density+1e-8)/(Melody onset density+1e-8)) and its absolute value,signed or absolute log ratio,NaN if either density is undefined
+relation,duration_log_mismatch,primary,first8,v1,input_melody+selected_prompt,relation_abs_median_duration_log_mismatch,Absolute natural log of ((prompt median duration+1e-8)/(Melody median duration+1e-8)),absolute log ratio,NaN if either median duration is undefined
+relation,pitch_class_js,primary,first8,v1,input_melody+selected_prompt,relation_pitch_class_js_divergence,Normalized Jensen-Shannon divergence between Melody and prompt duration-weighted pitch-class distributions,normalized divergence [0;1],NaN if either distribution has zero mass
+relation,onset_phase_js,primary,first8,v1,input_melody+selected_prompt,relation_onset_phase_js_divergence,Normalized Jensen-Shannon divergence between Melody and prompt four-phase distinct-onset distributions,normalized divergence [0;1],NaN if either distribution has zero mass
+relation,pitch_median_gap,primary,first8,v1,input_melody+selected_prompt,relation_abs_pitch_median_gap,Absolute difference between prompt and Melody median MIDI pitch,semitones,NaN if either track has no onset note
+prompt,ppl,v2,first8,v2,prompt_model_token_logs,not_emitted_in_v1; exp(mean negative token log probability) over selected Prompt tokens,perplexity,Unavailable unless raw selected-sample token log probabilities are retained
