@@ -11,7 +11,9 @@ from streammuse.domain.rap import (
     FlowTemplate,
     PcmAudio,
     PreparedRapBar,
+    PreparedRapChunk,
     RenderedSyllable,
+    RemoteRapChunkRequest,
     SyllableRenderRequest,
 )
 from streammuse.domain.timing import Tempo
@@ -30,6 +32,14 @@ class DrumRenderer(Protocol):
 
 class RapBarRenderer(Protocol):
     def render(self, plan: PlannedRapBar) -> PreparedRapBar: ...
+
+
+class RapChunkPreparationStrategy(Protocol):
+    def prepare(self, request: RemoteRapChunkRequest, *, deadline_monotonic: float) -> PreparedRapChunk: ...
+
+    def abort(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class RapAudioSink(Protocol):
