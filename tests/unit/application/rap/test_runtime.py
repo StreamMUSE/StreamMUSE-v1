@@ -3,7 +3,7 @@
 from collections import UserDict
 from threading import Event, Thread
 from time import monotonic, sleep
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -415,6 +415,91 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
     assert calls.count("playback_close") == 1
     assert calls.count("dispatcher_close") == 1
     assert calls.count("recorder_close") == 1
+
+
+@pytest.mark.parametrize("loop", (False, True))
+def test_remote_finite_cap_is_terminal_and_requires_reset_even_when_scenario_has_more_bars(
+    tmp_path,
+    loop: bool,
+) -> None:
+    calls: list[object] = []
+
+    class Playback:
+        state = PlaybackState.STOPPED
+        current_tick: int | None = None
+        next_start_bar = 0
+        stop_successor_bar = 2
+
+        def start(self) -> None:
+            calls.append("playback_start")
+            self.state = PlaybackState.RUNNING
+            self.current_tick = 31
+
+        def request_stop(self) -> int:
+            calls.append("playback_stop")
+            self.state = PlaybackState.STOP_REQUESTED
+            return 2
+
+        def wait(self, timeout: float | None = None) -> None:
+            self.state = PlaybackState.STOPPED
+            self.next_start_bar = 2
+
+        def reset(self, *, coordinator_epoch: int) -> None:
+            calls.append(("playback_reset", coordinator_epoch))
+            self.next_start_bar = 0
+            self.current_tick = None
+
+        def close(self) -> None:
+            self.state = PlaybackState.CLOSED
+
+    playback = Playback()
+
+    class Controller:
+        scenario = SimpleNamespace(loop=loop, total_bars=8)
+        terminal_bar_limit = 2
+
+        def start(self) -> None:
+            calls.append("controller_start")
+            playback.state = PlaybackState.PRIMING
+
+        def request_stop(self, *, successor_bar: int | None) -> None:
+            calls.append(("controller_stop", successor_bar))
+
+        def reset(self) -> int:
+            calls.append("controller_reset")
+            return 7
+
+        def close(self) -> None:
+            calls.append("controller_close")
+
+    class Publisher:
+        def emit(self, *_args, **_kwargs) -> None:
+            return None
+
+    class Dispatcher:
+        def flush_and_close(self) -> None:
+            return None
+
+    dependencies = RapAudioDemoDependencies(
+        tempo=Tempo(120.0, 4, 4),
+        controller=Controller(),
+        coordinator=None,
+        playback=playback,
+        publisher=Publisher(),
+        dispatcher=Dispatcher(),
+        session_dir=tmp_path,
+        configured_max_bars=2,
+    )
+
+    dependencies.start()
+
+    assert dependencies.restart_requires_reset is True
+    assert ("controller_stop", None) in calls
+    with pytest.raises(RuntimeError, match="reset is required"):
+        dependencies.start()
+    dependencies.reset()
+    assert dependencies.restart_requires_reset is False
+    assert ("playback_reset", 7) in calls
 
 
 def test_audio_dependency_allows_controller_owned_remote_strategy_without_coordinator(tmp_path) -> None:

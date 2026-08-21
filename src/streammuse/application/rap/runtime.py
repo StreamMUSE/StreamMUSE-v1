@@ -241,11 +241,10 @@ class RapAudioDemoDependencies:
         if successor_bar is None:
             successor_bar = self.playback.stop_successor_bar
         scenario = getattr(self.controller, "scenario", None)
-        terminal = (
-            scenario is not None
-            and not scenario.loop
-            and successor_bar >= scenario.total_bars
-        )
+        terminal_bar_limit = getattr(self.controller, "terminal_bar_limit", None)
+        if terminal_bar_limit is None and scenario is not None and not scenario.loop:
+            terminal_bar_limit = scenario.total_bars
+        terminal = terminal_bar_limit is not None and successor_bar >= terminal_bar_limit
         self.controller.request_stop(successor_bar=None if terminal else successor_bar)
         if terminal:
             self._restart_requires_reset = True
