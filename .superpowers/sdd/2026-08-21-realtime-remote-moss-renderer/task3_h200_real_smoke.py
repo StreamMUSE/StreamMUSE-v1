@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 import wave
+from collections.abc import Mapping
 from pathlib import Path
 
 from streammuse.application.rap.alignment import align_exact
@@ -44,6 +45,14 @@ def _emit(event: str, **values: object) -> None:
         ),
         flush=True,
     )
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def _request() -> TwoBarRenderRequest:
@@ -201,9 +210,9 @@ def main() -> None:
             "wall_ms": wall_ms,
             "stage_timings_ms": dict(result.stage_timings_ms),
             "warnings": list(result.warnings),
-            "alignment_diagnostics": dict(result.alignment_diagnostics),
-            "audio_diagnostics": dict(result.audio_diagnostics),
-            "versions": dict(result.model_tool_versions),
+            "alignment_diagnostics": _jsonable(result.alignment_diagnostics),
+            "audio_diagnostics": _jsonable(result.audio_diagnostics),
+            "versions": _jsonable(result.model_tool_versions),
             "wav": wav,
             "source_sha256": alignment["source"]["sha256"],
             "alignment_confidence": alignment["aligner"]["confidence"],
