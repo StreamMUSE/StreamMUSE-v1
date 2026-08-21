@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-from streammuse.application.tasks import InteractiveTaskRunResult, TaskRunResult
-from streammuse.domain.tasks import ZipZapZopTask
+from streammuse.application.tasks import InteractiveTaskRunResult, TaskRunResult, TaskWebConfig
+from streammuse.domain.tasks import AnimalNamingTask, ZipZapZopTask
 from streammuse.infrastructure.voice import MicrophoneDevice, VoiceDependencyError
-from streammuse.presentation.task.cli import build_parser, main
+from streammuse.presentation.task.cli import build_parser, create_task, main, play_task
 
 
 def test_task_cli_runs_zip_zap_zop_benchmark(tmp_path, capsys) -> None:
@@ -190,6 +190,126 @@ def test_task_cli_play_defaults_to_menu_deadline_mode() -> None:
     assert args.challenge_deadline_ms_list == (10000.0, 5000.0, 3000.0, 2000.0, 1000.0)
 
 
+def test_task_cli_parses_web_ui_options_and_rejects_orphans(capsys) -> None:
+    args = build_parser().parse_args(
+        ["play", "--task", "zip_zap_zop", "--web-ui", "--web-port", "9012"]
+    )
+    assert args.web_ui is True
+    assert args.web_port == 9012
+
+    with patch("streammuse.presentation.task.cli.play_task") as play:
+        exit_code = main(
+            ["play", "--task", "zip_zap_zop", "--web-port", "9012"]
+        )
+    assert exit_code == 2
+    play.assert_not_called()
+    assert "require --web-ui" in capsys.readouterr().out
+
+
+def test_task_web_gate_runs_before_game_resource_construction(tmp_path) -> None:
+    run_dir = tmp_path / "web-gate"
+    order: list[str] = []
+
+    class FakeWebServer:
+        url = "http://127.0.0.1:8002/?token=test"
+
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def start(self) -> None:
+            order.append("server_start")
+
+        def wait_for_viewer(self) -> None:
+            order.append("viewer_ready")
+
+        def close(self) -> None:
+            order.append("server_close")
+
+    def create_source(*args: object, **kwargs: object) -> _TrackingSource:
+        del args, kwargs
+        order.append("source_create")
+        return _TrackingSource()
+
+    with (
+        patch("streammuse.presentation.task.cli._new_run_dir", return_value=run_dir),
+        patch("streammuse.presentation.task_web.TaskWebServer", FakeWebServer),
+        patch(
+            "streammuse.application.factories.human_input_factory.HumanInputFactory.create",
+            side_effect=create_source,
+        ),
+        patch(
+            "streammuse.application.factories.speech_output_factory.SpeechOutputFactory.create",
+            side_effect=RuntimeError("stop after gate"),
+        ),
+        pytest.raises(RuntimeError, match="stop after gate"),
+    ):
+        play_task(
+            task_name="zip_zap_zop",
+            max_turns=1,
+            model_url="http://localhost:8000/v1",
+            model="fake",
+            timeout_s=1.0,
+            max_tokens=8,
+            temperature=0.0,
+            deadline_ms=1000.0,
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            task_web_config=TaskWebConfig(enabled=True),
+        )
+
+    assert order.index("viewer_ready") < order.index("source_create")
+
+
+def test_task_web_wait_interrupt_writes_manifest_without_constructing_game_resources(
+    tmp_path, capsys
+) -> None:
+    run_dir = tmp_path / "web-interrupt"
+
+    class InterruptingWebServer:
+        url = "http://127.0.0.1:8002/?token=test"
+
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def start(self) -> None:
+            return None
+
+        def wait_for_viewer(self) -> None:
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            return None
+
+    with (
+        patch("streammuse.presentation.task.cli._new_run_dir", return_value=run_dir),
+        patch("streammuse.presentation.task_web.TaskWebServer", InterruptingWebServer),
+        patch(
+            "streammuse.application.factories.human_input_factory.HumanInputFactory.create"
+        ) as create_source,
+        patch("streammuse.presentation.task.cli._build_client") as build_client,
+    ):
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "zip_zap_zop",
+                "--deadline-mode",
+                "soft",
+                "--web-ui",
+                "--output-dir",
+                str(tmp_path),
+            ]
+        )
+
+    assert exit_code == 130
+    create_source.assert_not_called()
+    build_client.assert_not_called()
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "user_interrupt"
+    assert manifest["task_web"]["enabled"] is True
+    assert "interactive session interrupted" in capsys.readouterr().out
+
+
 def test_task_cli_run_keeps_batch_max_tokens_default() -> None:
     args = build_parser().parse_args(["run", "--task", "zip_zap_zop"])
 
@@ -198,11 +318,242 @@ def test_task_cli_run_keeps_batch_max_tokens_default() -> None:
     assert args.top_p is None
 
 
-def test_task_cli_rejects_noninteractive_task_for_play(capsys) -> None:
-    exit_code = main(["play", "--task", "animal_naming"])
+def test_task_cli_plays_animal_naming_interactive(tmp_path, capsys) -> None:
+    result = InteractiveTaskRunResult(
+        output_dir=str(tmp_path / "play"),
+        task_name="animal_naming",
+        turn_count=2,
+        human_turn_count=1,
+        llm_turn_count=1,
+        valid_count=2,
+        invalid_count=0,
+        deadline_miss_count=0,
+    )
+
+    with patch(
+        "streammuse.presentation.task.cli.play_task",
+        return_value=result,
+    ) as mocked_play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "animal_naming",
+                "--max-turns",
+                "2",
+                "--deadline-mode",
+                "soft",
+                "--output-dir",
+                str(tmp_path),
+            ]
+        )
+
+    assert exit_code == 0
+    assert mocked_play_task.call_args.kwargs["task_name"] == "animal_naming"
+    assert mocked_play_task.call_args.kwargs["max_turns"] == 2
+    assert mocked_play_task.call_args.kwargs["human_input_config"].mode == "terminal"
+    assert "interactive completed: 2 turns" in capsys.readouterr().out
+
+
+def test_task_cli_passes_voice_configuration_to_animal_naming(
+    tmp_path,
+    capsys,
+) -> None:
+    result = InteractiveTaskRunResult(
+        output_dir=str(tmp_path / "play"),
+        task_name="animal_naming",
+        turn_count=0,
+        human_turn_count=0,
+        llm_turn_count=0,
+        valid_count=0,
+        invalid_count=0,
+        deadline_miss_count=0,
+    )
+
+    with patch(
+        "streammuse.presentation.task.cli.play_task",
+        return_value=result,
+    ) as mocked_play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "animal_naming",
+                "--human-input",
+                "voice",
+                "--voice-max-utterance-ms",
+                "1500",
+                "--voice-local-files-only",
+            ]
+        )
+
+    assert exit_code == 0
+    config = mocked_play_task.call_args.kwargs["human_input_config"]
+    assert config.mode == "voice"
+    assert config.voice.model == "tiny.en"
+    assert config.voice.compute_type == "int8"
+    assert config.voice.max_utterance_ms == 1500.0
+    assert config.voice.local_files_only is True
+    assert "interactive completed" in capsys.readouterr().out
+
+
+def test_task_cli_passes_bidirectional_voice_configuration_to_animal_naming(
+    tmp_path,
+) -> None:
+    result = InteractiveTaskRunResult(
+        output_dir=str(tmp_path / "play"),
+        task_name="animal_naming",
+        turn_count=0,
+        human_turn_count=0,
+        llm_turn_count=0,
+        valid_count=0,
+        invalid_count=0,
+        deadline_miss_count=0,
+    )
+
+    with patch(
+        "streammuse.presentation.task.cli.play_task",
+        return_value=result,
+    ) as mocked_play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "animal_naming",
+                "--human-input",
+                "voice",
+                "--voice-max-utterance-ms",
+                "1000",
+                "--speech-output",
+                "audio",
+                "--speech-backend",
+                "null",
+                "--llm-deadline-basis",
+                "audio_end",
+                "--model-url",
+                "http://127.0.0.1:8101/v1",
+                "--model",
+                "Qwen/Qwen3.6-27B",
+                "--deadline-mode",
+                "soft",
+                "--deadline-ms",
+                "5000",
+            ]
+        )
+
+    assert exit_code == 0
+    kwargs = mocked_play_task.call_args.kwargs
+    assert kwargs["task_name"] == "animal_naming"
+    assert kwargs["human_input_config"].mode == "voice"
+    assert kwargs["human_input_config"].voice.max_utterance_ms == 1000.0
+    assert kwargs["speech_output_config"].mode == "audio"
+    assert kwargs["speech_output_config"].backend == "null"
+    assert kwargs["speech_output_config"].llm_deadline_basis == "audio_end"
+    assert kwargs["model_url"] == "http://127.0.0.1:8101/v1"
+    assert kwargs["model"] == "Qwen/Qwen3.6-27B"
+    assert kwargs["deadline_ms"] == 5000.0
+
+
+def test_animal_naming_task_ignores_zip_zap_zop_start_number() -> None:
+    default_task = create_task("animal_naming", start_number=1, history_limit=6)
+    offset_task = create_task("animal_naming", start_number=999, history_limit=6)
+
+    assert isinstance(default_task, AnimalNamingTask)
+    assert isinstance(offset_task, AnimalNamingTask)
+    assert default_task.initial_state() == offset_task.initial_state()
+
+
+@pytest.mark.parametrize("max_turns", ["0", "-1"])
+def test_task_cli_rejects_nonpositive_interactive_turn_count(
+    max_turns: str,
+    capsys,
+) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as mocked_play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "animal_naming",
+                "--max-turns",
+                max_turns,
+            ]
+        )
 
     assert exit_code == 2
-    assert "unsupported interactive task: animal_naming" in capsys.readouterr().out
+    mocked_play_task.assert_not_called()
+    assert "max_turns must be > 0" in capsys.readouterr().out
+
+
+def test_task_cli_rejects_animal_naming_turns_above_whitelist_size(
+    capsys,
+) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as mocked_play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "animal_naming",
+                "--max-turns",
+                str(len(AnimalNamingTask().animals) + 1),
+            ]
+        )
+
+    assert exit_code == 2
+    mocked_play_task.assert_not_called()
+    assert "cannot exceed the whitelist size (91)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("max_turns", [1, len(AnimalNamingTask().animals)])
+def test_task_cli_accepts_animal_naming_turn_boundaries(
+    max_turns: int,
+    tmp_path,
+) -> None:
+    result = InteractiveTaskRunResult(
+        output_dir=str(tmp_path / "play"),
+        task_name="animal_naming",
+        turn_count=0,
+        human_turn_count=0,
+        llm_turn_count=0,
+        valid_count=0,
+        invalid_count=0,
+        deadline_miss_count=0,
+    )
+    with patch(
+        "streammuse.presentation.task.cli.play_task",
+        return_value=result,
+    ) as mocked_play_task:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "animal_naming",
+                "--max-turns",
+                str(max_turns),
+                "--deadline-mode",
+                "soft",
+            ]
+        )
+
+    assert exit_code == 0
+    assert mocked_play_task.call_args.kwargs["max_turns"] == max_turns
+
+
+def test_play_task_direct_call_validates_animal_naming_turn_limit(
+    tmp_path,
+) -> None:
+    with pytest.raises(ValueError, match="whitelist size"):
+        play_task(
+            task_name="animal_naming",
+            max_turns=len(AnimalNamingTask().animals) + 1,
+            model_url="http://localhost:8000/v1",
+            model="fake",
+            timeout_s=1.0,
+            max_tokens=8,
+            temperature=0.0,
+            deadline_ms=1000.0,
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+        )
 
 
 def test_task_cli_play_rejects_conflicting_first_actor_flags() -> None:

@@ -57,6 +57,8 @@ class VoiceInputConfig:
     end_silence_ms: float = 300.0
     max_utterance_ms: float = 5000.0
     vad_aggressiveness: int = 2
+    vad_start_window_frames: int = 8
+    vad_start_trigger_frames: int = 5
     pre_roll_ms: float = 100.0
     queue_max_chunks: int = 128
 
@@ -90,6 +92,18 @@ class VoiceInputConfig:
             raise TypeError("vad_aggressiveness must be an integer from 0 to 3")
         if self.vad_aggressiveness not in {0, 1, 2, 3}:
             raise ValueError("vad_aggressiveness must be between 0 and 3")
+        for name, value in (
+            ("vad_start_window_frames", self.vad_start_window_frames),
+            ("vad_start_trigger_frames", self.vad_start_trigger_frames),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value <= 0:
+                raise ValueError(f"{name} must be > 0")
+        if self.vad_start_trigger_frames > self.vad_start_window_frames:
+            raise ValueError(
+                "vad_start_trigger_frames must be <= vad_start_window_frames"
+            )
         if isinstance(self.queue_max_chunks, bool) or not isinstance(self.queue_max_chunks, int):
             raise TypeError("queue_max_chunks must be an integer")
         if self.queue_max_chunks <= 0:

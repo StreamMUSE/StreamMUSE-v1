@@ -26,8 +26,11 @@ from streammuse.domain.tasks.models import (
     SpokenResponseParseResult,
     SpokenResponseParseStatus,
     TaskRefereeResult,
+    TaskEventSink,
     TaskState,
     TaskTurn,
+    TaskViewEvent,
+    TaskViewEventType,
 )
 from streammuse.domain.tasks.zip_zap_zop import ZipZapZopTask
 
@@ -57,7 +60,10 @@ __all__ = [
     "SpokenResponseParseResult",
     "SpokenResponseParseStatus",
     "TaskRefereeResult",
+    "TaskEventSink",
     "TaskState",
     "TaskTurn",
+    "TaskViewEvent",
+    "TaskViewEventType",
     "ZipZapZopTask",
 ]

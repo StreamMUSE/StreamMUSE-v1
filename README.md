@@ -123,6 +123,19 @@ uv run --extra speech streammuse-task play \
 
 Only LLM answers are spoken; human prompts and referee results remain terminal text. See [`docs/user-guide/speech-output.md`](docs/user-guide/speech-output.md) for backends, caching, deadline semantics, saved audio, and echo precautions.
 
+### Interactive Task Web Viewer
+
+Add `--web-ui` to require a read-only browser display before an interactive game starts:
+
+```bash
+uv run streammuse-task play \
+  --task animal_naming \
+  --deadline-mode soft \
+  --web-ui
+```
+
+Open the tokenized URL printed by the CLI. Microphone/STT, TTS, and the LLM client are initialized only after the page renders its boot snapshot. See [`docs/user-guide/task-web-ui.md`](docs/user-guide/task-web-ui.md) for reconnect, privacy, and remote-binding behavior.
+
 ## Documentation
 
 Start from [`docs/index.md`](docs/index.md). Key pages:
@@ -132,6 +145,7 @@ Start from [`docs/index.md`](docs/index.md). Key pages:
 - [`docs/user-guide/running-realtime.md`](docs/user-guide/running-realtime.md)
 - [`docs/user-guide/music-injection.md`](docs/user-guide/music-injection.md)
 - [`docs/user-guide/speech-output.md`](docs/user-guide/speech-output.md)
+- [`docs/user-guide/animal-naming.md`](docs/user-guide/animal-naming.md)
 - [`docs/architecture/application/service.md`](docs/architecture/application/service.md)
 
 ## Dataset / Training Notes

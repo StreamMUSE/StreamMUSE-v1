@@ -20,6 +20,7 @@ from streammuse.application.tasks import (
     TaskRunResult,
     TaskRuntime,
     TaskRuntimeConfig,
+    TaskWebConfig,
     TerminalIO,
 )
 from streammuse.application.tasks.human_input import HumanInputConfig, VoiceInputConfig
@@ -31,7 +32,7 @@ from streammuse.infrastructure.inference.local_chat_client import (
 
 
 TASKS = {"animal_naming": AnimalNamingTask, "zip_zap_zop": ZipZapZopTask}
-INTERACTIVE_TASKS = {"zip_zap_zop"}
+INTERACTIVE_TASKS = {"animal_naming", "zip_zap_zop"}
 RUNNERS = {"offline_benchmark", "realtime_loop"}
 
 
@@ -143,6 +144,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["text", "audio_end"],
         default=None,
     )
+    play.add_argument(
+        "--web-ui",
+        action="store_true",
+        help="require a read-only browser viewer before the game starts",
+    )
+    play.add_argument("--web-host", default=None)
+    play.add_argument("--web-port", type=int, default=None)
+    play.add_argument("--web-allow-remote", action="store_true")
 
     subcommands.add_parser("voice-devices", help="List microphone input devices without loading a model")
     subcommands.add_parser(
@@ -209,6 +218,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
+        _validate_interactive_turn_count(
+            task_name=args.task,
+            max_turns=int(args.max_turns),
+        )
+    except ValueError as exc:
+        print(f"invalid interactive task configuration: {exc}")
+        return 2
+    try:
         human_input_config = _human_input_config_from_args(args)
         _validate_voice_game_range(
             task_name=args.task,
@@ -223,6 +240,11 @@ def main(argv: list[str] | None = None) -> int:
         speech_output_config = _speech_output_config_from_args(args)
     except (TypeError, ValueError) as exc:
         print(f"invalid speech output configuration: {exc}")
+        return 2
+    try:
+        task_web_config = _task_web_config_from_args(args)
+    except (TypeError, ValueError) as exc:
+        print(f"invalid task Web UI configuration: {exc}")
         return 2
 
     try:
@@ -245,11 +267,15 @@ def main(argv: list[str] | None = None) -> int:
             challenge_deadline_ms_list=args.challenge_deadline_ms_list,
             human_input_config=human_input_config,
             speech_output_config=speech_output_config,
+            task_web_config=task_web_config,
         )
     except KeyboardInterrupt:
         print("interactive session interrupted")
         return 130
     except Exception as exc:
+        if _is_task_web_startup_error(exc):
+            print(f"task Web UI error: {exc}")
+            return 1
         if _is_speech_output_error(exc):
             print(f"speech output error: {exc}")
             return 1
@@ -335,12 +361,15 @@ def play_task(
     terminal: TerminalIO | None = None,
     human_input_config: HumanInputConfig | None = None,
     speech_output_config: SpeechOutputConfig | None = None,
+    task_web_config: TaskWebConfig | None = None,
 ) -> InteractiveTaskRunResult:
     task = create_task(task_name, start_number=start_number, history_limit=history_limit)
+    _validate_interactive_turn_count(task_name=task_name, max_turns=max_turns)
     run_dir = _new_run_dir(output_dir, task_name=task.name, runner_kind="interactive")
     active_terminal = terminal or StdTerminalIO()
     input_config = human_input_config or HumanInputConfig()
     output_config = speech_output_config or SpeechOutputConfig()
+    web_config = task_web_config or TaskWebConfig()
     _validate_voice_game_range(
         task_name=task_name,
         start_number=start_number,
@@ -363,6 +392,44 @@ def play_task(
     )
 
     with ExitStack() as resources:
+        task_event_sink = None
+        task_event_session_id = None
+        if web_config.enabled:
+            from streammuse.infrastructure.task_view import QueueTaskEventSink
+            from streammuse.presentation.task_web import TaskWebServer
+
+            task_event_session_id = uuid.uuid4().hex
+            task_event_sink = QueueTaskEventSink(
+                session_id=task_event_session_id,
+                task=task.name,
+                capacity=web_config.queue_capacity,
+            )
+            resources.enter_context(_preserving_close(task_event_sink.close))
+            web_server = TaskWebServer(
+                config=web_config,
+                sink=task_event_sink,
+                session_id=task_event_session_id,
+            )
+            resources.enter_context(_preserving_close(web_server.close))
+            try:
+                web_server.start()
+                active_terminal.write(f"Task Web UI: {web_server.url}")
+                active_terminal.write("Waiting for viewer...")
+                web_server.wait_for_viewer()
+                task_event_sink.update_status("initializing")
+                active_terminal.write("Viewer ready. Initializing game...")
+            except BaseException as exc:
+                _best_effort_startup_manifest(
+                    run_dir,
+                    task_name=task.name,
+                    max_turns=max_turns,
+                    config=input_config,
+                    speech_config=output_config,
+                    runtime_config=runtime_config,
+                    web_config=web_config,
+                    error=exc,
+                )
+                raise
         try:
             from streammuse.application.factories.human_input_factory import HumanInputFactory
 
@@ -379,6 +446,7 @@ def play_task(
                 config=input_config,
                 speech_config=output_config,
                 runtime_config=runtime_config,
+                web_config=web_config,
                 error=exc,
             )
             raise
@@ -403,6 +471,19 @@ def play_task(
                 terminal=active_terminal,
                 human_response_source=human_response_source,
                 speech_output_sink=speech_output_sink,
+                task_event_sink=task_event_sink,
+                task_event_session_id=task_event_session_id,
+                task_web_metadata=(
+                    {
+                        "enabled": True,
+                        "host": web_config.host,
+                        "port": web_config.port,
+                        "allow_remote": web_config.allow_remote,
+                        "session_id": task_event_session_id,
+                    }
+                    if web_config.enabled
+                    else None
+                ),
             )
         except BaseException as exc:
             _best_effort_startup_manifest(
@@ -412,6 +493,7 @@ def play_task(
                 config=input_config,
                 speech_config=output_config,
                 runtime_config=runtime_config,
+                web_config=web_config,
                 error=exc,
                 human_response_source=human_response_source,
                 speech_output_sink=speech_output_sink
@@ -599,6 +681,22 @@ def _speech_output_config_from_args(
     )
 
 
+def _task_web_config_from_args(args: argparse.Namespace) -> TaskWebConfig:
+    enabled = bool(args.web_ui)
+    if not enabled and (
+        args.web_host is not None
+        or args.web_port is not None
+        or bool(args.web_allow_remote)
+    ):
+        raise ValueError("--web-host/--web-port/--web-allow-remote require --web-ui")
+    return TaskWebConfig(
+        enabled=enabled,
+        host="127.0.0.1" if args.web_host is None else str(args.web_host),
+        port=8002 if args.web_port is None else int(args.web_port),
+        allow_remote=bool(args.web_allow_remote),
+    )
+
+
 def _validate_voice_game_range(
     *,
     task_name: str,
@@ -619,6 +717,20 @@ def _validate_voice_game_range(
         raise ValueError(
             "voice Zip-Zap-Zop turns must stay within the spoken integer range "
             f"[{ZipZapZopTask.min_spoken_integer}, {ZipZapZopTask.max_spoken_integer}]"
+        )
+
+
+def _validate_interactive_turn_count(*, task_name: str, max_turns: int) -> None:
+    turn_count = int(max_turns)
+    if turn_count <= 0:
+        raise ValueError("max_turns must be > 0")
+    if task_name != "animal_naming":
+        return
+    animal_count = len(AnimalNamingTask().animals)
+    if turn_count > animal_count:
+        raise ValueError(
+            "Animal Naming max_turns cannot exceed the whitelist size "
+            f"({animal_count})"
         )
 
 
@@ -679,6 +791,7 @@ def _best_effort_startup_manifest(
     config: HumanInputConfig,
     speech_config: SpeechOutputConfig,
     runtime_config: InteractiveTaskRuntimeConfig,
+    web_config: TaskWebConfig | None = None,
     error: BaseException,
     human_response_source: object | None = None,
     speech_output_sink: object | None = None,
@@ -719,6 +832,13 @@ def _best_effort_startup_manifest(
             "artifact_root": "artifacts",
             "human_input": human_input,
         }
+        if web_config is not None:
+            manifest["task_web"] = {
+                "enabled": bool(web_config.enabled),
+                "host": web_config.host,
+                "port": int(web_config.port),
+                "allow_remote": bool(web_config.allow_remote),
+            }
         speech_output = _startup_speech_output(
             speech_config,
             speech_output_sink,
@@ -835,6 +955,12 @@ def _is_speech_output_error(exc: BaseException) -> bool:
     from streammuse.infrastructure.voice import SpeechOutputError
 
     return isinstance(exc, SpeechOutputError)
+
+
+def _is_task_web_startup_error(exc: BaseException) -> bool:
+    from streammuse.presentation.task_web import TaskWebStartupError
+
+    return isinstance(exc, TaskWebStartupError)
 
 
 def _build_client(

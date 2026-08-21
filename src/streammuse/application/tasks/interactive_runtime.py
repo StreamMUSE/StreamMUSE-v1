@@ -20,6 +20,7 @@ from streammuse.application.tasks.human_input import (
     TimedPromptResult as TimedPromptResult,
 )
 from streammuse.application.tasks.speech_output import SilentSpeechOutput
+from streammuse.application.tasks.task_events import NullTaskEventSink
 from streammuse.domain.tasks import (
     ChatModelResponse,
     DeadlineMode,
@@ -36,7 +37,9 @@ from streammuse.domain.tasks import (
     SpeechRenderableTask,
     SpeechRequest,
     TaskRefereeResult,
+    TaskEventSink,
     TaskState,
+    TaskViewEvent,
 )
 
 
@@ -140,6 +143,9 @@ class InteractiveTaskRuntime:
         terminal: TerminalIO | None = None,
         human_response_source: HumanResponseSource | None = None,
         speech_output_sink: SpeechOutputSink | None = None,
+        task_event_sink: TaskEventSink | None = None,
+        task_event_session_id: str | None = None,
+        task_web_metadata: dict[str, Any] | None = None,
         now: Callable[[], float] | None = None,
         timing_now: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
@@ -157,14 +163,22 @@ class InteractiveTaskRuntime:
             if speech_output_sink is not None
             else SilentSpeechOutput()
         )
+        self.task_event_sink = task_event_sink or NullTaskEventSink()
+        self.task_event_session_id = task_event_session_id or uuid.uuid4().hex
+        self.task_web_metadata = deepcopy(task_web_metadata)
         self._now = now or time.perf_counter
         self._timing_now = timing_now or time.perf_counter
         self._sleep = sleep or time.sleep
         self._pending_speech_guard = False
         self._last_stats_fallback_reasons: dict[str, int] = {}
         self._timing_session_origin_s: float | None = None
+        self._task_event_seq = 0
+        self._task_event_error_count = 0
 
     def play(self, task: InteractiveTask, *, max_turns: int) -> InteractiveTaskRunResult:
+        turn_limit = int(max_turns)
+        if turn_limit <= 0:
+            raise ValueError("max_turns must be > 0")
         self._timing_session_origin_s = self._timing_now()
         run_dir = Path(self.config.output_dir).expanduser()
         run_id = f"interactive-{uuid.uuid4().hex[:8]}"
@@ -192,23 +206,39 @@ class InteractiveTaskRuntime:
             if self.speech_output_sink.mode == "audio":
                 speech_task = self._renderable_task(task)
                 self.speech_output_sink.prepare(
-                    speech_task.speech_vocabulary(state, max_turns=max_turns)
+                    speech_task.speech_vocabulary(state, max_turns=turn_limit)
                 )
             human_input = self._human_input_provenance()
             self._write_initial_manifest(
                 run_dir,
                 run_id=run_id,
                 task=task,
-                max_turns=max_turns,
+                max_turns=turn_limit,
                 deadline_state=deadline_state,
                 human_input=human_input,
             )
             manifest_written = True
             startup_complete = True
 
+            self._emit_task_event(
+                "session_config",
+                {
+                    "task": task.name,
+                    "deadline_mode": deadline_state.mode,
+                    "deadline_ms": float(deadline_state.current_deadline_ms),
+                    "challenge_deadline_ms_list": list(self._challenge_schedule()),
+                    "stage_index": int(deadline_state.stage_index),
+                    "max_turns": turn_limit,
+                    "human_first": bool(self.config.human_first),
+                    "human_input_mode": self.human_response_source.mode,
+                    "speech_output_mode": self.speech_output_sink.mode,
+                    "show_expected": bool(self.config.show_expected),
+                },
+            )
+
             self._write_banner(task.name, deadline_state)
             while (
-                stats.turn_count < int(max_turns)
+                stats.turn_count < turn_limit
                 and not stats.quit_requested
                 and deadline_state.stop_reason is None
             ):
@@ -239,6 +269,7 @@ class InteractiveTaskRuntime:
             source_close_attempted = True
             self._close_interactive_resources()
             result = self._result(run_dir, task.name, stats, deadline_state, stop_reason=status)
+            self._emit_session_finished(result)
             self._write_run_summary(run_dir, task.name, result, status=status)
             self.terminal.write(self._summary_text(result, stats))
         except KeyboardInterrupt as exc:
@@ -250,7 +281,7 @@ class InteractiveTaskRuntime:
                         run_dir,
                         run_id=run_id,
                         task=task,
-                        max_turns=max_turns,
+                        max_turns=turn_limit,
                         deadline_state=active_deadline_state,
                         human_input=self._safe_human_input_provenance(),
                         status="user_interrupt",
@@ -264,6 +295,7 @@ class InteractiveTaskRuntime:
                         active_deadline_state,
                         stop_reason="user_interrupt",
                     )
+                    self._emit_session_finished(result)
                     self._write_run_summary(run_dir, task.name, result, status="user_interrupt")
             except BaseException:
                 pass
@@ -277,7 +309,7 @@ class InteractiveTaskRuntime:
                         run_dir,
                         run_id=run_id,
                         task=task,
-                        max_turns=max_turns,
+                        max_turns=turn_limit,
                         deadline_state=active_deadline_state,
                         human_input=self._safe_human_input_provenance(),
                         status="startup_error",
@@ -286,6 +318,7 @@ class InteractiveTaskRuntime:
                     manifest_written = True
                 elif run_dir_ready:
                     result = self._result(run_dir, task.name, stats, active_deadline_state, stop_reason="error")
+                    self._emit_session_finished(result)
                     self._write_run_summary(run_dir, task.name, result, status="error")
             except BaseException:
                 pass
@@ -316,6 +349,44 @@ class InteractiveTaskRuntime:
                 first_error = exc
         if first_error is not None:
             raise first_error
+
+    def _emit_task_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        self._task_event_seq += 1
+        event = TaskViewEvent(
+            type=event_type,  # type: ignore[arg-type]
+            session_id=self.task_event_session_id,
+            event_seq=self._task_event_seq,
+            payload=deepcopy(payload),
+        )
+        try:
+            self.task_event_sink.emit(event)
+        except Exception:
+            self._task_event_error_count += 1
+
+    @staticmethod
+    def _event_stats(stats: _InteractiveStats) -> dict[str, int]:
+        return {
+            "turn_count": stats.turn_count,
+            "valid_count": stats.valid_count,
+            "invalid_count": stats.invalid_count,
+            "deadline_miss_count": stats.deadline_miss_count,
+        }
+
+    def _emit_session_finished(self, result: InteractiveTaskRunResult) -> None:
+        self._emit_task_event(
+            "session_finished",
+            {
+                "stop_reason": result.stop_reason,
+                "winner": result.winner,
+                "loser": result.loser,
+                "stats": {
+                    "turn_count": result.turn_count,
+                    "valid_count": result.valid_count,
+                    "invalid_count": result.invalid_count,
+                    "deadline_miss_count": result.deadline_miss_count,
+                },
+            },
+        )
 
     def _build_deadline_state(self) -> _DeadlineSessionState:
         mode = self._resolve_deadline_mode()
@@ -444,6 +515,7 @@ class InteractiveTaskRuntime:
         number = self._number_from_state(state)
         self._mark_timing(timing, "prompt_build_completed")
 
+        attempt_index = 0
         while True:
             prompt = (
                 f"[{number if number is not None else state.turn_index + 1}] "
@@ -454,6 +526,20 @@ class InteractiveTaskRuntime:
                 speech_task = self._speech_task(task)
                 speech_context = speech_task.build_speech_context(state, transcript)
             turn_started_s = self._now()
+            self._mark_timing(timing, "deadline_window_started")
+            self._emit_task_event(
+                "turn_attempt_started",
+                {
+                    "turn_id": len(transcript),
+                    "attempt_index": attempt_index,
+                    "actor": "human",
+                    "prompt": prompt_text,
+                    "display_value": number,
+                    "deadline_ms": float(deadline_state.current_deadline_ms),
+                    "stage_index": int(deadline_state.stage_index),
+                    "started_server_ms": self._timing_now() * 1000.0,
+                },
+            )
             prompt_elapsed_ms = 0.0
             self._mark_timing(timing, "prompt_render_started")
             if self.human_response_source.mode == "voice":
@@ -511,6 +597,7 @@ class InteractiveTaskRuntime:
                 )
                 if stats.quit_requested:
                     return None
+                attempt_index += 1
                 continue
             timed_out = bool(response.deadline_expired) or (
                 deadline_state.mode != "soft"
@@ -562,6 +649,15 @@ class InteractiveTaskRuntime:
                     human_input_metadata["parse_reason"] = response.status
             human_input_metadata["canonical_response"] = canonical_response
             self._mark_timing(timing, "spoken_response_parse_completed")
+            self._emit_task_event(
+                "asr",
+                {
+                    "turn_id": len(transcript),
+                    "raw_transcript": str(response_text or ""),
+                    "canonical_response": canonical_response,
+                    "parse_status": str(human_input_metadata["parse_status"]),
+                },
+            )
             self._mark_timing(timing, "transcript_render_started")
             self.terminal.write(
                 self._voice_transcript_text(
@@ -947,6 +1043,20 @@ class InteractiveTaskRuntime:
         self._mark_timing(timing, "prompt_build_completed")
         start_s = self._now()
         self._mark_timing(timing, "llm_request_started")
+        self._mark_timing(timing, "deadline_window_started")
+        self._emit_task_event(
+            "turn_attempt_started",
+            {
+                "turn_id": len(transcript),
+                "attempt_index": 0,
+                "actor": "llm",
+                "prompt": "LLM thinking...",
+                "display_value": number,
+                "deadline_ms": float(deadline_state.current_deadline_ms),
+                "stage_index": int(deadline_state.stage_index),
+                "started_server_ms": self._timing_now() * 1000.0,
+            },
+        )
         try:
             model_response = self.model_client.generate(
                 messages,
@@ -1020,6 +1130,14 @@ class InteractiveTaskRuntime:
                 else:
                     speak_started_s = self._now()
                     self._mark_timing(timing, "speech_output_started")
+                    self._emit_task_event(
+                        "speech_output",
+                        {
+                            "turn_id": len(transcript),
+                            "status": "started",
+                            "spoken_text": spoken_text,
+                        },
+                    )
                     playback = self.speech_output_sink.speak(
                         SpeechRequest(
                             turn_id=len(transcript),
@@ -1061,6 +1179,14 @@ class InteractiveTaskRuntime:
                     ),
                     deadline_basis_fallback_reason=fallback_reason,
                 )
+                self._emit_task_event(
+                    "speech_output",
+                    {
+                        "turn_id": len(transcript),
+                        "status": playback.status,
+                        "completed_normally": playback.completed_normally,
+                    },
+                )
         except BaseException as exc:
             for started, completed in (
                 ("llm_output_render_started", "llm_output_render_completed"),
@@ -1098,6 +1224,14 @@ class InteractiveTaskRuntime:
                         0.0, (text_ready_s - start_s) * 1000.0
                     ),
                     deadline_basis_fallback_reason=fallback_reason,
+                )
+                self._emit_task_event(
+                    "speech_output",
+                    {
+                        "turn_id": len(transcript),
+                        "status": playback.status,
+                        "completed_normally": playback.completed_normally,
+                    },
                 )
             self._finish_turn(
                 task=task,
@@ -1315,6 +1449,7 @@ class InteractiveTaskRuntime:
         number = self._number_from_state(state)
         metadata: dict[str, Any] = {
             "failure_reason": referee.failure_reason,
+            "referee_metadata": deepcopy(referee.metadata),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "deadline_mode": deadline_state.mode,
@@ -1371,7 +1506,32 @@ class InteractiveTaskRuntime:
             raise
         transcript.append(record)
         self._update_stats(stats, record)
+        turn_payload: dict[str, Any] = {
+            "turn_id": record.turn_id,
+            "actor": record.actor,
+            "response": record.response,
+            "is_valid": record.is_valid,
+            "failure_reason": referee.failure_reason,
+            "latency_ms": record.latency_ms,
+            "deadline_missed": record.deadline_missed,
+            "stats": self._event_stats(stats),
+        }
+        if self.config.show_expected:
+            turn_payload["expected"] = record.expected
+        self._emit_task_event("turn_finished", turn_payload)
+        old_stage_index = deadline_state.stage_index
+        old_deadline_ms = deadline_state.current_deadline_ms
         self._handle_turn_outcome(record, deadline_state)
+        if deadline_state.stage_index != old_stage_index:
+            self._emit_task_event(
+                "stage_changed",
+                {
+                    "stage_index": int(deadline_state.stage_index),
+                    "old_deadline_ms": float(old_deadline_ms),
+                    "new_deadline_ms": float(deadline_state.current_deadline_ms),
+                    "stage_count": len(self._challenge_schedule()),
+                },
+            )
         self.terminal.write(f"    {self._result_text(record)}")
         loss_text = self._loss_text(record, deadline_state)
         if loss_text:
@@ -1417,15 +1577,18 @@ class InteractiveTaskRuntime:
         record: InteractiveTurnRecord,
         deadline_state: _DeadlineSessionState,
     ) -> dict[str, Any]:
-        return {
+        detail: dict[str, Any] = {
             "turn_id": record.turn_id,
             "actor": record.actor,
-            "number": record.number,
             "latency_ms": record.latency_ms,
             "deadline_ms": float(record.metadata.get("deadline_ms", deadline_state.current_deadline_ms)),
-            "expected": record.expected,
             "response": record.response,
         }
+        if record.number is not None:
+            detail["number"] = record.number
+        if record.expected is not None:
+            detail["expected"] = record.expected
+        return detail
 
     def _invalid_response_detail(
         self,
@@ -1433,14 +1596,17 @@ class InteractiveTaskRuntime:
         deadline_state: _DeadlineSessionState,
     ) -> dict[str, Any]:
         _ = deadline_state
-        return {
+        detail: dict[str, Any] = {
             "turn_id": record.turn_id,
             "actor": record.actor,
-            "number": record.number,
-            "expected": record.expected,
             "response": record.response,
             "failure_reason": record.metadata.get("failure_reason"),
         }
+        if record.number is not None:
+            detail["number"] = record.number
+        if record.expected is not None:
+            detail["expected"] = record.expected
+        return detail
 
     def _handle_command(
         self,
@@ -1459,7 +1625,7 @@ class InteractiveTaskRuntime:
         if normalized == ":help":
             self.terminal.write(
                 "Commands: :help, :hint, :expected, :summary, :quit\n"
-                "Answer the shown prompt with only the next value."
+                "Answer the shown prompt."
             )
             return
         if normalized == ":hint":
@@ -1467,11 +1633,16 @@ class InteractiveTaskRuntime:
             self.terminal.write(hint or "No hint available.")
             return
         if normalized == ":expected":
+            expected = task.expected_for_state(state, transcript)
+            if expected is None:
+                self.terminal.write(
+                    "This task has no single expected answer; any valid unused answer may work."
+                )
+                return
             if not self.config.show_expected:
                 self.terminal.write("Expected answers are hidden; rerun with --show-expected.")
                 return
-            expected = task.expected_for_state(state, transcript)
-            self.terminal.write(expected or "N/A")
+            self.terminal.write(expected)
             return
         if normalized == ":summary":
             soft_state = _DeadlineSessionState(mode="soft", current_deadline_ms=float(self.config.deadline_ms))
@@ -1527,7 +1698,10 @@ class InteractiveTaskRuntime:
                 return f"OK expected={record.expected}{deadline}{latency}"
             return f"OK{deadline}{latency}"
         actual = record.response or self._empty_voice_response_label(record)
-        return f"MISS expected={record.expected} actual={actual}{deadline}{latency}"
+        if record.expected is not None:
+            return f"MISS expected={record.expected} actual={actual}{deadline}{latency}"
+        reason = str(record.metadata.get("failure_reason") or "INVALID_RESPONSE")
+        return f"MISS reason={reason} actual={actual}{deadline}{latency}"
 
     @staticmethod
     def _voice_transcript_text(
@@ -1561,8 +1735,17 @@ class InteractiveTaskRuntime:
                 f"Winner: {deadline_state.winner}."
             )
         if deadline_state.stop_reason == "invalid_response_loss":
+            actual = record.response or self._empty_voice_response_label(record)
+            if record.expected is None:
+                reason = str(
+                    record.metadata.get("failure_reason") or "INVALID_RESPONSE"
+                )
+                return (
+                    f"Invalid response: {record.actor} answered {actual} ({reason})\n"
+                    f"Winner: {deadline_state.winner}."
+                )
             return (
-                f"Wrong answer: {record.actor} answered {record.response}, expected {record.expected}\n"
+                f"Wrong answer: {record.actor} answered {actual}, expected {record.expected}\n"
                 f"Winner: {deadline_state.winner}."
             )
         return None
@@ -1587,18 +1770,28 @@ class InteractiveTaskRuntime:
         if result.deadline_misses:
             lines.append("Deadline misses:")
             for item in result.deadline_misses:
+                identity = (
+                    f"  turn={item.get('turn_id')} actor={item.get('actor')}"
+                )
+                if item.get("number") is not None:
+                    identity += f" number={item.get('number')}"
                 lines.append(
-                    f"  turn={item.get('turn_id')} actor={item.get('actor')} number={item.get('number')} "
+                    f"{identity} "
                     f"latency={float(item.get('latency_ms') or 0.0):.1f}ms "
                     f"deadline={self._format_ms(float(item.get('deadline_ms') or 0.0))}"
                 )
         if result.invalid_responses:
             lines.append("Invalid responses:")
             for item in result.invalid_responses:
-                lines.append(
-                    f"  turn={item.get('turn_id')} actor={item.get('actor')} number={item.get('number')} "
-                    f"expected={item.get('expected')} response={item.get('response')}"
-                )
+                detail = f"  turn={item.get('turn_id')} actor={item.get('actor')}"
+                if item.get("number") is not None:
+                    detail += f" number={item.get('number')}"
+                if item.get("expected") is not None:
+                    detail += f" expected={item.get('expected')}"
+                detail += f" response={item.get('response')}"
+                if item.get("failure_reason"):
+                    detail += f" reason={item.get('failure_reason')}"
+                lines.append(detail)
         return "\n".join(lines)
 
     def _number_from_state(self, state: TaskState) -> int | None:
@@ -1731,6 +1924,8 @@ class InteractiveTaskRuntime:
                 "type": type(startup_error).__name__,
                 "message": str(startup_error),
             }
+        if self.task_web_metadata is not None:
+            manifest["task_web"] = deepcopy(self.task_web_metadata)
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     def _write_run_summary(
@@ -1742,6 +1937,7 @@ class InteractiveTaskRuntime:
         status: str,
     ) -> None:
         summary = asdict(result)
+        summary["task_event_error_count"] = self._task_event_error_count
         manifest_path = run_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.update(
@@ -1761,6 +1957,7 @@ class InteractiveTaskRuntime:
                 "stop_reason": result.stop_reason,
                 "deadline_misses": list(result.deadline_misses),
                 "invalid_responses": list(result.invalid_responses),
+                "task_event_error_count": self._task_event_error_count,
             }
         )
         if self.speech_output_sink.mode == "audio":

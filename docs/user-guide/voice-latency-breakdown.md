@@ -58,6 +58,7 @@ uv run python scripts/analyze_interactive_voice_latency.py \
 | `breakdown_summary.md` | 便于人工审阅的汇总表 |
 
 分析器严格拒绝负数、非有限值和未知 timing schema，避免静默生成错误统计。
+它同时接受 Zip-Zap-Zop 的 numbered turns 和 Animal Naming 的 open-ended turns；后者在 CSV 中的 `number` 字段为空，不影响 timing 统计。
 
 ## 关键指标
 
@@ -90,3 +91,5 @@ uv run python scripts/analyze_interactive_voice_latency.py \
 4. cold start 的模型 resolution/load/warmup 和 TTS prewarm 单独报告。
 5. 使用固定 WAV 的 `scripts/voice_microbench.py` 测纯 STT/TTS，再进行真人端到端测试。
 6. 正式延迟测试默认不保存 WAV；需要审计 VAD 时才临时开启 `--voice-save-audio`。
+
+Animal Naming qualification 建议完成 5 局、每局 20 turns，并把 Human intended animal 与 `human_input.raw_transcript`、`human_input.canonical_response` 和 `referee_metadata.normalized_animal` 对齐审计。

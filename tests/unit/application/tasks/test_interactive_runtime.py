@@ -10,6 +10,7 @@ import requests
 
 from streammuse.application.tasks import InteractiveTaskRuntime, InteractiveTaskRuntimeConfig, TimedPromptResult
 from streammuse.domain.tasks import (
+    AnimalNamingTask,
     ChatModelResponse,
     HumanInputMode,
     HumanResponse,
@@ -19,6 +20,7 @@ from streammuse.domain.tasks import (
     SpeechContext,
     SpokenResponseParseResult,
     TaskState,
+    TaskViewEvent,
     ZipZapZopTask,
 )
 
@@ -188,12 +190,123 @@ class NonSpeechInteractiveTask:
     name = "plain_interactive"
 
 
+class RecordingTaskEventSink:
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.events: list[TaskViewEvent] = []
+        self.error = error
+
+    def emit(self, event: TaskViewEvent) -> None:
+        if self.error is not None:
+            raise self.error
+        self.events.append(event)
+
+    def close(self) -> None:
+        return None
+
+
 def _read_response_trace(trace_dir: Path) -> list[dict[str, object]]:
     return [
         json.loads(line)
         for line in (trace_dir / "response_trace.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def test_task_view_events_follow_attempts_and_do_not_leak_expected_by_default(tmp_path) -> None:
+    terminal = FakeTerminal([":hint", "1"])
+    sink = RecordingTaskEventSink()
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path), deadline_mode="soft", deadline_ms=1000.0
+        ),
+        model_client=StaticModelClient([]),
+        terminal=terminal,
+        task_event_sink=sink,
+        task_event_session_id="session",
+    )
+
+    result = runtime.play(ZipZapZopTask(start_number=1), max_turns=1)
+
+    attempts = [event for event in sink.events if event.type == "turn_attempt_started"]
+    assert [event.payload["attempt_index"] for event in attempts] == [0, 1]
+    assert all(event.payload["deadline_ms"] == 1000.0 for event in attempts)
+    finished = next(event for event in sink.events if event.type == "turn_finished")
+    assert "expected" not in finished.payload
+    assert finished.payload["stats"]["turn_count"] == 1
+    assert sink.events[-1].type == "session_finished"
+    assert result.turn_count == 1
+
+
+def test_task_event_sink_exception_isolated_but_keyboard_interrupt_propagates(tmp_path) -> None:
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path / "ordinary"), deadline_mode="soft"
+        ),
+        model_client=StaticModelClient([]),
+        terminal=FakeTerminal(["1"]),
+        task_event_sink=RecordingTaskEventSink(RuntimeError("viewer failed")),
+    )
+    result = runtime.play(ZipZapZopTask(), max_turns=1)
+    assert result.turn_count == 1
+    summary = json.loads((tmp_path / "ordinary" / "run_summary.json").read_text())
+    assert summary["task_event_error_count"] > 0
+
+    interrupting = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path / "interrupt"), deadline_mode="soft"
+        ),
+        model_client=StaticModelClient([]),
+        terminal=FakeTerminal(["1"]),
+        task_event_sink=RecordingTaskEventSink(KeyboardInterrupt()),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        interrupting.play(ZipZapZopTask(), max_turns=1)
+
+
+def test_challenge_stage_event_follows_turn_and_expected_is_opt_in(tmp_path) -> None:
+    sink = RecordingTaskEventSink()
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="challenge",
+            challenge_stage_turns=1,
+            challenge_deadline_ms_list=(1000.0, 500.0),
+            show_expected=True,
+        ),
+        model_client=StaticModelClient([]),
+        terminal=FakeTerminal(["1"]),
+        task_event_sink=sink,
+    )
+
+    runtime.play(ZipZapZopTask(), max_turns=1)
+
+    types = [event.type for event in sink.events]
+    assert types.index("turn_finished") < types.index("stage_changed")
+    finished = next(event for event in sink.events if event.type == "turn_finished")
+    assert finished.payload["expected"] == "1"
+    stage = next(event for event in sink.events if event.type == "stage_changed")
+    assert stage.payload["old_deadline_ms"] == 1000.0
+    assert stage.payload["new_deadline_ms"] == 500.0
+
+
+def test_animal_naming_view_event_is_task_neutral_and_preserves_failure_reason(tmp_path) -> None:
+    sink = RecordingTaskEventSink()
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path), deadline_mode="soft"
+        ),
+        model_client=StaticModelClient([]),
+        terminal=FakeTerminal(["dragon"]),
+        task_event_sink=sink,
+    )
+
+    runtime.play(AnimalNamingTask(), max_turns=1)
+
+    attempt = next(event for event in sink.events if event.type == "turn_attempt_started")
+    assert attempt.payload["display_value"] is None
+    assert attempt.payload["prompt"] == "Name one unused animal:"
+    finished = next(event for event in sink.events if event.type == "turn_finished")
+    assert finished.payload["failure_reason"] == "UNKNOWN_ANIMAL"
 
 
 def test_interactive_runtime_alternates_human_and_llm_turns(tmp_path) -> None:
@@ -247,6 +360,182 @@ def test_interactive_runtime_alternates_human_and_llm_turns(tmp_path) -> None:
     assert manifest["human_first"] is True
     assert manifest["human_input"] == {"mode": "terminal"}
     assert rows[0]["metadata"]["human_input"]["mode"] == "terminal"  # type: ignore[index]
+
+
+def test_animal_naming_runtime_alternates_with_shared_open_ended_state(
+    tmp_path,
+) -> None:
+    clock = ManualClock()
+    terminal = FakeTerminal(["lion", "tiger"], clock=clock)
+    model = StaticModelClient(["elephant", "bear"])
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            human_first=True,
+        ),
+        model_client=model,
+        terminal=terminal,
+        now=clock.now,
+    )
+
+    result = runtime.play(AnimalNamingTask(), max_turns=4)
+
+    rows = _read_response_trace(Path(result.output_dir))
+    assert result.valid_count == 4
+    assert [row["actor"] for row in rows] == ["human", "llm", "human", "llm"]
+    assert [row["response"] for row in rows] == [
+        "lion",
+        "elephant",
+        "tiger",
+        "bear",
+    ]
+    assert all(row["number"] is None for row in rows)
+    assert all(row["expected"] is None for row in rows)
+    assert rows[0]["metadata"]["referee_metadata"] == {  # type: ignore[index]
+        "normalized_animal": "lion"
+    }
+    assert "Forbidden animal names: lion" in model.requests[0][-1]["content"]
+    assert "lion, elephant, tiger" in model.requests[1][-1]["content"]
+    assert not any("expected=None" in output for output in terminal.outputs)
+    assert not any("number=None" in output for output in terminal.outputs)
+
+
+def test_animal_naming_runtime_rejects_repeats_from_either_actor(tmp_path) -> None:
+    clock = ManualClock()
+    terminal = FakeTerminal(["lion", "elephant"], clock=clock)
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            human_first=True,
+        ),
+        model_client=StaticModelClient(["elephant", "lion"]),
+        terminal=terminal,
+        now=clock.now,
+    )
+
+    result = runtime.play(AnimalNamingTask(), max_turns=4)
+
+    rows = _read_response_trace(Path(result.output_dir))
+    assert result.valid_count == 2
+    assert result.invalid_count == 2
+    assert [row["metadata"]["failure_reason"] for row in rows] == [  # type: ignore[index]
+        "NONE",
+        "NONE",
+        "REPEATED_ANIMAL",
+        "REPEATED_ANIMAL",
+    ]
+    assert all("expected" not in detail for detail in result.invalid_responses)
+    assert all("number" not in detail for detail in result.invalid_responses)
+    assert any(
+        "MISS reason=REPEATED_ANIMAL actual=elephant" in output
+        for output in terminal.outputs
+    )
+
+
+def test_animal_naming_hard_loss_uses_reason_instead_of_expected_none(
+    tmp_path,
+) -> None:
+    clock = ManualClock()
+    terminal = FakeTerminal(["dragon"], clock=clock)
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="hard",
+        ),
+        model_client=StaticModelClient([]),
+        terminal=terminal,
+        now=clock.now,
+    )
+
+    result = runtime.play(AnimalNamingTask(), max_turns=5)
+
+    assert result.stop_reason == "invalid_response_loss"
+    assert any(
+        "Invalid response: human answered dragon (UNKNOWN_ANIMAL)" in output
+        for output in terminal.outputs
+    )
+    assert not any("expected None" in output for output in terminal.outputs)
+
+
+def test_animal_naming_runtime_records_unknown_llm_response(tmp_path) -> None:
+    terminal = FakeTerminal([])
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            human_first=False,
+        ),
+        model_client=StaticModelClient(["dragon"]),
+        terminal=terminal,
+    )
+
+    result = runtime.play(AnimalNamingTask(), max_turns=1)
+
+    row = _read_response_trace(Path(result.output_dir))[0]
+    assert result.invalid_count == 1
+    assert row["actor"] == "llm"
+    assert row["response"] == "dragon"
+    assert row["expected"] is None
+    assert row["metadata"]["failure_reason"] == "UNKNOWN_ANIMAL"  # type: ignore[index]
+    assert any(
+        "MISS reason=UNKNOWN_ANIMAL actual=dragon" in output
+        for output in terminal.outputs
+    )
+
+
+def test_animal_naming_expected_command_explains_open_ended_rule(tmp_path) -> None:
+    terminal = FakeTerminal([":expected", ":hint", ":quit"])
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+        ),
+        model_client=StaticModelClient([]),
+        terminal=terminal,
+    )
+
+    result = runtime.play(AnimalNamingTask(), max_turns=1)
+
+    assert result.turn_count == 0
+    assert any("no single expected answer" in output for output in terminal.outputs)
+    assert any("91 unused animal names remain" in output for output in terminal.outputs)
+
+
+def test_animal_naming_voice_trace_keeps_raw_parse_and_referee_metadata(
+    tmp_path,
+) -> None:
+    clock = ManualClock()
+    source = FakeHumanResponseSource(
+        [HumanResponse(text="A lion.", latency_ms=20.0)],
+        clock=clock,
+        response_elapsed_s=0.02,
+    )
+    terminal = FakeTerminal([])
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+        ),
+        model_client=StaticModelClient([]),
+        terminal=terminal,
+        human_response_source=source,
+        now=clock.now,
+    )
+
+    result = runtime.play(AnimalNamingTask(), max_turns=1)
+
+    row = _read_response_trace(Path(result.output_dir))[0]
+    human_input = row["metadata"]["human_input"]  # type: ignore[index]
+    assert row["response"] == "lion"
+    assert row["is_valid"] is True
+    assert human_input["raw_transcript"] == "A lion."
+    assert human_input["canonical_response"] == "lion"
+    assert row["metadata"]["referee_metadata"] == {  # type: ignore[index]
+        "normalized_animal": "lion"
+    }
+    assert "lion" in source.requests[0].speech_context.hotwords  # type: ignore[union-attr]
 
 
 def test_interactive_runtime_supports_llm_first(tmp_path) -> None:

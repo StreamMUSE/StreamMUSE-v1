@@ -55,6 +55,8 @@ def test_voice_input_config_defaults_are_explicit_and_frozen() -> None:
     assert config.save_audio is False
     assert config.max_utterance_ms == 5000.0
     assert config.vad_aggressiveness == 2
+    assert config.vad_start_window_frames == 8
+    assert config.vad_start_trigger_frames == 5
     with pytest.raises(FrozenInstanceError):
         config.model = "base.en"  # type: ignore[misc]
 
@@ -71,6 +73,13 @@ def test_voice_input_config_defaults_are_explicit_and_frozen() -> None:
         ({"max_utterance_ms": 100, "end_silence_ms": 101}, ValueError, "must be <="),
         ({"max_utterance_ms": 100, "pre_roll_ms": 101}, ValueError, "must be <="),
         ({"vad_aggressiveness": 4}, ValueError, "between 0 and 3"),
+        ({"vad_start_window_frames": 0}, ValueError, "must be > 0"),
+        ({"vad_start_trigger_frames": True}, TypeError, "must be an integer"),
+        (
+            {"vad_start_window_frames": 8, "vad_start_trigger_frames": 9},
+            ValueError,
+            "must be <=",
+        ),
         ({"queue_max_chunks": 0}, ValueError, "must be > 0"),
     ],
 )

@@ -187,6 +187,8 @@ class MicrophoneCapture:
                 "capture_sample_rate_hz": self._sample_rate_hz,
                 "vad_frame_ms": _VAD_FRAME_MS,
                 "vad_aggressiveness": self.config.vad_aggressiveness,
+                "vad_start_window_frames": self.config.vad_start_window_frames,
+                "vad_start_trigger_frames": self.config.vad_start_trigger_frames,
                 "start_timeout_ms": self.config.start_timeout_ms,
                 "end_silence_ms": self.config.end_silence_ms,
                 "max_utterance_ms": self.config.max_utterance_ms,
@@ -514,7 +516,11 @@ class MicrophoneCapture:
     ) -> CapturedUtterance:
         accumulator = bytearray()
         pre_roll_frames = max(0, math.ceil(float(self.config.pre_roll_ms) / _VAD_FRAME_MS))
-        pre_roll: deque[bytes] = deque(maxlen=pre_roll_frames or 1)
+        onset_window_frames = int(self.config.vad_start_window_frames)
+        onset_trigger_frames = int(self.config.vad_start_trigger_frames)
+        pending_onset: deque[tuple[bytes, bool, float, float]] = deque(
+            maxlen=max(1, pre_roll_frames + onset_window_frames)
+        )
         captured: list[bytes] = []
         speech_started = False
         speech_started_s: float | None = None
@@ -621,16 +627,52 @@ class MicrophoneCapture:
                     raise MicrophoneCaptureError(f"WebRTC VAD failed: {exc}") from exc
 
                 if not speech_started:
-                    if voiced:
-                        speech_started = True
-                        speech_started_s = capture_start_s + frame_start_ms / 1000.0
-                        first_voiced_offset_ms = frame_start_ms
-                        if pre_roll_frames:
-                            captured.extend(pre_roll)
-                        captured.append(frame)
-                        last_voiced_offset_ms = frame_end_ms
-                    elif pre_roll_frames:
-                        pre_roll.append(frame)
+                    pending_onset.append(
+                        (frame, voiced, frame_start_ms, frame_end_ms)
+                    )
+                    onset_window = list(pending_onset)[-onset_window_frames:]
+                    if (
+                        len(onset_window) < onset_window_frames
+                        or sum(1 for _, active, _, _ in onset_window if active)
+                        < onset_trigger_frames
+                    ):
+                        continue
+
+                    first_voiced_index = next(
+                        index
+                        for index, (_, active, _, _) in enumerate(onset_window)
+                        if active
+                    )
+                    all_pending = list(pending_onset)
+                    window_start_index = len(all_pending) - len(onset_window)
+                    capture_start_index = max(
+                        0,
+                        window_start_index + first_voiced_index - pre_roll_frames,
+                    )
+                    selected = all_pending[capture_start_index:]
+                    first_voiced_offset_ms = onset_window[first_voiced_index][2]
+                    speech_started_s = (
+                        capture_start_s + first_voiced_offset_ms / 1000.0
+                    )
+                    last_voiced_offset_ms = max(
+                        frame_end
+                        for _, active, _, frame_end in onset_window
+                        if active
+                    )
+                    trailing_silence_ms = 0.0
+                    for _, active, _, _ in reversed(onset_window):
+                        if active:
+                            break
+                        trailing_silence_ms += _VAD_FRAME_MS
+                    captured.extend(item[0] for item in selected)
+                    pending_onset.clear()
+                    speech_started = True
+
+                    utterance_elapsed_ms = frame_end_ms - first_voiced_offset_ms
+                    if utterance_elapsed_ms >= float(self.config.max_utterance_ms):
+                        endpoint_reason = "max_utterance"
+                    elif trailing_silence_ms >= float(self.config.end_silence_ms):
+                        endpoint_reason = "trailing_silence"
                     continue
 
                 captured.append(frame)

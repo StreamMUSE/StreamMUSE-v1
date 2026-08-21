@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from streammuse.application.tasks.human_input import VoiceInputConfig
-from streammuse.domain.tasks import SpeechContext
+from streammuse.domain.tasks import AnimalNamingTask, SpeechContext
 from streammuse.infrastructure.voice import (
     FasterWhisperRecognizer,
     SpeechRecognitionError,
@@ -143,6 +143,25 @@ def test_transcribe_consumes_all_segments_and_preserves_raw_text() -> None:
     assert timing["durations_ms"]["model_call"] >= 0.0
     assert timing["durations_ms"]["segment_iteration"] >= 0.0
     assert timing["durations_ms"]["quality_gate"] >= 0.0
+
+
+def test_animal_naming_context_renders_complete_deterministic_hotword_list() -> None:
+    model = FakeModel()
+    recognizer = FasterWhisperRecognizer(
+        VoiceInputConfig(),
+        model_factory=lambda *args, **kwargs: model,
+        model_downloader=_fake_model_downloader,
+    )
+    recognizer.start()
+    task = AnimalNamingTask()
+    context = task.build_speech_context(task.initial_state(), [])
+
+    recognizer.transcribe(np.ones(800, dtype=np.float32), speech_context=context)
+
+    rendered = model.calls[1][1]["hotwords"]
+    assert tuple(rendered.split()) == task.remaining_animals(task.initial_state())
+    assert len(rendered.split()) == 91
+    assert len(rendered) < 1024
 
 
 def test_provenance_is_a_defensive_snapshot_and_reports_timings() -> None:

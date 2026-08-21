@@ -12,10 +12,12 @@ from streammuse.application.tasks import (
     InteractiveTaskRuntimeConfig,
 )
 from streammuse.domain.tasks import (
+    AnimalNamingTask,
     ChatModelResponse,
     HumanResponse,
     SpeechPlayback,
     SpeechRequest,
+    TaskViewEvent,
     ZipZapZopTask,
 )
 from streammuse.infrastructure.voice import SpeechOutputError
@@ -153,6 +155,17 @@ class FakeVoiceSource:
         self.closed += 1
 
 
+class RecordingTaskEventSink:
+    def __init__(self) -> None:
+        self.events: list[TaskViewEvent] = []
+
+    def emit(self, event: TaskViewEvent) -> None:
+        self.events.append(event)
+
+    def close(self) -> None:
+        return None
+
+
 def _trace(path: Path) -> list[dict[str, Any]]:
     return [
         json.loads(line)
@@ -160,6 +173,54 @@ def _trace(path: Path) -> list[dict[str, Any]]:
         .read_text(encoding="utf-8")
         .splitlines()
     ]
+
+
+def test_tts_emits_started_and_final_playback_states(tmp_path: Path) -> None:
+    clock = ManualClock()
+    event_sink = RecordingTaskEventSink()
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            human_first=False,
+        ),
+        model_client=FakeModel(clock),
+        terminal=FakeTerminal(),
+        speech_output_sink=FakeSpeechSink(clock),
+        task_event_sink=event_sink,
+        now=clock.now,
+    )
+
+    runtime.play(ZipZapZopTask(), max_turns=1)
+
+    speech_events = [
+        event.payload for event in event_sink.events if event.type == "speech_output"
+    ]
+    assert [event["status"] for event in speech_events] == ["started", "ok"]
+    assert speech_events[-1]["completed_normally"] is True
+
+
+def test_tts_exception_emits_one_internal_error_state(tmp_path: Path) -> None:
+    clock = ManualClock()
+    event_sink = RecordingTaskEventSink()
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path), deadline_mode="soft", human_first=False
+        ),
+        model_client=FakeModel(clock),
+        terminal=FakeTerminal(),
+        speech_output_sink=FakeSpeechSink(clock, error=RuntimeError("speaker failed")),
+        task_event_sink=event_sink,
+        now=clock.now,
+    )
+
+    with pytest.raises(RuntimeError, match="speaker failed"):
+        runtime.play(ZipZapZopTask(), max_turns=1)
+
+    speech_events = [
+        event.payload for event in event_sink.events if event.type == "speech_output"
+    ]
+    assert [event["status"] for event in speech_events] == ["started", "internal_error"]
 
 
 def test_audio_end_uses_unrounded_text_plus_drained_measurement(
@@ -193,6 +254,51 @@ def test_audio_end_uses_unrounded_text_plus_drained_measurement(
     assert json.loads(
         (tmp_path / "manifest.json").read_text(encoding="utf-8")
     )["speech_output"]["backend"] == "fake"
+
+
+def test_animal_naming_uses_on_demand_speech_without_vocabulary_prewarm(
+    tmp_path: Path,
+) -> None:
+    clock = ManualClock()
+    sink = FakeSpeechSink(
+        clock,
+        playback=SpeechPlayback(
+            status="cache_miss_synthesized",
+            spoken_text="lion",
+            cached=False,
+            synthesis_ms=50.0,
+            completed_normally=True,
+            first_dac_sample_offset_ms=70.0,
+            playback_drained_offset_ms=300.0,
+            stream_inactive_offset_ms=300.0,
+        ),
+    )
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            human_first=False,
+        ),
+        model_client=FakeModel(clock, text="Lion."),
+        terminal=FakeTerminal(),
+        speech_output_sink=sink,
+        now=clock.now,
+    )
+
+    runtime.play(AnimalNamingTask(), max_turns=1)
+
+    record = _trace(tmp_path)[0]
+    assert sink.prepared == ()
+    assert len(sink.requests) == 1
+    assert sink.requests[0].text == "lion"
+    assert sink.requests[0].source_text == "Lion."
+    assert record["is_valid"] is True
+    assert record["metadata"]["speech_output"]["status"] == (
+        "cache_miss_synthesized"
+    )
+    assert record["metadata"]["referee_metadata"] == {
+        "normalized_animal": "lion"
+    }
 
 
 def test_llm_turn_emits_session_aligned_timing_breakdown(

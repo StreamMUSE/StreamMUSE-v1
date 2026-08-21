@@ -151,6 +151,8 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 
 以下参数属于 `streammuse-task play`，与音乐实时入口 `streammuse-cli` 的输入参数相互独立：
 
+`play` 当前支持 `zip_zap_zop` 和 `animal_naming`。Animal Naming 使用 91 项 exact whitelist，`--max-turns` 不能超过 whitelist size；`--start-number` 对该任务没有作用。
+
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `--human-input` | `terminal/voice` | `terminal` | 人类玩家输入方式 |
@@ -162,6 +164,7 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `--voice-model-revision` | `str` | `None` | 固定模型版本的 commit 或 tag |
 | `--voice-local-files-only` | flag | `False` | 禁止联网下载模型 |
 | `--voice-save-audio` | flag | `False` | 将每回合发言保存到运行产物目录 |
+| `--voice-max-utterance-ms` | `float` | `5000` | 首个 VAD 语音帧之后的最大采集时长；Animal Naming 初始建议 1500 ms |
 
 `streammuse-task voice-devices` 可以在不提供 `--task`、不连接聊天模型服务器且不加载 Whisper 的情况下列出麦克风。语音参数只能和 `--human-input voice` 一起使用。完整说明见[交互式游戏语音输入](../user-guide/voice-input.md)。
 
@@ -189,6 +192,17 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `--llm-deadline-basis` | `text/audio_end` | `text` | 机器回合计分口径 |
 
 `streammuse-task speaker-devices` 不需要任务或模型服务器。关闭语音输出时禁止传入 `--speech-*` 参数；`audio_end` 必须同时启用音频输出。Kokoro 在当前版本必须显式提供模型和 revision。完整说明见[交互式游戏语音输出](../user-guide/speech-output.md)。
+
+### 交互式任务 Web 观察界面
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `--web-ui` | flag | `False` | 启用只读 Web UI；首个 viewer 完成首次 render 前不初始化游戏资源 |
+| `--web-host` | `str` | `127.0.0.1` | Web server 监听地址 |
+| `--web-port` | `int` | `8002` | Web server 端口 |
+| `--web-allow-remote` | flag | `False` | 允许非 loopback 绑定；仍校验随机 token 和 Origin |
+
+未启用 `--web-ui` 时不能单独传 `--web-*` 参数。启用后 Web server 与首个 `viewer_ready` 是开局前的 required dependency；开局后的断线不暂停对局。完整说明见[交互式任务 Web 观察界面](../user-guide/task-web-ui.md)。
 
 ## 典型命令示例
 

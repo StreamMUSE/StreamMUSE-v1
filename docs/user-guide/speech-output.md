@@ -1,11 +1,11 @@
 ---
 title: 交互式游戏语音输出
-description: 让 Zip-Zap-Zop 的 LLM 回答通过 TTS 和扬声器播放
+description: 让 Zip-Zap-Zop 和 Animal Naming 的 LLM 回答通过 TTS 和扬声器播放
 ---
 
 # 交互式游戏语音输出
 
-`streammuse-task play` 可以在 LLM 生成答案后，将答案规范化为适合朗读的文本、合成音频并完整播放。TTS 只朗读 LLM 的原始答案语义：`ZipZap` 会读成 `Zip Zap`，数字保持原值，错误答案不会被纠正。
+`streammuse-task play` 可以在 LLM 生成答案后，将答案规范化为适合朗读的文本、合成音频并完整播放。TTS 只朗读 LLM 的原始答案语义：`ZipZap` 会读成 `Zip Zap`，数字保持原值，Animal Naming 会朗读规范化的动物候选词，错误答案不会被纠正。
 
 裁判结果、胜负、帮助、截止时间信息和人类回合提示仍然只显示在终端。系统不提供音频 cue、结果播报、声学回声消除或播放中抢答。
 
@@ -72,6 +72,35 @@ uv run --extra voice --extra speech streammuse-task play \
   --model Qwen/Qwen2.5-7B-Instruct
 ```
 
+Animal Naming 双向语音：
+
+```bash
+uv run --frozen --extra voice --extra speech streammuse-task play \
+  --task animal_naming \
+  --human-input voice \
+  --human-first \
+  --max-turns 20 \
+  --microphone-device 2 \
+  --voice-model tiny.en \
+  --voice-device cpu \
+  --voice-compute-type int8 \
+  --voice-model-cache .cache/voice-models \
+  --voice-model-revision 0d3d19a32d3338f10357c0889762bd8d64bbdeba \
+  --voice-local-files-only \
+  --voice-max-utterance-ms 1500 \
+  --speech-output audio \
+  --speech-backend system \
+  --speech-cache-miss synthesize \
+  --speech-guard-ms 200 \
+  --model-url http://127.0.0.1:8101/v1 \
+  --model Qwen/Qwen3.6-27B \
+  --temperature 0 \
+  --max-tokens 8 \
+  --deadline-mode soft \
+  --deadline-ms 5000 \
+  --output-dir /private/tmp/streammuse-animal-bidirectional
+```
+
 建议双向语音时戴耳机。外放场景没有 AEC；系统只保证机器音频排空后等待一次 guard，再打印人类文字 prompt 并打开麦克风。人类先手、没有实际机器音频或使用终端输入时不等待 guard。
 
 ## 后端和缓存
@@ -81,7 +110,9 @@ uv run --extra voice --extra speech streammuse-task play \
 - `kokoro`：高质量可选后端，必须提供 `--speech-model` 和 `--speech-model-revision`。
 - `null`：生成静音 PCM，只用于测试。
 
-游戏开始前会预合成本局的有界词表。默认缓存最多 512 项和 64 MiB；命中时回合内 `synthesis_ms` 为 0。可以使用 `--no-speech-prewarm`，或用 `--speech-cache-miss skip` 在未命中时跳过播放。
+Zip-Zap-Zop 会在游戏开始前预合成本局的有界词表。Animal Naming 的候选词约百个，而且有效动物在单局中最多使用一次，因此不会在启动时预合成整个 whitelist；LLM 每次产生新动物后使用 `--speech-cache-miss synthesize` 按需合成。当前 audio cache 是 session 内存缓存，不是跨局 disk cache。Animal Naming 使用 `--speech-cache-miss skip` 时，大多数答案不会播放。
+
+默认缓存最多 512 项和 64 MiB；命中时回合内 `synthesis_ms` 为 0。Zip-Zap-Zop 可以使用 `--no-speech-prewarm`，或用 `--speech-cache-miss skip` 在未命中时跳过播放。
 
 Kokoro 示例：
 
@@ -128,6 +159,8 @@ uv run --extra tts-kokoro streammuse-task play \
 | 外放触发麦克风 | 戴耳机；必要时增大 `--speech-guard-ms` |
 | `audio_end` 经常回退 | 查看 trace 的 `deadline_basis_fallback_reason` 和播放错误 |
 | 希望听到当前人类回合提示 | 当前设计只显示文字 prompt，不提供音频 cue |
+| Animal Naming 启动后没有预热动物音频 | 这是预期行为；动物名使用 on-demand synthesis，检查 `--speech-cache-miss synthesize` |
 
 STT、LLM、TTS、首个 DAC 样本和 drain 的分阶段统计见
 [交互式语音延迟分解](voice-latency-breakdown.md)。
+Animal Naming 的规则、命令和 trace 字段见 [Animal Naming 交互游戏](animal-naming.md)。

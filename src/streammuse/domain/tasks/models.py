@@ -11,6 +11,15 @@ InteractiveActor = Literal["human", "llm"]
 DeadlineMode = Literal["menu", "soft", "hard", "challenge"]
 HumanInputMode = Literal["terminal", "voice"]
 SpeechOutputMode = Literal["silent", "audio"]
+TaskViewEventType = Literal[
+    "session_config",
+    "turn_attempt_started",
+    "asr",
+    "turn_finished",
+    "stage_changed",
+    "speech_output",
+    "session_finished",
+]
 HumanResponseStatus = Literal[
     "ok",
     "no_speech",
@@ -109,6 +118,20 @@ class SpeechOutputSink(Protocol):
     def speak(self, request: SpeechRequest) -> SpeechPlayback: ...
 
     def drain(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class TaskViewEvent:
+    type: TaskViewEventType
+    session_id: str
+    event_seq: int
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+class TaskEventSink(Protocol):
+    def emit(self, event: TaskViewEvent) -> None: ...
 
     def close(self) -> None: ...
 

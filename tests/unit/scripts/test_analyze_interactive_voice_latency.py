@@ -124,6 +124,55 @@ def test_analyzer_derives_cross_turn_metrics_and_writes_outputs(
     assert (output_dir / "breakdown_summary.md").is_file()
 
 
+def test_analyzer_accepts_open_ended_turn_without_number_or_expected(
+    load_script,
+    tmp_path: Path,
+) -> None:
+    analyzer = load_script("analyze_interactive_voice_latency")
+    trace = tmp_path / "response_trace.jsonl"
+    trace.write_text(
+        json.dumps(
+            {
+                "turn_id": 0,
+                "actor": "human",
+                "number": None,
+                "expected": None,
+                "is_valid": True,
+                "deadline_missed": False,
+                "latency_ms": 300.0,
+                "metadata": {
+                    "referee_metadata": {"normalized_animal": "lion"},
+                    "timing_breakdown": _breakdown(
+                        actor="human",
+                        session_offset_ms=0.0,
+                        anchors={
+                            "response_source_started": 5.0,
+                            "microphone.first_voiced": 50.0,
+                            "microphone.last_voiced": 150.0,
+                            "asr.completed": 250.0,
+                        },
+                    ),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = analyzer.analyze_traces((trace,))
+    output_dir = tmp_path / "analysis"
+    analyzer.write_outputs(output_dir, result)
+
+    assert result["turn_count"] == 1
+    assert result["rows"][0]["number"] is None
+    with (output_dir / "breakdown_turns.csv").open(
+        encoding="utf-8",
+        newline="",
+    ) as handle:
+        row = next(csv.DictReader(handle))
+    assert row["number"] == ""
+
+
 def test_analyzer_rejects_negative_stage_duration(
     load_script,
     tmp_path: Path,

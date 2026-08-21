@@ -170,6 +170,15 @@ class CaptureCleanupFailureSoundDevice(FakeSoundDevice):
         return stream
 
 
+def _single_frame_onset_config(**overrides: Any) -> VoiceInputConfig:
+    values: dict[str, Any] = {
+        "vad_start_window_frames": 1,
+        "vad_start_trigger_frames": 1,
+    }
+    values.update(overrides)
+    return VoiceInputConfig(**values)
+
+
 def _capture(sd: FakeSoundDevice, **overrides: Any) -> MicrophoneCapture:
     values = {
         "start_timeout_ms": 100.0,
@@ -178,7 +187,7 @@ def _capture(sd: FakeSoundDevice, **overrides: Any) -> MicrophoneCapture:
         "pre_roll_ms": 20.0,
     }
     values.update(overrides)
-    config = VoiceInputConfig(**values)
+    config = _single_frame_onset_config(**values)
     capture = MicrophoneCapture(config, sounddevice_module=sd, vad_factory=EnergyVad)
     capture.start()
     return capture
@@ -223,7 +232,7 @@ def test_capture_reports_observation_timing_without_using_control_clock() -> Non
         ]
     )
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             start_timeout_ms=100.0,
             end_silence_ms=40.0,
             max_utterance_ms=200.0,
@@ -298,7 +307,7 @@ def test_preflight_preserves_open_error_when_cleanup_also_fails() -> None:
             return stream
 
     sd = BrokenSoundDevice()
-    capture = MicrophoneCapture(VoiceInputConfig(), sounddevice_module=sd, vad_factory=EnergyVad)
+    capture = MicrophoneCapture(_single_frame_onset_config(), sounddevice_module=sd, vad_factory=EnergyVad)
 
     with pytest.raises(MicrophoneDeviceError, match="permission denied") as exc_info:
         capture.start()
@@ -310,7 +319,7 @@ def test_preflight_preserves_open_error_when_cleanup_also_fails() -> None:
 
 def test_preflight_rejects_device_without_supported_vad_rate() -> None:
     sd = FakeSoundDevice(supported_rates=set())
-    capture = MicrophoneCapture(VoiceInputConfig(), sounddevice_module=sd, vad_factory=EnergyVad)
+    capture = MicrophoneCapture(_single_frame_onset_config(), sounddevice_module=sd, vad_factory=EnergyVad)
 
     with pytest.raises(MicrophoneDeviceError, match="44.1 kHz-only"):
         capture.start()
@@ -339,6 +348,36 @@ def test_variable_callback_chunks_are_accumulated_into_exact_vad_frames() -> Non
     assert sd.stream_kwargs["dtype"] == "int16"  # type: ignore[index]
     assert sd.streams[-1].stopped == 1
     assert sd.streams[-1].closed == 1
+
+
+def test_default_onset_window_discards_short_noise_and_waits_for_speech() -> None:
+    false_burst = _pcm_frame(3000) * 4
+    quiet_gap = _pcm_frame(0) * 8
+    real_speech = _pcm_frame(3000) * 5
+    trailing_silence = _pcm_frame(0) * 2
+    sd = FakeSoundDevice(
+        chunks=[false_burst + quiet_gap + real_speech + trailing_silence]
+    )
+    capture = MicrophoneCapture(
+        VoiceInputConfig(
+            start_timeout_ms=1000.0,
+            end_silence_ms=40.0,
+            max_utterance_ms=500.0,
+            pre_roll_ms=0.0,
+        ),
+        sounddevice_module=sd,
+        vad_factory=EnergyVad,
+    )
+    capture.start()
+
+    utterance = capture.capture(timeout_s=None)
+
+    assert capture.provenance["vad_start_window_frames"] == 8
+    assert capture.provenance["vad_start_trigger_frames"] == 5
+    assert utterance.endpoint_reason == "trailing_silence"
+    assert utterance.wait_for_speech_ms == pytest.approx(240.0)
+    assert utterance.utterance_ms == pytest.approx(100.0)
+    assert utterance.audio.size == FRAME_SAMPLES_16K * 7
 
 
 def test_48khz_capture_uses_exact_20ms_vad_frames_before_resampling() -> None:
@@ -381,7 +420,7 @@ def test_late_nonfirst_chunk_is_not_accepted_past_max_utterance() -> None:
 
     sd = FakeSoundDevice(chunks=[_pcm_frame(2000), _pcm_frame(2000)])
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             max_utterance_ms=100.0,
             end_silence_ms=40.0,
             pre_roll_ms=0.0,
@@ -432,7 +471,7 @@ def test_predeadline_queued_audio_is_processed_after_consumer_reaches_deadline()
 
     sd = FakeSoundDevice(chunks=[_pcm_frame(2000)])
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             start_timeout_ms=5000.0,
             end_silence_ms=300.0,
             max_utterance_ms=5000.0,
@@ -465,7 +504,7 @@ def test_adc_time_preserves_predeadline_audio_from_a_delayed_callback() -> None:
         time_infos=[{"inputBufferAdcTime": 100.9, "currentTime": 102.0}],
     )
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             start_timeout_ms=5000.0,
             max_utterance_ms=5000.0,
             pre_roll_ms=0.0,
@@ -518,7 +557,7 @@ def test_stream_clock_calibration_maps_adc_time_without_callback_current_time() 
         time_infos=[{"inputBufferAdcTime": 200.5}],
     )
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             start_timeout_ms=5000.0,
             max_utterance_ms=5000.0,
             pre_roll_ms=0.0,
@@ -555,7 +594,7 @@ def test_adc_time_rejects_audio_captured_after_deadline() -> None:
         time_infos=[CDataTimeInfo()],
     )
     capture = MicrophoneCapture(
-        VoiceInputConfig(pre_roll_ms=0.0),
+        _single_frame_onset_config(pre_roll_ms=0.0),
         sounddevice_module=sd,
         vad_factory=EnergyVad,
         now=SequenceClock(),
@@ -584,7 +623,7 @@ def test_adc_time_preserves_speech_captured_before_start_timeout() -> None:
         time_infos=[{"inputBufferAdcTime": 100.5, "currentTime": 102.0}],
     )
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             start_timeout_ms=1000.0,
             end_silence_ms=40.0,
             pre_roll_ms=0.0,
@@ -618,7 +657,7 @@ def test_adc_time_rejects_nonfirst_frame_captured_after_max_utterance() -> None:
         ],
     )
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             max_utterance_ms=100.0,
             end_silence_ms=40.0,
             pre_roll_ms=0.0,
@@ -646,7 +685,7 @@ def test_audio_chunk_entirely_after_deadline_is_discarded() -> None:
 
     sd = FakeSoundDevice(chunks=[_pcm_frame(2000)])
     capture = MicrophoneCapture(
-        VoiceInputConfig(),
+        _single_frame_onset_config(),
         sounddevice_module=sd,
         vad_factory=EnergyVad,
         now=SequenceClock(),
@@ -672,7 +711,7 @@ def test_audio_chunk_straddling_deadline_is_truncated() -> None:
     frames = _pcm_frame(2000) * 4
     sd = FakeSoundDevice(chunks=[frames])
     capture = MicrophoneCapture(
-        VoiceInputConfig(pre_roll_ms=0.0),
+        _single_frame_onset_config(pre_roll_ms=0.0),
         sounddevice_module=sd,
         vad_factory=EnergyVad,
         now=SequenceClock(),
@@ -689,7 +728,7 @@ def test_audio_chunk_straddling_deadline_is_truncated() -> None:
 
 
 def test_soft_safety_timeout_is_not_a_game_deadline() -> None:
-    config = VoiceInputConfig(start_timeout_ms=10.0)
+    config = _single_frame_onset_config(start_timeout_ms=10.0)
     capture = MicrophoneCapture(
         config,
         sounddevice_module=FakeSoundDevice(),
@@ -714,7 +753,7 @@ def test_first_callback_delay_is_reflected_in_wait_for_speech_offset() -> None:
     data = _pcm_frame(2000) + _pcm_frame(0) + _pcm_frame(0)
     sd = FakeSoundDevice(chunks=[data])
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             start_timeout_ms=1000.0,
             end_silence_ms=40.0,
             pre_roll_ms=0.0,
@@ -741,7 +780,7 @@ def test_voiced_chunk_captured_after_start_timeout_is_rejected() -> None:
 
     sd = FakeSoundDevice(chunks=[_pcm_frame(2000)])
     capture = MicrophoneCapture(
-        VoiceInputConfig(start_timeout_ms=1000.0),
+        _single_frame_onset_config(start_timeout_ms=1000.0),
         sounddevice_module=sd,
         vad_factory=EnergyVad,
         now=SequenceClock(),
@@ -770,7 +809,7 @@ def test_late_nonfirst_voiced_chunk_is_rejected_after_start_timeout(
 
     sd = FakeSoundDevice(chunks=[first_chunk, _pcm_frame(2000)])
     capture = MicrophoneCapture(
-        VoiceInputConfig(start_timeout_ms=1000.0),
+        _single_frame_onset_config(start_timeout_ms=1000.0),
         sounddevice_module=sd,
         vad_factory=EnergyVad,
         now=SequenceClock(),
@@ -796,7 +835,7 @@ def test_speech_started_before_start_timeout_may_continue_after_it() -> None:
     data = _pcm_frame(0) + _pcm_frame(2000) + _pcm_frame(2000) + _pcm_frame(0)
     sd = FakeSoundDevice(chunks=[data])
     capture = MicrophoneCapture(
-        VoiceInputConfig(
+        _single_frame_onset_config(
             start_timeout_ms=1000.0,
             end_silence_ms=20.0,
             pre_roll_ms=0.0,
@@ -940,7 +979,7 @@ def test_close_winning_capture_start_race_prevents_a_new_stream() -> None:
     sd = FakeSoundDevice()
     clock = BlockingClock()
     capture = MicrophoneCapture(
-        VoiceInputConfig(),
+        _single_frame_onset_config(),
         sounddevice_module=sd,
         vad_factory=EnergyVad,
         now=clock,
