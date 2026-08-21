@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>StreamMUSE Task</title>
+    <link rel="stylesheet" href="/css/style.css">
+  </head>
+  <body>
+    <main class="shell" aria-live="polite">
+      <header class="topbar">
+        <div>
+          <p class="brand">StreamMUSE</p>
+          <h1 id="task-name">Interactive task</h1>
+        </div>
+        <div class="connection" id="connection-state">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-label">Connecting</span>
+        </div>
+      </header>
+
+      <section class="playfield" aria-labelledby="prompt">
+        <p class="turn-label" id="turn-label">Waiting for game</p>
+        <h2 id="prompt">Open this page before the first turn begins.</h2>
+        <p class="display-value" id="display-value" hidden></p>
+        <div class="timeline" id="timeline" aria-label="Turn deadline progress">
+          <div class="timeline-fill" id="timeline-fill"></div>
+        </div>
+      </section>
+
+      <section class="responses" aria-label="Latest responses">
+        <div class="response-row">
+          <span class="actor actor-human">You</span>
+          <span class="response-text" id="human-response">Waiting</span>
+          <span class="result" id="human-result"></span>
+        </div>
+        <div class="response-row">
+          <span class="actor actor-llm">LLM</span>
+          <span class="response-text" id="llm-response">Waiting</span>
+          <span class="result" id="llm-result"></span>
+        </div>
+        <p class="asr-line" id="asr-line" hidden></p>
+        <p class="speech-line" id="speech-line" hidden></p>
+      </section>
+
+      <footer class="statusbar">
+        <span id="mode-status">Waiting for viewer</span>
+        <span id="stats-status">0 turns</span>
+        <span id="session-status">Not started</span>
+      </footer>
+    </main>
+    <script src="/js/main.js" defer></script>
+  </body>
+</html>
