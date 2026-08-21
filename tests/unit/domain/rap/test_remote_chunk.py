@@ -27,6 +27,20 @@ from streammuse.domain.rap import (
 )
 
 
+_ARTIFACT_IDS = {
+    "request": "request.json",
+    "candidate_ledger": "candidate_ledger.json",
+    "source_wav": "source.wav",
+    "mms_alignment": "mms_alignment.json",
+    "alignment": "alignment.json",
+    "aligned_wav": "aligned.wav",
+    "vocal_wav": "vocal.wav",
+    "manifest": "manifest.json",
+    "server_timing": "server_timing.json",
+    "response_package": "response.zip",
+}
+
+
 @pytest.fixture
 def flow() -> FlowTemplate:
     return FlowTemplate(
@@ -116,6 +130,13 @@ def diagnostics(flow: FlowTemplate) -> RemoteRapChunkDiagnostics:
         },
         model_tool_versions={"moss": "test", "aligner": "test", "rubberband": "test"},
         warnings=(),
+        monitoring_summary={
+            "schema_version": "streammuse.rap_chunk_monitor.v1",
+            "alignment_method": "torchaudio.pipelines.MMS_FA",
+            "alignment_confidence": 0.9,
+            "source_wav_sha256": "a" * 64,
+            "artifact_ids": _ARTIFACT_IDS,
+        },
     )
 
 
@@ -253,6 +274,45 @@ def test_diagnostic_wire_numbers_reject_booleans(flow: FlowTemplate, mutate) -> 
 @pytest.mark.parametrize(
     "mutate",
     (
+        lambda payload: payload.pop("monitoring_summary"),
+        lambda payload: payload["monitoring_summary"].__setitem__("unexpected", True),  # type: ignore[union-attr]
+        lambda payload: payload["monitoring_summary"].__setitem__("schema_version", "unknown"),  # type: ignore[union-attr]
+        lambda payload: payload["monitoring_summary"].__setitem__("alignment_confidence", True),  # type: ignore[union-attr]
+        lambda payload: payload["monitoring_summary"].__setitem__("alignment_confidence", 1.1),  # type: ignore[union-attr]
+        lambda payload: payload["monitoring_summary"].__setitem__("source_wav_sha256", "not-a-hash"),  # type: ignore[union-attr]
+        lambda payload: payload["monitoring_summary"]["artifact_ids"].pop("manifest"),  # type: ignore[index,union-attr]
+        lambda payload: payload["monitoring_summary"]["artifact_ids"].__setitem__("manifest", "/absolute/manifest.json"),  # type: ignore[index,union-attr]
+    ),
+)
+def test_monitoring_summary_is_a_strict_versioned_wire_contract(
+    flow: FlowTemplate, mutate
+) -> None:
+    payload = diagnostics(flow).to_payload()
+    mutate(payload)
+
+    with pytest.raises(ValueError):
+        RemoteRapChunkDiagnostics.from_payload(payload)
+
+
+def test_monitoring_summary_round_trips_without_package_only_alignment_anchors(
+    flow: FlowTemplate,
+) -> None:
+    payload = diagnostics(flow).to_payload()
+
+    restored = RemoteRapChunkDiagnostics.from_payload(payload)
+
+    assert restored.monitoring_summary == {
+        "schema_version": "streammuse.rap_chunk_monitor.v1",
+        "alignment_method": "torchaudio.pipelines.MMS_FA",
+        "alignment_confidence": 0.9,
+        "source_wav_sha256": "a" * 64,
+        "artifact_ids": _ARTIFACT_IDS,
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
         lambda payload: payload.__setitem__("text", " "),
         lambda payload: payload.__setitem__("scheduled", []),
         lambda payload: payload.__setitem__("scheduled", list(reversed(payload["scheduled"]))),
@@ -349,7 +409,6 @@ def test_diagnostics_accept_modular_aligner_version(flow: FlowTemplate) -> None:
 
 def test_diagnostics_accept_generic_aligner_stage_timing(flow: FlowTemplate) -> None:
     payload = diagnostics(flow).to_payload()
-    timings = payload["stage_timings_ms"]
     decoded = RemoteRapChunkDiagnostics.from_payload(payload)
 
     assert "mfa" not in decoded.stage_timings_ms
@@ -553,7 +612,6 @@ def test_manifest_requires_complete_diagnostic_envelope(flow: FlowTemplate) -> N
 
 
 def test_selected_bar_requires_component_scores(flow: FlowTemplate) -> None:
-    request = remote_request(flow)
     scheduled = tuple(
         ScheduledSyllable(slot=slot, syllable=Syllable("orbit", 0, 1, 1))
         for slot in materialize_flow(flow, bar=0)

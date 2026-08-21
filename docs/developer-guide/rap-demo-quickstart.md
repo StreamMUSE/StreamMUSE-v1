@@ -164,13 +164,27 @@ curl --fail --silent --show-error http://127.0.0.1:8012/api/state \
   | python3 -m json.tool
 ```
 
-Mac session artifacts are under `logs/rap/<session-id>/`. The H200 retains
-`request.json`, `manifest.json`, `candidate_ledger.json`, `alignment.json`,
-`mms_alignment.json`, `source.wav`, `aligned.wav`, `server_timing.json`,
-`response.zip`, or `failure.json` under
-`$RAP_ARTIFACT_ROOT/<request-id>/`. Live events contain bounded summaries,
-hashes, and artifact references; they never contain WAV bytes, full ledgers, or
-full character spans.
+Mac session artifacts are under `logs/rap/<session-id>/`. A successful H200
+request retains `request.json`, `manifest.json`, `candidate_ledger.json`,
+`alignment.json`, `mms_alignment.json`, `source.wav`, `aligned.wav`,
+`vocal.wav`, `server_timing.json`, and `response.zip` under
+`$RAP_ARTIFACT_ROOT/<request-id>/`. A failed request retains `request.json` and
+`failure.json`, plus `candidate_ledger.json` when candidate selection produced
+a rejection ledger.
+
+Live events identify those files by stable request-relative names; combine the
+event request ID with `RAP_ARTIFACT_ROOT` to inspect them on H200. The live
+projection is capped at 24,000 serialized bytes and never contains WAV bytes,
+full ledgers, source/target anchors, or full character spans. Its generation
+input text is a deterministic summary of the exact request topics, template
+IDs, slot/stress schedules, policy, seed, and committed context. It is not a
+verbatim provider prompt. The versioned manifest monitoring summary carries
+alignment method/confidence, source hash, and the request-relative artifact
+contract; the Mac rejects malformed wire diagnostics before publication.
+
+The displayed `total` timing is Mac-observed end to end: HTTP request through
+download plus Mac validation/mix. Generation, evaluation, MOSS, aligner, R3,
+and package are server stages; transfer and Mac are shown separately.
 
 ## Normal Runtime Shutdown
 

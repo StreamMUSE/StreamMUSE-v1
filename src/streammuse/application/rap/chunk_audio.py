@@ -6,7 +6,7 @@ import hashlib
 import io
 from math import gcd, isclose, isfinite
 from time import monotonic
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 import wave
 
 import numpy as np
@@ -15,6 +15,10 @@ from scipy.signal import resample_poly
 from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.audio_rendering import bar_frame_count, limit_peak, mix_at, tick_frame_in_bar
 from streammuse.application.rap.audio_service import DrumRenderer, RapChunkPreparationStrategy
+from streammuse.application.rap.monitoring_payloads import (
+    bounded_chunk_event_payload,
+    remote_generation_input_summary,
+)
 from streammuse.application.rap.service import ProsodyAnalyzer
 from streammuse.domain.rap.audio import (
     AudioFormat,
@@ -112,7 +116,8 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             raise
         except Exception as error:
             raise RemoteChunkPreparationError("remote chunk transport failed") from error
-        if self._clock() >= deadline_monotonic:
+        mac_started = self._clock()
+        if mac_started >= deadline_monotonic:
             raise RemoteChunkPreparationError("remote chunk arrived after its useful deadline")
         try:
             self._validate_manifest(response.package, request)
@@ -131,28 +136,130 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             raise
         except (EOFError, ValueError, wave.Error) as error:
             raise RemoteChunkPreparationError("remote chunk package failed Mac validation") from error
-        if self._clock() >= deadline_monotonic:
+        mac_completed = self._clock()
+        if mac_completed >= deadline_monotonic:
             raise RemoteChunkPreparationError("remote chunk preparation missed its useful deadline")
         prepared = PreparedRapChunk(
             request_id=request.request_id,
             chunk_index=request.chunk_index,
             renderer="moss_aligned_remote",
             bars=bars,
-            diagnostics={
-                "manifest": response.package.manifest.to_payload(),
-                "warnings": response.package.manifest.diagnostics.warnings,
-                "transfer": {
-                    "request_ms": response.timing.request_ms,
-                    "first_byte_ms": response.timing.first_byte_ms,
-                    "download_ms": response.timing.download_ms,
-                    "response_bytes": response.timing.response_bytes,
-                    "attempts": response.timing.attempts,
-                },
-            },
+            diagnostics=self._monitoring_evidence(
+                request,
+                response,
+                mac_validation_mix_ms=max(0.0, (mac_completed - mac_started) * 1000.0),
+            ),
         )
         if self._clock() >= deadline_monotonic:
             raise RemoteChunkPreparationError("remote chunk preparation missed its useful deadline")
         return prepared
+
+    @staticmethod
+    def _monitoring_evidence(
+        request: RemoteRapChunkRequest,
+        response: RemoteChunkResponse,
+        *,
+        mac_validation_mix_ms: float,
+    ) -> dict[str, object]:
+        manifest = response.package.manifest
+        diagnostics = manifest.diagnostics
+        transfer_ms = (
+            response.timing.request_ms
+            + response.timing.first_byte_ms
+            + response.timing.download_ms
+        )
+        stage_timings = diagnostics.stage_timings_ms
+        monitoring = diagnostics.monitoring_summary
+        assert isinstance(monitoring, Mapping)
+        selected_schedules = [
+            ", ".join(
+                f"t{item.slot.tick - selected.bar * 16}:{item.syllable.word}/stress{item.syllable.stress}"
+                for item in selected.scheduled
+            )
+            for selected in manifest.selected_bars
+        ]
+        raw = {
+            "chunk_index": request.chunk_index,
+            "bars": [item.bar for item in request.bars],
+            "selected_lines": [item.text for item in manifest.selected_bars],
+            "flows": [
+                {
+                    "template_id": item.flow_template.template_id,
+                    "name": item.flow_template.name,
+                    "ticks_per_beat": item.flow_template.ticks_per_beat,
+                    "beats_per_bar": item.flow_template.beats_per_bar,
+                    "slots": [
+                        {
+                            "tick_in_bar": slot.tick_in_bar,
+                            "duration_ticks": slot.duration_ticks,
+                            "target_stress": slot.target_stress,
+                            "boundary_strength": slot.boundary_strength,
+                            "rhyme_group": slot.rhyme_group,
+                        }
+                        for slot in item.flow_template.slots
+                    ],
+                }
+                for item in request.bars
+            ],
+            "selected_schedules": selected_schedules,
+            "candidate_counts": {
+                "requested": diagnostics.candidate_stats.requested_count,
+                "parseable": diagnostics.candidate_stats.parseable_count,
+                "valid": diagnostics.candidate_stats.valid_count,
+                "selectable": diagnostics.candidate_stats.selectable_count,
+            },
+            "selected_scores": [
+                {
+                    "bar": item.bar,
+                    "total": item.score,
+                    "component_scores": item.diagnostics.get("component_scores", {}),
+                }
+                for item in manifest.selected_bars
+            ],
+            "prompt_summary": remote_generation_input_summary(request),
+            "context_lines": request.context_lines,
+            "stage_timings_ms": {
+                "generation": stage_timings["generation"],
+                "evaluation": stage_timings["evaluation"],
+                "moss": stage_timings["moss"],
+                "aligner": stage_timings["aligner"],
+                "r3": stage_timings["warp"],
+                "package": stage_timings["packaging"],
+                "transfer": transfer_ms,
+                "mac": mac_validation_mix_ms,
+                "total": transfer_ms + mac_validation_mix_ms,
+            },
+            "request_budget_ms": diagnostics.accepted_request_budget_ms,
+            "elapsed_ms": transfer_ms + mac_validation_mix_ms,
+            "alignment": {
+                "method": monitoring.get("alignment_method"),
+                "confidence": monitoring.get("alignment_confidence"),
+                "fallback_counts": diagnostics.alignment_diagnostics["fallback_counts"],
+            },
+            "warnings": diagnostics.warnings,
+            "hashes": {
+                "request_sha256": hashlib.sha256(request.canonical_json_bytes()).hexdigest(),
+                "manifest_sha256": hashlib.sha256(manifest.canonical_json_bytes()).hexdigest(),
+                "source_wav_sha256": monitoring.get("source_wav_sha256"),
+                "vocal_sha256": manifest.vocal_sha256,
+            },
+            "artifact_refs": monitoring.get("artifact_ids"),
+            "transfer": {
+                "total_ms": transfer_ms,
+                "response_bytes": response.timing.response_bytes,
+            },
+        }
+        bounded = bounded_chunk_event_payload(raw)
+        return {
+            **bounded,
+            "transfer": {
+                "request_ms": response.timing.request_ms,
+                "first_byte_ms": response.timing.first_byte_ms,
+                "download_ms": response.timing.download_ms,
+                "response_bytes": response.timing.response_bytes,
+                "attempts": response.timing.attempts,
+            },
+        }
 
     def abort(self) -> None:
         if not self._closed:

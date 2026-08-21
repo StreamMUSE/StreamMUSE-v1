@@ -414,6 +414,7 @@ def test_dashboard_displays_complete_bounded_remote_chunk_research_evidence() ->
                 "flows": [
                     {
                         "template_id": "flow-a",
+                        "selected_syllable_schedule": "t0:first/stress1, t2:remote/stress0",
                         "slots": [
                             {"tick_in_bar": 0, "target_stress": 1.0},
                             {"tick_in_bar": 2, "target_stress": 0.25},
@@ -421,6 +422,7 @@ def test_dashboard_displays_complete_bounded_remote_chunk_research_evidence() ->
                     },
                     {
                         "template_id": "flow-b",
+                        "selected_syllable_schedule": "t1:second/stress1",
                         "slots": [{"tick_in_bar": 1, "target_stress": 0.8}],
                     },
                 ],
@@ -483,12 +485,15 @@ def test_dashboard_displays_complete_bounded_remote_chunk_research_evidence() ->
         "Second remote line",
         "flow-a",
         "t0@1.00, t2@0.25",
+        "t0:first/stress1, t2:remote/stress0",
         "flow-b",
         "t1@0.80",
+        "t1:second/stress1",
         "32 / 30 / 8 / 4",
         "stress_alignment=0.880",
         "continuity=0.820",
         "system: clean rap | user: both exact schedules",
+        "Generation inputs",
         "Prior committed line",
         "generation=1000.0",
         "evaluation=80.0",

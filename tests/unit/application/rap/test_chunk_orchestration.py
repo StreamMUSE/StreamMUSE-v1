@@ -736,6 +736,12 @@ def phrase_result(vocal_wav: bytes | None = None) -> PhraseRenderResult:
         },
         warnings=("test warning",),
         stage_timings_ms={"moss": 100.0, "aligner": 20.0, "warp": 10.0},
+        monitoring_summary={
+            "schema_version": "streammuse.rap_chunk_monitor.v1",
+            "alignment_method": "mms-test",
+            "alignment_confidence": 0.87,
+            "source_wav_sha256": "b" * 64,
+        },
     )
 
 
@@ -785,6 +791,10 @@ def test_orchestrator_combines_plan_render_and_manifest_diagnostics(
     assert diagnostics.alignment_diagnostics["fallback_counts"] == {"word": 0}
     assert diagnostics.audio_diagnostics["frame_count"] == request.expected_frame_count
     assert diagnostics.model_tool_versions["aligner"] == "mms-test"
+    assert diagnostics.monitoring_summary["alignment_method"] == "mms-test"
+    assert diagnostics.monitoring_summary["alignment_confidence"] == 0.87
+    assert diagnostics.monitoring_summary["source_wav_sha256"] == "b" * 64
+    assert diagnostics.monitoring_summary["artifact_ids"]["manifest"] == "manifest.json"
     assert diagnostics.warnings == ("test warning", "packaging timing is provisional")
     assert "component_scores" in artifact.manifest.selected_bars[0].diagnostics
 

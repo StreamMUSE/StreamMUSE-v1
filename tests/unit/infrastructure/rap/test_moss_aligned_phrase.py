@@ -235,6 +235,14 @@ def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
         "aligner": "torchaudio.pipelines.MMS_FA; torchaudio 2.8.0+cu128 / MMS_FA",
         "rubberband": "rubberband 3.3.0 R3",
     }
+    assert result.monitoring_summary == {
+        "schema_version": "streammuse.rap_chunk_monitor.v1",
+        "alignment_method": "torchaudio.pipelines.MMS_FA",
+        "alignment_confidence": pytest.approx(0.9),
+        "source_wav_sha256": hashlib.sha256(
+            (tmp_path / "request-1" / "source.wav").read_bytes()
+        ).hexdigest(),
+    }
     assert set(result.alignment_diagnostics) == {
         "fallback_counts",
         "source_anchors",
@@ -277,6 +285,21 @@ def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
         audio_diagnostics=result.audio_diagnostics,
         model_tool_versions=result.model_tool_versions,
         warnings=result.warnings,
+        monitoring_summary={
+            **result.monitoring_summary,
+            "artifact_ids": {
+                "request": "request.json",
+                "candidate_ledger": "candidate_ledger.json",
+                "source_wav": "source.wav",
+                "mms_alignment": "mms_alignment.json",
+                "alignment": "alignment.json",
+                "aligned_wav": "aligned.wav",
+                "vocal_wav": "vocal.wav",
+                "manifest": "manifest.json",
+                "server_timing": "server_timing.json",
+                "response_package": "response.zip",
+            },
+        },
     )
 
 

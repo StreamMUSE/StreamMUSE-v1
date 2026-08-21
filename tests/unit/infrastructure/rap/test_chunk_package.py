@@ -141,6 +141,24 @@ def manifest() -> RemoteRapChunkManifest:
             },
             model_tool_versions={"moss": "test", "aligner": "test", "rubberband": "test"},
             warnings=(),
+            monitoring_summary={
+                "schema_version": "streammuse.rap_chunk_monitor.v1",
+                "alignment_method": "torchaudio.pipelines.MMS_FA",
+                "alignment_confidence": 0.91,
+                "source_wav_sha256": "a" * 64,
+                "artifact_ids": {
+                    "request": "request.json",
+                    "candidate_ledger": "candidate_ledger.json",
+                    "source_wav": "source.wav",
+                    "mms_alignment": "mms_alignment.json",
+                    "alignment": "alignment.json",
+                    "aligned_wav": "aligned.wav",
+                    "vocal_wav": "vocal.wav",
+                    "manifest": "manifest.json",
+                    "server_timing": "server_timing.json",
+                    "response_package": "response.zip",
+                },
+            },
         ),
         vocal_sha256=hashlib.sha256(vocal_wav).hexdigest(),
     )
@@ -182,6 +200,7 @@ def test_package_round_trip(manifest: RemoteRapChunkManifest, vocal_wav_bytes: b
 
     assert decoded.manifest == manifest
     assert decoded.vocal_wav == vocal_wav_bytes
+    assert decoded.manifest.diagnostics.monitoring_summary["alignment_confidence"] == 0.91
 
 
 def test_package_uses_deterministic_member_names_and_canonical_manifest_bytes(

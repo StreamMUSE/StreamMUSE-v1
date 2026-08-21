@@ -456,6 +456,12 @@ class RapStateProjector:
 
     def apply(self, event: RapEvent) -> None:
         with self._lock:
+            previous_session_id = self._state["session_id"]
+            if (
+                previous_session_id is not None
+                and previous_session_id != event.session_id
+            ):
+                self._state["remote_chunk"] = None
             self._state["session_id"] = event.session_id
             self._state["last_sequence"] = event.sequence
             if self._is_stale_coordinator_event(event):
@@ -621,6 +627,7 @@ class RapStateProjector:
     @staticmethod
     def _chunk_event_state(event: RapEvent) -> dict[str, Any]:
         return {
+            "session_id": event.session_id,
             "sequence": event.sequence,
             "event_type": event.event_type.value,
             "bar": event.bar,

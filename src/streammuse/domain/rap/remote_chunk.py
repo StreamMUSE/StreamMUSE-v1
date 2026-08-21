@@ -15,6 +15,7 @@ from streammuse.domain.rap.models import BeatSlot, ScheduledSyllable, Syllable
 
 
 REMOTE_CHUNK_SCHEMA_VERSION = "streammuse.rap_chunk.v1"
+REMOTE_CHUNK_MONITORING_SCHEMA_VERSION = "streammuse.rap_chunk_monitor.v1"
 REMOTE_CHUNK_SAMPLE_RATE_HZ = 24_000
 # The ZIP package is capped at 4 MiB; a mono PCM16 payload can never use more
 # than half that ceiling, before manifest and ZIP metadata overhead.
@@ -22,6 +23,20 @@ REMOTE_CHUNK_PACKAGE_MAX_BYTES = 4 * 1024 * 1024
 MAX_REMOTE_CHUNK_PCM16_FRAMES = REMOTE_CHUNK_PACKAGE_MAX_BYTES // 2
 MAX_REMOTE_DIAGNOSTIC_SUMMARIES = 8
 MAX_REMOTE_DIAGNOSTIC_JSON_DEPTH = 32
+REMOTE_CHUNK_ARTIFACT_IDS = MappingProxyType(
+    {
+        "request": "request.json",
+        "candidate_ledger": "candidate_ledger.json",
+        "source_wav": "source.wav",
+        "mms_alignment": "mms_alignment.json",
+        "alignment": "alignment.json",
+        "aligned_wav": "aligned.wav",
+        "vocal_wav": "vocal.wav",
+        "manifest": "manifest.json",
+        "server_timing": "server_timing.json",
+        "response_package": "response.zip",
+    }
+)
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -298,6 +313,47 @@ def _validate_rejection(value: Mapping[str, object]) -> Mapping[str, object]:
 _REQUIRED_STAGE_TIMINGS = {"generation", "evaluation", "moss", "aligner", "warp", "packaging", "total"}
 _REQUIRED_ALIGNMENT_DIAGNOSTICS = {"fallback_counts", "source_anchors", "target_anchors", "local_warp_ratios"}
 _REQUIRED_AUDIO_DIAGNOSTICS = {"sample_rate_hz", "frame_count", "duration_seconds", "peak"}
+_REQUIRED_MONITORING_SUMMARY = {
+    "schema_version",
+    "alignment_method",
+    "alignment_confidence",
+    "source_wav_sha256",
+    "artifact_ids",
+}
+
+
+def _default_monitoring_summary(model_tool_versions: Mapping[str, str]) -> dict[str, object]:
+    return {
+        "schema_version": REMOTE_CHUNK_MONITORING_SCHEMA_VERSION,
+        "alignment_method": model_tool_versions.get("aligner"),
+        "alignment_confidence": None,
+        "source_wav_sha256": None,
+        "artifact_ids": dict(REMOTE_CHUNK_ARTIFACT_IDS),
+    }
+
+
+def _validate_monitoring_summary(value: object) -> Mapping[str, object]:
+    summary = _mapping(value, "monitoring_summary")
+    _keys(summary, _REQUIRED_MONITORING_SUMMARY, "monitoring_summary")
+    if summary["schema_version"] != REMOTE_CHUNK_MONITORING_SCHEMA_VERSION:
+        raise ValueError("monitoring_summary schema version is unsupported")
+    method = summary["alignment_method"]
+    if method is not None and not _nonblank(method):
+        raise ValueError("monitoring_summary alignment_method must be null or non-empty")
+    confidence = summary["alignment_confidence"]
+    if confidence is not None and (not _is_real(confidence) or not 0 <= confidence <= 1):
+        raise ValueError("monitoring_summary alignment_confidence must be null or normalized")
+    source_hash = summary["source_wav_sha256"]
+    if source_hash is not None and (
+        not isinstance(source_hash, str)
+        or len(source_hash) != 64
+        or any(item not in "0123456789abcdef" for item in source_hash)
+    ):
+        raise ValueError("monitoring_summary source_wav_sha256 must be null or lowercase SHA-256")
+    artifact_ids = _mapping(summary["artifact_ids"], "monitoring_summary artifact_ids")
+    if dict(artifact_ids) != dict(REMOTE_CHUNK_ARTIFACT_IDS):
+        raise ValueError("monitoring_summary artifact_ids must use the stable request-relative contract")
+    return _freeze_json(summary, "monitoring_summary")  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)
@@ -310,6 +366,7 @@ class RemoteRapChunkDiagnostics:
     audio_diagnostics: Mapping[str, object]
     model_tool_versions: Mapping[str, str]
     warnings: tuple[str, ...]
+    monitoring_summary: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not _is_int(self.accepted_request_budget_ms) or self.accepted_request_budget_ms <= 0:
@@ -359,11 +416,18 @@ class RemoteRapChunkDiagnostics:
             raise ValueError("model_tool_versions must include non-empty moss, aligner, and rubberband versions")
         if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) for item in self.warnings):
             raise ValueError("warnings must be a tuple of strings")
+        monitoring_summary = (
+            _default_monitoring_summary(self.model_tool_versions)
+            if self.monitoring_summary is None
+            else self.monitoring_summary
+        )
+        monitoring_summary = _validate_monitoring_summary(monitoring_summary)
         object.__setattr__(self, "stage_timings_ms", _freeze_json(self.stage_timings_ms, "stage_timings_ms"))
         object.__setattr__(self, "alignment_diagnostics", _freeze_json(alignment, "alignment_diagnostics"))
         object.__setattr__(self, "audio_diagnostics", _freeze_json(audio, "audio_diagnostics"))
         object.__setattr__(self, "model_tool_versions", _freeze_json(self.model_tool_versions, "model_tool_versions"))
         object.__setattr__(self, "warnings", _freeze_json(self.warnings, "warnings"))
+        object.__setattr__(self, "monitoring_summary", monitoring_summary)
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -375,12 +439,13 @@ class RemoteRapChunkDiagnostics:
             "audio_diagnostics": _thaw(self.audio_diagnostics),
             "model_tool_versions": _thaw(self.model_tool_versions),
             "warnings": list(self.warnings),
+            "monitoring_summary": _thaw(self.monitoring_summary),
         }
 
     @classmethod
     def from_payload(cls, value: object) -> RemoteRapChunkDiagnostics:
         payload = _mapping(value, "remote chunk diagnostics")
-        _keys(payload, {"accepted_request_budget_ms", "resolved_policy", "candidate_stats", "stage_timings_ms", "alignment_diagnostics", "audio_diagnostics", "model_tool_versions", "warnings"}, "remote chunk diagnostics")
+        _keys(payload, {"accepted_request_budget_ms", "resolved_policy", "candidate_stats", "stage_timings_ms", "alignment_diagnostics", "audio_diagnostics", "model_tool_versions", "warnings", "monitoring_summary"}, "remote chunk diagnostics")
         warnings = payload["warnings"]
         if not isinstance(warnings, list):
             raise ValueError("warnings must be an array")
@@ -393,6 +458,7 @@ class RemoteRapChunkDiagnostics:
             _mapping(payload["audio_diagnostics"], "audio_diagnostics"),
             _mapping(payload["model_tool_versions"], "model_tool_versions"),  # type: ignore[arg-type]
             tuple(warnings),  # type: ignore[arg-type]
+            _mapping(payload["monitoring_summary"], "monitoring_summary"),
         )
 
 

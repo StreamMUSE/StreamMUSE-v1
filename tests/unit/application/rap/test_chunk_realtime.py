@@ -12,6 +12,11 @@ import pytest
 
 import streammuse.application.rap.chunk_realtime as chunk_realtime_module
 from streammuse.application.rap.chunk_realtime import RollingRapChunkController
+from streammuse.application.rap.monitoring import (
+    RapEventDispatcher,
+    RapEventPublisher,
+    RapStateProjector,
+)
 from streammuse.domain.rap import (
     AudioFormat,
     FlowProvenance,
@@ -31,6 +36,7 @@ from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
 from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 from streammuse.infrastructure.rap.templates import TemplateCatalog
+from streammuse.infrastructure.rap.recorder import event_to_dict
 
 
 class ManualClock:
@@ -227,6 +233,7 @@ def _controller(
     cancellation_executor: ManualExecutor | None = None,
     renderer: RecordingRenderer | None = None,
     on_enqueue=None,
+    publisher=None,
 ):
     clock = clock or ManualClock()
     executor = executor or ManualExecutor()
@@ -244,7 +251,7 @@ def _controller(
         if on_enqueue is not None:
             on_enqueue(prepared)
 
-    publisher = RecordingPublisher()
+    publisher = publisher if publisher is not None else RecordingPublisher()
     controller = RollingRapChunkController(
         tempo=Tempo(120.0, 4, 4),
         scenario=scenario,
@@ -770,6 +777,123 @@ def test_chunk_events_are_bounded_and_existing_bar_and_tick_events_remain_availa
     assert len(committed["flows"]) == 2
 
 
+def test_real_prepared_chunk_survives_controller_publisher_recorder_and_projector() -> None:
+    def rich_chunk(request) -> PreparedRapChunk:
+        chunk = _chunk_for(request)
+        return replace(
+            chunk,
+            diagnostics={
+                "candidate_counts": {
+                    "requested": 6,
+                    "parseable": 5,
+                    "valid": 4,
+                    "selectable": 2,
+                },
+                "selected_scores": [
+                    {"bar": 0, "total": 0.91, "component_scores": {"stress": 0.88}},
+                    {"bar": 1, "total": 0.89, "component_scores": {"topic": 0.84}},
+                ],
+                "selected_schedules": ["t0:stars/stress1", "t0:space/stress1"],
+                "prompt_summary": (
+                    "deterministic generation input summary; not a verbatim provider prompt: "
+                    "bar=0 topic=space template=one_slot; bar=1 topic=space template=one_slot"
+                ),
+                "context_lines": request.context_lines,
+                "request_budget_ms": request.remaining_budget_ms,
+                "elapsed_ms": 131.0,
+                "stage_timings_ms": {
+                    "generation": 10.0,
+                    "evaluation": 2.0,
+                    "moss": 80.0,
+                    "aligner": 4.0,
+                    "r3": 8.0,
+                    "package": 1.0,
+                    "transfer": 20.0,
+                    "mac": 6.0,
+                    "total": 131.0,
+                },
+                "alignment": {
+                    "method": "torchaudio.pipelines.MMS_FA",
+                    "confidence": 0.94,
+                    "fallback_counts": {"word_duration_proportional": 1},
+                },
+                "stretch_warnings": ["wide local stretch ratio retained: 1.250"],
+                "warnings": ["alignment fallback retained"],
+                "hashes": {
+                    "request_sha256": "a" * 64,
+                    "manifest_sha256": "b" * 64,
+                    "source_wav_sha256": "c" * 64,
+                    "vocal_sha256": "d" * 64,
+                },
+                "artifact_refs": {
+                    "request": "request.json",
+                    "manifest": "manifest.json",
+                    "response_package": "response.zip",
+                },
+                "transfer": {"response_bytes": 262_144},
+            },
+        )
+
+    canonical_events = []
+    recorded_rows = []
+    committed_projections = []
+    projector = RapStateProjector()
+
+    def project(event) -> None:
+        projector(event)
+        if event.event_type == RapEventType.CHUNK_COMMITTED:
+            committed_projections.append(projector.snapshot()["remote_chunk"])
+
+    publisher = RapEventPublisher(
+        "session-1",
+        utc_now=lambda: "2026-08-21T00:00:00+00:00",
+        monotonic_ns=lambda: 123,
+    )
+    dispatcher = RapEventDispatcher(
+        publisher.queue,
+        sinks=(canonical_events.append, lambda event: recorded_rows.append(event_to_dict(event)), project),
+    )
+    dispatcher.start()
+    executor = ManualExecutor(run_submissions=1)
+    strategy = RecordingStrategy((rich_chunk,))
+    controller, _, _, _, _, _, _ = _controller(
+        strategy=strategy,
+        executor=executor,
+        publisher=publisher,
+    )
+
+    controller.start()
+    dispatcher.flush_and_close()
+
+    committed = next(
+        event for event in canonical_events if event.event_type == RapEventType.CHUNK_COMMITTED
+    )
+    payload = committed.payload
+    assert payload["coordinator_epoch"] == 0
+    assert payload["candidate_counts"] == {
+        "requested": 6,
+        "parseable": 5,
+        "valid": 4,
+        "selectable": 2,
+    }
+    assert payload["selected_scores"][0]["component_scores"] == {"stress": 0.88}
+    assert payload["flows"][0]["selected_syllable_schedule"] == "t0:stars/stress1"
+    assert payload["stage_timings_ms"]["total"] == 131.0
+    assert payload["failure_reason"] is None
+    assert payload["artifact_refs"]["manifest"] == "manifest.json"
+    recorded = next(
+        row for row in recorded_rows if row["event_type"] == "chunk_committed"
+    )
+    assert recorded["payload"] == payload
+    projected = committed_projections[-1]
+    assert projected["session_id"] == "session-1"
+    assert projected["coordinator_epoch"] == 0
+    assert projected["hashes"]["source_wav_sha256"] == "c" * 64
+    encoded = json.dumps(projected)
+    assert "source_anchors" not in encoded
+    assert "target_anchors" not in encoded
+
+
 def test_chunk_event_strings_and_nested_aggregates_have_hard_bounds() -> None:
     long_line = "line-" + "x" * 100_000
     long_warning = "warning-" + "y" * 100_000
@@ -796,13 +920,26 @@ def test_chunk_event_strings_and_nested_aggregates_have_hard_bounds() -> None:
     assert set(payload) == {
         "state",
         "renderer_decision",
+        "coordinator_epoch",
         "chunk_index",
         "bars",
         "selected_lines",
         "flows",
+        "candidate_counts",
+        "selected_scores",
+        "prompt_summary",
+        "context_lines",
         "stage_timings_ms",
+        "request_budget_ms",
+        "elapsed_ms",
         "deadline_slack_ms",
+        "alignment",
+        "stretch_warnings",
         "warnings",
+        "hashes",
+        "artifact_refs",
+        "transfer_bytes",
+        "failure_reason",
     }
     assert all(len(item.encode("utf-8")) <= 512 for item in payload["selected_lines"])
     assert len(payload["warnings"]) <= 8
@@ -824,6 +961,8 @@ def test_chunk_rejection_bounds_arbitrary_exception_text() -> None:
 
     rejected = _events(publisher, RapEventType.CHUNK_REMOTE_REJECTED)[-1]["payload"]
     committed = _events(publisher, RapEventType.CHUNK_COMMITTED)[-1]["payload"]
+    assert rejected["failure_reason"].startswith("RuntimeError: remote-error-")
+    assert committed["failure_reason"].startswith("RuntimeError: remote-error-")
     assert all(len(item.encode("utf-8")) <= 256 for item in rejected["warnings"])
     assert all(len(item.encode("utf-8")) <= 256 for item in committed["warnings"])
     assert len(json.dumps(rejected, ensure_ascii=False).encode("utf-8")) <= 24_000
@@ -842,7 +981,7 @@ def _contains_bytes(value) -> bool:
 def _assert_bounded_collections(value, *, depth: int = 0) -> None:
     assert depth <= 6
     if isinstance(value, dict):
-        assert len(value) <= 16
+        assert len(value) <= (24 if depth == 0 else 16)
         for item in value.values():
             _assert_bounded_collections(item, depth=depth + 1)
     elif isinstance(value, (list, tuple)):

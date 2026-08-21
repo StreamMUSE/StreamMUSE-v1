@@ -113,9 +113,10 @@ def _event(
     tick: int | None = None,
     request_id: str | None = None,
     payload: dict[str, object] | None = None,
+    session_id: str = "session-1",
 ) -> RapEvent:
     return RapEvent(
-        session_id="session-1",
+        session_id=session_id,
         sequence=sequence,
         event_type=event_type,
         utc_time="2026-08-07T00:00:00+00:00",
@@ -129,6 +130,7 @@ def _event(
 
 def _remote_chunk_payload() -> dict[str, object]:
     return {
+        "coordinator_epoch": 3,
         "state": "committed",
         "renderer_decision": "moss_aligned_remote",
         "chunk_index": 1,
@@ -220,6 +222,8 @@ def test_state_projector_keeps_latest_bounded_chunk_research_state_and_clears_it
     snapshot = projector.snapshot()
     remote = snapshot["remote_chunk"]
     assert remote["event_type"] == "chunk_committed"
+    assert remote["session_id"] == "session-1"
+    assert remote["coordinator_epoch"] == 3
     assert remote["request_id"] == "request-1"
     assert remote["selected_lines"] == ["Remote line one", "Remote line two"]
     assert remote["candidate_counts"] == {
@@ -241,6 +245,31 @@ def test_state_projector_keeps_latest_bounded_chunk_research_state_and_clears_it
 
     projector.apply(_event(2, RapEventType.SESSION_RESET, payload={}))
     assert projector.snapshot()["remote_chunk"] is None
+
+
+def test_state_projector_clears_remote_chunk_when_a_new_session_starts() -> None:
+    projector = RapStateProjector()
+    projector.apply(
+        _event(
+            10,
+            RapEventType.CHUNK_COMMITTED,
+            payload=_remote_chunk_payload(),
+            session_id="session-old",
+        )
+    )
+
+    projector.apply(
+        _event(
+            1,
+            RapEventType.SESSION_STARTED,
+            payload={"coordinator_epoch": 1},
+            session_id="session-new",
+        )
+    )
+
+    snapshot = projector.snapshot()
+    assert snapshot["session_id"] == "session-new"
+    assert snapshot["remote_chunk"] is None
 
 
 def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:

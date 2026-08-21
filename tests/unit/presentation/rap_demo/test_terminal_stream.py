@@ -293,6 +293,7 @@ def test_stream_renders_complete_remote_chunk_diagnostics_and_espeak_fallback() 
             "flows": [
                 {
                     "template_id": "flow-a",
+                    "selected_syllable_schedule": "t0:first/stress1, t2:remote/stress0",
                     "slots": [
                         {"tick_in_bar": 0, "target_stress": 1.0},
                         {"tick_in_bar": 2, "target_stress": 0.25},
@@ -300,6 +301,7 @@ def test_stream_renders_complete_remote_chunk_diagnostics_and_espeak_fallback() 
                 },
                 {
                     "template_id": "flow-b",
+                    "selected_syllable_schedule": "t1:second/stress1",
                     "slots": [{"tick_in_bar": 1, "target_stress": 0.8}],
                 },
             ],
@@ -360,12 +362,12 @@ def test_stream_renders_complete_remote_chunk_diagnostics_and_espeak_fallback() 
     for expected in (
         "[BAR 05][REMOTE] state=returned chunk=2 request=request-2 renderer=moss_aligned_remote",
         "lines=['First remote line', 'Second remote line']",
-        "flow[0]=flow-a schedule=t0@1.00, t2@0.25",
-        "flow[1]=flow-b schedule=t1@0.80",
+        "flow[0]=flow-a targets=t0@1.00, t2@0.25 selected=t0:first/stress1, t2:remote/stress0",
+        "flow[1]=flow-b targets=t1@0.80 selected=t1:second/stress1",
         "candidates requested=32 parseable=30 valid=8 selectable=4",
         "bar=4 total=0.91 components=stress_alignment=0.88",
         "bar=5 total=0.87 components=continuity=0.82",
-        "prompt_summary='system: clean rap | user: both exact schedules'",
+        "generation_input_summary='system: clean rap | user: both exact schedules'",
         "context=['Prior committed line']",
         "generation=1000",
         "evaluation=80",

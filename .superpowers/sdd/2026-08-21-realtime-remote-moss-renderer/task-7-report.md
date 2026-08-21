@@ -2,14 +2,20 @@
 
 ## Status
 
-Implemented bounded remote-chunk monitoring, terminal presentation, Mac website
-projection, normal-runtime operations documentation, and the Task 8 acceptance
-handoff. The implementation starts from accepted Task 6 revision
-`0af9f57c8e3046326b6cd7aa47e65310fcd3d60c`.
+The rejected `0cecbfc5` implementation was repaired starting from integrated
+revision `5bf9ff84cea9cf9814ee629fc0d704ea50de9082`, then verified with concurrent
+Task 4 revision `05fa3d84e6244c3d24fc60c60cc88d962bf8c3de`. Production telemetry now starts
+at the remote wire/renderer and Mac preparation boundaries, survives the real
+controller and canonical publisher, and is ordered correctly across browser
+resets, reconnect snapshots, coordinator epochs, and session restarts.
 
-Task 3 renderer files, Task 4 server files, Task 6 controller/events/CLI files,
-research notes, and unrelated offline experiment work were not modified for
-Task 7. Existing quickstart content was retained and extended in place.
+The permitted minimum telemetry plumbing changed the remote diagnostics
+contract, MOSS result metadata, orchestrator, Mac preparation strategy,
+controller projection, monitoring, terminal, and browser files. It did not
+change accepted audio timing/playback behavior. Task 4 render-server source,
+its tests, `pyproject.toml`, and unrelated offline experiment work were not
+modified by this repair. Concurrent quickstart command edits were preserved and
+the documentation additions were kept narrow.
 
 ## RED And GREEN Record
 
@@ -88,19 +94,121 @@ the unchanged command with approved cache access produced the behavioral RED.
 GREEN: the same command completed with `3 passed`, with requested-state counts
 rendered as `-- / -- / -- / --`.
 
+### Review Repair Cycle 1: Versioned Wire And Production Evidence
+
+RED:
+
+```text
+uv run pytest -q tests/unit/domain/rap/test_remote_chunk.py tests/unit/application/rap/test_chunk_orchestration.py tests/unit/infrastructure/rap/test_moss_aligned_phrase.py tests/unit/infrastructure/rap/test_chunk_package.py tests/unit/application/rap/test_chunk_audio.py tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_chunk_realtime.py tests/unit/application/rap/test_monitoring.py tests/integration/test_rap_demo_browser_reducer.py
+```
+
+The first run stopped during collection because
+`MAX_BOUNDED_CHUNK_EVENT_BYTES` did not exist. A second run excluding that
+module produced `78 failed, 148 passed, 13 errors`; the new tests exposed the
+missing strict monitoring schema, real `PreparedRapChunk` propagation, failure
+reason, browser session/epoch ordering, and snapshot projection.
+
+The contract/renderer/package GREEN slice:
+
+```text
+uv run pytest -q tests/unit/domain/rap/test_remote_chunk.py tests/unit/application/rap/test_chunk_orchestration.py tests/unit/infrastructure/rap/test_moss_aligned_phrase.py tests/unit/infrastructure/rap/test_chunk_package.py
+```
+
+Result: `151 passed`.
+
+### Review Repair Cycle 2: Bounded Mac And Canonical Publication
+
+RED after the first implementation pass:
+
+```text
+uv run pytest -q tests/unit/application/rap/test_chunk_audio.py tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_chunk_realtime.py tests/unit/application/rap/test_monitoring.py
+```
+
+Result: `3 failed, 84 passed`. The failures caught immutable prepared values,
+the actual coordinator epoch, and the existing 256-byte warning limit. The
+follow-up idempotence test then caught selected schedules being lost during the
+publisher/projector's repeated normalization. GREEN results are included in
+Final Verification below.
+
+### Review Repair Cycle 3: Terminal And Browser Ordering
+
+Terminal RED:
+
+```text
+uv run pytest -q tests/unit/presentation/rap_demo/test_terminal_stream.py::test_stream_renders_complete_remote_chunk_diagnostics_and_espeak_fallback tests/unit/presentation/rap_demo/test_terminal_dashboard.py::test_dashboard_displays_complete_bounded_remote_chunk_research_evidence tests/unit/presentation/rap_demo/test_terminal_state.py::test_projector_exposes_only_the_latest_bounded_remote_chunk_diagnostics
+```
+
+Result: `2 failed, 1 passed`; target and selected schedules and truthful
+generation-input labeling were absent. GREEN: `3 passed` as part of the
+`25 passed` terminal suite.
+
+Browser bound RED:
+
+```text
+node --check src/streammuse/presentation/rap_demo/static/js/rap-demo-state.js
+node --check src/streammuse/presentation/rap_demo/static/js/rap-demo.js
+uv run pytest -q tests/integration/test_rap_demo_browser_reducer.py tests/unit/presentation/rap_demo/test_server.py
+```
+
+Result: `2 failed, 21 passed`; the new hostile payload exceeded the byte
+ceiling and exposed a missing reducer return. GREEN: `23 passed` after the
+bounded compaction path was fixed.
+
+### Review Repair Cycle 4: Published Artifact And Lazy Browser Bounds
+
+RED:
+
+```text
+uv run pytest -q tests/unit/domain/rap/test_remote_chunk.py tests/integration/test_rap_demo_browser_reducer.py::test_browser_chunk_sanitizer_enforces_numeric_collection_and_byte_bounds
+```
+
+Result: `33 failed, 55 passed`. The strict contract rejected Task 4's retained
+`vocal.wav`, and a proxied browser array proved that bar sanitization scanned
+past the two-item prefix. GREEN: the same command completed with `88 passed`
+after the exact artifact contract, docs, lazy slice, and normalized
+stress/alignment bounds were corrected.
+
+### Review Repair Cycle 5: Semantic Numeric Ranges
+
+RED:
+
+```text
+uv run pytest -q tests/unit/application/rap/test_monitoring_payloads.py::test_chunk_event_payload_preserves_zero_budget_and_rejects_negative_durations tests/integration/test_rap_demo_browser_reducer.py::test_browser_chunk_projection_orders_by_session_epoch_and_strict_sequence tests/integration/test_rap_demo_browser_reducer.py::test_browser_chunk_sanitizer_enforces_numeric_collection_and_byte_bounds
+```
+
+Result: `3 failed`. A zero request budget was replaced by a manifest fallback,
+negative duration/timing values were retained, and fractional browser event
+sequences survived sanitization. GREEN: the same command completed with
+`3 passed` after explicit nonnegative duration/timing ranges and safe-integer
+event identity handling were added. Deadline slack remains signed by design.
+
 ## Implementation
 
-- Chunk publication and both state projectors apply one fixed whitelist before
-  data enters event, terminal, or browser history.
+- `streammuse.rap_chunk_monitor.v1` is a strict nested wire schema for alignment
+  method/confidence, source WAV hash, and exact request-relative artifact IDs.
+- MOSS produces the source evidence; the orchestrator binds stable Task 4
+  artifact names; Mac preparation combines the original request, returned
+  manifest, transfer measurements, and Mac validation/mix timing.
+- Controller chunk events pass that production summary through the canonical
+  publisher and recorder. Rejections carry an explicit failure reason while
+  retaining bounded returned evidence when one exists.
+- Chunk publication and both state projectors apply one idempotent whitelist
+  before data enters event, terminal, or browser history.
 - Live state is limited to two selected lines, two flows, 32 slots per flow,
   four context lines, 16 component scores, and eight diagnostic/map entries.
 - Stage names are canonicalized to generation, evaluation, MOSS, aligner, R3,
-  package, transfer, Mac, and total. Manifest `warp` and `packaging` aliases are
-  projected as R3 and package.
+  package, transfer, Mac, and end-to-end total. Manifest `warp` and `packaging`
+  aliases are projected as R3 and package.
 - Alignment projection retains method, confidence, and bounded fallback counts,
   but excludes source/target anchors and character spans.
+- Numeric magnitudes, derived schedules, map/list scans, nesting, and strings
+  are bounded, with a tested 24,000-byte serialized ceiling in Python and JS.
+- Browser ordering uses session ID, coordinator epoch, and strict sequence;
+  reset/session changes and authoritative null snapshots clear the panel, and
+  websocket snapshots update it directly.
 - The terminal dashboard and stream name local eSpeak fallback commitments and
-  display request/chunk lifecycle, all bounded research evidence, and failure.
+  display request/chunk lifecycle, target and selected schedules, all bounded
+  research evidence, and failure.
 - The website uses text-only DOM updates, a full-width audit band with a dense
   two-column inner grid, and the existing palette. It adds no controls.
 
@@ -139,24 +247,27 @@ latency or acceptance measurements.
 Focused Task 7 gate:
 
 ```text
-uv run pytest tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_monitoring.py tests/unit/presentation/rap_demo/test_terminal.py tests/unit/presentation/rap_demo/test_terminal_state.py tests/unit/presentation/rap_demo/test_terminal_dashboard.py tests/unit/presentation/rap_demo/test_terminal_stream.py tests/unit/presentation/rap_demo/test_server.py tests/integration/test_rap_demo_browser_reducer.py -q
+uv run pytest -q tests/unit/domain/rap/test_remote_chunk.py tests/unit/application/rap/test_chunk_orchestration.py tests/unit/infrastructure/rap/test_moss_aligned_phrase.py tests/unit/infrastructure/rap/test_chunk_package.py tests/unit/application/rap/test_chunk_audio.py tests/unit/application/rap/test_chunk_realtime.py tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_monitoring.py tests/unit/presentation/rap_demo/test_terminal.py tests/unit/presentation/rap_demo/test_terminal_state.py tests/unit/presentation/rap_demo/test_terminal_dashboard.py tests/unit/presentation/rap_demo/test_terminal_stream.py tests/unit/presentation/rap_demo/test_server.py tests/integration/test_rap_demo_browser_reducer.py tests/unit/presentation/test_rap_render_server.py
 ```
 
-Result: `82 passed in 1.35s`.
+Result: `332 passed in 4.53s`.
 
 Existing eSpeak snapshot and regression gate:
 
 ```text
-uv run pytest tests/unit/infrastructure/rap/test_speech.py tests/unit/application/rap/test_audio_coordination.py tests/unit/presentation/rap_demo/test_cli.py tests/integration/test_realtime_rap_audio.py -q
+uv run pytest -q tests/unit/infrastructure/rap/test_speech.py tests/unit/application/rap/test_audio_coordination.py tests/unit/presentation/rap_demo/test_cli.py tests/integration/test_realtime_rap_audio.py
 ```
 
-Result: `66 passed in 1.91s`.
+Result: `66 passed in 1.93s`.
 
 Static checks:
 
 ```text
-uv run ruff check src/streammuse/application/rap/monitoring_payloads.py src/streammuse/application/rap/monitoring.py src/streammuse/presentation/rap_demo/terminal_state.py src/streammuse/presentation/rap_demo/terminal_dashboard.py src/streammuse/presentation/rap_demo/terminal_stream.py tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_monitoring.py tests/unit/presentation/rap_demo/test_terminal_state.py tests/unit/presentation/rap_demo/test_terminal_dashboard.py tests/unit/presentation/rap_demo/test_terminal_stream.py tests/unit/presentation/rap_demo/test_server.py tests/integration/test_rap_demo_browser_reducer.py
+uv run ruff check src/streammuse/domain/rap/remote_chunk.py src/streammuse/domain/rap/__init__.py src/streammuse/application/rap/chunk_orchestration.py src/streammuse/infrastructure/rap/moss_aligned_phrase.py src/streammuse/application/rap/chunk_audio.py src/streammuse/application/rap/chunk_realtime.py src/streammuse/application/rap/monitoring_payloads.py src/streammuse/application/rap/monitoring.py src/streammuse/presentation/rap_demo/terminal_dashboard.py src/streammuse/presentation/rap_demo/terminal_stream.py tests/unit/domain/rap/test_remote_chunk.py tests/unit/application/rap/test_chunk_orchestration.py tests/unit/infrastructure/rap/test_moss_aligned_phrase.py tests/unit/infrastructure/rap/test_chunk_package.py tests/unit/application/rap/test_chunk_audio.py tests/unit/application/rap/test_chunk_realtime.py tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_monitoring.py tests/integration/test_rap_demo_browser_reducer.py tests/unit/presentation/rap_demo/test_terminal_dashboard.py tests/unit/presentation/rap_demo/test_terminal_state.py tests/unit/presentation/rap_demo/test_terminal_stream.py
 node --check src/streammuse/presentation/rap_demo/static/js/rap-demo-state.js
+node --check src/streammuse/presentation/rap_demo/static/js/rap-demo.js
+git diff --check
 ```
 
-Results: `All checks passed!` and JavaScript syntax exit code 0.
+Results: `All checks passed!`; both JavaScript syntax checks and the diff check
+exited 0.

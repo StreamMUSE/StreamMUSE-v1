@@ -9,6 +9,10 @@ designated H200 and Mac environments. Synthetic fixtures and local fake-service
 results are not performance measurements.
 
 - Accepted Task 6 base: `0af9f57c8e3046326b6cd7aa47e65310fcd3d60c`.
+- Task 7 review repair began at integrated revision
+  `5bf9ff84cea9cf9814ee629fc0d704ea50de9082`; final local verification also
+  includes Task 4 publication revision
+  `05fa3d84e6244c3d24fc60c60cc88d962bf8c3de`.
 - Task 7 revision: the commit containing this file; record `git rev-parse HEAD`
   before Task 8 deployment.
 - Runtime artifact root: `logs/rap/remote_moss_acceptance_20260821/`.
@@ -19,9 +23,11 @@ results are not performance measurements.
 
 | Check | Result |
 | --- | --- |
-| Chunk events and projector state are bounded | PASS: two lines, two flows, bounded maps/lists, and fixed timing keys |
-| Event and browser state exclude raw WAV, full candidate ledgers, and character spans | PASS |
-| Terminal reports commitment, lifecycle, lines, schedules, counts, scores, prompt/context, timings, slack, alignment, warnings, hashes, artifacts, and failure | PASS |
+| Chunk events and projector state are bounded | PASS: two lines, two flows, bounded maps/lists, fixed timing keys, safe numeric ranges, and a 24,000-byte serialized ceiling |
+| Production evidence path | PASS: actual `PreparedRapChunk` survives controller, canonical publisher, recorder conversion, and terminal/browser projectors |
+| Versioned wire evidence | PASS: strict `streammuse.rap_chunk_monitor.v1` summary carries alignment identity/confidence, source hash, and stable request-relative artifact IDs |
+| Event and browser state exclude raw WAV, full candidate ledgers, anchors, and character spans | PASS |
+| Terminal reports commitment, lifecycle, lines, target and selected schedules, counts, scores, deterministic generation-input/context summary, timings, slack, alignment, warnings, hashes, artifacts, and failure | PASS |
 | Website reports the same evidence without adding runtime controls | PASS |
 | Existing dense desktop layout remains two columns | PASS: browser inspection at 1440 x 900 |
 | Responsive audit panel has no horizontal overflow | PASS: browser inspection at 390 x 844 |

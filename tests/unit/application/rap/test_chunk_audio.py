@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import io
 from math import gcd
-import struct
 import wave
 from dataclasses import dataclass, replace
 
@@ -163,6 +162,24 @@ def _package(
             },
             model_tool_versions={"moss": "test", "aligner": "test", "rubberband": "test"},
             warnings=warnings,
+            monitoring_summary={
+                "schema_version": "streammuse.rap_chunk_monitor.v1",
+                "alignment_method": "torchaudio.pipelines.MMS_FA",
+                "alignment_confidence": 0.93,
+                "source_wav_sha256": "c" * 64,
+                "artifact_ids": {
+                    "request": "request.json",
+                    "candidate_ledger": "candidate_ledger.json",
+                    "source_wav": "source.wav",
+                    "mms_alignment": "mms_alignment.json",
+                    "alignment": "alignment.json",
+                    "aligned_wav": "aligned.wav",
+                    "vocal_wav": "vocal.wav",
+                    "manifest": "manifest.json",
+                    "server_timing": "server_timing.json",
+                    "response_package": "response.zip",
+                },
+            },
         ),
         vocal_sha256=hashlib.sha256(vocal_wav).hexdigest(),
     )
@@ -270,6 +287,72 @@ def test_remote_chunk_splits_and_mixes_exact_bars() -> None:
     )
     assert actual.shape == expected.shape
     assert np.allclose(actual, expected, atol=1e-6)
+
+
+def test_remote_chunk_preparation_builds_truthful_end_to_end_monitoring_evidence() -> None:
+    request = _request()
+    package = _package(request, warnings=("wide local stretch ratio retained: 1.250",))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    prepared = strategy.prepare(request, deadline_monotonic=10.0)
+
+    diagnostics = prepared.diagnostics
+    assert diagnostics["candidate_counts"] == {
+        "requested": 2,
+        "parseable": 2,
+        "valid": 2,
+        "selectable": 2,
+    }
+    assert [
+        {
+            **dict(item),
+            "component_scores": dict(item["component_scores"]),
+        }
+        for item in diagnostics["selected_scores"]
+    ] == [
+        {"bar": 0, "total": 0.9, "component_scores": {"total": 0.9}},
+        {"bar": 1, "total": 0.9, "component_scores": {"total": 0.9}},
+    ]
+    assert diagnostics["stage_timings_ms"] == {
+        "generation": 1.0,
+        "evaluation": 1.0,
+        "moss": 1.0,
+        "aligner": 1.0,
+        "r3": 1.0,
+        "package": 1.0,
+        "transfer": 6.0,
+        "mac": 0.0,
+        "total": 6.0,
+    }
+    assert diagnostics["request_budget_ms"] == request.remaining_budget_ms
+    assert diagnostics["elapsed_ms"] == 6.0
+    assert diagnostics["context_lines"] == ()
+    assert "deterministic generation input summary; not a verbatim provider prompt" in diagnostics["prompt_summary"]
+    assert "first-flow" in diagnostics["prompt_summary"]
+    assert "second-flow" in diagnostics["prompt_summary"]
+    assert diagnostics["alignment"] == {
+        "method": "torchaudio.pipelines.MMS_FA",
+        "confidence": 0.93,
+        "fallback_counts": {"word": 0},
+    }
+    assert diagnostics["hashes"] == {
+        "request_sha256": hashlib.sha256(request.canonical_json_bytes()).hexdigest(),
+        "manifest_sha256": hashlib.sha256(package.manifest.canonical_json_bytes()).hexdigest(),
+        "source_wav_sha256": "c" * 64,
+        "vocal_sha256": package.manifest.vocal_sha256,
+    }
+    assert diagnostics["artifact_refs"]["manifest"] == "manifest.json"
+    assert diagnostics["transfer"]["response_bytes"] == len(package.vocal_wav)
+    encoded = repr(diagnostics)
+    assert "source_anchors" not in encoded
+    assert "target_anchors" not in encoded
 
 
 @pytest.mark.parametrize(

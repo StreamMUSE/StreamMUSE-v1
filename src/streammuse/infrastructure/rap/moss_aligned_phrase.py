@@ -23,6 +23,7 @@ from streammuse.application.rap.chunk_orchestration import (
     PhraseVocalRenderer,
 )
 from streammuse.domain.rap.remote_chunk import (
+    REMOTE_CHUNK_MONITORING_SCHEMA_VERSION,
     REMOTE_CHUNK_SAMPLE_RATE_HZ,
     RemoteRapChunkRequest,
 )
@@ -292,6 +293,12 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 },
                 warnings=warnings,
                 stage_timings_ms=stage_timings,
+                monitoring_summary={
+                    "schema_version": REMOTE_CHUNK_MONITORING_SCHEMA_VERSION,
+                    "alignment_method": alignment.aligner_identity,
+                    "alignment_confidence": alignment.confidence,
+                    "source_wav_sha256": moss_result.source_wav_sha256,
+                },
             )
             _write_json_atomic(alignment_path, full_alignment_artifact)
             os.replace(vocal_partial_path, vocal_path)

@@ -779,7 +779,10 @@ async function refreshSnapshot() {
   monitor.refreshInFlight = true;
   try {
     const response = await fetch("/api/state", { cache: "no-store" });
-    if (response.ok) monitor.snapshot = await response.json();
+    if (response.ok) {
+      monitor.snapshot = await response.json();
+      window.StreamMuseRapState.applyRemoteSnapshot(monitor.snapshot);
+    }
   } catch (_) {
     connectionState("retrying", "Retrying");
   } finally {
@@ -821,6 +824,7 @@ function connect() {
     }
     if (message.type === "snapshot" && message.payload) {
       monitor.snapshot = message.payload;
+      window.StreamMuseRapState.applyRemoteSnapshot(message.payload);
       monitor.events = Array.isArray(message.payload.recent_events) ? message.payload.recent_events.slice(-240) : [];
     } else if (message.type === "event" && message.payload) {
       monitor.events = window.StreamMuseRapState.reduceEventCache(monitor.events, message.payload, 240);

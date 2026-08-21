@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from concurrent.futures import CancelledError, Executor, Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, replace
-from itertools import islice
 from math import isfinite
 from threading import RLock
 from typing import Callable, Mapping
@@ -13,12 +13,16 @@ from typing import Callable, Mapping
 from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.audio_service import RapBarRenderer, RapChunkPreparationStrategy
 from streammuse.application.rap.monitoring import RapEventPublisher
-from streammuse.application.rap.monitoring_payloads import flow_template_payload, scheduled_syllables_payload
+from streammuse.application.rap.monitoring_payloads import (
+    bounded_chunk_event_payload,
+    flow_template_payload,
+    remote_generation_input_summary,
+    scheduled_syllables_payload,
+)
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.application.rap.service import ProsodyAnalyzer
 from streammuse.domain.rap import (
     CandidateRequest,
-    FlowTemplate,
     PreparedRapBar,
     PreparedRapChunk,
     RapEventType,
@@ -33,13 +37,8 @@ from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
 from streammuse.infrastructure.rap.templates import TemplateCatalog
 
 
-_MAX_EVENT_LINE_BYTES = 512
 _MAX_EVENT_WARNING_BYTES = 256
 _MAX_EVENT_NAME_BYTES = 64
-_MAX_EVENT_FLOW_TEXT_BYTES = 128
-_MAX_EVENT_WARNINGS = 8
-_MAX_EVENT_STAGE_TIMINGS = 8
-_MAX_EVENT_FLOW_SLOTS = 32
 
 
 @dataclass(frozen=True)
@@ -83,6 +82,7 @@ class _ChunkWork:
     remote_authorized: bool = False
     remote_started: bool = False
     accepted: PreparedRapChunk | None = None
+    observed: PreparedRapChunk | None = None
     rejection_state: str | None = None
     rejection_message: str | None = None
     deadline_slack_ms: float | None = None
@@ -634,6 +634,7 @@ class RollingRapChunkController:
         chunk = completion.chunk
         invalid = self._validation_error(work, chunk)
         valid_chunk = chunk if isinstance(chunk, PreparedRapChunk) else None
+        work.observed = valid_chunk
         renderer = valid_chunk.renderer if valid_chunk is not None else "invalid"
         slack_ms = (work.deadline_monotonic - completion.completed_monotonic) * 1000.0
         work.deadline_slack_ms = slack_ms
@@ -992,78 +993,59 @@ class RollingRapChunkController:
         deadline_slack_ms: float | None = None,
         warnings: tuple[str, ...] = (),
     ) -> dict[str, object]:
+        chunk = chunk if chunk is not None else work.observed
         if selected_lines is None:
             selected_lines = () if chunk is None else tuple(item.text for item in chunk.bars)
         diagnostics = chunk.diagnostics if chunk is not None else {}
-        diagnostic_warnings: tuple[object, ...] = ()
-        if isinstance(diagnostics, Mapping):
-            raw_warnings = diagnostics.get("warnings", ())
-            if isinstance(raw_warnings, (list, tuple)):
-                diagnostic_warnings = tuple(islice(raw_warnings, _MAX_EVENT_WARNINGS))
-        warning_values = tuple(islice((*warnings, *diagnostic_warnings), _MAX_EVENT_WARNINGS))
-        return {
-            "state": self._bounded_text(state, _MAX_EVENT_NAME_BYTES),
-            "renderer_decision": self._bounded_text(renderer_decision, _MAX_EVENT_NAME_BYTES),
+        raw: dict[str, object] = {
+            "state": state,
+            "renderer_decision": renderer_decision,
+            "coordinator_epoch": work.epoch,
             "chunk_index": work.request.chunk_index,
             "bars": [work.start_bar, work.start_bar + 1],
-            "selected_lines": [
-                self._bounded_text(item, _MAX_EVENT_LINE_BYTES)
-                for item in islice(selected_lines, 2)
-            ],
-            "flows": [self._bounded_flow_payload(item.template) for item in work.plans],
-            "stage_timings_ms": self._stage_timings(diagnostics),
+            "selected_lines": selected_lines,
+            "flows": [flow_template_payload(item.template) for item in work.plans],
+            "prompt_summary": remote_generation_input_summary(work.request),
+            "context_lines": work.request.context_lines,
+            "request_budget_ms": work.request.remaining_budget_ms,
             "deadline_slack_ms": deadline_slack_ms,
-            "warnings": [
-                self._bounded_text(item, _MAX_EVENT_WARNING_BYTES)
-                for item in warning_values
-            ],
-        }
-
-    @classmethod
-    def _bounded_flow_payload(cls, template: FlowTemplate) -> dict[str, object]:
-        return {
-            "template_id": cls._bounded_text(template.template_id, _MAX_EVENT_FLOW_TEXT_BYTES),
-            "name": cls._bounded_text(template.name, _MAX_EVENT_FLOW_TEXT_BYTES),
-            "ticks_per_beat": template.ticks_per_beat,
-            "beats_per_bar": template.beats_per_bar,
-            "slots": [
-                {
-                    "tick_in_bar": item.tick_in_bar,
-                    "duration_ticks": item.duration_ticks,
-                    "target_stress": item.target_stress,
-                    "boundary_strength": item.boundary_strength,
-                    "rhyme_group": None
-                    if item.rhyme_group is None
-                    else cls._bounded_text(item.rhyme_group, _MAX_EVENT_FLOW_TEXT_BYTES),
-                }
-                for item in islice(template.slots, _MAX_EVENT_FLOW_SLOTS)
-            ],
-            "provenance": {
-                "kind": cls._bounded_text(template.provenance.kind, _MAX_EVENT_FLOW_TEXT_BYTES),
-                "source": cls._bounded_text(template.provenance.source, _MAX_EVENT_FLOW_TEXT_BYTES),
-                "source_hash": None
-                if template.provenance.source_hash is None
-                else cls._bounded_text(template.provenance.source_hash, _MAX_EVENT_FLOW_TEXT_BYTES),
-                "quantization_error_ticks": template.provenance.quantization_error_ticks,
+            "failure_reason": work.rejection_message,
+            "warnings": warnings,
+            "hashes": {
+                "request_sha256": hashlib.sha256(
+                    work.request.canonical_json_bytes()
+                ).hexdigest()
             },
         }
-
-    @classmethod
-    def _stage_timings(cls, diagnostics: Mapping[str, object]) -> dict[str, float]:
-        value = diagnostics.get("stage_timings_ms")
-        if not isinstance(value, Mapping):
-            manifest = diagnostics.get("manifest")
-            if isinstance(manifest, Mapping):
-                remote_diagnostics = manifest.get("diagnostics")
-                if isinstance(remote_diagnostics, Mapping):
-                    value = remote_diagnostics.get("stage_timings_ms")
-        if not isinstance(value, Mapping):
-            return {}
-        result: dict[str, float] = {}
-        for key, item in islice(value.items(), _MAX_EVENT_STAGE_TIMINGS):
-            if isinstance(item, (int, float)) and not isinstance(item, bool) and isfinite(item):
-                result[cls._bounded_text(key, _MAX_EVENT_NAME_BYTES)] = float(item)
-        return result
+        if isinstance(diagnostics, Mapping):
+            for key in (
+                "candidate_counts",
+                "selected_scores",
+                "selected_schedules",
+                "prompt_summary",
+                "context_lines",
+                "stage_timings_ms",
+                "request_budget_ms",
+                "elapsed_ms",
+                "alignment",
+                "stretch_warnings",
+                "hashes",
+                "artifact_refs",
+                "transfer",
+                "transfer_bytes",
+            ):
+                try:
+                    value = diagnostics[key]
+                except (KeyError, LookupError, TypeError):
+                    continue
+                raw[key] = value
+            try:
+                diagnostic_warnings = diagnostics["warnings"]
+            except (KeyError, LookupError, TypeError):
+                diagnostic_warnings = ()
+            if isinstance(diagnostic_warnings, (list, tuple)):
+                raw["warnings"] = (*warnings, *diagnostic_warnings)
+        return bounded_chunk_event_payload(raw)
 
     @staticmethod
     def _bounded_text(value: object, max_bytes: int) -> str:

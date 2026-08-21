@@ -29,6 +29,7 @@ from streammuse.domain.rap import (
     RemoteRapChunkManifest,
     RemoteRapChunkRequest,
     RemoteSelectedBar,
+    REMOTE_CHUNK_ARTIFACT_IDS,
     ScoreWeights,
     normalize_text,
 )
@@ -151,6 +152,7 @@ class PhraseRenderResult:
     model_tool_versions: Mapping[str, str]
     warnings: tuple[str, ...]
     stage_timings_ms: Mapping[str, float]
+    monitoring_summary: Mapping[str, object]
 
     def __post_init__(self) -> None:
         if not isinstance(self.vocal_wav, bytes):
@@ -160,6 +162,7 @@ class PhraseRenderResult:
             ("audio_diagnostics", self.audio_diagnostics),
             ("model_tool_versions", self.model_tool_versions),
             ("stage_timings_ms", self.stage_timings_ms),
+            ("monitoring_summary", self.monitoring_summary),
         ):
             if not isinstance(value, Mapping):
                 raise ValueError(f"phrase {name} must be a mapping")
@@ -189,6 +192,9 @@ class PhraseRenderResult:
         )
         object.__setattr__(
             self, "stage_timings_ms", _frozen_mapping(self.stage_timings_ms)
+        )
+        object.__setattr__(
+            self, "monitoring_summary", _frozen_mapping(self.monitoring_summary)
         )
 
 
@@ -897,6 +903,10 @@ class RapChunkOrchestrator:
                 audio_diagnostics=phrase.audio_diagnostics,
                 model_tool_versions=phrase.model_tool_versions,
                 warnings=warnings,
+                monitoring_summary={
+                    **phrase.monitoring_summary,
+                    "artifact_ids": dict(REMOTE_CHUNK_ARTIFACT_IDS),
+                },
             )
             manifest = RemoteRapChunkManifest(
                 request_id=request.request_id,

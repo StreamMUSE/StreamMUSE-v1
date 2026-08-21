@@ -30,6 +30,8 @@ from streammuse.domain.rap.audio import (
 from streammuse.domain.rap.prosody import analyse_syllables, extract_words, normalize_text
 from streammuse.domain.rap.scenario import RapScenario, ScenarioSegment
 from streammuse.domain.rap.remote_chunk import (
+    REMOTE_CHUNK_ARTIFACT_IDS,
+    REMOTE_CHUNK_MONITORING_SCHEMA_VERSION,
     REMOTE_CHUNK_SCHEMA_VERSION,
     PreparedRapChunk,
     RemoteCandidatePolicy,
@@ -67,6 +69,8 @@ __all__ = [
     "RapScenario",
     "RapEvent",
     "RapEventType",
+    "REMOTE_CHUNK_ARTIFACT_IDS",
+    "REMOTE_CHUNK_MONITORING_SCHEMA_VERSION",
     "REMOTE_CHUNK_SCHEMA_VERSION",
     "RemoteCandidatePolicy",
     "RemoteCandidateStats",

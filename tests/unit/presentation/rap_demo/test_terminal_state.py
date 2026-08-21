@@ -147,7 +147,11 @@ def test_projector_exposes_only_the_latest_bounded_remote_chunk_diagnostics() ->
         "bars": [4, 5],
         "selected_lines": ["First remote line", "Second remote line"],
         "flows": [
-            {"template_id": "flow-a", "slots": [{"tick_in_bar": 0, "target_stress": 1.0}]},
+            {
+                "template_id": "flow-a",
+                "selected_syllable_schedule": "t0:first/stress1",
+                "slots": [{"tick_in_bar": 0, "target_stress": 1.0}],
+            },
             {"template_id": "flow-b", "slots": [{"tick_in_bar": 2, "target_stress": 0.5}]},
         ],
         "candidate_counts": {"requested": 32, "parseable": 30, "valid": 8, "selectable": 4},
@@ -187,6 +191,7 @@ def test_projector_exposes_only_the_latest_bounded_remote_chunk_diagnostics() ->
     assert remote["request_id"] == "request-2"
     assert remote["selected_lines"] == ("First remote line", "Second remote line")
     assert remote["flows"][0]["slot_stress_schedule"] == "t0@1.00"
+    assert remote["flows"][0]["selected_syllable_schedule"] == "t0:first/stress1"
     assert remote["candidate_counts"]["selectable"] == 4
     assert remote["stage_timings_ms"]["mac"] == 6.0
     assert "RIFF-forbidden" not in repr(remote)

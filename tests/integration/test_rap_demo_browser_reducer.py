@@ -9,6 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 REDUCER = ROOT / "src/streammuse/presentation/rap_demo/static/js/rap-demo-state.js"
+MAIN_SCRIPT = ROOT / "src/streammuse/presentation/rap_demo/static/js/rap-demo.js"
 
 
 def test_browser_event_cache_rebases_on_session_reset() -> None:
@@ -38,6 +39,113 @@ process.stdout.write(JSON.stringify(events));
         {"sequence": 3, "event_type": "session_reset"},
         {"sequence": 4, "event_type": "tick", "bar": 0, "tick": 0},
     ]
+
+
+def test_browser_chunk_projection_orders_by_session_epoch_and_strict_sequence() -> None:
+    program = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = global;
+vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"), { filename: process.argv[1] });
+const api = global.StreamMuseRapState;
+const event = (session, sequence, epoch, state) => ({
+  session_id: session,
+  sequence,
+  event_type: "chunk_committed",
+  request_id: `${session}-${state}`,
+  payload: { coordinator_epoch: epoch, state },
+});
+let projected = api.projectRemoteChunk(null, event("session-a", 100, 2, "old"));
+projected = api.projectRemoteChunk(projected, event("session-a", 100, 2, "equal-rejected"));
+projected = api.projectRemoteChunk(projected, event("session-a", 99, 2, "older-rejected"));
+const afterOlder = projected;
+projected = api.projectRemoteChunk(projected, event("session-a", 1, 3, "new-epoch"));
+const afterEpoch = projected;
+projected = api.projectRemoteChunk(projected, event("session-a", 200, 2, "old-epoch-rejected"));
+const afterOldEpoch = projected;
+projected = api.projectRemoteChunk(projected, event("session-b", 1, 1, "new-session"));
+const afterSession = projected;
+const afterSessionStart = api.projectRemoteChunk(projected, {
+  session_id: "session-c", sequence: 1, event_type: "session_started", payload: {},
+});
+const fractionalEvents = api.reduceEventCache([], event("session-a", 1.5, 2, "fractional"), 240);
+process.stdout.write(JSON.stringify({
+  afterOlder, afterEpoch, afterOldEpoch, afterSession, afterSessionStart, fractionalEvents,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program, str(REDUCER)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["afterOlder"]["state"] == "old"
+    assert result["afterEpoch"]["state"] == "new-epoch"
+    assert result["afterOldEpoch"]["state"] == "new-epoch"
+    assert result["afterSession"]["session_id"] == "session-b"
+    assert result["afterSession"]["state"] == "new-session"
+    assert result["afterSessionStart"] is None
+    assert result["fractionalEvents"][0]["sequence"] is None
+
+
+def test_browser_authoritative_snapshots_clear_and_replace_remote_projection() -> None:
+    program = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = global;
+global.document = {
+  getElementById() { return null; },
+  addEventListener() {},
+  readyState: "loading",
+};
+vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"), { filename: process.argv[1] });
+const api = global.StreamMuseRapState;
+api.reduceEventCache([], {
+  session_id: "session-a", sequence: 9, event_type: "chunk_committed", request_id: "old",
+  payload: { coordinator_epoch: 1, state: "old" },
+}, 240);
+const before = api.currentRemoteChunk();
+const cleared = api.applyRemoteSnapshot({
+  session_id: "session-a", last_sequence: 10, coordinator_epoch: 2, remote_chunk: null,
+});
+const staleEvents = api.reduceEventCache([], {
+  session_id: "session-a", sequence: 9, event_type: "chunk_committed", request_id: "stale",
+  payload: { coordinator_epoch: 1, state: "stale" },
+}, 240);
+const afterStale = api.currentRemoteChunk();
+const replaced = api.applyRemoteSnapshot({
+  session_id: "session-b",
+  last_sequence: 1,
+  coordinator_epoch: 1,
+  remote_chunk: {
+    session_id: "session-b", sequence: 1, coordinator_epoch: 1,
+    event_type: "chunk_committed", request_id: "new", state: "snapshot",
+  },
+});
+process.stdout.write(JSON.stringify({ before, cleared, staleEvents, afterStale, replaced }));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program, str(REDUCER)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["before"]["request_id"] == "old"
+    assert result["cleared"] is None
+    assert result["afterStale"] is None
+    assert result["replaced"]["session_id"] == "session-b"
+    assert result["replaced"]["request_id"] == "new"
+
+
+def test_websocket_snapshot_path_updates_remote_panel_directly() -> None:
+    source = MAIN_SCRIPT.read_text(encoding="utf-8")
+
+    snapshot_branch = source[source.index('message.type === "snapshot"') : source.index('message.type === "event"')]
+    assert "StreamMuseRapState.applyRemoteSnapshot(message.payload)" in snapshot_branch
 
 
 def test_browser_chunk_projection_and_event_cache_drop_unbounded_artifact_bodies() -> None:
@@ -128,6 +236,76 @@ process.stdout.write(JSON.stringify({ projected, cached }));
     assert "character_spans" not in encoded
 
 
+def test_browser_chunk_sanitizer_enforces_numeric_collection_and_byte_bounds() -> None:
+    program = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = global;
+vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"), { filename: process.argv[1] });
+const longText = "x".repeat(10000);
+const largeMap = {};
+for (let index = 0; index < 1000; index += 1) largeMap[`${longText}-${index}`] = longText;
+let barChecks = 0;
+const boundedBars = new Proxy(
+  [Number.MAX_SAFE_INTEGER + 1, ...Array(999).fill(2)],
+  {
+    has(target, key) {
+      if (/^\d+$/.test(String(key))) {
+        barChecks += 1;
+        if (barChecks > 4) throw new Error("bars scanned past the bounded prefix");
+      }
+      return Reflect.has(target, key);
+    },
+  },
+);
+const bounded = global.StreamMuseRapState.sanitizeChunkPayload({
+  chunk_index: Number.MAX_SAFE_INTEGER + 1,
+  bars: boundedBars,
+  request_budget_ms: 0,
+  elapsed_ms: -1,
+  stage_timings_ms: { total: -1 },
+  selected_lines: Array(1000).fill(longText),
+  flows: Array(1000).fill({
+    template_id: longText,
+    slots: Array.from({ length: 1000 }, (_, index) => ({
+      tick_in_bar: index, target_stress: index === 0 ? 2 : 1, rhyme_group: longText,
+    })),
+    selected_syllable_schedule: longText,
+  }),
+  prompt_summary: longText,
+  context_lines: Array(1000).fill(longText),
+  warnings: Array(1000).fill(longText),
+  hashes: largeMap,
+  artifact_refs: largeMap,
+  alignment: { confidence: 2 },
+});
+process.stdout.write(JSON.stringify({
+  bounded,
+  barChecks,
+  bytes: new TextEncoder().encode(JSON.stringify(bounded)).length,
+  hashCount: Object.keys(bounded.hashes).length,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", program, str(REDUCER)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["bounded"]["chunk_index"] is None
+    assert result["bounded"]["bars"] == [2]
+    assert result["barChecks"] <= 4
+    assert result["bounded"]["flows"][0]["slots"][0]["target_stress"] is None
+    assert result["bounded"]["alignment"]["confidence"] is None
+    assert result["bounded"]["request_budget_ms"] == 0
+    assert result["bounded"]["elapsed_ms"] is None
+    assert result["bounded"]["stage_timings_ms"] == {}
+    assert result["hashCount"] <= 8
+    assert result["bytes"] <= 24_000
+
+
 def test_browser_remote_chunk_renderer_populates_every_research_group() -> None:
     program = r"""
 const fs = require("fs");
@@ -165,8 +343,8 @@ global.StreamMuseRapState.renderRemoteChunk({
   bars: [4, 5],
   selected_lines: ["First remote line", "Second remote line"],
   flows: [
-    { template_id: "flow-a", slot_stress_schedule: "t0@1.00, t2@0.25" },
-    { template_id: "flow-b", slot_stress_schedule: "t1@0.80" },
+    { template_id: "flow-a", slot_stress_schedule: "t0@1.00, t2@0.25", selected_syllable_schedule: "t0:first/stress1" },
+    { template_id: "flow-b", slot_stress_schedule: "t1@0.80", selected_syllable_schedule: "t1:second/stress1" },
   ],
   candidate_counts: { requested: 32, parseable: 30, valid: 8, selectable: 4 },
   selected_scores: [
@@ -216,7 +394,10 @@ process.stdout.write(JSON.stringify({
     assert values["remote-request-id"] == "request-2"
     assert values["remote-renderer"] == "moss_aligned_remote"
     assert values["remote-lines"] == "Bar 5: First remote lineBar 6: Second remote line"
-    assert values["remote-flows"] == "flow-a | t0@1.00, t2@0.25flow-b | t1@0.80"
+    assert values["remote-flows"] == (
+        "flow-a | targets t0@1.00, t2@0.25 | selected t0:first/stress1"
+        "flow-b | targets t1@0.80 | selected t1:second/stress1"
+    )
     assert values["remote-candidate-counts"] == "32 / 30 / 8 / 4"
     assert "stress_alignment=0.880" in values["remote-scores"]
     assert "continuity=0.820" in values["remote-scores"]

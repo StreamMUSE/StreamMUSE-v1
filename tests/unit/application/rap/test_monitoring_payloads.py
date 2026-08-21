@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping
 
 from streammuse.application.rap.monitoring_payloads import (
+    MAX_BOUNDED_CHUNK_EVENT_BYTES,
     bounded_chunk_event_payload,
     flow_template_payload,
     scheduled_syllables_payload,
@@ -185,3 +187,130 @@ def test_chunk_event_payload_keeps_bounded_research_evidence_without_artifact_bo
     encoded = json.dumps(bounded)
     for forbidden in ("RIFF-not-for-the-event-bus", '"unbounded"', "character_spans", "source_anchors", "target_anchors"):
         assert forbidden not in encoded
+
+
+class _ScanBombMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        if key == "safe":
+            return 1
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        yield "safe"
+        for index in range(8):
+            yield f"extra-{index}"
+        raise AssertionError("bounded projection scanned past its item limit")
+
+    def __len__(self) -> int:
+        return 10**100_000
+
+
+class _ReadBombMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise AssertionError(f"hostile read: {key}")
+
+    def __iter__(self) -> Iterator[str]:
+        raise AssertionError("hostile iteration")
+
+    def __len__(self) -> int:
+        raise AssertionError("hostile length")
+
+
+def test_chunk_event_payload_handles_hostile_numbers_and_mappings_without_raising() -> None:
+    huge = 10**100_000
+    payload = {
+        "chunk_index": huge,
+        "bars": [huge, 2, 3],
+        "request_budget_ms": huge,
+        "elapsed_ms": huge,
+        "deadline_slack_ms": -huge,
+        "stage_timings_ms": {"total": huge},
+        "alignment": {
+            "confidence": huge,
+            "fallback_counts": _ScanBombMapping(),
+        },
+        "hashes": _ScanBombMapping(),
+        "artifact_refs": _ScanBombMapping(),
+    }
+
+    bounded = bounded_chunk_event_payload(payload)
+
+    assert bounded["chunk_index"] is None
+    assert bounded["bars"] == [2]
+    assert bounded["request_budget_ms"] is None
+    assert bounded["elapsed_ms"] is None
+    assert bounded["deadline_slack_ms"] is None
+    assert bounded["stage_timings_ms"] == {}
+    assert bounded["alignment"]["confidence"] is None
+    assert len(json.dumps(bounded).encode("utf-8")) <= MAX_BOUNDED_CHUNK_EVENT_BYTES
+
+    read_bomb = bounded_chunk_event_payload(_ReadBombMapping())
+    assert read_bomb["state"] is None
+    assert len(json.dumps(read_bomb).encode("utf-8")) <= MAX_BOUNDED_CHUNK_EVENT_BYTES
+
+
+def test_chunk_event_payload_preserves_zero_budget_and_rejects_negative_durations() -> None:
+    bounded = bounded_chunk_event_payload(
+        {
+            "request_budget_ms": 0,
+            "elapsed_ms": -1,
+            "deadline_slack_ms": -5,
+            "stage_timings_ms": {"generation": -2},
+            "transfer": {"total_ms": -3},
+            "mac_validation_mix_ms": -4,
+            "manifest": {
+                "diagnostics": {"accepted_request_budget_ms": 5_000},
+            },
+        }
+    )
+
+    assert bounded["request_budget_ms"] == 0
+    assert bounded["elapsed_ms"] is None
+    assert bounded["deadline_slack_ms"] == -5
+    assert bounded["stage_timings_ms"] == {}
+
+
+def test_chunk_event_payload_enforces_a_serialized_byte_ceiling_and_bounded_depth() -> None:
+    long_text = "x" * 100_000
+    payload = {
+        "state": long_text,
+        "renderer_decision": long_text,
+        "selected_lines": [long_text] * 100,
+        "flows": [
+            {
+                "template_id": long_text,
+                "name": long_text,
+                "slots": [
+                    {
+                        "tick_in_bar": index,
+                        "target_stress": 1.0,
+                        "rhyme_group": long_text,
+                    }
+                    for index in range(1_000)
+                ],
+            }
+        ] * 100,
+        "selected_scores": [
+            {"component_scores": {f"{long_text}-{index}": 1.0 for index in range(100)}}
+        ] * 100,
+        "prompt_summary": long_text,
+        "context_lines": [long_text] * 100,
+        "warnings": [long_text] * 100,
+        "stretch_warnings": [long_text] * 100,
+        "hashes": {f"{long_text}-{index}": long_text for index in range(100)},
+        "artifact_refs": {f"{long_text}-{index}": long_text for index in range(100)},
+    }
+
+    bounded = bounded_chunk_event_payload(payload)
+    encoded = json.dumps(bounded, separators=(",", ":")).encode("utf-8")
+
+    assert len(encoded) <= MAX_BOUNDED_CHUNK_EVENT_BYTES
+    assert max(_json_depth(bounded)) <= 5
+
+
+def _json_depth(value: object, depth: int = 0) -> list[int]:
+    if isinstance(value, dict):
+        return [depth, *[item for child in value.values() for item in _json_depth(child, depth + 1)]]
+    if isinstance(value, list):
+        return [depth, *[item for child in value for item in _json_depth(child, depth + 1)]]
+    return [depth]

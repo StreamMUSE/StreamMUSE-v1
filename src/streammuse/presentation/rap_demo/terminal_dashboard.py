@@ -140,7 +140,8 @@ def _remote_chunk(chunk: Mapping[str, Any]) -> RenderableType:
                 f"Flow {index + 1}",
                 Text(
                     f"{_safe(flow.get('template_id') or '-')} | "
-                    f"{_safe(flow.get('slot_stress_schedule') or '-')}"
+                    f"targets {_safe(flow.get('slot_stress_schedule') or '-')} | "
+                    f"selected {_safe(flow.get('selected_syllable_schedule') or '-')}"
                 ),
             )
         )
@@ -169,7 +170,10 @@ def _remote_chunk(chunk: Mapping[str, Any]) -> RenderableType:
         )
     rows.extend(
         (
-            ("Prompt", Text(_safe(chunk.get("prompt_summary") or "-", preserve_newlines=True))),
+            (
+                "Generation inputs",
+                Text(_safe(chunk.get("prompt_summary") or "-", preserve_newlines=True)),
+            ),
             ("Context", Text("\n".join(_safe(item) for item in context_lines) if context_lines else "-")),
             (
                 "Timings",

@@ -223,7 +223,8 @@ class StructuredStreamRenderer:
         for index, flow in enumerate(_mappings(chunk.get("flows"))):
             self._write(
                 f"{_continuation()} flow[{index}]={_value(flow.get('template_id'))} "
-                f"schedule={_value(flow.get('slot_stress_schedule'))}"
+                f"targets={_value(flow.get('slot_stress_schedule'))} "
+                f"selected={_value(flow.get('selected_syllable_schedule'))}"
             )
         counts = chunk.get("candidate_counts")
         if isinstance(counts, Mapping):
@@ -239,7 +240,7 @@ class StructuredStreamRenderer:
                 f"components={_pairs(components)}"
             )
         self._write(
-            f"{_continuation()} prompt_summary={chunk.get('prompt_summary')!r} "
+            f"{_continuation()} generation_input_summary={chunk.get('prompt_summary')!r} "
             f"context={list(chunk.get('context_lines', ()))!r}"
         )
         timings = chunk.get("stage_timings_ms")
