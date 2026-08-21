@@ -78,6 +78,20 @@ def remote_request(
     )
 
 
+def test_realtime_default_uses_measured_two_bar_h200_profile() -> None:
+    policy = RemoteCandidatePolicy.realtime_default()
+
+    assert policy.to_payload() == {
+        "profile": "realtime_default",
+        "initial_candidates": 16,
+        "rescue_candidates": 4,
+        "maximum_candidates": 20,
+        "minimum_valid_candidates": 3,
+        "minimum_score": 0.0,
+        "render_reserve_ms": 3_000,
+    }
+
+
 def diagnostics(flow: FlowTemplate) -> RemoteRapChunkDiagnostics:
     return RemoteRapChunkDiagnostics(
         accepted_request_budget_ms=5_000,

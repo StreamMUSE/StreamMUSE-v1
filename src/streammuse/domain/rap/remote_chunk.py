@@ -197,7 +197,7 @@ class RemoteCandidatePolicy:
 
     @classmethod
     def realtime_default(cls) -> RemoteCandidatePolicy:
-        return cls("realtime_default", 4, 2, 6, 1, 0.0, 1_500)
+        return cls("realtime_default", 16, 4, 20, 3, 0.0, 3_000)
 
     def to_payload(self) -> dict[str, object]:
         return {
