@@ -417,6 +417,32 @@ def test_audio_dependency_lifecycle_keeps_components_open_until_permanent_close(
     assert calls.count("recorder_close") == 1
 
 
+def test_audio_dependency_allows_controller_owned_remote_strategy_without_coordinator(tmp_path) -> None:
+    calls: list[str] = []
+
+    class Component:
+        def close(self) -> None:
+            calls.append("close")
+
+    class Dispatcher:
+        def flush_and_close(self) -> None:
+            calls.append("close")
+
+    dependencies = RapAudioDemoDependencies(
+        tempo=Tempo(60.0, 4, 4),
+        controller=Component(),
+        coordinator=None,
+        playback=Component(),
+        publisher=object(),
+        dispatcher=Dispatcher(),
+        session_dir=tmp_path,
+    )
+
+    dependencies.close()
+
+    assert calls == ["close", "close", "close"]
+
+
 def test_audio_dependency_arms_playback_before_a_blocked_controller_stop(tmp_path) -> None:
     class Controller:
         def __init__(self) -> None:

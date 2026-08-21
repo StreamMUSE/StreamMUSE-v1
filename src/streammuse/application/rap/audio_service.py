@@ -20,6 +20,26 @@ from streammuse.domain.timing import Tempo
 
 if TYPE_CHECKING:
     from streammuse.application.rap.realtime import PlannedRapBar
+    from streammuse.domain.rap import RapScenario
+
+
+class RapAudioController(Protocol):
+    @property
+    def scenario(self) -> RapScenario: ...
+
+    def start(self) -> None: ...
+
+    def on_tick(self, tick: int) -> None: ...
+
+    def request_stop(self, *, successor_bar: int | None) -> None: ...
+
+    def resume_audio(self, bar: int) -> None: ...
+
+    def resume_after_stop(self) -> None: ...
+
+    def reset(self) -> int: ...
+
+    def close(self) -> None: ...
 
 
 class SpeechSynthesizer(Protocol):

@@ -2,10 +2,12 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from streammuse.application.rap.runtime import RapAudioDemoDependencies, RapDemoDependencies
+from streammuse.application.rap.chunk_realtime import RollingRapChunkController
 from streammuse.domain.rap import AudioFormat, PlaybackState
 from streammuse.infrastructure.rap.audio_output import NullAudioSink
 from streammuse.presentation.rap_demo.cli import (
@@ -28,6 +30,11 @@ class FakeClock:
         self.now += seconds
 
 
+class FailIfCalledAudioFactories:
+    def __getattr__(self, name: str):
+        raise AssertionError(f"audio factory should not be used: {name}")
+
+
 def test_parser_defaults_to_showcase_local_endpoint_and_model() -> None:
     args = build_parser().parse_args([])
 
@@ -45,6 +52,33 @@ def test_existing_parser_defaults_remain_text_only() -> None:
     assert args.tempo is None
     assert args.candidate_count == 8
     assert args.lookahead_bars == 2
+    assert args.rap_audio_renderer == "espeak"
+    assert args.rap_render_url == "http://127.0.0.1:8020"
+    assert args.rap_render_profile == "realtime"
+    assert args.rap_render_startup_timeout == 120.0
+    assert args.rap_render_rolling_timeout == 5.0
+
+
+def test_parser_accepts_remote_moss_renderer_configuration() -> None:
+    args = build_parser().parse_args(
+        [
+            "--rap-audio-renderer",
+            "moss_aligned_remote",
+            "--rap-render-url",
+            "http://render.test:9000",
+            "--rap-render-profile",
+            "realtime",
+            "--rap-render-startup-timeout",
+            "30",
+            "--rap-render-rolling-timeout",
+            "4.5",
+        ]
+    )
+
+    assert args.rap_audio_renderer == "moss_aligned_remote"
+    assert args.rap_render_url == "http://render.test:9000"
+    assert args.rap_render_startup_timeout == 30.0
+    assert args.rap_render_rolling_timeout == 4.5
 
 
 def test_audio_parser_accepts_explicit_research_configuration() -> None:
@@ -127,6 +161,47 @@ def test_audio_cli_rejects_non_48khz_before_constructing_audio_dependencies(tmp_
         build_demo(args, audio_factories=FailIfCalledAudioFactories())
 
 
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    (
+        (("--rap-audio-renderer", "moss_aligned_remote"), "requires audio output"),
+        (
+            ("--rap-audio-renderer", "moss_aligned_remote", "--audio-output", "wav", "--max-bars", "3"),
+            "zero or even",
+        ),
+        (
+            (
+                "--rap-audio-renderer",
+                "moss_aligned_remote",
+                "--audio-output",
+                "wav",
+                "--rap-render-startup-timeout",
+                "nan",
+            ),
+            "startup-timeout",
+        ),
+        (
+            (
+                "--rap-audio-renderer",
+                "moss_aligned_remote",
+                "--audio-output",
+                "wav",
+                "--rap-render-rolling-timeout",
+                "0",
+            ),
+            "rolling-timeout",
+        ),
+    ),
+)
+def test_remote_renderer_options_are_validated_before_assembly(
+    tmp_path: Path, arguments: tuple[str, ...], message: str
+) -> None:
+    args = build_parser().parse_args([*arguments, "--log-dir", str(tmp_path)])
+
+    with pytest.raises(ValueError, match=message):
+        build_demo(args, audio_factories=FailIfCalledAudioFactories())
+
+
 def test_text_build_uses_existing_tick_loop_and_no_audio_dependencies(tmp_path: Path) -> None:
     class FailIfCalledAudioFactories:
         def __getattr__(self, name: str):
@@ -183,6 +258,109 @@ def test_audio_build_uses_mac_synthesis_renderer_playback_and_recording(tmp_path
         assert manifest["audio"]["artifact_paths"]["wav"].endswith("mixed.wav")
     finally:
         demo.close()
+
+
+def test_remote_audio_build_health_checks_and_creates_no_local_chat_client(tmp_path: Path, monkeypatch) -> None:
+    class SilentSynthesizer:
+        def synthesize(self, request):
+            raise AssertionError(f"rendering should not start during assembly: {request}")
+
+    class RemoteClient:
+        def __init__(self) -> None:
+            self.health_timeouts: list[float] = []
+            self.abort_calls = 0
+            self.close_calls = 0
+
+        def health(self, *, timeout_seconds: float):
+            self.health_timeouts.append(timeout_seconds)
+            return SimpleNamespace(ready=True, schema_version="streammuse.rap_chunk.v1")
+
+        def abort(self) -> None:
+            self.abort_calls += 1
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    client = RemoteClient()
+
+    class AudioFactories(RapAudioFactories):
+        def create_synthesizer(self):
+            return SilentSynthesizer()
+
+        def create_sink(self, *, output, audio_format, audio_file, audio_device):
+            return NullAudioSink(audio_format=audio_format)
+
+        def create_remote_client(self, *, base_url, clock):
+            assert base_url == "http://render.test:9000"
+            return client
+
+    monkeypatch.setattr(
+        "streammuse.presentation.rap_demo.cli.LocalChatModelClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("local chat client must not be created")),
+    )
+    args = build_parser().parse_args(
+        [
+            "--rap-audio-renderer",
+            "moss_aligned_remote",
+            "--rap-render-url",
+            "http://render.test:9000",
+            "--audio-output",
+            "wav",
+            "--generator",
+            "local_chat",
+            "--max-bars",
+            "2",
+            "--log-dir",
+            str(tmp_path),
+        ]
+    )
+
+    demo = build_demo(args, audio_factories=AudioFactories())
+    try:
+        assert isinstance(demo.controller, RollingRapChunkController)
+        assert demo.coordinator is None
+        assert client.health_timeouts == [5.0]
+        manifest = json.loads((demo.session_dir / "session.json").read_text(encoding="utf-8"))
+        assert manifest["audio"]["renderer"] == "moss_aligned_remote"
+        assert manifest["audio"]["render_url"] == "http://render.test:9000"
+        assert demo.session_metadata["audio"]["render_profile"] == "realtime"
+    finally:
+        demo.close()
+    assert client.close_calls == 1
+
+
+def test_remote_audio_build_rejects_unready_health_and_closes_client(tmp_path: Path) -> None:
+    class RemoteClient:
+        closed = False
+
+        def health(self, *, timeout_seconds: float):
+            return SimpleNamespace(ready=False, schema_version="streammuse.rap_chunk.v1")
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = RemoteClient()
+
+    class AudioFactories(RapAudioFactories):
+        def create_remote_client(self, *, base_url, clock):
+            return client
+
+    args = build_parser().parse_args(
+        [
+            "--rap-audio-renderer",
+            "moss_aligned_remote",
+            "--audio-output",
+            "wav",
+            "--max-bars",
+            "2",
+            "--log-dir",
+            str(tmp_path),
+        ]
+    )
+
+    with pytest.raises(OSError, match="not ready"):
+        build_demo(args, audio_factories=AudioFactories())
+    assert client.closed is True
 
 
 def test_build_demo_prevalidates_fallbacks_and_runs_finite_terminal_session(tmp_path: Path, capsys) -> None:

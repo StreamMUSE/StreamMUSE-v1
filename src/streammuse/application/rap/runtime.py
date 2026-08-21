@@ -11,6 +11,7 @@ from threading import Event, RLock
 from types import MappingProxyType
 from typing import Any, Callable, ClassVar
 
+from streammuse.application.rap.audio_service import RapAudioController
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher
 from streammuse.application.rap.realtime import RollingRapController
 from streammuse.domain.rap import PlaybackState, RapEventType
@@ -152,7 +153,7 @@ class RapAudioDemoDependencies:
     autostart: ClassVar[bool] = False
 
     tempo: Tempo
-    controller: RollingRapController
+    controller: RapAudioController
     coordinator: Any
     playback: Any
     publisher: RapEventPublisher
@@ -283,7 +284,8 @@ class RapAudioDemoDependencies:
 
             attempt("playback close", self.playback.close)
             attempt("controller close", self.controller.close)
-            attempt("coordinator close", self.coordinator.close)
+            if self.coordinator is not None:
+                attempt("coordinator close", self.coordinator.close)
             attempt("dispatcher close", self.dispatcher.flush_and_close)
             if self.recorder is not None:
                 attempt("recorder close", self.recorder.close)

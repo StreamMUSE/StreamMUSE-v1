@@ -61,6 +61,11 @@ class RapAudioFactories:
 
         return ProceduralBoomBapRenderer(seed=seed)
 
+    def create_remote_client(self, *, base_url: str, clock: Callable[[], float]):
+        from streammuse.infrastructure.rap.remote_chunk_client import RemoteChunkClient
+
+        return RemoteChunkClient(base_url, clock=clock)
+
     def create_sink(
         self,
         *,
@@ -100,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-count", type=int, default=8)
     parser.add_argument("--lookahead-bars", type=int, default=2)
     parser.add_argument("--audio-output", choices=("none", "live", "wav", "composite"), default="none")
+    parser.add_argument("--rap-audio-renderer", choices=("espeak", "moss_aligned_remote"), default="espeak")
+    parser.add_argument("--rap-render-url", default="http://127.0.0.1:8020")
+    parser.add_argument("--rap-render-profile", choices=("realtime",), default="realtime")
+    parser.add_argument("--rap-render-startup-timeout", type=float, default=120.0)
+    parser.add_argument("--rap-render-rolling-timeout", type=float, default=5.0)
     parser.add_argument("--tempo", type=float, default=None, help="Override the scenario playback tempo")
     parser.add_argument("--audio-device", default=None)
     parser.add_argument("--sample-rate", type=int, default=48_000)
@@ -156,6 +166,24 @@ def build_demo(
             "terminal_detail": args.terminal_detail,
         }
     )
+    if args.rap_audio_renderer == "moss_aligned_remote":
+        manifest["generator_config"] = {
+            "name": "remote_service",
+            "candidate_count": None,
+            "prompt_schema_version": "remote_chunk_v1",
+            "candidate_parser_version": "remote_chunk_v1",
+            "temperature": None,
+            "output_length_policy": None,
+        }
+        manifest["model_config"] = {
+            "name": "remote_service",
+            "base_url": args.rap_render_url,
+            "timeout_seconds": args.rap_render_rolling_timeout,
+            "max_retries": None,
+            "retry_delay_seconds": None,
+            "top_p": None,
+            "extra_payload": {"profile": args.rap_render_profile},
+        }
     if args.audio_output != "none":
         return _build_audio_demo(
             args,
@@ -275,8 +303,11 @@ def _build_audio_demo(
 
     from streammuse.application.rap.audio_coordination import BarAudioCoordinator
     from streammuse.application.rap.bar_renderer import DeterministicRapBarRenderer
+    from streammuse.application.rap.chunk_audio import RemoteMossChunkPreparationStrategy
+    from streammuse.application.rap.chunk_realtime import RollingRapChunkController
+    from streammuse.application.rap.audio_service import RapAudioController
     from streammuse.application.rap.playback import RapPlaybackService
-    from streammuse.domain.rap import AudioFormat
+    from streammuse.domain.rap import AudioFormat, RemoteCandidatePolicy
 
     audio_format = AudioFormat(sample_rate_hz=args.sample_rate, channels=2, sample_width_bytes=4)
     audio_file = args.audio_file or session_dir / "mixed.wav"
@@ -290,13 +321,22 @@ def _build_audio_demo(
         "voice_pitch": args.voice_pitch,
         "max_compression": args.max_compression,
         "audio_device": args.audio_device,
+        "renderer": args.rap_audio_renderer,
+        "render_url": args.rap_render_url if args.rap_audio_renderer == "moss_aligned_remote" else None,
+        "render_profile": args.rap_render_profile if args.rap_audio_renderer == "moss_aligned_remote" else None,
+        "render_startup_timeout_seconds": args.rap_render_startup_timeout,
+        "render_rolling_timeout_seconds": args.rap_render_rolling_timeout,
         "artifact_paths": {"wav": str(audio_file)} if args.audio_output in ("wav", "composite") else {},
     }
-    generator, stop_primary, close_primary = _build_generator(args)
+    generator = stop_primary = close_primary = None
+    if args.rap_audio_renderer == "espeak":
+        generator, stop_primary, close_primary = _build_generator(args)
     recorder = None
     dispatcher = None
     coordinator = None
     playback = None
+    controller: RapAudioController | None = None
+    remote_client = None
     try:
         recorder = RapSessionRecorder(session_dir, manifest)
         publisher = RapEventPublisher(str(manifest["session_id"]))
@@ -324,14 +364,12 @@ def _build_audio_demo(
             pitch=args.voice_pitch,
             max_compression=args.max_compression,
         )
-        coordinator = BarAudioCoordinator(renderer, publisher=publisher)
         sink = audio_factories.create_sink(
             output=args.audio_output,
             audio_format=audio_format,
             audio_file=audio_file,
             audio_device=args.audio_device,
         )
-        controller: RollingRapController
         playback = RapPlaybackService(
             tempo=tempo,
             sink=sink,
@@ -339,31 +377,74 @@ def _build_audio_demo(
             on_tick=lambda tick: controller.on_tick(tick),
             monotonic=clock,
         )
-        controller = RollingRapController(
-            tempo=tempo,
-            scenario=scenario,
-            templates=BUILTIN_TEMPLATES,
-            fallback_catalog=fallbacks,
-            analyzer=analyzer,
-            weights=ScoreWeights(),
-            publisher=publisher,
-            primary_generator=generator,
-            candidate_count=args.candidate_count,
-            lookahead_bars=args.lookahead_bars,
-            minimum_score=args.minimum_score,
-            seed=args.seed,
-            planning_bar_limit=args.max_bars or (None if scenario.loop else scenario.total_bars),
-            stop_primary=stop_primary,
-            close_primary=close_primary,
-            audio_coordinator=coordinator,
-            on_audio_committed=playback.enqueue,
-            monotonic=clock,
-        )
+        planning_bar_limit = args.max_bars or (None if scenario.loop else scenario.total_bars)
+        if args.rap_audio_renderer == "espeak":
+            coordinator = BarAudioCoordinator(renderer, publisher=publisher)
+            controller = RollingRapController(
+                tempo=tempo,
+                scenario=scenario,
+                templates=BUILTIN_TEMPLATES,
+                fallback_catalog=fallbacks,
+                analyzer=analyzer,
+                weights=ScoreWeights(),
+                publisher=publisher,
+                primary_generator=generator,
+                candidate_count=args.candidate_count,
+                lookahead_bars=args.lookahead_bars,
+                minimum_score=args.minimum_score,
+                seed=args.seed,
+                planning_bar_limit=planning_bar_limit,
+                stop_primary=stop_primary,
+                close_primary=close_primary,
+                audio_coordinator=coordinator,
+                on_audio_committed=playback.enqueue,
+                monotonic=clock,
+            )
+        else:
+            remote_client = audio_factories.create_remote_client(base_url=args.rap_render_url, clock=clock)
+            try:
+                health = remote_client.health(timeout_seconds=min(5.0, args.rap_render_startup_timeout))
+                if not health.ready:
+                    raise OSError("remote rap renderer is not ready")
+                strategy = RemoteMossChunkPreparationStrategy(
+                    client=remote_client,
+                    audio_format=audio_format,
+                    drums=drums,
+                    prosody=analyzer,
+                    tempo=tempo,
+                    clock=clock,
+                )
+                controller = RollingRapChunkController(
+                    tempo=tempo,
+                    scenario=scenario,
+                    templates=BUILTIN_TEMPLATES,
+                    fallback_catalog=fallbacks,
+                    analyzer=analyzer,
+                    fallback_renderer=renderer,
+                    preparation_strategy=strategy,
+                    publisher=publisher,
+                    enqueue=playback.enqueue,
+                    session_id=str(manifest["session_id"]),
+                    policy=RemoteCandidatePolicy.realtime_default(),
+                    seed=args.seed,
+                    planning_bar_limit=planning_bar_limit,
+                    startup_timeout_seconds=args.rap_render_startup_timeout,
+                    rolling_timeout_seconds=args.rap_render_rolling_timeout,
+                    monotonic=clock,
+                )
+            except BaseException:
+                remote_client.close()
+                remote_client = None
+                raise
     except BaseException:
         if playback is not None:
             playback.close()
+        if controller is not None:
+            controller.close()
         elif coordinator is not None:
             coordinator.close()
+        elif remote_client is not None:
+            remote_client.close()
         if dispatcher is not None:
             dispatcher.flush_and_close()
         if recorder is not None:
@@ -426,6 +507,19 @@ def _validate_audio_options(args: argparse.Namespace, *, require_external: bool)
         raise ValueError("voice-pitch must be between 0 and 99")
     if not isfinite(args.max_compression) or not 1.0 <= args.max_compression <= 4.0:
         raise ValueError("max-compression must be between 1.0 and 4.0")
+    if args.rap_audio_renderer == "moss_aligned_remote":
+        if args.audio_output == "none":
+            raise ValueError("moss_aligned_remote requires audio output")
+        if args.max_bars and args.max_bars % 2:
+            raise ValueError("remote max-bars must be zero or even")
+        if args.lookahead_bars != 2:
+            raise ValueError("moss_aligned_remote requires lookahead-bars 2")
+        if not isinstance(args.rap_render_url, str) or not args.rap_render_url:
+            raise ValueError("rap-render-url must not be empty")
+        if not isfinite(args.rap_render_startup_timeout) or args.rap_render_startup_timeout <= 0:
+            raise ValueError("rap-render-startup-timeout must be positive")
+        if not isfinite(args.rap_render_rolling_timeout) or args.rap_render_rolling_timeout <= 0:
+            raise ValueError("rap-render-rolling-timeout must be positive")
     if args.audio_output == "none" or not require_external:
         return
     if not isinstance(args.voice, str) or not args.voice:
