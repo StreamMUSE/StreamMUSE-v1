@@ -28,6 +28,7 @@ from streammuse.domain.rap import (
     RemoteRapChunkManifest,
     RemoteRapChunkRequest,
     RemoteSelectedBar,
+    REMOTE_CHUNK_ARTIFACT_IDS,
     ScheduledSyllable,
     Syllable,
     materialize_flow,
@@ -349,6 +350,7 @@ def test_remote_chunk_preparation_builds_truthful_end_to_end_monitoring_evidence
         "vocal_sha256": package.manifest.vocal_sha256,
     }
     assert diagnostics["artifact_refs"]["manifest"] == "manifest.json"
+    assert diagnostics["artifact_refs"] == dict(REMOTE_CHUNK_ARTIFACT_IDS)
     assert diagnostics["transfer"]["response_bytes"] == len(package.vocal_wav)
     encoded = repr(diagnostics)
     assert "source_anchors" not in encoded
@@ -448,8 +450,24 @@ def test_remote_chunk_rejects_selected_schedule_mismatch_as_preparation_failure(
         clock=lambda: 0.0,
     )
 
-    with pytest.raises(RemoteChunkPreparationError, match="selected schedule"):
+    with pytest.raises(RemoteChunkPreparationError, match="selected schedule") as caught:
         strategy.prepare(request, deadline_monotonic=10.0)
+
+    assert type(caught.value).__name__ == "RemoteChunkResponseRejected"
+    evidence = caught.value.evidence  # type: ignore[attr-defined]
+    assert evidence.request_id == request.request_id
+    assert evidence.chunk_index == request.chunk_index
+    assert evidence.diagnostics["candidate_counts"] == {
+        "requested": 2,
+        "parseable": 2,
+        "valid": 2,
+        "selectable": 2,
+    }
+    assert evidence.diagnostics["artifact_refs"] == dict(REMOTE_CHUNK_ARTIFACT_IDS)
+    encoded = repr(evidence.diagnostics)
+    assert "source_anchors" not in encoded
+    assert "target_anchors" not in encoded
+    assert "RIFF" not in encoded
 
 
 def test_remote_chunk_rejects_selected_text_that_disagrees_with_mac_reanalysis() -> None:

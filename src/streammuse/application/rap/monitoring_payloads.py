@@ -8,7 +8,12 @@ import json
 from math import isfinite
 from typing import Any
 
-from streammuse.domain.rap import FlowTemplate, RemoteRapChunkRequest, ScheduledSyllable
+from streammuse.domain.rap import (
+    FlowTemplate,
+    REMOTE_CHUNK_ARTIFACT_IDS,
+    RemoteRapChunkRequest,
+    ScheduledSyllable,
+)
 
 
 _MAX_CHUNK_LINES = 2
@@ -17,6 +22,7 @@ _MAX_FLOW_SLOTS = 32
 _MAX_CONTEXT_LINES = 4
 _MAX_COMPONENT_SCORES = 16
 _MAX_DIAGNOSTIC_ITEMS = 8
+_MAX_ARTIFACT_REFS = len(REMOTE_CHUNK_ARTIFACT_IDS)
 _MAX_LINE_BYTES = 512
 _MAX_WARNING_BYTES = 256
 _MAX_NAME_BYTES = 128
@@ -288,7 +294,9 @@ def bounded_chunk_event_payload(value: object) -> dict[str, Any]:
         "stretch_warnings": stretch_warnings,
         "warnings": warnings,
         "hashes": hashes,
-        "artifact_refs": _bounded_string_mapping(_safe_get(payload, "artifact_refs")),
+        "artifact_refs": _bounded_string_mapping(
+            _safe_get(payload, "artifact_refs"), limit=_MAX_ARTIFACT_REFS
+        ),
         "transfer_bytes": transfer_bytes,
         "failure_reason": _bounded_text(
             _first_value(payload, ("failure_reason", "error_message")),
@@ -457,11 +465,13 @@ def _bounded_integer_mapping(value: object) -> dict[str, int]:
     }
 
 
-def _bounded_string_mapping(value: object) -> dict[str, str]:
+def _bounded_string_mapping(
+    value: object, *, limit: int = _MAX_DIAGNOSTIC_ITEMS
+) -> dict[str, str]:
     mapping = _mapping(value)
     return {
         bounded_key: bounded_item
-        for key, item in _safe_items(mapping, _MAX_DIAGNOSTIC_ITEMS)
+        for key, item in _safe_items(mapping, limit)
         if (bounded_key := _bounded_text(key, _MAX_NAME_BYTES)) is not None
         if (bounded_item := _bounded_text(item, _MAX_REFERENCE_BYTES)) is not None
     }
@@ -576,7 +586,9 @@ def _enforce_serialized_ceiling(value: dict[str, Any]) -> dict[str, Any]:
         ],
         "warnings": [_bounded_text(item, 256) for item in value["warnings"][:4]],
         "hashes": dict(list(value["hashes"].items())[:4]),
-        "artifact_refs": dict(list(value["artifact_refs"].items())[:4]),
+        "artifact_refs": dict(
+            list(value["artifact_refs"].items())[:_MAX_ARTIFACT_REFS]
+        ),
     }
     if _encoded_size(compact) <= MAX_BOUNDED_CHUNK_EVENT_BYTES:
         return compact
@@ -603,7 +615,7 @@ def _enforce_serialized_ceiling(value: dict[str, Any]) -> dict[str, Any]:
         "stretch_warnings": [],
         "warnings": [],
         "hashes": {},
-        "artifact_refs": {},
+        "artifact_refs": value.get("artifact_refs", {}),
         "transfer_bytes": value.get("transfer_bytes"),
         "failure_reason": _bounded_text(value.get("failure_reason"), 256),
     }

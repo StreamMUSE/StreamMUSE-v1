@@ -834,7 +834,7 @@ function connect() {
   };
   socket.onclose = () => {
     monitor.socket = null;
-    if (monitor.closing || (monitor.snapshot && monitor.snapshot.stopped)) {
+    if (monitor.closing) {
       connectionState("stopped", "Stopped");
       return;
     }

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+from dataclasses import dataclass
 from math import gcd, isclose, isfinite
+from types import MappingProxyType
 from time import monotonic
 from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 import wave
@@ -46,6 +48,41 @@ _REMOTE_SAMPLE_RATE_HZ = 24_000
 
 class RemoteChunkPreparationError(RuntimeError):
     """A remote chunk cannot safely replace the already-prepared fallback."""
+
+
+@dataclass(frozen=True)
+class RemoteChunkRejectionEvidence:
+    """Bounded diagnostics retained from a decoded response rejected on the Mac."""
+
+    request_id: str
+    chunk_index: int
+    diagnostics: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if not self.request_id:
+            raise ValueError("rejection evidence requires a request ID")
+        if type(self.chunk_index) is not int or self.chunk_index < 0:
+            raise ValueError("rejection evidence requires a non-negative chunk index")
+        if not isinstance(self.diagnostics, Mapping):
+            raise ValueError("rejection evidence diagnostics must be a mapping")
+        object.__setattr__(
+            self,
+            "diagnostics",
+            MappingProxyType(dict(self.diagnostics)),
+        )
+
+
+class RemoteChunkResponseRejected(RemoteChunkPreparationError):
+    """A strictly decoded response failed Mac acceptance with evidence retained."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        evidence: RemoteChunkRejectionEvidence,
+    ) -> None:
+        super().__init__(message)
+        self.evidence = evidence
 
 
 class _RemoteChunkTransport(Protocol):
@@ -118,7 +155,12 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             raise RemoteChunkPreparationError("remote chunk transport failed") from error
         mac_started = self._clock()
         if mac_started >= deadline_monotonic:
-            raise RemoteChunkPreparationError("remote chunk arrived after its useful deadline")
+            raise self._response_rejection(
+                "remote chunk arrived after its useful deadline",
+                request,
+                response,
+                mac_validation_mix_ms=0.0,
+            )
         try:
             self._validate_manifest(response.package, request)
             vocal_samples = _decode_pcm16_mono_wav(response.package.vocal_wav, request.expected_frame_count)
@@ -132,27 +174,82 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 frame_counts,
                 observed_latency_ms,
             )
-        except RemoteChunkPreparationError:
-            raise
+        except RemoteChunkPreparationError as error:
+            failed_at = self._clock()
+            raise self._response_rejection(
+                str(error),
+                request,
+                response,
+                mac_validation_mix_ms=max(
+                    0.0, (failed_at - mac_started) * 1000.0
+                ),
+            ) from error
         except (EOFError, ValueError, wave.Error) as error:
-            raise RemoteChunkPreparationError("remote chunk package failed Mac validation") from error
+            failed_at = self._clock()
+            raise self._response_rejection(
+                "remote chunk package failed Mac validation",
+                request,
+                response,
+                mac_validation_mix_ms=max(
+                    0.0, (failed_at - mac_started) * 1000.0
+                ),
+            ) from error
         mac_completed = self._clock()
+        monitoring_evidence = self._monitoring_evidence(
+            request,
+            response,
+            mac_validation_mix_ms=max(
+                0.0, (mac_completed - mac_started) * 1000.0
+            ),
+        )
         if mac_completed >= deadline_monotonic:
-            raise RemoteChunkPreparationError("remote chunk preparation missed its useful deadline")
+            raise RemoteChunkResponseRejected(
+                "remote chunk preparation missed its useful deadline",
+                evidence=RemoteChunkRejectionEvidence(
+                    request.request_id,
+                    request.chunk_index,
+                    monitoring_evidence,
+                ),
+            )
         prepared = PreparedRapChunk(
             request_id=request.request_id,
             chunk_index=request.chunk_index,
             renderer="moss_aligned_remote",
             bars=bars,
-            diagnostics=self._monitoring_evidence(
-                request,
-                response,
-                mac_validation_mix_ms=max(0.0, (mac_completed - mac_started) * 1000.0),
-            ),
+            diagnostics=monitoring_evidence,
         )
         if self._clock() >= deadline_monotonic:
-            raise RemoteChunkPreparationError("remote chunk preparation missed its useful deadline")
+            raise RemoteChunkResponseRejected(
+                "remote chunk preparation missed its useful deadline",
+                evidence=RemoteChunkRejectionEvidence(
+                    request.request_id,
+                    request.chunk_index,
+                    monitoring_evidence,
+                ),
+            )
         return prepared
+
+    @classmethod
+    def _response_rejection(
+        cls,
+        message: str,
+        request: RemoteRapChunkRequest,
+        response: RemoteChunkResponse,
+        *,
+        mac_validation_mix_ms: float,
+    ) -> RemoteChunkResponseRejected:
+        return RemoteChunkResponseRejected(
+            message,
+            evidence=RemoteChunkRejectionEvidence(
+                request.request_id,
+                request.chunk_index,
+                cls._monitoring_evidence(
+                    request,
+                    response,
+                    mac_validation_mix_ms=mac_validation_mix_ms,
+                ),
+            ),
+        )
 
     @staticmethod
     def _monitoring_evidence(

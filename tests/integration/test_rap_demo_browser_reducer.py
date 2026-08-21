@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import subprocess
 
+from streammuse.domain.rap import REMOTE_CHUNK_ARTIFACT_IDS
+
 
 ROOT = Path(__file__).resolve().parents[2]
 REDUCER = ROOT / "src/streammuse/presentation/rap_demo/static/js/rap-demo-state.js"
@@ -148,6 +150,144 @@ def test_websocket_snapshot_path_updates_remote_panel_directly() -> None:
     assert "StreamMuseRapState.applyRemoteSnapshot(message.payload)" in snapshot_branch
 
 
+def test_stopped_disconnect_reconnects_and_accepts_later_restart_snapshot() -> None:
+    program = r"""
+const fs = require("fs");
+const vm = require("vm");
+
+class FakeClassList {
+  add() {}
+  remove() {}
+  toggle() {}
+}
+class FakeNode {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.classList = new FakeClassList();
+    this.style = { setProperty() {} };
+    this.listeners = {};
+    this.options = [];
+    this.parentElement = this;
+    this.textContent = "";
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+    this.clientWidth = 0;
+    this.offsetLeft = 0;
+    this.offsetWidth = 0;
+  }
+  addEventListener(type, handler) { this.listeners[type] = handler; }
+  append(...children) {
+    for (const child of children) {
+      if (child && typeof child === "object") child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+  replaceChildren(...children) { this.children = []; this.append(...children); }
+  setAttribute() {}
+  removeAttribute() {}
+  remove() {}
+}
+
+global.window = global;
+global.Node = FakeNode;
+global.location = { protocol: "http:", host: "127.0.0.1:8012" };
+const nodes = new Map();
+global.document = {
+  getElementById(id) {
+    if (!nodes.has(id)) nodes.set(id, new FakeNode());
+    return nodes.get(id);
+  },
+  createElement() { return new FakeNode(); },
+  querySelectorAll() { return []; },
+};
+global.window.addEventListener = () => {};
+
+let nextTimer = 1;
+const timers = new Map();
+global.window.setTimeout = (callback, delay) => {
+  const id = nextTimer++;
+  timers.set(id, { callback, delay, cleared: false });
+  return id;
+};
+global.window.clearTimeout = (id) => {
+  const timer = timers.get(id);
+  if (timer) timer.cleared = true;
+};
+
+const appliedSnapshots = [];
+global.window.StreamMuseRapState = {
+  applyRemoteSnapshot(snapshot) { appliedSnapshots.push(snapshot); },
+  reduceEventCache(events) { return events; },
+  renderRemoteChunk() {},
+};
+let stateSnapshot = {
+  stopped: true,
+  session_id: "session-a",
+  last_sequence: 10,
+  coordinator_epoch: 1,
+  remote_chunk: null,
+  recent_events: [],
+  audio: { state: "stopped" },
+};
+global.fetch = async (url) => {
+  if (url === "/api/state") return { ok: true, json: async () => stateSnapshot };
+  if (url === "/api/session") return { ok: true, json: async () => ({}) };
+  if (url === "/api/control/start") {
+    return { ok: true, status: 202, json: async () => ({ state: "priming" }) };
+  }
+  throw new Error(`unexpected fetch ${url}`);
+};
+
+const sockets = [];
+global.WebSocket = class FakeWebSocket {
+  constructor(url) { this.url = url; sockets.push(this); }
+  close() { this.closed = true; }
+};
+
+vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"), { filename: process.argv[1] });
+
+(async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  sockets[0].onopen();
+  sockets[0].onclose();
+  const reconnect = [...timers.values()].find((timer) => timer.delay === 1000 && !timer.cleared);
+  nodes.get("start-runtime").listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  if (reconnect) reconnect.callback();
+  const restarted = {
+    stopped: false,
+    session_id: "session-b",
+    last_sequence: 1,
+    coordinator_epoch: 2,
+    remote_chunk: null,
+    recent_events: [],
+    audio: { state: "priming" },
+  };
+  if (sockets[1]) {
+    sockets[1].onmessage({ data: JSON.stringify({ type: "snapshot", payload: restarted }) });
+  }
+  process.stdout.write(JSON.stringify({
+    reconnectScheduled: Boolean(reconnect),
+    socketCount: sockets.length,
+    lastSnapshot: appliedSnapshots.at(-1),
+  }));
+})();
+"""
+    completed = subprocess.run(
+        ["node", "-e", program, str(MAIN_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    assert result["reconnectScheduled"] is True
+    assert result["socketCount"] == 2
+    assert result["lastSnapshot"]["session_id"] == "session-b"
+    assert result["lastSnapshot"]["stopped"] is False
+
+
 def test_browser_chunk_projection_and_event_cache_drop_unbounded_artifact_bodies() -> None:
     program = r"""
 const fs = require("fs");
@@ -155,6 +295,18 @@ const vm = require("vm");
 global.window = global;
 vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"), { filename: process.argv[1] });
 const api = global.StreamMuseRapState;
+const artifactRefs = {
+  request: "request.json",
+  candidate_ledger: "candidate_ledger.json",
+  source_wav: "source.wav",
+  mms_alignment: "mms_alignment.json",
+  alignment: "alignment.json",
+  aligned_wav: "aligned.wav",
+  vocal_wav: "vocal.wav",
+  manifest: "manifest.json",
+  server_timing: "server_timing.json",
+  response_package: "response.zip",
+};
 const event = {
   sequence: 12,
   event_type: "chunk_committed",
@@ -193,7 +345,7 @@ const event = {
     stretch_warnings: ["stretch_ratio_high:1.22"],
     warnings: ["alignment_fallback:one_word"],
     hashes: { vocal_sha256: "vocal-hash" },
-    artifact_refs: { manifest: "/h200/request-2/manifest.json" },
+    artifact_refs: artifactRefs,
     transfer_bytes: 262144,
     failure_reason: null,
     raw_wav: "RIFF-forbidden",
@@ -230,6 +382,7 @@ process.stdout.write(JSON.stringify({ projected, cached }));
         "confidence": 0.94,
         "fallback_counts": {"transcript_proportional": 1},
     }
+    assert projected["artifact_refs"] == dict(REMOTE_CHUNK_ARTIFACT_IDS)
     encoded = json.dumps(result)
     assert "RIFF-forbidden" not in encoded
     assert "forbidden full ledger" not in encoded

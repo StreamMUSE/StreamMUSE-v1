@@ -12,6 +12,7 @@ from typing import Callable, Mapping
 
 from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.audio_service import RapBarRenderer, RapChunkPreparationStrategy
+from streammuse.application.rap.chunk_audio import RemoteChunkResponseRejected
 from streammuse.application.rap.monitoring import RapEventPublisher
 from streammuse.application.rap.monitoring_payloads import (
     bounded_chunk_event_payload,
@@ -43,8 +44,9 @@ _MAX_EVENT_NAME_BYTES = 64
 
 @dataclass(frozen=True)
 class _RemoteCompletion:
-    chunk: object
+    chunk: object | None
     completed_monotonic: float
+    rejection: RemoteChunkResponseRejected | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class _ChunkWork:
     remote_started: bool = False
     accepted: PreparedRapChunk | None = None
     observed: PreparedRapChunk | None = None
+    returned_diagnostics: Mapping[str, object] | None = None
     rejection_state: str | None = None
     rejection_message: str | None = None
     deadline_slack_ms: float | None = None
@@ -577,7 +580,12 @@ class RollingRapChunkController:
                 or self._closed
             ):
                 raise CancelledError
-        chunk = self._strategy.prepare(work.request, deadline_monotonic=work.deadline_monotonic)
+        try:
+            chunk = self._strategy.prepare(
+                work.request, deadline_monotonic=work.deadline_monotonic
+            )
+        except RemoteChunkResponseRejected as rejection:
+            return _RemoteCompletion(None, self._clock(), rejection)
         return _RemoteCompletion(chunk, self._clock())
 
     def _wait_for_startup(self, work: _ChunkWork) -> tuple[PreparedRapChunk | None, bool]:
@@ -630,6 +638,38 @@ class RollingRapChunkController:
         if work.accepted is not None:
             return work.accepted
         if work.rejection_state is not None:
+            return None
+        if completion.rejection is not None:
+            rejection = completion.rejection
+            evidence = rejection.evidence
+            if (
+                evidence.request_id == work.request.request_id
+                and evidence.chunk_index == work.request.chunk_index
+            ):
+                work.returned_diagnostics = evidence.diagnostics
+            slack_ms = (
+                work.deadline_monotonic - completion.completed_monotonic
+            ) * 1000.0
+            work.deadline_slack_ms = slack_ms
+            self._event(
+                RapEventType.CHUNK_REMOTE_COMPLETED,
+                bar=work.start_bar,
+                request_id=work.request.request_id,
+                payload=self._chunk_payload(
+                    work,
+                    state="returned_rejected",
+                    renderer_decision="moss_aligned_remote",
+                    deadline_slack_ms=slack_ms,
+                ),
+            )
+            self._reject(
+                work,
+                "late"
+                if completion.completed_monotonic >= work.deadline_monotonic
+                else "invalid",
+                self._error_message(rejection),
+                slack_ms,
+            )
             return None
         chunk = completion.chunk
         invalid = self._validation_error(work, chunk)
@@ -994,9 +1034,23 @@ class RollingRapChunkController:
         warnings: tuple[str, ...] = (),
     ) -> dict[str, object]:
         chunk = chunk if chunk is not None else work.observed
+        diagnostics = (
+            chunk.diagnostics
+            if chunk is not None
+            else work.returned_diagnostics or {}
+        )
         if selected_lines is None:
-            selected_lines = () if chunk is None else tuple(item.text for item in chunk.bars)
-        diagnostics = chunk.diagnostics if chunk is not None else {}
+            if chunk is not None:
+                selected_lines = tuple(item.text for item in chunk.bars)
+            elif isinstance(diagnostics, Mapping):
+                returned_lines = diagnostics.get("selected_lines")
+                selected_lines = (
+                    tuple(returned_lines[:2])
+                    if isinstance(returned_lines, (list, tuple))
+                    else ()
+                )
+            else:
+                selected_lines = ()
         raw: dict[str, object] = {
             "state": state,
             "renderer_decision": renderer_decision,

@@ -8,6 +8,8 @@ Task 4 revision `05fa3d84e6244c3d24fc60c60cc88d962bf8c3de`. Production telemetry
 at the remote wire/renderer and Mac preparation boundaries, survives the real
 controller and canonical publisher, and is ordered correctly across browser
 resets, reconnect snapshots, coordinator epochs, and session restarts.
+The fresh rereview corrections were developed against integrated revision
+`d67360bae22465c422f2243ff32ac583634ae2fd`.
 
 The permitted minimum telemetry plumbing changed the remote diagnostics
 contract, MOSS result metadata, orchestrator, Mac preparation strategy,
@@ -182,6 +184,28 @@ sequences survived sanitization. GREEN: the same command completed with
 `3 passed` after explicit nonnegative duration/timing ranges and safe-integer
 event identity handling were added. Deadline slack remains signed by design.
 
+### Fresh Rereview: Rejected Evidence, Reconnect, And Artifact IDs
+
+RED commands:
+
+```text
+uv run pytest -q tests/unit/application/rap/test_chunk_audio.py::test_remote_chunk_rejects_selected_schedule_mismatch_as_preparation_failure tests/unit/application/rap/test_chunk_realtime.py::test_real_mac_rejection_retains_returned_evidence_through_fallback_recording tests/unit/application/rap/test_monitoring_payloads.py::test_chunk_event_payload_preserves_all_versioned_artifact_references
+uv run pytest -q tests/integration/test_rap_demo_browser_reducer.py::test_stopped_disconnect_reconnects_and_accepts_later_restart_snapshot tests/integration/test_rap_demo_browser_reducer.py::test_browser_chunk_projection_and_event_cache_drop_unbounded_artifact_bodies
+```
+
+The Python RED runs exposed an untyped preparation error, no completed event
+for a decoded-but-rejected response, and only eight retained artifact IDs. The
+browser RED runs exposed a stopped snapshot suppressing reconnection and the
+same eight-entry truncation of the versioned artifact map.
+
+GREEN command:
+
+```text
+uv run pytest -q tests/unit/application/rap/test_chunk_audio.py::test_remote_chunk_rejects_selected_schedule_mismatch_as_preparation_failure tests/unit/application/rap/test_chunk_realtime.py::test_real_mac_rejection_retains_returned_evidence_through_fallback_recording tests/unit/application/rap/test_monitoring_payloads.py::test_chunk_event_payload_preserves_all_versioned_artifact_references tests/integration/test_rap_demo_browser_reducer.py::test_stopped_disconnect_reconnects_and_accepts_later_restart_snapshot tests/integration/test_rap_demo_browser_reducer.py::test_browser_chunk_projection_and_event_cache_drop_unbounded_artifact_bodies
+```
+
+Result: `5 passed in 0.83s`.
+
 ## Implementation
 
 - `streammuse.rap_chunk_monitor.v1` is a strict nested wire schema for alignment
@@ -191,11 +215,14 @@ event identity handling were added. Deadline slack remains signed by design.
   manifest, transfer measurements, and Mac validation/mix timing.
 - Controller chunk events pass that production summary through the canonical
   publisher and recorder. Rejections carry an explicit failure reason while
-  retaining bounded returned evidence when one exists.
+  retaining bounded returned manifest evidence through a typed rejection when
+  package decoding succeeded; rejected audio still activates local fallback.
 - Chunk publication and both state projectors apply one idempotent whitelist
   before data enters event, terminal, or browser history.
 - Live state is limited to two selected lines, two flows, 32 slots per flow,
-  four context lines, 16 component scores, and eight diagnostic/map entries.
+  four context lines, 16 component scores, and eight generic diagnostic/map
+  entries. The explicit versioned artifact map separately retains all ten
+  stable IDs and remains capped at exactly that contract size.
 - Stage names are canonicalized to generation, evaluation, MOSS, aligner, R3,
   package, transfer, Mac, and end-to-end total. Manifest `warp` and `packaging`
   aliases are projected as R3 and package.
@@ -205,7 +232,8 @@ event identity handling were added. Deadline slack remains signed by design.
   are bounded, with a tested 24,000-byte serialized ceiling in Python and JS.
 - Browser ordering uses session ID, coordinator epoch, and strict sequence;
   reset/session changes and authoritative null snapshots clear the panel, and
-  websocket snapshots update it directly.
+  websocket snapshots update it directly. A stopped runtime snapshot does not
+  suppress transport reconnection, so a later restart snapshot can be applied.
 - The terminal dashboard and stream name local eSpeak fallback commitments and
   display request/chunk lifecycle, target and selected schedules, all bounded
   research evidence, and failure.
@@ -250,7 +278,7 @@ Focused Task 7 gate:
 uv run pytest -q tests/unit/domain/rap/test_remote_chunk.py tests/unit/application/rap/test_chunk_orchestration.py tests/unit/infrastructure/rap/test_moss_aligned_phrase.py tests/unit/infrastructure/rap/test_chunk_package.py tests/unit/application/rap/test_chunk_audio.py tests/unit/application/rap/test_chunk_realtime.py tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_monitoring.py tests/unit/presentation/rap_demo/test_terminal.py tests/unit/presentation/rap_demo/test_terminal_state.py tests/unit/presentation/rap_demo/test_terminal_dashboard.py tests/unit/presentation/rap_demo/test_terminal_stream.py tests/unit/presentation/rap_demo/test_server.py tests/integration/test_rap_demo_browser_reducer.py tests/unit/presentation/test_rap_render_server.py
 ```
 
-Result: `332 passed in 4.53s`.
+Result: `343 passed in 4.54s`.
 
 Existing eSpeak snapshot and regression gate:
 
@@ -258,12 +286,12 @@ Existing eSpeak snapshot and regression gate:
 uv run pytest -q tests/unit/infrastructure/rap/test_speech.py tests/unit/application/rap/test_audio_coordination.py tests/unit/presentation/rap_demo/test_cli.py tests/integration/test_realtime_rap_audio.py
 ```
 
-Result: `66 passed in 1.93s`.
+Result: `66 passed in 1.91s`.
 
 Static checks:
 
 ```text
-uv run ruff check src/streammuse/domain/rap/remote_chunk.py src/streammuse/domain/rap/__init__.py src/streammuse/application/rap/chunk_orchestration.py src/streammuse/infrastructure/rap/moss_aligned_phrase.py src/streammuse/application/rap/chunk_audio.py src/streammuse/application/rap/chunk_realtime.py src/streammuse/application/rap/monitoring_payloads.py src/streammuse/application/rap/monitoring.py src/streammuse/presentation/rap_demo/terminal_dashboard.py src/streammuse/presentation/rap_demo/terminal_stream.py tests/unit/domain/rap/test_remote_chunk.py tests/unit/application/rap/test_chunk_orchestration.py tests/unit/infrastructure/rap/test_moss_aligned_phrase.py tests/unit/infrastructure/rap/test_chunk_package.py tests/unit/application/rap/test_chunk_audio.py tests/unit/application/rap/test_chunk_realtime.py tests/unit/application/rap/test_monitoring_payloads.py tests/unit/application/rap/test_monitoring.py tests/integration/test_rap_demo_browser_reducer.py tests/unit/presentation/rap_demo/test_terminal_dashboard.py tests/unit/presentation/rap_demo/test_terminal_state.py tests/unit/presentation/rap_demo/test_terminal_stream.py
+uv run ruff check src/streammuse/application/rap/chunk_audio.py src/streammuse/application/rap/chunk_realtime.py src/streammuse/application/rap/monitoring_payloads.py tests/unit/application/rap/test_chunk_audio.py tests/unit/application/rap/test_chunk_realtime.py tests/unit/application/rap/test_monitoring_payloads.py tests/integration/test_rap_demo_browser_reducer.py
 node --check src/streammuse/presentation/rap_demo/static/js/rap-demo-state.js
 node --check src/streammuse/presentation/rap_demo/static/js/rap-demo.js
 git diff --check

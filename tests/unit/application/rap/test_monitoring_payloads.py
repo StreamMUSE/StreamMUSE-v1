@@ -11,7 +11,12 @@ from streammuse.application.rap.monitoring_payloads import (
     flow_template_payload,
     scheduled_syllables_payload,
 )
-from streammuse.domain.rap import BeatSlot, ScheduledSyllable, Syllable
+from streammuse.domain.rap import (
+    BeatSlot,
+    REMOTE_CHUNK_ARTIFACT_IDS,
+    ScheduledSyllable,
+    Syllable,
+)
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 
 
@@ -247,6 +252,14 @@ def test_chunk_event_payload_handles_hostile_numbers_and_mappings_without_raisin
     read_bomb = bounded_chunk_event_payload(_ReadBombMapping())
     assert read_bomb["state"] is None
     assert len(json.dumps(read_bomb).encode("utf-8")) <= MAX_BOUNDED_CHUNK_EVENT_BYTES
+
+
+def test_chunk_event_payload_preserves_all_versioned_artifact_references() -> None:
+    bounded = bounded_chunk_event_payload(
+        {"artifact_refs": REMOTE_CHUNK_ARTIFACT_IDS}
+    )
+
+    assert bounded["artifact_refs"] == dict(REMOTE_CHUNK_ARTIFACT_IDS)
 
 
 def test_chunk_event_payload_preserves_zero_budget_and_rejects_negative_durations() -> None:

@@ -12,6 +12,7 @@ import pytest
 
 import streammuse.application.rap.chunk_realtime as chunk_realtime_module
 from streammuse.application.rap.chunk_realtime import RollingRapChunkController
+from streammuse.application.rap.chunk_audio import RemoteMossChunkPreparationStrategy
 from streammuse.application.rap.monitoring import (
     RapEventDispatcher,
     RapEventPublisher,
@@ -28,6 +29,10 @@ from streammuse.domain.rap import (
     RapEventType,
     RapScenario,
     RemoteCandidatePolicy,
+    RemoteRapBarRequest,
+    RemoteRapChunkRequest,
+    RemoteSelectedBar,
+    REMOTE_CHUNK_ARTIFACT_IDS,
     ScheduledSyllable,
     ScenarioSegment,
     materialize_flow,
@@ -37,6 +42,14 @@ from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
 from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 from streammuse.infrastructure.rap.templates import TemplateCatalog
 from streammuse.infrastructure.rap.recorder import event_to_dict
+from streammuse.infrastructure.rap.chunk_package import DecodedRapChunkPackage
+from tests.unit.application.rap.test_chunk_audio import (
+    _FakeClient,
+    _FakeDrums,
+    _FakeProsody,
+    _flow,
+    _package,
+)
 
 
 class ManualClock:
@@ -234,14 +247,16 @@ def _controller(
     renderer: RecordingRenderer | None = None,
     on_enqueue=None,
     publisher=None,
+    template: FlowTemplate | None = None,
 ):
     clock = clock or ManualClock()
     executor = executor or ManualExecutor()
     renderer = renderer or RecordingRenderer()
     strategy = strategy or RecordingStrategy()
-    strategy.renderer = renderer
+    if hasattr(strategy, "renderer"):
+        strategy.renderer = renderer
     scenario = scenario or _scenario()
-    template = _template()
+    template = template or _template()
     templates = TemplateCatalog.from_templates((template,))
     analyzer = CmuProsodyAnalyzer()
     queued: list[PreparedRapBar] = []
@@ -892,6 +907,151 @@ def test_real_prepared_chunk_survives_controller_publisher_recorder_and_projecto
     encoded = json.dumps(projected)
     assert "source_anchors" not in encoded
     assert "target_anchors" not in encoded
+
+
+def test_real_mac_rejection_retains_returned_evidence_through_fallback_recording() -> None:
+    template = _flow("two_slot")
+    scenario = RapScenario(
+        scenario_id="mac-rejection",
+        tempo_bpm=120.0,
+        segments=(
+            ScenarioSegment(
+                0,
+                4,
+                "space",
+                template.template_id,
+                ("orbit", "signal", "orbit", "signal"),
+            ),
+        ),
+        loop=True,
+    )
+    request = RemoteRapChunkRequest.create(
+        session_id="session-1",
+        chunk_index=0,
+        bars=(
+            RemoteRapBarRequest(0, "space", template),
+            RemoteRapBarRequest(1, "space", template),
+        ),
+        tempo_bpm=120.0,
+        remaining_budget_ms=3_000,
+        policy=RemoteCandidatePolicy.realtime_default(),
+        context_lines=(),
+        seed=7,
+    )
+    package = _package(request)
+    original = package.manifest.selected_bars[0]
+    changed = replace(
+        original.scheduled[0],
+        syllable=replace(original.scheduled[0].syllable, word="wrong"),
+    )
+    rejected_selected = RemoteSelectedBar(
+        original.bar,
+        original.text,
+        original.flow_template_id,
+        (changed, original.scheduled[1]),
+        original.score,
+        original.diagnostics,
+    )
+    rejected_package = DecodedRapChunkPackage(
+        replace(
+            package.manifest,
+            selected_bars=(rejected_selected, package.manifest.selected_bars[1]),
+        ),
+        package.vocal_wav,
+    )
+    clock = ManualClock()
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(rejected_package),
+        tempo_bpm=120.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=clock,
+    )
+    canonical_events = []
+    recorded_rows = []
+    rejected_projections = []
+    projector = RapStateProjector()
+
+    def project(event) -> None:
+        projector(event)
+        if event.event_type == RapEventType.CHUNK_REMOTE_REJECTED:
+            rejected_projections.append(projector.snapshot()["remote_chunk"])
+
+    publisher = RapEventPublisher(
+        "session-1",
+        utc_now=lambda: "2026-08-21T00:00:00+00:00",
+        monotonic_ns=lambda: 123,
+    )
+    dispatcher = RapEventDispatcher(
+        publisher.queue,
+        sinks=(
+            canonical_events.append,
+            lambda event: recorded_rows.append(event_to_dict(event)),
+            project,
+        ),
+    )
+    dispatcher.start()
+    executor = ManualExecutor(run_submissions=1)
+    controller, queued, *_ = _controller(
+        strategy=strategy,
+        executor=executor,
+        clock=clock,
+        scenario=scenario,
+        publisher=publisher,
+        template=template,
+    )
+
+    controller.start()
+    dispatcher.flush_and_close()
+
+    assert [bar.source for bar in queued] == [
+        "prevalidated_fallback",
+        "prevalidated_fallback",
+    ]
+    returned = next(
+        event
+        for event in canonical_events
+        if event.event_type == RapEventType.CHUNK_REMOTE_COMPLETED
+    )
+    rejected = next(
+        event
+        for event in canonical_events
+        if event.event_type == RapEventType.CHUNK_REMOTE_REJECTED
+    )
+    assert returned.payload["state"] == "returned_rejected"
+    assert rejected.payload["candidate_counts"] == {
+        "requested": 2,
+        "parseable": 2,
+        "valid": 2,
+        "selectable": 2,
+    }
+    assert rejected.payload["selected_lines"] == ["orbit orbit", "orbit orbit"]
+    assert rejected.payload["stage_timings_ms"] == {
+        "generation": 1.0,
+        "evaluation": 1.0,
+        "moss": 1.0,
+        "aligner": 1.0,
+        "r3": 1.0,
+        "package": 1.0,
+        "transfer": 6.0,
+        "mac": 0.0,
+        "total": 6.0,
+    }
+    assert rejected.payload["artifact_refs"] == dict(REMOTE_CHUNK_ARTIFACT_IDS)
+    assert "selected schedule" in rejected.payload["failure_reason"]
+    recorded = next(
+        row for row in recorded_rows if row["event_type"] == "chunk_remote_rejected"
+    )
+    assert recorded["payload"] == rejected.payload
+    projected = rejected_projections[-1]
+    assert projected["renderer_decision"] == "prevalidated_fallback"
+    assert projected["candidate_counts"] == rejected.payload["candidate_counts"]
+    assert projected["artifact_refs"] == dict(REMOTE_CHUNK_ARTIFACT_IDS)
+    encoded = json.dumps(projected)
+    assert "source_anchors" not in encoded
+    assert "target_anchors" not in encoded
+    assert "RIFF" not in encoded
 
 
 def test_chunk_event_strings_and_nested_aggregates_have_hard_bounds() -> None:

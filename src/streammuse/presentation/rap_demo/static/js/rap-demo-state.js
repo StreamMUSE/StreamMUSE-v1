@@ -16,6 +16,7 @@
   const MAX_SUMMARY = 4096;
   const MAX_REFERENCE = 1024;
   const MAX_ITEMS = 8;
+  const MAX_ARTIFACT_REFS = 10;
   const MAX_NUMBER_MAGNITUDE = 1_000_000_000_000;
   const MAX_EVENT_BYTES = 24000;
   let latestRemoteChunk = null;
@@ -64,10 +65,10 @@
     return result;
   }
 
-  function boundedStringMap(value) {
+  function boundedStringMap(value, limit = MAX_ITEMS) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     const result = {};
-    for (const [key, item] of boundedEntries(value)) {
+    for (const [key, item] of boundedEntries(value, limit)) {
       if (typeof key === "string" && typeof item === "string") {
         result[key.slice(0, MAX_TEXT)] = item.slice(0, MAX_REFERENCE);
       }
@@ -179,7 +180,7 @@
       stretch_warnings: boundedStrings(source.stretch_warnings),
       warnings: boundedStrings(source.warnings),
       hashes: boundedStringMap(source.hashes),
-      artifact_refs: boundedStringMap(source.artifact_refs),
+      artifact_refs: boundedStringMap(source.artifact_refs, MAX_ARTIFACT_REFS),
       transfer_bytes: nonnegativeInteger(source.transfer_bytes),
       failure_reason: boundedText(source.failure_reason),
     };
@@ -214,7 +215,9 @@
       stretch_warnings: value.stretch_warnings.slice(0, 4).map((item) => item.slice(0, 256)),
       warnings: value.warnings.slice(0, 4).map((item) => item.slice(0, 256)),
       hashes: Object.fromEntries(boundedEntries(value.hashes, 4)),
-      artifact_refs: Object.fromEntries(boundedEntries(value.artifact_refs, 4)),
+      artifact_refs: Object.fromEntries(
+        boundedEntries(value.artifact_refs, MAX_ARTIFACT_REFS),
+      ),
     };
     if (encodedBytes(compact) <= MAX_EVENT_BYTES) return compact;
     return {
@@ -225,7 +228,6 @@
       stretch_warnings: [],
       warnings: [],
       hashes: {},
-      artifact_refs: {},
     };
   }
 
