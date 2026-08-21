@@ -392,6 +392,60 @@ def test_attempt_timeout_cancels_opus_decode_without_retry_or_worker_leak(
         client.close()
 
 
+def test_attempt_timeout_is_bounded_while_pre_header_worker_cleans_up() -> None:
+    request = _request()
+    package = _package(request)
+    entered_transport = Event()
+    release_headers = Event()
+    worker_finished = Event()
+    calls = 0
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered_transport.set()
+            release_headers.wait(2.0)
+            worker_finished.set()
+        return httpx.Response(
+            200,
+            headers={"content-type": RAP_CHUNK_PACKAGE_MEDIA_TYPE},
+            content=package,
+        )
+
+    client = _client(handler, clock=monotonic)
+    started = monotonic()
+    try:
+        with pytest.raises(RemoteChunkDeadlineExceeded, match="attempt timed out"):
+            client.prepare(
+                request,
+                timeout_seconds=0.05,
+                deadline_monotonic=monotonic() + 1.0,
+            )
+        assert entered_transport.is_set()
+        assert monotonic() - started < 0.25
+
+        with pytest.raises(RemoteChunkClientError, match="already has an active request"):
+            client.prepare(request, timeout_seconds=1.0)
+
+        release_headers.set()
+        assert worker_finished.wait(0.5)
+        deadline = monotonic() + 0.5
+        while True:
+            try:
+                response = client.prepare(request, timeout_seconds=1.0)
+                break
+            except RemoteChunkClientError as error:
+                if "already has an active request" not in str(error) or monotonic() >= deadline:
+                    raise
+                sleep(0.005)
+        assert response.package.manifest.request_id == request.request_id
+        assert calls == 2
+    finally:
+        release_headers.set()
+        client.close()
+
+
 def test_deadline_during_opus_decode_reports_deadline_instead_of_protocol_error(
     monkeypatch,
 ) -> None:

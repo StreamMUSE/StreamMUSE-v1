@@ -27,6 +27,7 @@ _RENDER_PATH = "/v1/rap/chunks/render"
 _HEALTH_PATH = "/health"
 _RETRYABLE_STATUS_CODES = frozenset((502, 503, 504))
 _MAX_HEALTH_RESPONSE_BYTES = 16 * 1024
+_ATTEMPT_CANCELLATION_GRACE_SECONDS = 0.05
 
 
 class RemoteChunkClientError(RuntimeError):
@@ -73,6 +74,9 @@ class _PrepareOperation:
         self.condition = Condition()
         self.cancelled = False
         self.active_response: httpx.Response | None = None
+        self.active_workers = 0
+        self.retain_until_idle = False
+        self.owner_returned = False
 
     def cancel(self) -> None:
         with self.condition:
@@ -283,14 +287,29 @@ class RemoteChunkClient:
             finally:
                 with operation.condition:
                     completion.done = True
+                    operation.active_workers -= 1
+                    release_operation = (
+                        operation.owner_returned
+                        and operation.retain_until_idle
+                        and operation.active_workers == 0
+                    )
                     operation.condition.notify_all()
+                if release_operation:
+                    self._release_operation_if_idle(operation)
 
         worker = Thread(
             target=request,
             name=f"remote-rap-chunk-{operation.generation}-{attempts}",
             daemon=True,
         )
-        worker.start()
+        with operation.condition:
+            operation.active_workers += 1
+        try:
+            worker.start()
+        except BaseException:
+            with operation.condition:
+                operation.active_workers -= 1
+            raise
         wait_deadline = system_monotonic() + timeout_seconds
         with operation.condition:
             while not completion.done and not operation.cancelled:
@@ -303,7 +322,11 @@ class RemoteChunkClient:
             timed_out = not completion.done
         if timed_out:
             operation.cancel()
-            worker.join()
+            worker.join(_ATTEMPT_CANCELLATION_GRACE_SECONDS)
+            if worker.is_alive():
+                with operation.condition:
+                    if operation.active_workers > 0:
+                        operation.retain_until_idle = True
             raise RemoteChunkDeadlineExceeded("remote chunk attempt timed out")
         if completion.error is not None:
             raise completion.error
@@ -469,6 +492,18 @@ class RemoteChunkClient:
 
     def _end_operation(self, operation: _PrepareOperation) -> None:
         with self._lock:
+            with operation.condition:
+                operation.owner_returned = True
+                if operation.retain_until_idle and operation.active_workers > 0:
+                    return
+            if self._active_operation is operation:
+                self._active_operation = None
+
+    def _release_operation_if_idle(self, operation: _PrepareOperation) -> None:
+        with self._lock:
+            with operation.condition:
+                if not operation.owner_returned or operation.active_workers > 0:
+                    return
             if self._active_operation is operation:
                 self._active_operation = None
 
