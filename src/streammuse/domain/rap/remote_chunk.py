@@ -16,7 +16,12 @@ from streammuse.domain.rap.models import BeatSlot, ScheduledSyllable, Syllable
 
 REMOTE_CHUNK_SCHEMA_VERSION = "streammuse.rap_chunk.v1"
 REMOTE_CHUNK_SAMPLE_RATE_HZ = 24_000
+# The ZIP package is capped at 4 MiB; a mono PCM16 payload can never use more
+# than half that ceiling, before manifest and ZIP metadata overhead.
+REMOTE_CHUNK_PACKAGE_MAX_BYTES = 4 * 1024 * 1024
+MAX_REMOTE_CHUNK_PCM16_FRAMES = REMOTE_CHUNK_PACKAGE_MAX_BYTES // 2
 MAX_REMOTE_DIAGNOSTIC_SUMMARIES = 8
+MAX_REMOTE_DIAGNOSTIC_JSON_DEPTH = 32
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -43,18 +48,22 @@ def _freeze(value: object) -> object:
     return value
 
 
-def _freeze_json(value: object, name: str) -> object:
+def _freeze_json(value: object, name: str, depth: int = 0) -> object:
     """Freeze a recursively JSON-safe value before it becomes wire diagnostics."""
     if value is None or isinstance(value, (str, bool)):
         return value
     if _is_real(value):
         return value
     if isinstance(value, Mapping):
+        if depth >= MAX_REMOTE_DIAGNOSTIC_JSON_DEPTH:
+            raise ValueError(f"{name} exceeds the maximum JSON nesting depth")
         if not all(isinstance(key, str) for key in value):
             raise ValueError(f"{name} object keys must be strings")
-        return MappingProxyType({key: _freeze_json(item, name) for key, item in value.items()})
+        return MappingProxyType({key: _freeze_json(item, name, depth + 1) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
-        return tuple(_freeze_json(item, name) for item in value)
+        if depth >= MAX_REMOTE_DIAGNOSTIC_JSON_DEPTH:
+            raise ValueError(f"{name} exceeds the maximum JSON nesting depth")
+        return tuple(_freeze_json(item, name, depth + 1) for item in value)
     raise ValueError(f"{name} must contain only finite JSON values")
 
 
@@ -286,7 +295,7 @@ def _validate_rejection(value: Mapping[str, object]) -> Mapping[str, object]:
     return _freeze_json(value, "candidate rejection")  # type: ignore[return-value]
 
 
-_REQUIRED_STAGE_TIMINGS = {"generation", "evaluation", "moss", "mfa", "warp", "packaging", "total"}
+_REQUIRED_STAGE_TIMINGS = {"generation", "evaluation", "moss", "aligner", "warp", "packaging", "total"}
 _REQUIRED_ALIGNMENT_DIAGNOSTICS = {"fallback_counts", "source_anchors", "target_anchors", "local_warp_ratios"}
 _REQUIRED_AUDIO_DIAGNOSTICS = {"sample_rate_hz", "frame_count", "duration_seconds", "peak"}
 
@@ -345,9 +354,9 @@ class RemoteRapChunkDiagnostics:
         sample_tolerance = 1 / audio["sample_rate_hz"]
         if abs(audio["duration_seconds"] - audio["frame_count"] / audio["sample_rate_hz"]) > sample_tolerance:
             raise ValueError("audio duration must match frame count within one sample")
-        required_versions = {"moss", "mfa", "rubberband"}
+        required_versions = {"moss", "aligner", "rubberband"}
         if not isinstance(self.model_tool_versions, Mapping) or not required_versions.issubset(self.model_tool_versions) or not all(_nonblank(key) and _nonblank(value) for key, value in self.model_tool_versions.items()):
-            raise ValueError("model_tool_versions must include non-empty moss, mfa, and rubberband versions")
+            raise ValueError("model_tool_versions must include non-empty moss, aligner, and rubberband versions")
         if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) for item in self.warnings):
             raise ValueError("warnings must be a tuple of strings")
         object.__setattr__(self, "stage_timings_ms", _freeze_json(self.stage_timings_ms, "stage_timings_ms"))
@@ -466,7 +475,16 @@ class RemoteRapChunkRequest:
     def frame_count_for(tempo_bpm: float, sample_rate_hz: int = REMOTE_CHUNK_SAMPLE_RATE_HZ) -> int:
         if not _is_real(tempo_bpm) or tempo_bpm <= 0 or not _is_int(sample_rate_hz) or sample_rate_hz <= 0:
             raise ValueError("tempo_bpm and sample_rate_hz must be positive finite wire numbers")
-        return round(sample_rate_hz * 8 * 60 / tempo_bpm)
+        try:
+            exact_frame_count = sample_rate_hz * 8 * 60 / tempo_bpm
+            if not isfinite(exact_frame_count) or exact_frame_count <= 0:
+                raise ValueError("derived frame count must be positive and finite")
+            frame_count = round(exact_frame_count)
+        except (OverflowError, ZeroDivisionError) as error:
+            raise ValueError("derived frame count is not representable") from error
+        if frame_count <= 0 or frame_count > MAX_REMOTE_CHUNK_PCM16_FRAMES:
+            raise ValueError("derived frame count exceeds the bounded PCM16 transport")
+        return frame_count
 
     @staticmethod
     def request_id_for(identity_payload: Mapping[str, object]) -> str:
@@ -559,7 +577,7 @@ class RemoteRapChunkTransportAttempt:
             raise ValueError("transport attempt body must be bytes")
         try:
             request = RemoteRapChunkRequest.from_payload(json.loads(self.body.decode("utf-8")))
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, TypeError, ValueError) as error:
             raise ValueError("transport attempt body must be a valid canonical request") from error
         if request.request_id != self.request_id or request.canonical_json_bytes() != self.body:
             raise ValueError("transport attempt body does not match its request identity")
@@ -664,6 +682,8 @@ class RemoteSelectedBar:
         ticks = [item.slot.tick for item in self.scheduled]
         if ticks != sorted(ticks) or len(ticks) != len(set(ticks)):
             raise ValueError("selected bar scheduled slots must be ordered and unique")
+        if [item.slot.slot_index for item in self.scheduled] != list(range(len(self.scheduled))):
+            raise ValueError("selected bar slot indices must be contiguous in schedule order")
         if not _is_real(self.score):
             raise ValueError("selected bar score must be finite")
         if not isinstance(self.diagnostics, Mapping):

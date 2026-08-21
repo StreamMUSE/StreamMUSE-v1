@@ -122,7 +122,7 @@ def manifest() -> RemoteRapChunkManifest:
                 "generation": 1.0,
                 "evaluation": 1.0,
                 "moss": 1.0,
-                "mfa": 1.0,
+                "aligner": 1.0,
                 "warp": 1.0,
                 "packaging": 1.0,
                 "total": 7.0,
@@ -139,7 +139,7 @@ def manifest() -> RemoteRapChunkManifest:
                 "duration_seconds": 128_000 / 24_000,
                 "peak": 0.5,
             },
-            model_tool_versions={"moss": "test", "mfa": "test", "rubberband": "test"},
+            model_tool_versions={"moss": "test", "aligner": "test", "rubberband": "test"},
             warnings=(),
         ),
         vocal_sha256=hashlib.sha256(vocal_wav).hexdigest(),
@@ -167,6 +167,13 @@ def _with_unsupported_compression(package: bytes) -> bytes:
     struct.pack_into("<H", modified, local_header + 8, zipfile.ZIP_BZIP2)
     struct.pack_into("<H", modified, central_header + 10, zipfile.ZIP_BZIP2)
     return bytes(modified)
+
+
+def _nested_json(depth: int) -> object:
+    value: object = "leaf"
+    for _ in range(depth):
+        value = {"next": value}
+    return value
 
 
 def test_package_round_trip(manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes) -> None:
@@ -264,6 +271,19 @@ def test_package_normalizes_excessively_nested_manifest_json(vocal_wav_bytes: by
 
     with pytest.raises(ValueError, match="manifest JSON"):
         decode_chunk_package(encoded, expected_request_id="request-1")
+
+
+def test_package_normalizes_post_parse_nested_manifest_diagnostics(
+    manifest: RemoteRapChunkManifest, vocal_wav_bytes: bytes
+) -> None:
+    payload = manifest.to_payload()
+    payload["selected_bars"][0]["diagnostics"]["detail"] = _nested_json(33)  # type: ignore[index,union-attr]
+    encoded = _archive(
+        [("manifest.json", json.dumps(payload, allow_nan=False).encode("utf-8")), ("vocals.wav", vocal_wav_bytes)]
+    )
+
+    with pytest.raises(ValueError, match="manifest JSON contract"):
+        decode_chunk_package(encoded, expected_request_id=manifest.request_id)
 
 
 @pytest.mark.parametrize(

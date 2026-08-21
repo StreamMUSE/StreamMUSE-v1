@@ -13,11 +13,15 @@ import wave
 import zipfile
 import zlib
 
-from streammuse.domain.rap.remote_chunk import REMOTE_CHUNK_SAMPLE_RATE_HZ, RemoteRapChunkManifest
+from streammuse.domain.rap.remote_chunk import (
+    REMOTE_CHUNK_PACKAGE_MAX_BYTES,
+    REMOTE_CHUNK_SAMPLE_RATE_HZ,
+    RemoteRapChunkManifest,
+)
 
 
 RAP_CHUNK_PACKAGE_MEDIA_TYPE = "application/vnd.streammuse.rap-chunk+zip"
-MAX_RAP_CHUNK_PACKAGE_BYTES = 4 * 1024 * 1024
+MAX_RAP_CHUNK_PACKAGE_BYTES = REMOTE_CHUNK_PACKAGE_MAX_BYTES
 _MANIFEST_MEMBER = "manifest.json"
 _VOCALS_MEMBER = "vocals.wav"
 _MEMBERS = (_MANIFEST_MEMBER, _VOCALS_MEMBER)
@@ -127,7 +131,7 @@ def decode_chunk_package(package: bytes, *, expected_request_id: str) -> Decoded
         raise ValueError("invalid manifest JSON") from error
     try:
         manifest = RemoteRapChunkManifest.from_payload(payload)
-    except (TypeError, ValueError) as error:
+    except (RecursionError, TypeError, ValueError) as error:
         raise ValueError("invalid manifest JSON contract") from error
     if manifest.request_id != expected_request_id:
         raise ValueError("manifest request_id does not match the requested chunk")

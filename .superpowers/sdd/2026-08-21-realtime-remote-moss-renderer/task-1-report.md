@@ -190,7 +190,7 @@ Outcome: `54 passed in 0.64s`.
   count-derived plus maximum-eight bounds.
 - Enforced the re-review diagnostic invariants: nonempty equal anchor arrays,
   positive finite warp ratios, duration within one sample of frames/rate, peak
-  in `[0, 1]`, nonempty `moss`/`mfa`/`rubberband` versions, and total timing no
+  in `[0, 1]`, nonempty `moss`/`aligner`/`rubberband` versions, and total timing no
   smaller than any component timing.
 - Restricted package members to `ZIP_STORED` and `ZIP_DEFLATED`; unsupported
   compression and ZIP/JSON bounded-parser failures now normalize to
@@ -274,4 +274,129 @@ Outcome: no whitespace errors.
 
 ### Follow-Up Commit
 
+`finalize remote rap chunk contract bounds` (follow-up commit)
+
+## Timing-Key Correction (2026-08-21)
+
+- Replaced the sole mandatory stage timing key `mfa` with generic `aligner` in
+  the Task 1 diagnostic contract and all Task 1 fixtures. The exact required
+  set is now `generation`, `evaluation`, `moss`, `aligner`, `warp`,
+  `packaging`, and `total`; no other timing key changed.
+- Retained modular version diagnostics: `moss`, `aligner`, and `rubberband`
+  are mandatory, while implementation-specific keys such as `mfa` remain
+  allowed there.
+
+RED command:
+
+```bash
+uv run pytest tests/unit/domain/rap/test_remote_chunk.py -q --tb=short
+```
+
+Outcome: `1 failed, 77 passed`; a diagnostic carrying `aligner` timing and no
+`mfa` was rejected by the old required-stage-key set.
+
+GREEN focused command:
+
+```bash
+uv run pytest tests/unit/domain/rap/test_remote_chunk.py tests/unit/infrastructure/rap/test_chunk_package.py -q --tb=short
+```
+
+Outcome: `99 passed in 0.76s`.
+
+Adjacent regression command:
+
+```bash
+uv run pytest tests/unit/domain/rap tests/unit/infrastructure/rap -q --tb=short
+```
+
+Outcome: `384 passed in 1.39s`.
+
+`git diff --check` reported no whitespace errors.
+
+### Follow-Up Commit
+
 `tighten remote rap chunk wire contracts` (follow-up commit)
+
+## Final Review-Fix Loop (2026-08-21)
+
+### Implementation
+
+- Required every selected-bar schedule to carry `slot_index` values exactly
+  `0..len(schedule)-1` in schedule order, in addition to the existing ordered
+  unique tick validation. This remains local structural validation; full
+  requested-flow comparison is still deferred to Task 5.
+- Added a 32-container-depth limit for recursively frozen wire diagnostics.
+  Constructors now reject excessive nesting as `ValueError`; manifest decoding
+  and retained transport-attempt JSON decoding also normalize `RecursionError`
+  to their existing `ValueError` boundary.
+- Added `REMOTE_CHUNK_PACKAGE_MAX_BYTES` and the derived
+  `MAX_REMOTE_CHUNK_PCM16_FRAMES` domain limit. Frame derivation rejects
+  arithmetic failures, non-finite/zero rounded counts, and counts beyond the
+  4 MiB package-ceiling-derived mono PCM16 transport bound.
+- Applied the modular-aligner amendment: diagnostic versions now require
+  nonblank `moss`, `aligner`, and `rubberband` keys. Extra version keys remain
+  accepted; stage timing keys remain unchanged.
+
+### Changed Paths
+
+- `src/streammuse/domain/rap/remote_chunk.py`
+- `src/streammuse/infrastructure/rap/chunk_package.py`
+- `tests/unit/domain/rap/test_remote_chunk.py`
+- `tests/unit/infrastructure/rap/test_chunk_package.py`
+- `.superpowers/sdd/2026-08-21-realtime-remote-moss-renderer/task-1-report.md`
+
+### TDD Evidence
+
+RED command:
+
+```bash
+uv run pytest tests/unit/domain/rap/test_remote_chunk.py tests/unit/infrastructure/rap/test_chunk_package.py -q --tb=short
+```
+
+Outcome: `9 failed, 89 passed`. The failures demonstrated accepted duplicate
+and noncontiguous slot indices, unbounded diagnostics, leaked retained-body
+`RecursionError`, unrepresentable/zero/oversized frame counts, rejected
+modular aligner versions, and accepted post-parse nested manifest diagnostics.
+
+GREEN focused command:
+
+```bash
+uv run pytest tests/unit/domain/rap/test_remote_chunk.py tests/unit/infrastructure/rap/test_chunk_package.py -q --tb=short
+```
+
+Outcome: `98 passed in 0.69s`.
+
+Adjacent regression command:
+
+```bash
+uv run pytest tests/unit/domain/rap tests/unit/infrastructure/rap -q --tb=short
+```
+
+Outcome: `383 passed in 1.38s`.
+
+Quality command:
+
+```bash
+git diff --check
+```
+
+Outcome: no whitespace errors.
+
+### Self-Review
+
+- Confirmed the frame limit is named and derived from the shared 4 MiB package
+  ceiling, not from an arbitrary BPM range; normal 90 BPM requests remain at
+  128,000 frames.
+- Confirmed diagnostics are limited before Python recursion depth is reached,
+  while codec and retained-body decoder boundaries still normalize parser or
+  construction recursion independently.
+- Confirmed request identity still excludes `remaining_budget_ms`, and the
+  immutable transport attempt still returns its original canonical bytes.
+- Confirmed no coordinator-owned `progress.md`, `task-2-brief.md`,
+  `mms-fa-probe.py`, or review artifact will be staged.
+
+### Concerns
+
+- Full-repository tests were not run because the worktree contains extensive
+  unrelated uncommitted work. Focused and adjacent Task 1 rap modules are
+  green.
