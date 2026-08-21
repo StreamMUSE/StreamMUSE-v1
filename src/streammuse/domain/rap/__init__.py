@@ -29,6 +29,15 @@ from streammuse.domain.rap.audio import (
 )
 from streammuse.domain.rap.prosody import analyse_syllables, extract_words, normalize_text
 from streammuse.domain.rap.scenario import RapScenario, ScenarioSegment
+from streammuse.domain.rap.remote_chunk import (
+    REMOTE_CHUNK_SCHEMA_VERSION,
+    PreparedRapChunk,
+    RemoteCandidatePolicy,
+    RemoteRapBarRequest,
+    RemoteRapChunkManifest,
+    RemoteRapChunkRequest,
+    RemoteSelectedBar,
+)
 
 __all__ = [
     "AlignedLine",
@@ -50,10 +59,17 @@ __all__ = [
     "PcmAudio",
     "PlaybackState",
     "PreparedRapBar",
+    "PreparedRapChunk",
     "RapPlan",
     "RapScenario",
     "RapEvent",
     "RapEventType",
+    "REMOTE_CHUNK_SCHEMA_VERSION",
+    "RemoteCandidatePolicy",
+    "RemoteRapBarRequest",
+    "RemoteRapChunkManifest",
+    "RemoteRapChunkRequest",
+    "RemoteSelectedBar",
     "ScheduledSyllable",
     "ScenarioSegment",
     "RenderedSyllable",
