@@ -326,7 +326,8 @@ def _build_independent_messages(
                 f"Write one distinct lyric line about {request.topic!r} for bar {request.target_bar}. "
                 f"It must contain exactly {request.required_syllables} spoken syllables under normal American "
                 "spoken pronunciation. Match lexical stress to the stronger slots, preserve natural words, and "
-                "close the phrase at the final slot. Do not include numbering, labels, explanations, syllable "
+                "close the phrase at the final slot. Spell out every number with words; never emit digits. "
+                "Do not include numbering, labels, explanations, syllable "
                 f"markup, or alternate lines.\n{flow}\nRecent frozen lines:\n{history}\n"
                 f"Variation seed: {request.seed}."
             ),

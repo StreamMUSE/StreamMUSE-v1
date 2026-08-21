@@ -602,6 +602,7 @@ def test_independent_choice_prompt_contains_complete_flow_context_and_visible_se
     user = messages[1]["content"]
     assert "exactly 9 spoken syllables" in user
     assert "normal American spoken pronunciation" in user
+    assert "Spell out every number with words; never emit digits" in user
     assert "Syllable ticks: [0, 2, 3, 5, 7, 8, 10, 13, 15]" in user
     assert "Target stress: [1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9]" in user
     assert "stars cross the night" in user

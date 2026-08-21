@@ -191,6 +191,62 @@ def planner(
     )
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("2026", "two zero two six"),
+        ("version 2!", "version two!"),
+        ("R2D2", "R two D two"),
+        ("take 7 / 11", "take seven / one one"),
+        ("already spelled out", "already spelled out"),
+        ("unicode \u0662 stays", "unicode \u0662 stays"),
+    ),
+)
+def test_verbalize_ascii_digits_uses_individual_english_digit_words(
+    text: str,
+    expected: str,
+) -> None:
+    assert orchestration_module.verbalize_ascii_digits(text) == expected
+
+
+def test_planner_verbalizes_digits_before_analysis_selection_and_rendering() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    generator = ScriptedGenerator([(0, ("2026",)), (1, ("R2D2",))])
+    analyzer = FakeAnalyzer()
+
+    plan = planner(generator, analyzer).plan(
+        chunk_request(
+            first_flow=four_syllables,
+            second_flow=four_syllables,
+            policy=RemoteCandidatePolicy("digits", 1, 0, 1, 1, 0.0, 500),
+        )
+    )
+
+    assert analyzer.calls == ["two zero two six", "R two D two"]
+    assert tuple(item.text for item in plan.selected_bars) == (
+        "two zero two six",
+        "R two D two",
+    )
+    assert plan.render_request.text == "two zero two six\nR two D two"
+    assert tuple(item.word for item in plan.render_request.syllables) == (
+        "two",
+        "zero",
+        "two",
+        "six",
+        "r",
+        "two",
+        "d",
+        "two",
+    )
+    assert all(
+        not any(
+            character.isascii() and character.isdigit() for character in row["text"]
+        )
+        for row in plan.candidate_ledger
+        if "text" in row
+    )
+
+
 def test_planner_generates_both_initial_waves_before_stopping() -> None:
     generator = ScriptedGenerator([(0, ("moon", "sun")), (1, ("light", "beat"))])
     request = chunk_request()

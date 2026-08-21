@@ -66,7 +66,34 @@ _SENSITIVE_DIAGNOSTIC_ASSIGNMENT = re.compile(
     r"(?P<separator>\s*(?::|=)\s*)(?:(?:bearer\s+)?\[redacted\]|bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)"
 )
 _BEARER_DIAGNOSTIC = re.compile(r"(?i)\bbearer\s+(?:\[redacted\]|[^\s,;}\]]+)")
+_ASCII_DIGIT_RUN = re.compile(r"[0-9]+")
+_DIGIT_WORDS = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+)
 _MAX_DIAGNOSTIC_CHARS = 256
+
+
+def verbalize_ascii_digits(text: str) -> str:
+    """Replace each ASCII digit with its individual English spoken form."""
+
+    def replace(match: re.Match[str]) -> str:
+        words = " ".join(_DIGIT_WORDS[int(character)] for character in match.group())
+        before = text[match.start() - 1] if match.start() else ""
+        after = text[match.end()] if match.end() < len(text) else ""
+        prefix = " " if before.isascii() and before.isalpha() else ""
+        suffix = " " if after.isascii() and after.isalpha() else ""
+        return f"{prefix}{words}{suffix}"
+
+    return _ASCII_DIGIT_RUN.sub(replace, text)
 
 
 def _bounded_diagnostic_text(value: object) -> str:
@@ -483,7 +510,7 @@ class ChunkCandidatePlanner:
             candidate_id = (
                 f"{request.request_id}:bar:{bar.bar}:candidate:{source_order}"
             )
-            text = raw_text.strip()
+            text = verbalize_ascii_digits(raw_text.strip())
             base_row: dict[str, object] = {
                 "bar": bar.bar,
                 "wave": wave,
