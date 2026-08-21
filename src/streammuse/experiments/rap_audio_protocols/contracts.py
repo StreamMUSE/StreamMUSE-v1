@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
+from math import isfinite
 from typing import Any
 
 from streammuse.domain.timing import Tempo
@@ -78,18 +79,21 @@ class TwoBarRenderRequest:
     end_bar: int
     text: str
     syllables: tuple[SyllableTarget, ...]
+    tempo_bpm: float = 90.0
 
     def __post_init__(self) -> None:
         if self.end_bar - self.start_bar != 2:
             raise ValueError("two-bar render requests must span exactly two bars")
-        if len(self.syllables) != 18:
-            raise ValueError("two-bar render requests must contain exactly 18 syllables")
+        if not self.syllables:
+            raise ValueError("two-bar render requests must contain at least one syllable")
         if any(item.tick_in_chunk < 0 or item.tick_in_chunk >= 32 for item in self.syllables):
             raise ValueError("two-bar render requests must stay within a 32-tick chunk")
+        if not isfinite(self.tempo_bpm) or self.tempo_bpm <= 0:
+            raise ValueError("two-bar render request tempo must be finite and positive")
 
     @property
     def duration_seconds(self) -> float:
-        return 32 * Tempo(90.0, 4, 4).seconds_per_tick
+        return 32 * Tempo(self.tempo_bpm, 4, 4).seconds_per_tick
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -97,6 +101,7 @@ class TwoBarRenderRequest:
             "chunk_index": self.chunk_index,
             "start_bar": self.start_bar,
             "end_bar": self.end_bar,
+            "tempo_bpm": self.tempo_bpm,
             "duration_seconds": self.duration_seconds,
             "text": self.text,
             "syllables": [item.to_payload() for item in self.syllables],
