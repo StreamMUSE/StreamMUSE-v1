@@ -285,7 +285,12 @@ class RemoteChunkClient:
                     completion.done = True
                     operation.condition.notify_all()
 
-        Thread(target=request, name=f"remote-rap-chunk-{operation.generation}-{attempts}", daemon=True).start()
+        worker = Thread(
+            target=request,
+            name=f"remote-rap-chunk-{operation.generation}-{attempts}",
+            daemon=True,
+        )
+        worker.start()
         wait_deadline = system_monotonic() + timeout_seconds
         with operation.condition:
             while not completion.done and not operation.cancelled:
@@ -295,10 +300,11 @@ class RemoteChunkClient:
                 operation.condition.wait(wait_seconds)
             if operation.cancelled:
                 raise RemoteChunkCancelled("remote chunk request was cancelled")
-            if not completion.done:
-                if self._clock() >= deadline:
-                    raise RemoteChunkDeadlineExceeded("remote chunk deadline elapsed while waiting for response headers")
-                raise _RetryableRemoteFailure()
+            timed_out = not completion.done
+        if timed_out:
+            operation.cancel()
+            worker.join()
+            raise RemoteChunkDeadlineExceeded("remote chunk attempt timed out")
         if completion.error is not None:
             raise completion.error
         if completion.value is None:

@@ -5,7 +5,7 @@ import io
 import json
 import struct
 import wave
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 from time import monotonic, sleep
 
 import httpx
@@ -305,6 +305,91 @@ def test_abort_during_opus_decode_stops_decoder_and_reports_cancelled(monkeypatc
     assert len(outcome) == 1
     assert isinstance(outcome[0], RemoteChunkCancelled)
     client.close()
+
+
+def test_attempt_timeout_cancels_opus_decode_without_retry_or_worker_leak(
+    monkeypatch,
+) -> None:
+    request = _request()
+    canonical = _package(request)
+    from streammuse.infrastructure.rap.chunk_package import decode_chunk_package
+
+    decoded = decode_chunk_package(canonical, expected_request_id=request.request_id)
+    entered = Event()
+    cancellation_observed = Event()
+    release = Event()
+    decoder_threads: list[Thread] = []
+    decoder_calls = 0
+    request_calls = 0
+
+    class PackageCodec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            return b"encoded-opus"
+
+        def decode_to_pcm16_mono_24khz(self, encoded: bytes, *, expected_frame_count: int) -> bytes:
+            return decoded.vocal_wav[44:]
+
+    opus_package = encode_opus_chunk_package(
+        decoded.manifest, decoded.vocal_wav, PackageCodec()
+    )
+
+    class BlockingCodec:
+        def decode_to_pcm16_mono_24khz(
+            self,
+            encoded: bytes,
+            *,
+            expected_frame_count: int,
+            timeout_seconds: float,
+            cancelled,
+        ) -> bytes:
+            nonlocal decoder_calls
+            decoder_calls += 1
+            decoder_threads.append(current_thread())
+            entered.set()
+            while not cancelled() and not release.is_set():
+                sleep(0.005)
+            if cancelled():
+                cancellation_observed.set()
+            raise RuntimeError("decoder stopped")
+
+    monkeypatch.setattr(
+        "streammuse.infrastructure.rap.opus_codec.FFmpegOpusCodec", BlockingCodec
+    )
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        nonlocal request_calls
+        request_calls += 1
+        return httpx.Response(
+            200,
+            headers={"content-type": RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE},
+            content=opus_package,
+        )
+
+    client = RemoteChunkClient(
+        "http://render.test",
+        transport=httpx.MockTransport(handler),
+        clock=monotonic,
+        audio_transport="opus",
+    )
+    try:
+        with pytest.raises(RemoteChunkDeadlineExceeded, match="attempt timed out"):
+            client.prepare(
+                request,
+                timeout_seconds=0.1,
+                deadline_monotonic=monotonic() + 0.5,
+            )
+        assert entered.is_set()
+        assert cancellation_observed.wait(0.5)
+        assert request_calls == 1
+        assert decoder_calls == 1
+        assert all(not thread.is_alive() for thread in decoder_threads)
+    finally:
+        release.set()
+        for thread in decoder_threads:
+            thread.join(0.5)
+        client.close()
 
 
 def test_deadline_during_opus_decode_reports_deadline_instead_of_protocol_error(

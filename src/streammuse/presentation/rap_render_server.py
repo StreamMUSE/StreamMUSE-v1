@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -130,7 +131,7 @@ class _ArtifactStore:
         self._opus_codec = opus_codec
         self._lock = Lock()
         self._in_flight: dict[str, tuple[bytes, Future[_StoredResponse]]] = {}
-        self._opus_in_flight: dict[str, Future[bytes]] = {}
+        self._opus_in_flight: dict[tuple[str, bytes], Future[bytes]] = {}
 
     def render_or_load(
         self, request: RemoteRapChunkRequest, canonical_request: bytes
@@ -282,8 +283,9 @@ class _ArtifactStore:
             workspace / _SERVER_TIMING_FILE, {"server_timing": server_timing}
         )
         # The final atomic replacement is the sole successful-cache marker.
-        self._durably_unpublish(workspace / _OPUS_RESPONSE_FILE)
-        self._publish_response(workspace / _RESPONSE_FILE, package)
+        with self._lock:
+            self._durably_unpublish(workspace / _OPUS_RESPONSE_FILE)
+            self._publish_response(workspace / _RESPONSE_FILE, package)
         return _StoredResponse(package, server_timing)
 
     def load_or_create_opus(self, request: RemoteRapChunkRequest, stored: _StoredResponse) -> bytes:
@@ -292,11 +294,14 @@ class _ArtifactStore:
             raise RuntimeError("Opus response requested but no Opus codec is configured")
         workspace = self._workspace(request.request_id)
         path = workspace / _OPUS_RESPONSE_FILE
+        canonical_path = workspace / _RESPONSE_FILE
+        canonical_identity = hashlib.sha256(stored.package).digest()
+        in_flight_key = (request.request_id, canonical_identity)
         with self._lock:
-            future = self._opus_in_flight.get(request.request_id)
+            future = self._opus_in_flight.get(in_flight_key)
             if future is None:
                 future = Future()
-                self._opus_in_flight[request.request_id] = future
+                self._opus_in_flight[in_flight_key] = future
                 owner = True
             else:
                 owner = False
@@ -305,9 +310,13 @@ class _ArtifactStore:
             return future.result()
 
         try:
-            if path.is_file():
-                package = path.read_bytes()
-            else:
+            with self._lock:
+                canonical_matches = (
+                    canonical_path.is_file()
+                    and canonical_path.read_bytes() == stored.package
+                )
+                package = path.read_bytes() if canonical_matches and path.is_file() else None
+            if package is None:
                 from streammuse.infrastructure.rap.chunk_package import (
                     decode_chunk_package,
                     encode_opus_chunk_package,
@@ -319,7 +328,12 @@ class _ArtifactStore:
                 package = encode_opus_chunk_package(
                     canonical.manifest, canonical.vocal_wav, self._opus_codec
                 )
-                self._publish_response(path, package)
+                with self._lock:
+                    if (
+                        canonical_path.is_file()
+                        and canonical_path.read_bytes() == stored.package
+                    ):
+                        self._publish_response(path, package)
         except BaseException as error:
             future.set_exception(error)
             raise
@@ -328,8 +342,8 @@ class _ArtifactStore:
             return package
         finally:
             with self._lock:
-                if self._opus_in_flight.get(request.request_id) is future:
-                    self._opus_in_flight.pop(request.request_id, None)
+                if self._opus_in_flight.get(in_flight_key) is future:
+                    self._opus_in_flight.pop(in_flight_key, None)
 
     def _persist_failure(self, request_id: str, error: BaseException) -> None:
         from streammuse.application.rap.chunk_orchestration import NoValidCandidates

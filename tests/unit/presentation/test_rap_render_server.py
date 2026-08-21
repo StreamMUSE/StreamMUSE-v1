@@ -655,6 +655,81 @@ def test_canonical_regeneration_invalidates_stale_opus_derivative(tmp_path: Path
     assert orchestrator.calls == 2
 
 
+def test_overlapping_old_opus_encode_cannot_replace_new_canonical_derivative(
+    tmp_path: Path,
+) -> None:
+    old_entered = Event()
+    new_entered = Event()
+    release_old = Event()
+    encode_calls = 0
+
+    class Codec:
+        encoder_identity = "ffmpeg test / libopus"
+
+        def encode_pcm16_mono_24khz(self, pcm: bytes, *, expected_frame_count: int) -> bytes:
+            nonlocal encode_calls
+            encode_calls += 1
+            if encode_calls == 1:
+                old_entered.set()
+                assert release_old.wait(timeout=5)
+                return b"old-opus"
+            new_entered.set()
+            return b"new-opus"
+
+    request = _request()
+    orchestrator = FakeOrchestrator(tmp_path / "worker")
+    store = rap_render_server._ArtifactStore(
+        tmp_path / "artifacts", orchestrator, opus_codec=Codec()
+    )
+    old_stored = store.render_or_load(request, request.canonical_json_bytes())
+    workspace = tmp_path / "artifacts" / request.request_id
+    old_results: list[bytes] = []
+    new_results: list[bytes] = []
+    errors: list[BaseException] = []
+
+    def encode(stored, results: list[bytes]) -> None:
+        try:
+            results.append(store.load_or_create_opus(request, stored))
+        except BaseException as error:
+            errors.append(error)
+
+    old_thread = Thread(target=encode, args=(old_stored, old_results))
+    old_thread.start()
+    assert old_entered.wait(timeout=1)
+
+    new_workspace = tmp_path / "worker" / request.request_id
+    new_workspace.mkdir(parents=True, exist_ok=True)
+    new_artifact = _artifact(request, new_workspace)
+    new_vocal = new_artifact.vocal_wav[:-2] + struct.pack("<h", 2_000)
+    new_artifact = replace(
+        new_artifact,
+        vocal_wav=new_vocal,
+        manifest=replace(
+            new_artifact.manifest,
+            vocal_sha256=hashlib.sha256(new_vocal).hexdigest(),
+        ),
+    )
+    orchestrator.result = new_artifact
+    (workspace / "response.zip").unlink()
+    new_stored = store.render_or_load(request, request.canonical_json_bytes())
+
+    new_thread = Thread(target=encode, args=(new_stored, new_results))
+    new_thread.start()
+    new_started_before_old_finished = new_entered.wait(timeout=0.5)
+    release_old.set()
+    old_thread.join(timeout=5)
+    new_thread.join(timeout=5)
+
+    assert new_started_before_old_finished
+    assert not old_thread.is_alive()
+    assert not new_thread.is_alive()
+    assert not errors
+    assert len(old_results) == 1
+    assert len(new_results) == 1
+    assert (workspace / "response.opus.zip").read_bytes() == new_results[0]
+    assert new_results[0] != old_results[0]
+
+
 def test_packaging_timing_uses_measured_final_publication_equivalent(
     tmp_path: Path,
 ) -> None:
