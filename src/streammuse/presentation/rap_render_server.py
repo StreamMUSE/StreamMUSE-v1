@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -15,27 +16,22 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
-from streammuse.application.rap.chunk_orchestration import (
-    NoValidCandidates,
-    PhraseRenderFailed,
-    RemoteChunkRenderArtifact,
-    RenderBudgetExpired,
-)
 from streammuse.domain.rap import (
     REMOTE_CHUNK_SCHEMA_VERSION,
     RemoteRapChunkManifest,
     RemoteRapChunkRequest,
 )
-from streammuse.infrastructure.rap.chunk_package import (
-    RAP_CHUNK_PACKAGE_MEDIA_TYPE,
-    encode_chunk_package,
-)
+
+if TYPE_CHECKING:
+    from streammuse.application.rap.chunk_orchestration import (
+        RemoteChunkRenderArtifact,
+    )
 
 
 _RESPONSE_FILE = "response.zip"
@@ -46,12 +42,25 @@ _ALIGNMENT_FILE = "alignment.json"
 _MMS_ALIGNMENT_FILE = "mms_alignment.json"
 _ALIGNED_WAV_FILE = "aligned.wav"
 _SOURCE_WAV_FILE = "source.wav"
+_VOCAL_WAV_FILE = "vocal.wav"
+_MANIFEST_FILE = "manifest.json"
 _SERVER_TIMING_FILE = "server_timing.json"
+_MEASUREMENT_MANIFEST_FILE = ".manifest.measurement.json"
+_MEASUREMENT_TIMING_FILE = ".server_timing.measurement.json"
 _MEASUREMENT_PACKAGE_FILE = ".response.measurement.zip"
 MAX_RAP_CHUNK_REQUEST_BYTES = 64 * 1024
+_MAX_HEALTH_STRING_LENGTH = 128
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _HEALTH_COMPONENT_KEYS = {"vllm", "moss", "aligner", "rubberband"}
-_HEALTH_SUMMARY_KEYS = {"ready", "status", "identity", "version", "model", "profile"}
+_HEALTH_SUMMARY_KEYS = {
+    "ready",
+    "status",
+    "identity",
+    "version",
+    "model",
+    "profile",
+}
+_INVALID_HEALTH_VALUE = object()
 _CANDIDATE_PROFILES = {
     "realtime": {"max_tokens_per_choice": 32, "temperature": 1.0},
 }
@@ -190,15 +199,32 @@ class _ArtifactStore:
     def _persist_success(
         self, request: RemoteRapChunkRequest, artifact: RemoteChunkRenderArtifact
     ) -> _StoredResponse:
+        from streammuse.application.rap.chunk_orchestration import PhraseRenderFailed
+        from streammuse.infrastructure.rap.chunk_package import encode_chunk_package
+
         if artifact.manifest.request_id != request.request_id:
             raise PhraseRenderFailed("render artifact request identity mismatch")
         packaging_started = self._clock()
         workspace = self._workspace(request.request_id)
         self._copy_renderer_artifacts(artifact.workspace, workspace)
-        self._preserve_source_wav(artifact.workspace, workspace)
-        self._preserve_mms_alignment(artifact.workspace, workspace)
-        if not (workspace / _SOURCE_WAV_FILE).is_file():
-            raise PhraseRenderFailed("render artifact is missing source WAV")
+        self._preserve_renderer_artifact(
+            artifact.workspace,
+            workspace,
+            _SOURCE_WAV_FILE,
+            "render artifact is missing source WAV",
+        )
+        self._preserve_renderer_artifact(
+            artifact.workspace,
+            workspace,
+            _MMS_ALIGNMENT_FILE,
+            "render artifact is missing MMS alignment JSON",
+        )
+        self._preserve_renderer_artifact(
+            artifact.workspace,
+            workspace,
+            _VOCAL_WAV_FILE,
+            "render artifact is missing vocal WAV",
+        )
 
         self._write_json(workspace / _CANDIDATE_LEDGER_FILE, artifact.candidate_ledger)
         self._write_json(
@@ -206,28 +232,57 @@ class _ArtifactStore:
             artifact.manifest.diagnostics.alignment_diagnostics,
         )
         self._atomic_write(workspace / _ALIGNED_WAV_FILE, artifact.vocal_wav)
-        measurement_package = encode_chunk_package(
-            artifact.manifest, artifact.vocal_wav
+
+        # The manifest must contain packaging time, so measure a first pass that
+        # mirrors the final manifest/package/timing/response publication sequence.
+        measurement_manifest = _finalize_manifest_timing(artifact.manifest, 0.001)
+        measurement_paths = (
+            workspace / _MEASUREMENT_MANIFEST_FILE,
+            workspace / _MEASUREMENT_TIMING_FILE,
+            workspace / _MEASUREMENT_PACKAGE_FILE,
         )
-        measurement_path = workspace / _MEASUREMENT_PACKAGE_FILE
+        measurement_started = self._clock()
         try:
-            self._atomic_write(measurement_path, measurement_package)
-            packaging_ms = max(0.001, (self._clock() - packaging_started) * 1000.0)
+            self._write_json(measurement_paths[0], measurement_manifest.to_payload())
+            measurement_package = encode_chunk_package(
+                measurement_manifest, artifact.vocal_wav
+            )
+            self._write_json(
+                measurement_paths[1],
+                {"server_timing": _server_timing(measurement_manifest)},
+            )
+            self._atomic_write(measurement_paths[2], measurement_package)
         finally:
-            measurement_path.unlink(missing_ok=True)
+            measurement_finished = self._clock()
+            for measurement_path in measurement_paths:
+                self._durably_unpublish(measurement_path)
+            cleanup_finished = self._clock()
+
+        measured_prefix_ms = (measurement_started - packaging_started) * 1000.0
+        measured_publication_ms = (measurement_finished - measurement_started) * 1000.0
+        measured_cleanup_ms = (cleanup_finished - measurement_finished) * 1000.0
+        packaging_ms = max(
+            0.001,
+            measured_prefix_ms
+            + measured_publication_ms
+            + measured_cleanup_ms
+            + measured_publication_ms,
+        )
 
         final_manifest = _finalize_manifest_timing(artifact.manifest, packaging_ms)
-        self._write_json(workspace / "manifest.json", final_manifest.to_payload())
+        self._write_json(workspace / _MANIFEST_FILE, final_manifest.to_payload())
         package = encode_chunk_package(final_manifest, artifact.vocal_wav)
         server_timing = _server_timing(final_manifest)
         self._write_json(
             workspace / _SERVER_TIMING_FILE, {"server_timing": server_timing}
         )
         # The final atomic replacement is the sole successful-cache marker.
-        self._atomic_write(workspace / _RESPONSE_FILE, package)
+        self._publish_response(workspace / _RESPONSE_FILE, package)
         return _StoredResponse(package, server_timing)
 
     def _persist_failure(self, request_id: str, error: BaseException) -> None:
+        from streammuse.application.rap.chunk_orchestration import NoValidCandidates
+
         workspace = self._workspace(request_id)
         if isinstance(error, NoValidCandidates):
             self._write_json(workspace / _CANDIDATE_LEDGER_FILE, error.candidate_ledger)
@@ -264,27 +319,33 @@ class _ArtifactStore:
                 _MMS_ALIGNMENT_FILE,
                 _ALIGNED_WAV_FILE,
                 _SOURCE_WAV_FILE,
+                _VOCAL_WAV_FILE,
+                _MANIFEST_FILE,
                 _SERVER_TIMING_FILE,
+                _MEASUREMENT_MANIFEST_FILE,
+                _MEASUREMENT_TIMING_FILE,
                 _MEASUREMENT_PACKAGE_FILE,
             }:
                 continue
             self._atomic_copy(path, target)
 
-    def _preserve_mms_alignment(self, source: Path, destination: Path) -> None:
-        full_alignment = Path(source) / _MMS_ALIGNMENT_FILE
-        if not full_alignment.is_file():
-            raise PhraseRenderFailed("render artifact is missing MMS alignment JSON")
-        target = destination / _MMS_ALIGNMENT_FILE
-        if full_alignment.resolve() != target.resolve():
-            self._atomic_copy(full_alignment, target)
+    def _preserve_renderer_artifact(
+        self,
+        source: Path,
+        destination: Path,
+        name: str,
+        missing_message: str,
+    ) -> None:
+        from streammuse.application.rap.chunk_orchestration import PhraseRenderFailed
 
-    def _preserve_source_wav(self, source: Path, destination: Path) -> None:
-        source_wav = Path(source) / _SOURCE_WAV_FILE
-        if not source_wav.is_file():
-            raise PhraseRenderFailed("render artifact is missing source WAV")
-        target = destination / _SOURCE_WAV_FILE
-        if source_wav.resolve() != target.resolve():
-            self._atomic_copy(source_wav, target)
+        source_path = Path(source) / name
+        if not source_path.is_file():
+            raise PhraseRenderFailed(missing_message)
+        target = destination / name
+        if source_path.resolve() == target.resolve():
+            self._fsync_existing_file(target)
+        else:
+            self._atomic_copy(source_path, target)
 
     @staticmethod
     def _atomic_copy(source: Path, destination: Path) -> None:
@@ -318,6 +379,31 @@ class _ArtifactStore:
             temporary.unlink(missing_ok=True)
 
     @staticmethod
+    def _publish_response(path: Path, data: bytes) -> None:
+        try:
+            _ArtifactStore._atomic_write(path, data)
+        except BaseException:
+            try:
+                _ArtifactStore._durably_unpublish(path)
+            except BaseException:
+                pass
+            raise
+
+    @staticmethod
+    def _durably_unpublish(path: Path) -> None:
+        path.unlink(missing_ok=True)
+        _ArtifactStore._fsync_directory(path.parent)
+
+    @staticmethod
+    def _fsync_existing_file(path: Path) -> None:
+        file_fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(file_fd)
+        finally:
+            os.close(file_fd)
+        _ArtifactStore._fsync_directory(path.parent)
+
+    @staticmethod
     def _fsync_directory(path: Path) -> None:
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         directory_fd = os.open(path, flags)
@@ -334,6 +420,10 @@ def create_rap_render_app(
     artifact_root: str | Path = "rap-chunk-artifacts",
 ) -> FastAPI:
     """Create the testable private render service without composing model dependencies."""
+    from streammuse.infrastructure.rap.chunk_package import (
+        RAP_CHUNK_PACKAGE_MEDIA_TYPE,
+    )
+
     store = _ArtifactStore(Path(artifact_root), orchestrator)
     app = FastAPI(
         title="StreamMUSE Private Rap Renderer", docs_url=None, redoc_url=None
@@ -431,6 +521,12 @@ def _json_value(value: object) -> object:
 
 
 def _error_spec(error: Exception) -> tuple[str, int]:
+    from streammuse.application.rap.chunk_orchestration import (
+        NoValidCandidates,
+        PhraseRenderFailed,
+        RenderBudgetExpired,
+    )
+
     if isinstance(error, RenderBudgetExpired):
         return "budget_exhausted", 422
     if isinstance(error, NoValidCandidates):
@@ -481,7 +577,11 @@ def _public_health(value: Mapping[str, object]) -> dict[str, object]:
         "ready": False,
     }
     for key in ("protocol_version", "schema_version", "ready", "candidate_profile"):
-        if key in value and _is_health_scalar(item := value[key]):
+        if key not in value:
+            continue
+        scalar_key = "profile" if key == "candidate_profile" else key
+        item = _bounded_health_scalar(scalar_key, value[key])
+        if item is not _INVALID_HEALTH_VALUE:
             public[key] = item
     for key in _HEALTH_COMPONENT_KEYS:
         item = value.get(key)
@@ -489,30 +589,69 @@ def _public_health(value: Mapping[str, object]) -> dict[str, object]:
             public[key] = _public_health_summary(item)
     if "warmup" in value:
         warmup = value["warmup"]
-        if _is_health_scalar(warmup):
-            public["warmup"] = warmup
-        elif isinstance(warmup, Mapping):
+        if isinstance(warmup, Mapping):
             public["warmup"] = _public_health_summary(warmup)
+        else:
+            bounded = _bounded_health_scalar("warmup", warmup)
+            if bounded is not _INVALID_HEALTH_VALUE:
+                public["warmup"] = bounded
     return public
 
 
 def _public_health_summary(value: Mapping[str, object]) -> dict[str, object]:
-    summary = {
-        key: item
-        for key in _HEALTH_SUMMARY_KEYS
-        if key in value and _is_health_scalar(item := value[key])
-    }
+    summary: dict[str, object] = {}
+    for key in _HEALTH_SUMMARY_KEYS:
+        if key not in value:
+            continue
+        item = _bounded_health_scalar(key, value[key])
+        if item is not _INVALID_HEALTH_VALUE:
+            summary[key] = item
     if "warmup" in value:
         warmup = value["warmup"]
-        if _is_health_scalar(warmup):
-            summary["warmup"] = warmup
-        elif isinstance(warmup, Mapping):
+        if isinstance(warmup, Mapping):
             summary["warmup"] = _public_health_summary(warmup)
+        else:
+            bounded = _bounded_health_scalar("warmup", warmup)
+            if bounded is not _INVALID_HEALTH_VALUE:
+                summary["warmup"] = bounded
     return summary
 
 
-def _is_health_scalar(value: object) -> bool:
-    return isinstance(value, (str, int, float, bool)) or value is None
+def _bounded_health_scalar(key: str, value: object) -> object:
+    if key == "ready":
+        return value if type(value) is bool else _INVALID_HEALTH_VALUE
+    if key != "warmup" and not isinstance(value, str):
+        return _INVALID_HEALTH_VALUE
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or any(ord(character) < 32 for character in text):
+            return _INVALID_HEALTH_VALUE
+        lowered = text.casefold()
+        if "://" in text or lowered.startswith(
+            ("bearer ", "api_key=", "access_token=", "token=")
+        ):
+            return _INVALID_HEALTH_VALUE
+        if _looks_like_absolute_path(text):
+            if key != "model":
+                return _INVALID_HEALTH_VALUE
+            text = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            if not text:
+                return _INVALID_HEALTH_VALUE
+        return text[:_MAX_HEALTH_STRING_LENGTH]
+    if type(value) is int:
+        return value if abs(value) <= 1_000_000_000 else _INVALID_HEALTH_VALUE
+    if type(value) is float:
+        if math.isfinite(value) and abs(value) <= 1_000_000_000.0:
+            return value
+    if type(value) is bool:
+        return value
+    return _INVALID_HEALTH_VALUE
+
+
+def _looks_like_absolute_path(value: str) -> bool:
+    return value.startswith(("/", "\\", "~/", "~\\")) or (
+        len(value) >= 3 and value[1] == ":" and value[2] in "/\\"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -652,7 +791,7 @@ def _compose_real_worker(
                 "status": "warmed",
                 "identity": "PersistentMossSynthesizer",
                 "version": moss_version,
-                "model": config.moss_model,
+                "model": _public_model_identity(config.moss_model),
                 "warmup": "complete",
             },
             "aligner": {
@@ -707,6 +846,12 @@ def _load_worker_dependencies() -> object:
         MossAlignedPhraseRenderer=MossAlignedPhraseRenderer,
         RapChunkOrchestrator=RapChunkOrchestrator,
     )
+
+
+def _public_model_identity(model: str) -> str:
+    if _looks_like_absolute_path(model):
+        model = model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return model[:_MAX_HEALTH_STRING_LENGTH] or "unknown"
 
 
 def _register_close(resources: ExitStack, owner: object) -> None:

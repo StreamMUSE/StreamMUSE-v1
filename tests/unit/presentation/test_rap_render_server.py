@@ -57,6 +57,10 @@ _FULL_MMS_ALIGNMENT_BYTES = (
 )
 
 
+class _PublicationInterrupted(BaseException):
+    pass
+
+
 def _request(
     *, remaining_budget_ms: int = 5_000, session_id: str = "session-1"
 ) -> RemoteRapChunkRequest:
@@ -346,6 +350,60 @@ def test_health_uses_recursive_allowlists_for_public_scalar_summaries(
     assert secret not in response.text
 
 
+def test_health_bounds_types_and_never_exposes_private_model_paths(
+    tmp_path: Path,
+) -> None:
+    private_model = tmp_path / "private-models" / "MOSS-v1.5"
+    long_status = "w" * 512
+    app = create_rap_render_app(
+        FakeOrchestrator(tmp_path / "worker"),
+        {
+            "ready": 1,
+            "candidate_profile": "realtime",
+            "vllm": {
+                "ready": True,
+                "identity": str(tmp_path / "private" / "vllm"),
+                "model": "Qwen/test-model",
+            },
+            "moss": {
+                "ready": True,
+                "status": long_status,
+                "identity": "PersistentMossSynthesizer",
+                "version": float("nan"),
+                "model": str(private_model),
+                "profile": "resident",
+            },
+            "aligner": {"ready": True, "version": float("inf")},
+            "rubberband": {"ready": "true", "version": "3.3.0"},
+            "warmup": {"ready": True, "status": "complete", "elapsed": 1.0},
+        },
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "protocol_version": "remote-rap-chunk/v1",
+        "schema_version": "streammuse.rap_chunk.v1",
+        "ready": False,
+        "candidate_profile": "realtime",
+        "vllm": {"ready": True, "model": "Qwen/test-model"},
+        "moss": {
+            "ready": True,
+            "status": "w" * 128,
+            "identity": "PersistentMossSynthesizer",
+            "model": "MOSS-v1.5",
+            "profile": "resident",
+        },
+        "aligner": {"ready": True},
+        "rubberband": {"version": "3.3.0"},
+        "warmup": {"ready": True, "status": "complete"},
+    }
+    assert str(tmp_path) not in response.text
+    assert "private-models" not in response.text
+
+
 def test_render_returns_canonical_binary_package_and_atomic_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -390,6 +448,46 @@ def test_render_returns_canonical_binary_package_and_atomic_artifacts(
         "packaging timing is provisional" not in decoded.manifest.diagnostics.warnings
     )
     assert response.headers["server-timing"] == f"total;dur={timings['total']:.3f}"
+
+
+def test_packaging_timing_uses_measured_final_publication_equivalent(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+    orchestrator = FakeOrchestrator(tmp_path / "worker")
+    clock_values = iter((10.000, 10.002, 10.005, 10.006))
+    clock_calls: list[float] = []
+
+    def clock() -> float:
+        value = next(clock_values)
+        clock_calls.append(value)
+        return value
+
+    store = rap_render_server._ArtifactStore(
+        tmp_path / "artifacts", orchestrator, clock=clock
+    )
+
+    stored = store.render_or_load(request, request.canonical_json_bytes())
+
+    workspace = tmp_path / "artifacts" / request.request_id
+    decoded = decode_chunk_package(
+        stored.package, expected_request_id=request.request_id
+    )
+    timings = decoded.manifest.diagnostics.stage_timings_ms
+    persisted_manifest = json.loads(
+        (workspace / "manifest.json").read_text(encoding="utf-8")
+    )
+    persisted_server_timing = json.loads(
+        (workspace / "server_timing.json").read_text(encoding="utf-8")
+    )
+    assert clock_calls == [10.000, 10.002, 10.005, 10.006]
+    assert timings["packaging"] == pytest.approx(9.0)
+    assert timings["total"] == pytest.approx(24.0)
+    assert persisted_manifest == decoded.manifest.to_payload()
+    assert persisted_server_timing == {"server_timing": "total;dur=24.000"}
+    assert stored.server_timing == "total;dur=24.000"
+    assert (workspace / "response.zip").read_bytes() == stored.package
+    assert not tuple(workspace.glob(".*measurement*"))
 
 
 @pytest.mark.parametrize(
@@ -465,6 +563,125 @@ def test_atomic_replace_fsyncs_containing_directory(
     assert output.read_bytes() == b"durable"
     assert labels.index("replace") < labels.index("directory_fsync")
     assert labels.index("directory_fsync") < labels.index("directory_close")
+
+
+def test_shared_renderer_workspace_fsyncs_canonical_task3_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request()
+    artifact_root = tmp_path / "artifacts"
+    orchestrator = FakeOrchestrator(artifact_root)
+    opened_paths: dict[int, Path] = {}
+    fsynced_paths: list[Path] = []
+    original_open = rap_render_server.os.open
+    original_fsync = rap_render_server.os.fsync
+
+    def tracked_open(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        opened_paths[fd] = Path(path)
+        return fd
+
+    def tracked_fsync(fd):
+        if fd in opened_paths:
+            fsynced_paths.append(opened_paths[fd])
+        return original_fsync(fd)
+
+    monkeypatch.setattr(rap_render_server.os, "open", tracked_open)
+    monkeypatch.setattr(rap_render_server.os, "fsync", tracked_fsync)
+    store = rap_render_server._ArtifactStore(artifact_root, orchestrator)
+
+    store.render_or_load(request, request.canonical_json_bytes())
+
+    workspace = artifact_root / request.request_id
+    assert {
+        workspace / "source.wav",
+        workspace / "mms_alignment.json",
+        workspace / "vocal.wav",
+        workspace,
+    }.issubset(set(fsynced_paths))
+    assert (workspace / "source.wav").read_bytes() == b"source wav"
+    assert (workspace / "mms_alignment.json").read_bytes() == (
+        _FULL_MMS_ALIGNMENT_BYTES
+    )
+    assert (workspace / "vocal.wav").read_bytes() == _wav(request)
+
+
+@pytest.mark.parametrize("failure_type", (OSError, _PublicationInterrupted))
+def test_post_rename_publication_failure_unpublishes_and_retries_for_all_waiters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_type: type[BaseException],
+) -> None:
+    request = _request()
+    orchestrator = FakeOrchestrator(tmp_path / "worker")
+    orchestrator.release = Event()
+    waiter_started = Event()
+    publication_renamed = Event()
+    failure = failure_type("response publication interrupted")
+    original_replace = rap_render_server.os.replace
+    original_fsync_directory = rap_render_server._ArtifactStore._fsync_directory
+    failed_once = False
+    rollback_fsync_states: list[bool] = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            waiter_started.set()
+            return super().result(timeout=5)
+
+    def replace_then_fail(source, destination):
+        nonlocal failed_once
+        if Path(destination).name == "response.zip" and not failed_once:
+            failed_once = True
+            original_replace(source, destination)
+            publication_renamed.set()
+            raise failure
+        return original_replace(source, destination)
+
+    def tracked_fsync_directory(path: Path) -> None:
+        if publication_renamed.is_set():
+            response_path = Path(path) / "response.zip"
+            rollback_fsync_states.append(response_path.exists())
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(rap_render_server, "Future", ObservedFuture)
+    monkeypatch.setattr(rap_render_server.os, "replace", replace_then_fail)
+    monkeypatch.setattr(
+        rap_render_server._ArtifactStore,
+        "_fsync_directory",
+        staticmethod(tracked_fsync_directory),
+    )
+    store = rap_render_server._ArtifactStore(tmp_path / "artifacts", orchestrator)
+    failures: dict[str, BaseException] = {}
+
+    def invoke(name: str) -> None:
+        try:
+            store.render_or_load(request, request.canonical_json_bytes())
+        except BaseException as error:
+            failures[name] = error
+
+    owner = Thread(target=invoke, args=("owner",))
+    waiter = Thread(target=invoke, args=("waiter",))
+    owner.start()
+    assert orchestrator.started.wait(timeout=5)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+    orchestrator.release.set()
+    owner.join(timeout=5)
+    waiter.join(timeout=5)
+
+    workspace = tmp_path / "artifacts" / request.request_id
+    assert not owner.is_alive()
+    assert not waiter.is_alive()
+    assert failures["owner"] is failure
+    assert failures["waiter"] is failure
+    assert not (workspace / "response.zip").exists()
+    assert False in rollback_fsync_states
+    assert orchestrator.calls == 1
+
+    recovered = store.render_or_load(request, request.canonical_json_bytes())
+
+    assert (workspace / "response.zip").read_bytes() == recovered.package
+    assert orchestrator.calls == 2
 
 
 @pytest.mark.parametrize(
@@ -1012,7 +1229,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         artifact_root=tmp_path / "artifacts",
         vllm_url="http://127.0.0.1:8000/v1",
         vllm_model="Qwen-test",
-        moss_model="MOSS-test",
+        moss_model=str(tmp_path / "private-models" / "MOSS-test"),
         moss_device="cuda:1",
         moss_reference_wav=tmp_path / "reference.wav",
         aligner_device="cuda:2",
@@ -1032,7 +1249,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         "temperature": 1.0,
     }
     assert calls["moss_load"] == {
-        "model_id": "MOSS-test",
+        "model_id": str(tmp_path / "private-models" / "MOSS-test"),
         "device": "cuda:1",
         "reference_wav": tmp_path / "reference.wav",
     }

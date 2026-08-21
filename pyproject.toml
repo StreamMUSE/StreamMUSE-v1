@@ -3,7 +3,20 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["streammuse*", "scripts*"]
+exclude = [
+  "app*",
+  "build*",
+  "configs*",
+  "docs*",
+  "logs*",
+  "prompts*",
+  "results*",
+  "src*",
+  "tests*",
+  "transformers*",
+]
 
 [tool.setuptools.package-data]
 "streammuse.presentation.rap_demo" = ["static/*.html", "static/css/*.css", "static/js/*.js"]

@@ -61,20 +61,18 @@ export ENV_ROOT=/data/home/Andrew.Yang/StreamMUSE/envs/rap-audio-protocols
 export ASSET_ROOT=/data/home/Andrew.Yang/StreamMUSE/assets/rap-audio-protocols
 export MOSS_ENV="$ENV_ROOT/moss"
 export FFMPEG7_ENV="$ENV_ROOT/ffmpeg7"
-export MANIFEST_PATH="$ENV_ROOT/environment_manifest.json"
 export RUBBERBAND_ROOT="$ASSET_ROOT/rubberband/rootfs"
-export MOSS_REFERENCE="$ASSET_ROOT/ted/0011_000001.wav"
-export MOSS_SNAPSHOT="$("$MOSS_ENV/bin/python" -c \
-  'import json,sys; print(json.load(open(sys.argv[1]))["models"]["moss_tts"]["snapshot_path"])' \
-  "$MANIFEST_PATH")"
+export MOSS_REFERENCE=/data/home/Andrew.Yang/StreamMUSE/audio-protocol-downloads/TED-TTS/datasets/Ref/0011_000001.wav
+export MOSS_SNAPSHOT=/data/home/Andrew.Yang/.cache/huggingface/hub/models--OpenMOSS-Team--MOSS-TTS-v1.5/snapshots/cdd3b911b1585e3f2dbc7775ef10f9926f58850a
 export RAP_ARTIFACT_ROOT="$REPO_ROOT/logs/rap/remote_moss_server"
 mkdir -p "$RAP_ARTIFACT_ROOT"
 
+"$MOSS_ENV/bin/python" -m pip install --no-deps --editable "$REPO_ROOT"
+
 PATH="$RUBBERBAND_ROOT/usr/bin:$FFMPEG7_ENV/bin:$PATH" \
 LD_LIBRARY_PATH="$RUBBERBAND_ROOT/usr/lib:$FFMPEG7_ENV/lib:${LD_LIBRARY_PATH:-}" \
-PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT" \
 CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
-"$MOSS_ENV/bin/python" -m streammuse.presentation.rap_render_server \
+"$MOSS_ENV/bin/streammuse-rap-render-server" \
   --host 127.0.0.1 \
   --port 8020 \
   --artifact-root "$RAP_ARTIFACT_ROOT" \
@@ -87,6 +85,10 @@ CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
   --aligner-cache "$ASSET_ROOT/mms-cache" \
   --candidate-profile realtime
 ```
+
+The snapshot and reference above are the paths verified on the current H200.
+For another host, replace those two exports with that host's installed snapshot
+and reference WAV; no environment-manifest file is required.
 
 Wait for model loading and warmup to complete. From the H200, verify that the
 orchestrator reports `ready: true` and the expected schema before opening a
