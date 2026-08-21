@@ -160,8 +160,9 @@ def test_static_monitor_routes_are_served_and_model_text_uses_text_content(tmp_p
     index = client.get("/")
     css = client.get("/static/css/rap-demo.css")
     script = client.get("/static/js/rap-demo.js")
+    state_script = client.get("/static/js/rap-demo-state.js")
 
-    assert index.status_code == css.status_code == script.status_code == 200
+    assert index.status_code == css.status_code == script.status_code == state_script.status_code == 200
     assert "StreamMUSE Rap Lab" in index.text
     for element_id in (
         "follow-live",
@@ -190,14 +191,35 @@ def test_static_monitor_routes_are_served_and_model_text_uses_text_content(tmp_p
         "reset-runtime",
         "audio-state",
         "audio-warning-rows",
+        "remote-chunk-panel",
+        "remote-request-id",
+        "remote-renderer",
+        "remote-state",
+        "remote-lines",
+        "remote-flows",
+        "remote-candidate-counts",
+        "remote-scores",
+        "remote-prompt-summary",
+        "remote-context-lines",
+        "remote-stage-timings",
+        "remote-alignment",
+        "remote-stretch-warnings",
+        "remote-hashes",
+        "remote-artifacts",
+        "remote-failure-reason",
     ):
         assert f'id="{element_id}"' in index.text
+
+    runtime_controls = index.text.split('<div class="runtime-controls"', maxsplit=1)[1].split("</div>", maxsplit=1)[0]
+    assert runtime_controls.count("<button") == 3
+    assert all(label in runtime_controls for label in ("Start", "Stop", "Reset"))
 
     for css_contract in (
         "--brand: #e91e63",
         ".flow-rail",
         ".candidate-record",
         ".mobile-sort",
+        ".remote-chunk-grid",
         ":focus-visible",
         "@media (max-width: 760px)",
         "@media (prefers-reduced-motion: reduce)",
@@ -226,6 +248,17 @@ def test_static_monitor_routes_are_served_and_model_text_uses_text_content(tmp_p
         assert renderer_contract in script.text
     assert "textContent" in script.text
     assert "innerHTML" not in script.text
+    for state_contract in (
+        "projectRemoteChunk",
+        "sanitizeChunkPayload",
+        "renderRemoteChunk",
+        "remote-candidate-counts",
+        "remote-stage-timings",
+        "remote-alignment",
+    ):
+        assert state_contract in state_script.text
+    assert "textContent" in state_script.text
+    assert "innerHTML" not in state_script.text
 
 
 def test_websocket_sends_snapshot_before_ordered_live_events(tmp_path: Path) -> None:

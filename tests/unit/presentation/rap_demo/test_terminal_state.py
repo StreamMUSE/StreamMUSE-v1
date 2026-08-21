@@ -137,3 +137,57 @@ def test_audio_render_pipeline_does_not_replace_terminal_playback_lifecycle_stat
     assert projector.state.audio["current_bar"] == 1
     assert projector.state.audio["render_state"] == "committed"
     assert projector.state.audio["render_bar"] == 3
+
+
+def test_projector_exposes_only_the_latest_bounded_remote_chunk_diagnostics() -> None:
+    payload = {
+        "state": "committed",
+        "renderer_decision": "moss_aligned_remote",
+        "chunk_index": 2,
+        "bars": [4, 5],
+        "selected_lines": ["First remote line", "Second remote line"],
+        "flows": [
+            {"template_id": "flow-a", "slots": [{"tick_in_bar": 0, "target_stress": 1.0}]},
+            {"template_id": "flow-b", "slots": [{"tick_in_bar": 2, "target_stress": 0.5}]},
+        ],
+        "candidate_counts": {"requested": 32, "parseable": 30, "valid": 8, "selectable": 4},
+        "selected_scores": [
+            {"bar": 4, "total": 0.91, "component_scores": {"stress_alignment": 0.88}},
+            {"bar": 5, "total": 0.87, "component_scores": {"continuity": 0.82}},
+        ],
+        "prompt_summary": "system: clean rap | user: both exact schedules",
+        "context_lines": ["Prior committed line"],
+        "stage_timings_ms": {"generation": 1_000.0, "mac": 6.0, "total": 3_276.0},
+        "deadline_slack_ms": 1_700.0,
+        "alignment": {
+            "method": "mms_forced_alignment",
+            "confidence": 0.94,
+            "fallback_counts": {"transcript_proportional": 1},
+        },
+        "stretch_warnings": ["stretch_ratio_high:1.22"],
+        "hashes": {"vocal_sha256": "vocal-hash"},
+        "artifact_refs": {"manifest": "/h200/request-2/manifest.json"},
+        "raw_wav": "RIFF-forbidden",
+    }
+    projector = TerminalRapStateProjector()
+
+    projector.apply(
+        _event(
+            1,
+            RapEventType.CHUNK_COMMITTED,
+            payload,
+            bar=4,
+            request_id="request-2",
+        )
+    )
+
+    remote = projector.state.remote_chunk
+    assert remote is not None
+    assert remote["event_type"] == "chunk_committed"
+    assert remote["request_id"] == "request-2"
+    assert remote["selected_lines"] == ("First remote line", "Second remote line")
+    assert remote["flows"][0]["slot_stress_schedule"] == "t0@1.00"
+    assert remote["candidate_counts"]["selectable"] == 4
+    assert remote["stage_timings_ms"]["mac"] == 6.0
+    assert "RIFF-forbidden" not in repr(remote)
+    assert "RIFF-forbidden" not in repr(projector.state.recent_events[-1].payload)

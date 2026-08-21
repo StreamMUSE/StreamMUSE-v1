@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>StreamMUSE Rap Lab</title>
-    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20260809-4">
-    <script src="/static/js/rap-demo-state.js?v=20260815-1" defer></script>
+    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20260821-1">
+    <script src="/static/js/rap-demo-state.js?v=20260821-1" defer></script>
     <script src="/static/js/rap-demo.js?v=20260815-1" defer></script>
   </head>
   <body>
@@ -160,6 +160,80 @@
           </section>
         </aside>
       </div>
+
+      <section class="data-panel remote-chunk-panel" id="remote-chunk-panel" aria-labelledby="remote-chunk-title" hidden>
+        <div class="panel-heading table-heading">
+          <div>
+            <span class="eyebrow">Remote render audit</span>
+            <h2 id="remote-chunk-title">Two-bar chunk</h2>
+          </div>
+          <span class="request-id" id="remote-request-id">no request</span>
+        </div>
+
+        <dl class="remote-summary-strip">
+          <div><dt>Commitment</dt><dd id="remote-renderer">--</dd></div>
+          <div><dt>State</dt><dd id="remote-state">--</dd></div>
+          <div><dt>Chunk</dt><dd id="remote-chunk-index">--</dd></div>
+          <div><dt>Bars</dt><dd id="remote-bars">--</dd></div>
+        </dl>
+
+        <div class="remote-chunk-grid">
+          <div class="remote-chunk-column">
+            <section aria-labelledby="remote-lines-title">
+              <h3 id="remote-lines-title">Selected pair</h3>
+              <ol class="remote-list" id="remote-lines"><li>--</li></ol>
+            </section>
+            <section aria-labelledby="remote-flows-title">
+              <h3 id="remote-flows-title">Template and slot / stress schedules</h3>
+              <ol class="remote-list" id="remote-flows"><li>--</li></ol>
+            </section>
+            <section aria-labelledby="remote-candidates-title">
+              <h3 id="remote-candidates-title">Candidate gate</h3>
+              <dl class="facts-list">
+                <div><dt>Requested / parseable / valid / selectable</dt><dd id="remote-candidate-counts">--</dd></div>
+              </dl>
+            </section>
+            <section aria-labelledby="remote-scores-title">
+              <h3 id="remote-scores-title">Selected component scores</h3>
+              <ol class="remote-list" id="remote-scores"><li>--</li></ol>
+            </section>
+            <section aria-labelledby="remote-context-title">
+              <h3 id="remote-context-title">Exact prompt and committed context summary</h3>
+              <pre class="code-output remote-prompt" id="remote-prompt-summary">--</pre>
+              <ol class="remote-list" id="remote-context-lines"><li>--</li></ol>
+            </section>
+          </div>
+
+          <div class="remote-chunk-column">
+            <section aria-labelledby="remote-timings-title">
+              <h3 id="remote-timings-title">Stage timings</h3>
+              <pre class="code-output remote-timings" id="remote-stage-timings">--</pre>
+              <dl class="facts-list">
+                <div><dt>Request budget</dt><dd id="remote-budget">--</dd></div>
+                <div><dt>Elapsed</dt><dd id="remote-elapsed">--</dd></div>
+                <div><dt>Final deadline slack</dt><dd id="remote-deadline-slack">--</dd></div>
+                <div><dt>Transfer size</dt><dd id="remote-transfer-bytes">--</dd></div>
+              </dl>
+            </section>
+            <section aria-labelledby="remote-alignment-title">
+              <h3 id="remote-alignment-title">Alignment and stretch</h3>
+              <dl class="facts-list">
+                <div><dt>Method / confidence / fallbacks</dt><dd id="remote-alignment">--</dd></div>
+              </dl>
+              <ol class="remote-list remote-warning-list" id="remote-stretch-warnings"><li>--</li></ol>
+              <ol class="remote-list remote-warning-list" id="remote-warnings"><li>--</li></ol>
+            </section>
+            <section aria-labelledby="remote-artifacts-title">
+              <h3 id="remote-artifacts-title">Identity and artifacts</h3>
+              <dl class="facts-list">
+                <div><dt>Hashes</dt><dd id="remote-hashes">--</dd></div>
+                <div><dt>Artifact references</dt><dd id="remote-artifacts">--</dd></div>
+                <div><dt>Failure reason</dt><dd id="remote-failure-reason">none</dd></div>
+              </dl>
+            </section>
+          </div>
+        </div>
+      </section>
 
       <section class="status-band" aria-label="Queue and health">
         <div><span>Next reserved bar</span><strong id="next-bar">--</strong></div>

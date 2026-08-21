@@ -7,8 +7,20 @@ import sys
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from streammuse.application.rap.monitoring_payloads import bounded_chunk_event_payload
 from streammuse.domain.rap import RapEvent, RapEventType
 from streammuse.presentation.rap_demo.terminal_state import TerminalRapViewState
+
+
+_CHUNK_EVENTS = frozenset(
+    {
+        RapEventType.CHUNK_REQUEST_SUBMITTED,
+        RapEventType.CHUNK_REMOTE_COMPLETED,
+        RapEventType.CHUNK_REMOTE_REJECTED,
+        RapEventType.CHUNK_COMMITTED,
+        RapEventType.CHUNK_FALLBACK_ACTIVATED,
+    }
+)
 
 
 class StructuredStreamRenderer:
@@ -38,7 +50,10 @@ class StructuredStreamRenderer:
         payload = event.payload
         prefix = self._prefix(event)
 
-        if kind == RapEventType.SESSION_STARTED:
+        if kind in _CHUNK_EVENTS:
+            chunk = bounded_chunk_event_payload(payload)
+            self._render_chunk(prefix, event, chunk)
+        elif kind == RapEventType.SESSION_STARTED:
             self._write(
                 f"[SESSION][START] tempo={_value(payload.get('tempo_bpm'))} "
                 f"max_bars={_value(payload.get('max_bars'))} session={event.session_id}"
@@ -186,6 +201,74 @@ class StructuredStreamRenderer:
         elif kind == RapEventType.BAR_PLAYBACK_COMPLETED:
             self._write(f"{prefix('PLAY')} completed absolute_frame={_value(payload.get('absolute_frame'))}")
 
+    def _render_chunk(
+        self,
+        prefix: Callable[[str], str],
+        event: RapEvent,
+        chunk: Mapping[str, Any],
+    ) -> None:
+        renderer = _renderer_commitment(chunk.get("renderer_decision"))
+        self._write(
+            f"{prefix('REMOTE')} state={_value(chunk.get('state'))} chunk={_value(chunk.get('chunk_index'))} "
+            f"request={_value(event.request_id)} renderer={renderer}"
+        )
+        lines = [item for item in chunk.get("selected_lines", ()) if isinstance(item, str)]
+        if lines:
+            self._write(f"{_continuation()} lines={lines!r}")
+        failure = chunk.get("failure_reason")
+        if failure is not None:
+            self._write(f"{_continuation()} failure={failure!r}")
+        if self._detail != "full":
+            return
+        for index, flow in enumerate(_mappings(chunk.get("flows"))):
+            self._write(
+                f"{_continuation()} flow[{index}]={_value(flow.get('template_id'))} "
+                f"schedule={_value(flow.get('slot_stress_schedule'))}"
+            )
+        counts = chunk.get("candidate_counts")
+        if isinstance(counts, Mapping):
+            self._write(
+                f"{_continuation()} candidates requested={_value(counts.get('requested'))} "
+                f"parseable={_value(counts.get('parseable'))} valid={_value(counts.get('valid'))} "
+                f"selectable={_value(counts.get('selectable'))}"
+            )
+        for score in _mappings(chunk.get("selected_scores")):
+            components = score.get("component_scores")
+            self._write(
+                f"{_continuation()} bar={_value(score.get('bar'))} total={_number(score.get('total'))} "
+                f"components={_pairs(components)}"
+            )
+        self._write(
+            f"{_continuation()} prompt_summary={chunk.get('prompt_summary')!r} "
+            f"context={list(chunk.get('context_lines', ()))!r}"
+        )
+        timings = chunk.get("stage_timings_ms")
+        if isinstance(timings, Mapping):
+            self._write(
+                f"{_continuation()} timings "
+                + " ".join(f"{_value(name)}={_number(value)}" for name, value in timings.items())
+            )
+        self._write(
+            f"{_continuation()} budget_ms={_number(chunk.get('request_budget_ms'))} "
+            f"elapsed_ms={_number(chunk.get('elapsed_ms'))} slack_ms={_number(chunk.get('deadline_slack_ms'))} "
+            f"transfer_bytes={_value(chunk.get('transfer_bytes'))}"
+        )
+        alignment = chunk.get("alignment")
+        if isinstance(alignment, Mapping):
+            self._write(
+                f"{_continuation()} alignment method={_value(alignment.get('method'))} "
+                f"confidence={_number(alignment.get('confidence'))} "
+                f"fallbacks={_pairs(alignment.get('fallback_counts'))}"
+            )
+        self._write(
+            f"{_continuation()} stretch_warnings={list(chunk.get('stretch_warnings', ()))!r} "
+            f"warnings={list(chunk.get('warnings', ()))!r}"
+        )
+        self._write(
+            f"{_continuation()} hashes={_pairs(chunk.get('hashes'))} "
+            f"artifacts={_pairs(chunk.get('artifact_refs'))}"
+        )
+
     @staticmethod
     def _prefix(event: RapEvent) -> Callable[[str], str]:
         bar = "--" if event.bar is None else f"{event.bar + 1:02d}"
@@ -238,6 +321,21 @@ def _flow_summary(value: object) -> str:
         f"flow={_value(value.get('template_id'))} ticks={ticks} durations={durations} stress={stresses} "
         f"boundaries={boundaries} rhymes={rhymes}"
     )
+
+
+def _renderer_commitment(value: object) -> str:
+    if value in {"prevalidated_fallback", "espeak", "local_espeak_fallback"}:
+        return "local eSpeak fallback"
+    return _value(value)
+
+
+def _pairs(value: object) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    return " ".join(
+        f"{_value(key)}={_number(item) if isinstance(item, (int, float)) and not isinstance(item, bool) else _value(item)}"
+        for key, item in value.items()
+    ) or "none"
 
 
 def _escape_controls(value: str) -> str:

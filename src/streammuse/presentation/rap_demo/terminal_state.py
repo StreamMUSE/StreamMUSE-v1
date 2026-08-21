@@ -10,9 +10,19 @@ from threading import Lock
 from types import MappingProxyType
 from typing import Any
 
+from streammuse.application.rap.monitoring_payloads import bounded_chunk_event_payload
 from streammuse.domain.rap import RapEvent, RapEventType
 
 
+_CHUNK_EVENTS = frozenset(
+    {
+        RapEventType.CHUNK_REQUEST_SUBMITTED,
+        RapEventType.CHUNK_REMOTE_COMPLETED,
+        RapEventType.CHUNK_REMOTE_REJECTED,
+        RapEventType.CHUNK_COMMITTED,
+        RapEventType.CHUNK_FALLBACK_ACTIVATED,
+    }
+)
 _COORDINATOR_EVENTS = frozenset(
     {
         RapEventType.AUDIO_RENDER_STARTED,
@@ -100,6 +110,7 @@ class TerminalRapViewState:
     audio: Mapping[str, Any]
     audio_warnings: tuple[Mapping[str, Any], ...]
     recent_events: tuple[TerminalRapEventView, ...]
+    remote_chunk: Mapping[str, Any] | None = None
     coordinator_epoch: int | None = None
 
 
@@ -139,6 +150,7 @@ class TerminalRapStateProjector:
         }
         self._audio_warnings: deque[Mapping[str, Any]] = deque(maxlen=128)
         self._recent_events: deque[TerminalRapEventView] = deque(maxlen=history_limit)
+        self._remote_chunk: Mapping[str, Any] | None = None
 
     def __call__(self, event: RapEvent) -> TerminalRapViewState:
         return self.apply(event)
@@ -190,6 +202,17 @@ class TerminalRapStateProjector:
                 self._update_bar(event, frozen=True)
             elif kind == RapEventType.FALLBACK_ACTIVATED:
                 self._update_bar(event)
+            elif kind in _CHUNK_EVENTS:
+                self._remote_chunk = _freeze(
+                    {
+                        "sequence": event.sequence,
+                        "event_type": event.event_type.value,
+                        "bar": event.bar,
+                        "tick": event.tick,
+                        "request_id": event.request_id,
+                        **bounded_chunk_event_payload(event.payload),
+                    }
+                )
             elif kind == RapEventType.TICK:
                 self._current_bar = event.bar
                 self._current_tick = event.tick
@@ -286,6 +309,7 @@ class TerminalRapStateProjector:
             audio=_freeze(self._audio),
             audio_warnings=tuple(self._audio_warnings),
             recent_events=tuple(self._recent_events),
+            remote_chunk=self._remote_chunk,
             coordinator_epoch=self._coordinator_epoch,
         )
 
@@ -358,6 +382,7 @@ class TerminalRapStateProjector:
             "absolute_frame": None,
         }
         self._audio_warnings.clear()
+        self._remote_chunk = None
         self._recent_events.clear()
         self._recent_events.append(event_view)
 
@@ -419,7 +444,19 @@ def _candidate_view(event: RapEvent) -> TerminalRapCandidateView:
 
 
 def _event_view(event: RapEvent) -> TerminalRapEventView:
-    return TerminalRapEventView(event.sequence, event.event_type, event.bar, event.tick, event.request_id, _freeze(event.payload))
+    payload = (
+        bounded_chunk_event_payload(event.payload)
+        if event.event_type in _CHUNK_EVENTS
+        else event.payload
+    )
+    return TerminalRapEventView(
+        event.sequence,
+        event.event_type,
+        event.bar,
+        event.tick,
+        event.request_id,
+        _freeze(payload),
+    )
 
 
 def _freeze(value: Any) -> Any:

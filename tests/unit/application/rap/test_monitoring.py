@@ -127,6 +127,122 @@ def _event(
     )
 
 
+def _remote_chunk_payload() -> dict[str, object]:
+    return {
+        "state": "committed",
+        "renderer_decision": "moss_aligned_remote",
+        "chunk_index": 1,
+        "bars": [2, 3],
+        "selected_lines": ["Remote line one", "Remote line two"],
+        "flows": [
+            {
+                "template_id": "flow-a",
+                "slots": [{"tick_in_bar": 0, "target_stress": 1.0}],
+            },
+            {
+                "template_id": "flow-b",
+                "slots": [{"tick_in_bar": 2, "target_stress": 0.5}],
+            },
+        ],
+        "candidate_counts": {"requested": 32, "parseable": 30, "valid": 8, "selectable": 4},
+        "selected_scores": [
+            {"bar": 2, "total": 0.91, "component_scores": {"stress_alignment": 0.88}},
+            {"bar": 3, "total": 0.87, "component_scores": {"continuity": 0.82}},
+        ],
+        "prompt_summary": "system: clean rap | user: both schedules",
+        "context_lines": ["Prior committed line"],
+        "stage_timings_ms": {
+            "generation": 1_000.0,
+            "evaluation": 80.0,
+            "moss": 2_000.0,
+            "aligner": 40.0,
+            "r3": 120.0,
+            "package": 10.0,
+            "transfer": 20.0,
+            "mac": 6.0,
+            "total": 3_276.0,
+        },
+        "request_budget_ms": 5_000,
+        "elapsed_ms": 3_300.0,
+        "deadline_slack_ms": 1_700.0,
+        "alignment": {
+            "method": "mms_forced_alignment",
+            "confidence": 0.94,
+            "fallback_counts": {"transcript_proportional": 1},
+            "character_spans": [{"start": 0, "end": 4}],
+        },
+        "stretch_warnings": ["stretch_ratio_high:1.22"],
+        "warnings": ["alignment_fallback:one_word"],
+        "hashes": {"vocal_sha256": "vocal-hash"},
+        "artifact_refs": {"manifest": "/h200/request-1/manifest.json"},
+        "failure_reason": None,
+        "raw_wav": "RIFF-forbidden",
+        "candidate_ledger": [{"text": "forbidden full ledger"}],
+        "character_spans": [{"start": 0, "end": 4}],
+    }
+
+
+def test_publisher_bounds_chunk_events_before_they_enter_the_event_bus() -> None:
+    seen: list[RapEvent] = []
+    publisher = RapEventPublisher("session-1")
+    dispatcher = RapEventDispatcher(publisher.queue, sinks=(seen.append,))
+    dispatcher.start()
+
+    publisher.emit(
+        RapEventType.CHUNK_REMOTE_COMPLETED,
+        bar=2,
+        request_id="request-1",
+        payload=_remote_chunk_payload(),
+    )
+    dispatcher.flush_and_close()
+
+    assert seen[0].payload["renderer_decision"] == "moss_aligned_remote"
+    assert seen[0].payload["candidate_counts"]["selectable"] == 4
+    assert seen[0].payload["flows"][1]["slot_stress_schedule"] == "t2@0.50"
+    encoded = json.dumps(seen[0].payload)
+    assert "RIFF-forbidden" not in encoded
+    assert "forbidden full ledger" not in encoded
+    assert "character_spans" not in encoded
+
+
+def test_state_projector_keeps_latest_bounded_chunk_research_state_and_clears_it_on_reset() -> None:
+    projector = RapStateProjector()
+    projector.apply(
+        _event(
+            1,
+            RapEventType.CHUNK_COMMITTED,
+            bar=2,
+            request_id="request-1",
+            payload=_remote_chunk_payload(),
+        )
+    )
+
+    snapshot = projector.snapshot()
+    remote = snapshot["remote_chunk"]
+    assert remote["event_type"] == "chunk_committed"
+    assert remote["request_id"] == "request-1"
+    assert remote["selected_lines"] == ["Remote line one", "Remote line two"]
+    assert remote["candidate_counts"] == {
+        "requested": 32,
+        "parseable": 30,
+        "valid": 8,
+        "selectable": 4,
+    }
+    assert remote["stage_timings_ms"]["mac"] == 6.0
+    assert remote["alignment"] == {
+        "method": "mms_forced_alignment",
+        "confidence": 0.94,
+        "fallback_counts": {"transcript_proportional": 1},
+    }
+    encoded = json.dumps(snapshot)
+    assert "RIFF-forbidden" not in encoded
+    assert "forbidden full ledger" not in encoded
+    assert "character_spans" not in encoded
+
+    projector.apply(_event(2, RapEventType.SESSION_RESET, payload={}))
+    assert projector.snapshot()["remote_chunk"] is None
+
+
 def test_state_projector_exposes_a_deep_serializable_snapshot() -> None:
     projector = RapStateProjector()
     events = (

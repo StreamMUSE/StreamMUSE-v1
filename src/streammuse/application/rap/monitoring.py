@@ -10,10 +10,20 @@ from threading import Lock, Thread
 from time import monotonic_ns
 from typing import Any, Callable
 
+from streammuse.application.rap.monitoring_payloads import bounded_chunk_event_payload
 from streammuse.domain.rap import RapEvent, RapEventType, normalize_text
 
 
 _SENTINEL = object()
+_CHUNK_EVENTS = frozenset(
+    {
+        RapEventType.CHUNK_REQUEST_SUBMITTED,
+        RapEventType.CHUNK_REMOTE_COMPLETED,
+        RapEventType.CHUNK_REMOTE_REJECTED,
+        RapEventType.CHUNK_COMMITTED,
+        RapEventType.CHUNK_FALLBACK_ACTIVATED,
+    }
+)
 _COORDINATOR_EVENTS = frozenset(
     {
         RapEventType.AUDIO_RENDER_STARTED,
@@ -136,6 +146,11 @@ class RapEventPublisher:
             if self._closed and not internal:
                 raise RuntimeError("rap event publisher is closed")
             self._sequence += 1
+            event_payload = (
+                bounded_chunk_event_payload(payload)
+                if event_type in _CHUNK_EVENTS
+                else deepcopy(payload or {})
+            )
             event = RapEvent(
                 session_id=self.session_id,
                 sequence=self._sequence,
@@ -145,7 +160,7 @@ class RapEventPublisher:
                 bar=bar,
                 tick=tick,
                 request_id=request_id,
-                payload=deepcopy(payload or {}),
+                payload=event_payload,
             )
             # Sequence allocation and publication are one critical section so the
             # FIFO queue order is also canonical event order across producers.
@@ -402,6 +417,7 @@ class RapStateProjector:
             "pending_request": None,
             "latest_request": None,
             "latest_batch": None,
+            "remote_chunk": None,
             "last_error": None,
             "session_metadata": {},
             "stopped": False,
@@ -513,6 +529,8 @@ class RapStateProjector:
                 reason = event.payload.get("fallback_reason")
                 if isinstance(reason, str):
                     fallbacks["by_reason"][reason] = fallbacks["by_reason"].get(reason, 0) + 1
+            elif event.event_type in _CHUNK_EVENTS:
+                self._state["remote_chunk"] = self._chunk_event_state(event)
             elif event.event_type == RapEventType.SYLLABLE_EMITTED:
                 syllable = {"bar": event.bar, "tick": event.tick, **deepcopy(event.payload)}
                 self._state["current_syllable"] = syllable
@@ -593,7 +611,22 @@ class RapStateProjector:
             "bar": event.bar,
             "tick": event.tick,
             "request_id": event.request_id,
-            "payload": deepcopy(event.payload),
+            "payload": (
+                bounded_chunk_event_payload(event.payload)
+                if event.event_type in _CHUNK_EVENTS
+                else deepcopy(event.payload)
+            ),
+        }
+
+    @staticmethod
+    def _chunk_event_state(event: RapEvent) -> dict[str, Any]:
+        return {
+            "sequence": event.sequence,
+            "event_type": event.event_type.value,
+            "bar": event.bar,
+            "tick": event.tick,
+            "request_id": event.request_id,
+            **bounded_chunk_event_payload(event.payload),
         }
 
     def _remember_segment(self, event: RapEvent) -> None:
@@ -717,6 +750,7 @@ class RapStateProjector:
                 "pending_request": None,
                 "latest_request": None,
                 "latest_batch": None,
+                "remote_chunk": None,
                 "last_error": None,
                 "session_metadata": session_metadata,
                 "stopped": True,

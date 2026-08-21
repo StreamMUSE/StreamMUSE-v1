@@ -397,3 +397,141 @@ def test_dashboard_respects_detail_boundaries(
     assert ("candidate-rejected" in output) is has_candidates
     assert ("Exact system prompt body." in output) is has_prompt
     assert ("EVENT TRACE" in output) is has_trace
+
+
+def test_dashboard_displays_complete_bounded_remote_chunk_research_evidence() -> None:
+    projector = TerminalRapStateProjector()
+    projector.apply(
+        _event(
+            1,
+            RapEventType.CHUNK_COMMITTED,
+            {
+                "state": "committed",
+                "renderer_decision": "moss_aligned_remote",
+                "chunk_index": 2,
+                "bars": [4, 5],
+                "selected_lines": ["First remote line", "Second remote line"],
+                "flows": [
+                    {
+                        "template_id": "flow-a",
+                        "slots": [
+                            {"tick_in_bar": 0, "target_stress": 1.0},
+                            {"tick_in_bar": 2, "target_stress": 0.25},
+                        ],
+                    },
+                    {
+                        "template_id": "flow-b",
+                        "slots": [{"tick_in_bar": 1, "target_stress": 0.8}],
+                    },
+                ],
+                "candidate_counts": {
+                    "requested": 32,
+                    "parseable": 30,
+                    "valid": 8,
+                    "selectable": 4,
+                },
+                "selected_scores": [
+                    {
+                        "bar": 4,
+                        "total": 0.91,
+                        "component_scores": {"stress_alignment": 0.88, "topic_coverage": 0.74},
+                    },
+                    {"bar": 5, "total": 0.87, "component_scores": {"continuity": 0.82}},
+                ],
+                "prompt_summary": "system: clean rap | user: both exact schedules",
+                "context_lines": ["Prior committed line"],
+                "stage_timings_ms": {
+                    "generation": 1_000.0,
+                    "evaluation": 80.0,
+                    "moss": 2_000.0,
+                    "aligner": 40.0,
+                    "r3": 120.0,
+                    "package": 10.0,
+                    "transfer": 20.0,
+                    "mac": 6.0,
+                    "total": 3_276.0,
+                },
+                "request_budget_ms": 5_000,
+                "elapsed_ms": 3_300.0,
+                "deadline_slack_ms": 1_700.0,
+                "alignment": {
+                    "method": "mms_forced_alignment",
+                    "confidence": 0.94,
+                    "fallback_counts": {"transcript_proportional": 1},
+                },
+                "stretch_warnings": ["stretch_ratio_high:1.22"],
+                "warnings": ["alignment_fallback:one_word"],
+                "hashes": {"vocal_sha256": "vocal-hash"},
+                "artifact_refs": {"manifest": "/h200/request-2/manifest.json"},
+                "transfer_bytes": 262_144,
+                "failure_reason": None,
+                "raw_wav": "RIFF-forbidden",
+            },
+            bar=4,
+            request_id="request-2",
+        )
+    )
+
+    output = _text(projector.state, detail="full")
+    normalized = " ".join(output.split())
+
+    for expected in (
+        "REMOTE CHUNK",
+        "request-2",
+        "moss_aligned_remote",
+        "First remote line",
+        "Second remote line",
+        "flow-a",
+        "t0@1.00, t2@0.25",
+        "flow-b",
+        "t1@0.80",
+        "32 / 30 / 8 / 4",
+        "stress_alignment=0.880",
+        "continuity=0.820",
+        "system: clean rap | user: both exact schedules",
+        "Prior committed line",
+        "generation=1000.0",
+        "evaluation=80.0",
+        "moss=2000.0",
+        "aligner=40.0",
+        "r3=120.0",
+        "package=10.0",
+        "transfer=20.0",
+        "mac=6.0",
+        "total=3276.0",
+        "slack=1700.0 ms",
+        "mms_forced_alignment",
+        "confidence=0.940",
+        "transcript_proportional=1",
+        "stretch_ratio_high:1.22",
+        "vocal_sha256=vocal-hash",
+        "manifest=/h200/request-2/manifest.json",
+        "262144 bytes",
+    ):
+        assert expected in normalized
+    assert "RIFF-forbidden" not in output
+
+
+def test_dashboard_names_local_espeak_fallback_commitment_and_failure_reason() -> None:
+    projector = TerminalRapStateProjector()
+    projector.apply(
+        _event(
+            1,
+            RapEventType.CHUNK_FALLBACK_ACTIVATED,
+            {
+                "state": "fallback",
+                "renderer_decision": "prevalidated_fallback",
+                "chunk_index": 3,
+                "bars": [6, 7],
+                "selected_lines": ["Fallback one", "Fallback two"],
+                "failure_reason": "remote deadline expired",
+            },
+            bar=6,
+            request_id="request-3",
+        )
+    )
+
+    output = _text(projector.state, detail="summary")
+
+    assert "local eSpeak fallback" in output
+    assert "remote deadline expired" in output

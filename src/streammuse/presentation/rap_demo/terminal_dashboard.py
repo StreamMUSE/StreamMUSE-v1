@@ -87,7 +87,10 @@ def _performance_sections(state: TerminalRapViewState, detail: str) -> tuple[Ren
 
 
 def _research_sections(state: TerminalRapViewState, detail: str) -> tuple[RenderableType, ...]:
-    sections: list[RenderableType] = [_llm_request(state)]
+    sections: list[RenderableType] = []
+    if state.remote_chunk is not None:
+        sections.append(_remote_chunk(state.remote_chunk))
+    sections.append(_llm_request(state))
     if detail == "full":
         sections.append(_exact_context(state))
     sections.append(_model_response(state, detail))
@@ -96,6 +99,113 @@ def _research_sections(state: TerminalRapViewState, detail: str) -> tuple[Render
     if detail == "full":
         sections.extend((_selected_score(state), _event_trace(state)))
     return tuple(sections)
+
+
+def _remote_chunk(chunk: Mapping[str, Any]) -> RenderableType:
+    bars = tuple(item for item in chunk.get("bars", ()) if isinstance(item, int))
+    lines = tuple(item for item in chunk.get("selected_lines", ()) if isinstance(item, str))
+    flows = _mapping_items(chunk.get("flows"))
+    counts = chunk.get("candidate_counts") if isinstance(chunk.get("candidate_counts"), Mapping) else {}
+    scores = _mapping_items(chunk.get("selected_scores"))
+    timings = chunk.get("stage_timings_ms") if isinstance(chunk.get("stage_timings_ms"), Mapping) else {}
+    alignment = chunk.get("alignment") if isinstance(chunk.get("alignment"), Mapping) else {}
+    fallback_counts = alignment.get("fallback_counts") if isinstance(alignment.get("fallback_counts"), Mapping) else {}
+    hashes = chunk.get("hashes") if isinstance(chunk.get("hashes"), Mapping) else {}
+    artifacts = chunk.get("artifact_refs") if isinstance(chunk.get("artifact_refs"), Mapping) else {}
+    warnings = tuple(item for item in chunk.get("warnings", ()) if isinstance(item, str))
+    stretch_warnings = tuple(item for item in chunk.get("stretch_warnings", ()) if isinstance(item, str))
+    context_lines = tuple(item for item in chunk.get("context_lines", ()) if isinstance(item, str))
+    rows: list[tuple[str, RenderableType]] = [
+        (
+            "Lifecycle",
+            Text(
+                f"state={_safe(chunk.get('state') or '-')} event={_safe(chunk.get('event_type') or '-')} "
+                f"chunk={_safe(chunk.get('chunk_index'))} request={_safe(chunk.get('request_id') or '-')}"
+            ),
+        ),
+        (
+            "Commitment",
+            Text(
+                _renderer_commitment(chunk.get("renderer_decision")),
+                style="yellow" if chunk.get("renderer_decision") in {"prevalidated_fallback", "espeak"} else "green",
+            ),
+        ),
+    ]
+    for index, line in enumerate(lines):
+        bar = bars[index] if index < len(bars) else None
+        rows.append((f"Line {_display_bar(bar)}", Text(_safe(line))))
+    for index, flow in enumerate(flows):
+        rows.append(
+            (
+                f"Flow {index + 1}",
+                Text(
+                    f"{_safe(flow.get('template_id') or '-')} | "
+                    f"{_safe(flow.get('slot_stress_schedule') or '-')}"
+                ),
+            )
+        )
+    rows.append(
+        (
+            "Candidates",
+            Text(
+                " / ".join(
+                    _safe(counts.get(name, "-"))
+                    for name in ("requested", "parseable", "valid", "selectable")
+                )
+                + "  requested / parseable / valid / selectable"
+            ),
+        )
+    )
+    for score in scores:
+        components = score.get("component_scores") if isinstance(score.get("component_scores"), Mapping) else {}
+        rendered_components = " ".join(
+            f"{_safe(name)}={_score(value)}" for name, value in components.items()
+        )
+        rows.append(
+            (
+                f"Score {_display_bar(score.get('bar') if isinstance(score.get('bar'), int) else None)}",
+                Text(f"total={_score(score.get('total'))} {rendered_components}".rstrip()),
+            )
+        )
+    rows.extend(
+        (
+            ("Prompt", Text(_safe(chunk.get("prompt_summary") or "-", preserve_newlines=True))),
+            ("Context", Text("\n".join(_safe(item) for item in context_lines) if context_lines else "-")),
+            (
+                "Timings",
+                Text(" ".join(f"{_safe(name)}={_safe(value)}" for name, value in timings.items()) or "-"),
+            ),
+            (
+                "Deadline",
+                Text(
+                    f"budget={_safe(chunk.get('request_budget_ms'))} ms "
+                    f"elapsed={_safe(chunk.get('elapsed_ms'))} ms "
+                    f"slack={_safe(chunk.get('deadline_slack_ms'))} ms"
+                ),
+            ),
+            (
+                "Alignment",
+                Text(
+                    f"{_safe(alignment.get('method') or '-')} "
+                    f"confidence={_score(alignment.get('confidence'))} "
+                    f"fallbacks={_pairs(fallback_counts)}"
+                ),
+            ),
+            ("Stretch", Text(", ".join(_safe(item) for item in stretch_warnings) or "none", style="yellow")),
+            ("Warnings", Text(", ".join(_safe(item) for item in warnings) or "none", style="yellow")),
+            ("Hashes", Text(_pairs(hashes))),
+            ("Artifacts", Text(_pairs(artifacts))),
+            ("Transfer", Text(f"{_safe(chunk.get('transfer_bytes'))} bytes")),
+            (
+                "Failure",
+                Text(
+                    _safe(chunk.get("failure_reason") or "none"),
+                    style="red" if chunk.get("failure_reason") else "dim",
+                ),
+            ),
+        )
+    )
+    return _section("REMOTE CHUNK", rows)
 
 
 def _live_delivery(state: TerminalRapViewState, bar: TerminalRapBarView | None) -> RenderableType:
@@ -441,6 +551,16 @@ def _fallback_status(bar: TerminalRapBarView) -> str:
     if not bar.fallback:
         return "disarmed"
     return f"armed: {_safe(bar.fallback_reason or 'unspecified')}"
+
+
+def _renderer_commitment(value: object) -> str:
+    if value in {"prevalidated_fallback", "espeak", "local_espeak_fallback"}:
+        return "local eSpeak fallback"
+    return _safe(value or "-")
+
+
+def _pairs(value: Mapping[object, object]) -> str:
+    return " ".join(f"{_safe(key)}={_safe(item)}" for key, item in value.items()) or "none"
 
 
 def _safe(value: object, *, preserve_newlines: bool = False) -> str:

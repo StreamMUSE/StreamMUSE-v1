@@ -275,3 +275,112 @@ def test_stream_renders_dense_audio_warning_and_playback_evidence() -> None:
     assert "target_sample=12345 renderer_phonemes=['str', 'i:']" in output
     assert "[BAR 03][WARN] timing slot=7 word='trans' available_ms=163 rendered_ms=241 compression=1.45 overlap_ms=12" in output
     assert "[BAR 03][PLAY] started queue=3 buffered_s=12 absolute_frame=384000" in output
+
+
+def test_stream_renders_complete_remote_chunk_diagnostics_and_espeak_fallback() -> None:
+    lines: list[str] = []
+    renderer = StructuredStreamRenderer(detail="full", write=lines.append)
+    projector = TerminalRapStateProjector()
+    completed = _event(
+        1,
+        RapEventType.CHUNK_REMOTE_COMPLETED,
+        {
+            "state": "returned",
+            "renderer_decision": "moss_aligned_remote",
+            "chunk_index": 2,
+            "bars": [4, 5],
+            "selected_lines": ["First remote line", "Second remote line"],
+            "flows": [
+                {
+                    "template_id": "flow-a",
+                    "slots": [
+                        {"tick_in_bar": 0, "target_stress": 1.0},
+                        {"tick_in_bar": 2, "target_stress": 0.25},
+                    ],
+                },
+                {
+                    "template_id": "flow-b",
+                    "slots": [{"tick_in_bar": 1, "target_stress": 0.8}],
+                },
+            ],
+            "candidate_counts": {"requested": 32, "parseable": 30, "valid": 8, "selectable": 4},
+            "selected_scores": [
+                {"bar": 4, "total": 0.91, "component_scores": {"stress_alignment": 0.88}},
+                {"bar": 5, "total": 0.87, "component_scores": {"continuity": 0.82}},
+            ],
+            "prompt_summary": "system: clean rap | user: both exact schedules",
+            "context_lines": ["Prior committed line"],
+            "stage_timings_ms": {
+                "generation": 1_000.0,
+                "evaluation": 80.0,
+                "moss": 2_000.0,
+                "aligner": 40.0,
+                "r3": 120.0,
+                "package": 10.0,
+                "transfer": 20.0,
+                "mac": 6.0,
+                "total": 3_276.0,
+            },
+            "request_budget_ms": 5_000,
+            "elapsed_ms": 3_300.0,
+            "deadline_slack_ms": 1_700.0,
+            "alignment": {
+                "method": "mms_forced_alignment",
+                "confidence": 0.94,
+                "fallback_counts": {"transcript_proportional": 1},
+            },
+            "stretch_warnings": ["stretch_ratio_high:1.22"],
+            "warnings": ["alignment_fallback:one_word"],
+            "hashes": {"vocal_sha256": "vocal-hash"},
+            "artifact_refs": {"manifest": "/h200/request-2/manifest.json"},
+            "transfer_bytes": 262_144,
+        },
+        bar=4,
+        request_id="request-2",
+    )
+    fallback = _event(
+        2,
+        RapEventType.CHUNK_FALLBACK_ACTIVATED,
+        {
+            "state": "fallback",
+            "renderer_decision": "prevalidated_fallback",
+            "chunk_index": 3,
+            "bars": [6, 7],
+            "selected_lines": ["Fallback one", "Fallback two"],
+            "failure_reason": "remote deadline expired",
+        },
+        bar=6,
+        request_id="request-3",
+    )
+
+    for event in (completed, fallback):
+        _render(renderer, projector, event)
+
+    output = "\n".join(lines)
+    for expected in (
+        "[BAR 05][REMOTE] state=returned chunk=2 request=request-2 renderer=moss_aligned_remote",
+        "lines=['First remote line', 'Second remote line']",
+        "flow[0]=flow-a schedule=t0@1.00, t2@0.25",
+        "flow[1]=flow-b schedule=t1@0.80",
+        "candidates requested=32 parseable=30 valid=8 selectable=4",
+        "bar=4 total=0.91 components=stress_alignment=0.88",
+        "bar=5 total=0.87 components=continuity=0.82",
+        "prompt_summary='system: clean rap | user: both exact schedules'",
+        "context=['Prior committed line']",
+        "generation=1000",
+        "evaluation=80",
+        "moss=2000",
+        "aligner=40",
+        "r3=120",
+        "package=10",
+        "transfer=20",
+        "mac=6",
+        "total=3276",
+        "budget_ms=5000 elapsed_ms=3300 slack_ms=1700 transfer_bytes=262144",
+        "alignment method=mms_forced_alignment confidence=0.94 fallbacks=transcript_proportional=1",
+        "stretch_warnings=['stretch_ratio_high:1.22'] warnings=['alignment_fallback:one_word']",
+        "hashes=vocal_sha256=vocal-hash artifacts=manifest=/h200/request-2/manifest.json",
+        "renderer=local eSpeak fallback",
+        "failure='remote deadline expired'",
+    ):
+        assert expected in output

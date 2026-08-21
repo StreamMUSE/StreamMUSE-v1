@@ -709,6 +709,87 @@ dd {
   margin: 0;
 }
 
+.remote-chunk-panel[hidden] {
+  display: none;
+}
+
+.remote-chunk-panel {
+  border-bottom: 1px solid var(--rule-strong);
+  background: var(--surface-soft);
+}
+
+.remote-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 0 12px;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.remote-summary-strip > div {
+  min-width: 0;
+  padding: 7px 9px;
+  border-right: 1px solid var(--rule);
+}
+
+.remote-summary-strip > div:last-child {
+  border-right: 0;
+}
+
+.remote-summary-strip dd {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.remote-chunk-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--rule-strong);
+  border-bottom: 1px solid var(--rule-strong);
+  background: var(--surface);
+}
+
+.remote-chunk-column {
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.remote-chunk-column:first-child {
+  border-right: 1px solid var(--rule-strong);
+}
+
+.remote-chunk-column > section + section {
+  margin-top: 14px;
+}
+
+.remote-list {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 10px;
+  list-style: none;
+}
+
+.remote-list li {
+  min-width: 0;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--rule);
+  overflow-wrap: anywhere;
+}
+
+.remote-warning-list {
+  color: var(--warning);
+}
+
+.remote-prompt,
+.remote-timings {
+  max-height: 110px;
+  border: 1px solid var(--rule);
+}
+
 .status-band {
   display: grid;
   grid-template-columns: minmax(140px, 0.7fr) minmax(140px, 0.7fr) minmax(280px, 2fr);
@@ -1082,6 +1163,15 @@ tbody tr:last-child td {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
+  .remote-chunk-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .remote-chunk-column:first-child {
+    border-right: 0;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
   .telemetry-band {
     grid-template-columns: repeat(4, minmax(74px, 1fr));
   }
@@ -1217,6 +1307,18 @@ tbody tr:last-child td {
   .workspace-panel,
   .data-panel {
     padding: 14px 12px;
+  }
+
+  .remote-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .remote-summary-strip > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .remote-summary-strip > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--rule);
   }
 
   .delivery-line {
