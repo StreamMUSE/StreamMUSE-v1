@@ -116,6 +116,33 @@ def test_final_measure_is_partial_and_never_padded(tmp_path):
         assert archive["metadata"].item()["total_length"] == 28
 
 
+@pytest.mark.parametrize("offset_steps", [3, 8])
+def test_pickup_partial_first_measure_preserves_exact_flattened_suffix(
+    tmp_path, offset_steps
+):
+    source_roll = np.zeros((4, 88, 40), dtype=np.uint8)
+    source_roll[3, 18, 1] = 1
+    source_roll[1, 45, offset_steps] = 1
+    source_roll[0, 45, offset_steps : offset_steps + 3] = 1
+    source_roll[3, 24, 25] = 1
+    source = tmp_path / f"pickup_{offset_steps}.npz"
+    _write_npz(source, source_roll, widths=[8, 16, 16])
+
+    prepare_record(
+        _record(f"pickup{offset_steps}", source),
+        output_root=tmp_path / f"output_{offset_steps}",
+    )
+    output = (
+        tmp_path
+        / f"output_{offset_steps}"
+        / "input_npz"
+        / f"pickup{offset_steps}.npz"
+    )
+    _, output_roll = _load_output(output)
+
+    assert np.array_equal(output_roll, source_roll[:, :, offset_steps:])
+
+
 def test_offset_zero_is_a_byte_exact_copy(tmp_path):
     source_roll = np.zeros((4, 88, 16), dtype=np.uint8)
     source_roll[1, 44, 0] = 1

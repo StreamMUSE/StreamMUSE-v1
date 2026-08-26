@@ -99,15 +99,17 @@ def load_npz_roll(
                 f"got {measure.shape}"
             )
         width = int(measure.shape[2])
+        is_first = index == 0
         is_last = index == len(measures) - 1
-        if not is_last and width != MEASURE_WIDTH:
+        if (is_first or is_last) and not 1 <= width <= MEASURE_WIDTH:
             raise ValueError(
-                f"{path} non-final measure_{index} width must be {MEASURE_WIDTH}, "
-                f"got {width}"
+                f"{path} boundary measure_{index} width must be in "
+                f"[1, {MEASURE_WIDTH}], got {width}"
             )
-        if is_last and not 1 <= width <= MEASURE_WIDTH:
+        if not is_first and not is_last and width != MEASURE_WIDTH:
             raise ValueError(
-                f"{path} final measure width must be in [1, {MEASURE_WIDTH}], got {width}"
+                f"{path} middle measure_{index} width must be {MEASURE_WIDTH}, "
+                f"got {width}"
             )
 
     full_roll = np.concatenate(measures, axis=2)
