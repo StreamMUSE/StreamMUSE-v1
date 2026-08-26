@@ -283,3 +283,20 @@ def test_small_selection_writes_id_mid_manifests_hashes_and_no_npz(tmp_path):
         assert row["output_sha256"] == sha256_file(Path(row["trimmed_melody_midi"]))
         assert row["exact_tick_shift_verified"] is True
     assert list(output_root.rglob("*.npz")) == []
+
+
+def test_wrapper_sets_worktree_pythonpath_before_python_call():
+    repo_root = Path(__file__).resolve().parents[3]
+    wrapper = (
+        repo_root
+        / "experiments"
+        / "lekai_failcase_dataset_v2"
+        / "run_prepare_trimmed_melody_midi.sh"
+    )
+    text = wrapper.read_text(encoding="utf-8")
+    cd_line = 'cd "${STREAMMUSE_ROOT}"'
+    export_line = 'export PYTHONPATH="${STREAMMUSE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"'
+    python_call = '"${PYTHON_BIN}" experiments/lekai_failcase_dataset_v2/prepare_trimmed_melody_midi.py'
+
+    assert export_line in text
+    assert text.index(cd_line) < text.index(export_line) < text.index(python_call)
