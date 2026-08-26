@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from types import SimpleNamespace
 
 from streammuse.application.services.prompt_continuation_realtime_service import (
     PromptContinuationRealtimeService,
@@ -24,12 +25,16 @@ class _RecordingOutput:
         self.events = []
         self.statuses = []
         self.ticks = []
+        self.metronome_ticks = []
 
     def output_event(self, event, source):
         self.events.append((event, source))
 
     def output_tick(self, tick, bar, beat):
         self.ticks.append((tick, bar, beat))
+
+    def output_metronome_tick(self, tick, bar, beat):
+        self.metronome_ticks.append((tick, bar, beat))
 
     def output_stats(self, **kwargs):
         return None
@@ -46,17 +51,23 @@ class _RecordingOutput:
 
 class _FakePromptClient:
     def __init__(self):
+        self.clear_history_calls = 0
+        self.start_calls = 0
+        self.append_calls = 0
         self.status_calls = 0
         self.playable_calls = 0
         self.playable_responses = [[]]
 
     def clear_history(self):
+        self.clear_history_calls += 1
         return {"success": True}
 
     def start(self, **kwargs):
+        self.start_calls += 1
         return {"phase": "prompt_running", **kwargs}
 
     def append_melody(self, **kwargs):
+        self.append_calls += 1
         return {"phase": "catchup_running", **kwargs}
 
     def status(self):
@@ -83,7 +94,7 @@ def _event_signature(events):
 
 def _make_service() -> PromptContinuationRealtimeService:
     client = _FakePromptClient()
-    return PromptContinuationRealtimeService(
+    service = PromptContinuationRealtimeService(
         input_source=_NoopInput(),
         prompt_client=client,
         output_sink=_RecordingOutput(),
@@ -94,6 +105,191 @@ def _make_service() -> PromptContinuationRealtimeService:
         now=lambda: 0.0,
         sleep=lambda _: None,
     )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    return service
+
+
+def test_prompt_count_in_emits_metronome_only_before_formal_timeline():
+    client = _FakePromptClient()
+    output = _RecordingOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=client,
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.5)
+    service._running = True
+
+    service._tick_loop(max_ticks=0)
+
+    assert [tick for tick, _bar, _beat in output.metronome_ticks] == [-4, -3, -2, -1]
+    assert output.ticks == []
+    assert client.clear_history_calls == 0
+    assert client.start_calls == 0
+    assert client.append_calls == 0
+    assert client.status_calls == 0
+    assert client.playable_calls == 0
+
+
+def test_prompt_count_in_starts_formal_timeline_at_tick_zero():
+    output = _RecordingOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.5)
+    service._running = True
+
+    service._tick_loop(max_ticks=1)
+
+    assert output.ticks == [(0, 0, 0)]
+    assert output.metronome_ticks[-1] == (0, 0, 0)
+
+
+def test_prompt_count_in_input_waits_and_stamps_first_event_at_tick_zero():
+    sleep_entered = threading.Event()
+    release = threading.Event()
+    read_started = threading.Event()
+    now_value = [0.0]
+
+    class _OneEventInput:
+        def read_events(self):
+            read_started.set()
+            return iter([_note(60, 99)])
+
+        def close(self):
+            return None
+
+    def blocking_sleep(_delay):
+        sleep_entered.set()
+        release.wait(timeout=1.0)
+
+    service = PromptContinuationRealtimeService(
+        input_source=_OneEventInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        now=lambda: now_value[0],
+        sleep=blocking_sleep,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.5)
+    service._running = True
+
+    worker = threading.Thread(target=service._input_worker)
+    worker.start()
+    assert sleep_entered.wait(timeout=1.0)
+    assert not read_started.is_set()
+
+    now_value[0] = 0.5
+    release.set()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert read_started.is_set()
+    assert service._event_q.get_nowait().tick == 0
+
+
+def test_prompt_count_in_stop_before_timeline_does_not_read_closed_input():
+    sleep_entered = threading.Event()
+    release = threading.Event()
+    read_started = threading.Event()
+
+    class _RecordingInput:
+        def read_events(self):
+            read_started.set()
+            return iter([])
+
+        def close(self):
+            return None
+
+    def blocking_sleep(_delay):
+        sleep_entered.set()
+        release.wait(timeout=1.0)
+
+    service = PromptContinuationRealtimeService(
+        input_source=_RecordingInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        now=lambda: 0.0,
+        sleep=blocking_sleep,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.5)
+    service._running = True
+
+    worker = threading.Thread(target=service._input_worker)
+    worker.start()
+    assert sleep_entered.wait(timeout=1.0)
+    service._running = False
+    release.set()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert not read_started.is_set()
+
+
+def test_prompt_count_in_protocol_waits_before_any_backend_call():
+    sleep_entered = threading.Event()
+    release = threading.Event()
+    now_value = [0.0]
+    client = _FakePromptClient()
+
+    def blocking_sleep(_delay):
+        sleep_entered.set()
+        release.wait(timeout=1.0)
+
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=client,
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=1,
+        protocol_poll_interval_s=0.01,
+        now=lambda: now_value[0],
+        sleep=blocking_sleep,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.5)
+    service._running = True
+
+    worker = threading.Thread(target=service._protocol_worker)
+    worker.start()
+    assert sleep_entered.wait(timeout=1.0)
+    assert client.clear_history_calls == 0
+    assert client.start_calls == 0
+    assert client.append_calls == 0
+    assert client.status_calls == 0
+    assert client.playable_calls == 0
+
+    now_value[0] = 0.5
+    release.set()
+    deadline = time.monotonic() + 1.0
+    while client.clear_history_calls == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    service._running = False
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert client.clear_history_calls == 1
+    assert client.start_calls == 0
+    assert client.append_calls == 0
+    assert client.status_calls == 0
+    assert client.playable_calls == 0
 
 
 def test_prompt_continuation_enqueues_start_after_prompt_window():

@@ -47,6 +47,7 @@ class PromptContinuationClient(Protocol):
 @dataclass(frozen=True)
 class PromptContinuationRuntime:
     session_start_time: float
+    timeline_start_time: float
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ class PromptContinuationRealtimeService:
         scheduler: PlaybackScheduler,
         prompt_length_ticks: int = 32,
         generation_interval_ticks: int = 4,
+        count_in_beats: int = 0,
         protocol_poll_interval_s: float = 0.05,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -85,6 +87,8 @@ class PromptContinuationRealtimeService:
             raise ValueError("prompt_length_ticks must be > 0")
         if int(generation_interval_ticks) <= 0:
             raise ValueError("generation_interval_ticks must be > 0")
+        if int(count_in_beats) < 0:
+            raise ValueError("count_in_beats must be >= 0")
         self._input = input_source
         self._client = prompt_client
         self._output = output_sink
@@ -92,6 +96,8 @@ class PromptContinuationRealtimeService:
         self._scheduler = scheduler
         self._prompt_length_ticks = int(prompt_length_ticks)
         self._generation_interval_ticks = int(generation_interval_ticks)
+        self._count_in_beats = int(count_in_beats)
+        self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
         self._protocol_poll_interval_s = float(protocol_poll_interval_s)
         self._now = now
         self._sleep = sleep
@@ -185,9 +191,42 @@ class PromptContinuationRealtimeService:
     def running(self) -> bool:
         return self._running
 
-    def _input_worker(self) -> None:
+    def _sleep_until(self, target_time: float) -> None:
+        delay = target_time - self._now()
+        if delay > 0:
+            self._sleep(delay)
+
+    def _output_metronome_tick(self, tick: int, bar: int, beat: int) -> None:
+        if hasattr(self._output, "output_metronome_tick"):
+            self._output.output_metronome_tick(tick, bar, beat)  # type: ignore[union-attr]
+
+    def _run_count_in(self) -> None:
+        """Play metronome-only pre-roll before the formal timeline starts."""
+        if self._count_in_ticks <= 0:
+            return
         assert self._runtime is not None
         start = self._runtime.session_start_time
+        ticks_per_beat = max(1, int(self._tempo.ticks_per_beat))
+        beats_per_bar = max(1, int(self._tempo.beats_per_bar))
+
+        self._output.output_status("count_in", f"{self._count_in_beats} beat(s)")
+        for elapsed_tick in range(self._count_in_ticks):
+            if not self._running:
+                return
+            target_time = start + self._tempo.tick_to_seconds(elapsed_tick)
+            self._sleep_until(target_time)
+
+            count_tick = elapsed_tick - self._count_in_ticks
+            beat = (elapsed_tick // ticks_per_beat) % beats_per_bar
+            bar = elapsed_tick // (ticks_per_beat * beats_per_bar)
+            self._output_metronome_tick(tick=count_tick, bar=bar, beat=beat)
+
+    def _input_worker(self) -> None:
+        assert self._runtime is not None
+        start = self._runtime.timeline_start_time
+        self._sleep_until(start)
+        if not self._running:
+            return
         for ev in self._input.read_events():
             if not self._running:
                 break
@@ -206,6 +245,10 @@ class PromptContinuationRealtimeService:
             self._event_q.put(stamped)
 
     def _protocol_worker(self) -> None:
+        assert self._runtime is not None
+        self._sleep_until(self._runtime.timeline_start_time)
+        if not self._running:
+            return
         try:
             self._client.clear_history()
         except Exception as exc:
@@ -838,7 +881,8 @@ class PromptContinuationRealtimeService:
 
     def _tick_loop(self, *, max_ticks: int | None) -> None:
         assert self._runtime is not None
-        start = self._runtime.session_start_time
+        self._run_count_in()
+        start = self._runtime.timeline_start_time
         tick = 0
         while self._running:
             if max_ticks is not None and tick >= max_ticks:
@@ -866,6 +910,7 @@ class PromptContinuationRealtimeService:
                     break
                 self._schedule_playable(accompaniment, current_tick=tick)
 
+            self._output_metronome_tick(tick=tick, bar=mt.bar, beat=mt.beat)
             for event in self._scheduler.get_events_at_tick(tick):
                 self._output.output_event(event, source=event.source)
 
@@ -875,7 +920,13 @@ class PromptContinuationRealtimeService:
         if self._running:
             return
         self._running = True
-        self._runtime = PromptContinuationRuntime(session_start_time=self._now())
+        session_start_time = self._now()
+        self._runtime = PromptContinuationRuntime(
+            session_start_time=session_start_time,
+            timeline_start_time=(
+                session_start_time + self._tempo.tick_to_seconds(self._count_in_ticks)
+            ),
+        )
         self._output.output_status("running", "prompt-continuation")
 
         self._input_thread = threading.Thread(target=self._input_worker, daemon=True)

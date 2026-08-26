@@ -23,6 +23,8 @@ from streammuse.infrastructure.output import (
     CompositeOutputSink,
     ConsoleOutputConfig,
     ConsoleOutputSink,
+    MetronomeOutputConfig,
+    MetronomeOutputSink,
     MidiFileOutputConfig,
     MidiFileOutputSink,
     WebSocketOutputSink,
@@ -65,7 +67,7 @@ class RuntimeSessionBuilder:
         )
 
     def build_web(self) -> RuntimeSession:
-        session_manager = self._create_session_manager(save_config=True)
+        session_manager = self._create_session_manager(save_config=True, ensure_unique=True)
         output_sink, websocket_sink = self._build_web_composite(session_manager=session_manager)
         return self._build(
             session_manager=session_manager,
@@ -75,8 +77,22 @@ class RuntimeSessionBuilder:
             write_summary_on_cleanup=False,
         )
 
-    def _create_session_manager(self, *, save_config: bool) -> SessionManager:
+    def _create_session_manager(
+        self,
+        *,
+        save_config: bool,
+        ensure_unique: bool = False,
+    ) -> SessionManager:
         session_manager = SessionManager(self.log_dir)
+        if ensure_unique:
+            base_session_id = session_manager.get_session_id()
+            suffix = 1
+            while session_manager.get_session_dir().exists():
+                session_manager = SessionManager(
+                    self.log_dir,
+                    session_id=f"{base_session_id}_{suffix:02d}",
+                )
+                suffix += 1
         session_manager.create_session_directory()
         if save_config:
             session_manager.save_config(self._session_config())
@@ -145,6 +161,7 @@ class RuntimeSessionBuilder:
                 scheduler=scheduler,
                 prompt_length_ticks=self._prompt_length_ticks(default=32),
                 generation_interval_ticks=self.config.inference.generation_interval_ticks,
+                count_in_beats=self.config.count_in_beats,
             )
         else:
             inference_engine = InferenceEngineFactory.create(self.config)
@@ -237,7 +254,9 @@ class RuntimeSessionBuilder:
             MidiFileOutputConfig(
                 bpm=float(self.config.tempo.bpm),
                 ticks_per_beat=int(self.config.tempo.ticks_per_beat),
+                beats_per_bar=int(self.config.tempo.beats_per_bar),
                 output_path=str(session_manager.get_session_dir() / "combined.mid"),
+                record_metronome=bool(self.config.output.metronome_enabled),
                 close_active_notes_on_finalize=bool(
                     self.config.output.close_active_notes_on_finalize
                 ),
@@ -256,4 +275,18 @@ class RuntimeSessionBuilder:
                     file=sys.stderr,
                     flush=True,
                 )
+        if self.config.output.metronome_enabled:
+            sinks.append(
+                MetronomeOutputSink(
+                    MetronomeOutputConfig(
+                        port_name=(
+                            self.config.output.metronome_port
+                            or self.config.output.midi_out_port
+                        ),
+                        ticks_per_beat=int(self.config.tempo.ticks_per_beat),
+                        beats_per_bar=int(self.config.tempo.beats_per_bar),
+                        channel=int(self.config.output.metronome_channel),
+                    )
+                )
+            )
         return CompositeOutputSink(sinks), ws_sink

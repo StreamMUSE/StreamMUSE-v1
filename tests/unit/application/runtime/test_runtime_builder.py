@@ -7,8 +7,10 @@ from streammuse.application.config import (
     InferenceConfig,
     OutputConfig,
     RapConfig,
+    TempoConfig,
 )
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
+from streammuse.infrastructure.output.metronome import MetronomeOutputSink
 from streammuse.infrastructure.output.midi_file import MidiFileOutputSink
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 
@@ -73,6 +75,65 @@ def test_builder_creates_web_standard_runtime_session(
     assert midi_sink._config.close_active_notes_on_finalize is False
     assert session.session_config["close_active_notes_on_finalize"] is False
     assert service_cls.call_args.kwargs["generation_interval_ticks"] == 4
+
+
+@patch("streammuse.application.runtime.builder.RealTimeMusicService")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
+def test_builder_web_composite_honors_metronome_and_midi_recording_config(
+    inference_factory,
+    input_factory,
+    service_cls,
+    tmp_path,
+) -> None:
+    config = ApplicationConfig(
+        tempo=TempoConfig(bpm=90.0, ticks_per_beat=6, beats_per_bar=3),
+        output=OutputConfig(
+            metronome_enabled=True,
+            metronome_port="click-port",
+            metronome_channel=8,
+        ),
+    )
+    input_factory.create.return_value = MagicMock()
+    inference_factory.create.return_value = MagicMock()
+    service_cls.return_value = MagicMock(running=False)
+
+    session = RuntimeSessionBuilder(config=config, log_dir=str(tmp_path)).build_web()
+
+    midi_sink = next(
+        sink for sink in session.output_sink.sinks if isinstance(sink, MidiFileOutputSink)
+    )
+    metronome_sink = next(
+        sink for sink in session.output_sink.sinks if isinstance(sink, MetronomeOutputSink)
+    )
+    assert midi_sink._config.beats_per_bar == 3
+    assert midi_sink._config.record_metronome is True
+    assert metronome_sink._config.port_name == "click-port"
+    assert metronome_sink._config.ticks_per_beat == 6
+    assert metronome_sink._config.beats_per_bar == 3
+    assert metronome_sink._config.channel == 8
+
+
+@patch("streammuse.application.runtime.builder.RealTimeMusicService")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
+def test_builder_creates_unique_web_session_directory_on_fast_restart(
+    inference_factory,
+    input_factory,
+    service_cls,
+    tmp_path,
+) -> None:
+    input_factory.create.return_value = MagicMock()
+    inference_factory.create.return_value = MagicMock()
+    service_cls.return_value = MagicMock(running=False)
+    builder = RuntimeSessionBuilder(config=ApplicationConfig(), log_dir=str(tmp_path))
+
+    first = builder.build_web()
+    second = builder.build_web()
+
+    assert first.session_dir != second.session_dir
+    assert first.session_dir.exists()
+    assert second.session_dir.exists()
 
 
 @patch("streammuse.application.runtime.builder.RealTimeMusicService")
@@ -188,6 +249,7 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
 ) -> None:
     config = ApplicationConfig(
         continuation_mode="prompt_continuation",
+        count_in_beats=4,
         inference=InferenceConfig(
             prompt_length_ticks=64,
             generation_interval_ticks=4,
@@ -218,6 +280,7 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     assert session.inference_engine is None
     assert service_cls.call_args.kwargs["prompt_length_ticks"] == 64
     assert service_cls.call_args.kwargs["generation_interval_ticks"] == 4
+    assert service_cls.call_args.kwargs["count_in_beats"] == 4
 
 
 def test_runtime_session_cleanup_is_idempotent_and_closes_output_after_clear_error() -> None:

@@ -1,17 +1,70 @@
 /**
- * StreamMUSE Viewer — read-only WebSocket client.
+ * StreamMUSE Viewer WebSocket client and minimal session controls.
  *
  * Connects to /ws, routes inbound JSON envelopes to PianoVisualizer / Stats,
  * and writes session metadata into the Session panel.
  *
- * No outbound messages, no controls, no parameter editing. The viewer is a
- * passive observer of whatever the streammuse-web process is doing.
+ * Runtime parameters remain owned by the CLI invocation.
  */
 
 (function() {
     let ws = null;
     let reconnectAttempts = 0;
     const MAX_RECONNECT_ATTEMPTS = 10;
+
+    function updateServiceState(status) {
+        const running = Boolean(status && status.is_running);
+        const state = status && status.state ? String(status.state) : (running ? 'running' : 'idle');
+        const stateEl = document.getElementById('service-state');
+        const startBtn = document.getElementById('btn-start');
+        const stopBtn = document.getElementById('btn-stop');
+        if (stateEl) {
+            stateEl.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+        }
+        if (startBtn) startBtn.disabled = running || state === 'starting';
+        if (stopBtn) stopBtn.disabled = !running && state !== 'starting';
+    }
+
+    async function refreshServiceStatus() {
+        try {
+            const response = await fetch('/api/status');
+            updateServiceState(await response.json());
+        } catch (error) {
+            console.error('Failed to read service status:', error);
+        }
+    }
+
+    async function startService() {
+        updateServiceState({is_running: false, state: 'starting'});
+        try {
+            const response = await fetch('/api/start', {method: 'POST'});
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || 'start failed');
+            }
+            if (window.PianoVisualizer && PianoVisualizer.clearNotes) {
+                PianoVisualizer.clearNotes();
+            }
+            updateServiceState(result);
+        } catch (error) {
+            console.error('Failed to start service:', error);
+            await refreshServiceStatus();
+        }
+    }
+
+    async function stopService() {
+        try {
+            const response = await fetch('/api/stop', {method: 'POST'});
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || 'stop failed');
+            }
+            updateServiceState(result);
+        } catch (error) {
+            console.error('Failed to stop service:', error);
+            await refreshServiceStatus();
+        }
+    }
 
     function updateConnectionStatus(connected) {
         const statusEl = document.getElementById('connection-status');
@@ -55,6 +108,7 @@
             console.log('WebSocket connected');
             updateConnectionStatus(true);
             reconnectAttempts = 0;
+            refreshServiceStatus();
         };
 
         ws.onclose = () => {
@@ -114,6 +168,13 @@
 
             case 'status':
                 console.log('Status:', data.state, data.message);
+                if (data.state === 'running') {
+                    updateServiceState({is_running: true, state: 'running'});
+                } else if (data.state === 'count_in') {
+                    updateServiceState({is_running: true, state: 'count-in'});
+                } else if (data.state === 'stopped') {
+                    updateServiceState({is_running: false, state: 'idle'});
+                }
                 break;
 
             case 'inference_result':
@@ -128,6 +189,11 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        const startBtn = document.getElementById('btn-start');
+        const stopBtn = document.getElementById('btn-stop');
+        if (startBtn) startBtn.addEventListener('click', startService);
+        if (stopBtn) stopBtn.addEventListener('click', stopService);
+        refreshServiceStatus();
         connectWebSocket();
     });
 })();

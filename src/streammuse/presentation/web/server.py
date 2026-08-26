@@ -1,17 +1,4 @@
-"""StreamMUSE web viewer.
-
-A single-process FastAPI server that:
-  1. Boots a RealTimeMusicService with the same CLI surface as `streammuse-cli`.
-  2. Wires a WebSocketOutputSink into the service's output composite alongside
-     console + auto MIDI recording + optional audio (--midi-out-port).
-  3. Serves a static piano-roll viewer at GET / and broadcasts the sink's
-     queued JSON envelopes to all connected browsers via WS /ws.
-
-There are no /api/start, /api/stop, or /api/inject endpoints. The viewer is
-read-only: the service runs from process start to process stop. Everything
-the UI shows comes from the WebSocket broadcast — same envelope shape as
-the legacy reference UI.
-"""
+"""StreamMUSE web viewer with explicit realtime session lifecycle controls."""
 
 from __future__ import annotations
 
@@ -19,15 +6,15 @@ import asyncio
 import signal
 import sys
 import threading
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from streammuse.application.config import ApplicationConfig
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
 from streammuse.infrastructure.output import CompositeOutputSink, WebSocketOutputSink
 from streammuse.presentation.cli.config_parser import args_to_config, parse_args
@@ -46,6 +33,11 @@ _composite_sink: Optional[CompositeOutputSink] = None
 _connections: List[WebSocket] = []
 _broadcaster_stop: Optional[asyncio.Event] = None
 _broadcaster_task: Optional[asyncio.Task] = None
+_config: Optional[ApplicationConfig] = None
+_log_dir = "logs"
+_last_session_dir: Optional[str] = None
+_lifecycle_state = "idle"
+_lifecycle_lock = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +45,11 @@ _broadcaster_task: Optional[asyncio.Task] = None
 # ---------------------------------------------------------------------------
 
 async def _broadcaster_loop(poll_interval_s: float = 0.02) -> None:
-    """Drain WebSocketOutputSink.get_pending_messages() and send to clients."""
-    assert _ws_sink is not None and _broadcaster_stop is not None
+    """Broadcast from whichever session sink is currently attached."""
+    assert _broadcaster_stop is not None
     while not _broadcaster_stop.is_set():
-        messages = _ws_sink.get_pending_messages()
+        sink = _ws_sink
+        messages = sink.get_pending_messages() if sink is not None else []
         if messages:
             dead: List[WebSocket] = []
             for ws in list(_connections):
@@ -78,8 +71,7 @@ async def _broadcaster_loop(poll_interval_s: float = 0.02) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _broadcaster_stop, _broadcaster_task
     _broadcaster_stop = asyncio.Event()
-    if _ws_sink is not None:
-        _broadcaster_task = asyncio.create_task(_broadcaster_loop())
+    _broadcaster_task = asyncio.create_task(_broadcaster_loop())
     try:
         yield
     finally:
@@ -90,33 +82,115 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await asyncio.wait_for(_broadcaster_task, timeout=1.0)
             except asyncio.TimeoutError:
                 _broadcaster_task.cancel()
-        _shutdown_service()
+        await asyncio.to_thread(_shutdown_service)
+
+
+def _configure_server(*, config: ApplicationConfig, log_dir: str) -> None:
+    global _config, _log_dir
+    with _lifecycle_lock:
+        _config = config
+        _log_dir = str(log_dir)
+
+
+def _runtime_status() -> dict[str, object]:
+    with _lifecycle_lock:
+        running = _runtime is not None and _runtime.running
+        state = _lifecycle_state
+        if state == "running" and not running:
+            state = "idle"
+        return {
+            "is_running": bool(running),
+            "state": state,
+            "session_dir": _last_session_dir,
+        }
+
+
+def _start_service() -> tuple[RuntimeSession, bool]:
+    """Build and start one fresh runtime; return (runtime, newly_started)."""
+    global _runtime, _service, _composite_sink, _ws_sink
+    global _last_session_dir, _lifecycle_state
+
+    with _lifecycle_lock:
+        if _runtime is not None and _runtime.running:
+            return _runtime, False
+        if _config is None:
+            raise RuntimeError("server not initialized")
+        if _runtime is not None:
+            _stop_service_locked()
+
+        _lifecycle_state = "starting"
+        runtime: RuntimeSession | None = None
+        try:
+            runtime = RuntimeSessionBuilder(config=_config, log_dir=_log_dir).build_web()
+            ws_sink = runtime.websocket_sink
+            if not isinstance(ws_sink, WebSocketOutputSink):
+                raise RuntimeError("web runtime did not provide a WebSocketOutputSink")
+
+            _runtime = runtime
+            _service = runtime.service
+            _composite_sink = runtime.output_sink
+            _ws_sink = ws_sink
+            _last_session_dir = str(runtime.session_dir)
+            runtime.start(run_stop_tick=None)
+            _lifecycle_state = "running"
+            return runtime, True
+        except Exception:
+            if runtime is not None:
+                try:
+                    runtime.stop()
+                except Exception:
+                    pass
+                runtime.cleanup()
+            _runtime = None
+            _service = None
+            _composite_sink = None
+            _ws_sink = None
+            _lifecycle_state = "idle"
+            raise
+
+
+def _stop_service_locked() -> bool:
+    global _runtime, _service, _composite_sink, _ws_sink, _lifecycle_state
+
+    runtime = _runtime
+    if runtime is None:
+        _lifecycle_state = "idle"
+        _service = None
+        _composite_sink = None
+        _ws_sink = None
+        return False
+
+    _lifecycle_state = "stopping"
+    stop_error: Exception | None = None
+    try:
+        runtime.stop()
+    except Exception as exc:
+        stop_error = exc
+    finally:
+        try:
+            runtime.cleanup()
+        finally:
+            _runtime = None
+            _service = None
+            _composite_sink = None
+            _ws_sink = None
+            _lifecycle_state = "idle"
+    if stop_error is not None:
+        raise stop_error
+    return True
+
+
+def _stop_service() -> bool:
+    with _lifecycle_lock:
+        return _stop_service_locked()
 
 
 def _shutdown_service() -> None:
-    """Stop the realtime service and close the output sink. Safe to call twice."""
-    global _runtime, _service, _composite_sink
-    if _runtime is not None:
-        try:
-            _runtime.stop()
-        finally:
-            _runtime.cleanup()
-        _runtime = None
-        _service = None
-        _composite_sink = None
-        return
-    if _service is not None and _service.running:
-        try:
-            _service.stop()
-        except Exception:
-            pass
-    if _composite_sink is not None:
-        try:
-            _composite_sink.close()
-        except Exception:
-            pass
-    _service = None
-    _composite_sink = None
+    """Stop and clean up the current session. Safe to call repeatedly."""
+    try:
+        _stop_service()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +214,46 @@ def create_app() -> FastAPI:
         if not path.exists():
             raise HTTPException(status_code=500, detail="static/index.html missing")
         return FileResponse(str(path))
+
+    @app.get("/api/status")
+    async def api_status() -> JSONResponse:
+        return JSONResponse(_runtime_status())
+
+    @app.post("/api/start")
+    async def api_start() -> JSONResponse:
+        try:
+            runtime, newly_started = await asyncio.to_thread(_start_service)
+        except Exception as exc:
+            return JSONResponse(
+                {"success": False, "message": str(exc)},
+                status_code=500,
+            )
+        return JSONResponse(
+            {
+                "success": True,
+                "message": "started" if newly_started else "already running",
+                "is_running": True,
+                "state": "running",
+                "session_dir": str(runtime.session_dir),
+            }
+        )
+
+    @app.post("/api/stop")
+    async def api_stop() -> JSONResponse:
+        try:
+            stopped = await asyncio.to_thread(_stop_service)
+        except Exception as exc:
+            return JSONResponse(
+                {"success": False, "message": str(exc)},
+                status_code=500,
+            )
+        return JSONResponse(
+            {
+                "success": True,
+                "message": "stopped" if stopped else "already stopped",
+                **_runtime_status(),
+            }
+        )
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
@@ -169,25 +283,12 @@ def create_app() -> FastAPI:
 
 def main() -> int:
     """Entry point for `streammuse-web`."""
-    global _runtime, _ws_sink, _service, _composite_sink
-
     import uvicorn
 
     args = parse_args()
     config = args_to_config(args)
 
-    runtime = RuntimeSessionBuilder(config=config, log_dir=args.log_dir).build_web()
-    session_manager = runtime.session_manager
-    assert session_manager is not None
-    composite = runtime.output_sink
-    ws_sink = runtime.websocket_sink
-    assert isinstance(ws_sink, WebSocketOutputSink)
-    service = runtime.service
-
-    _runtime = runtime
-    _composite_sink = composite
-    _ws_sink = ws_sink
-    _service = service
+    _configure_server(config=config, log_dir=args.log_dir)
 
     host = getattr(args, "web_host", "127.0.0.1")
     port = int(getattr(args, "web_port", 8001))
@@ -202,14 +303,13 @@ def main() -> int:
         sys.exit(0)
     signal.signal(signal.SIGINT, _sigint)
 
-    runtime.start(run_stop_tick=None)
-
     print("Starting StreamMUSE Viewer...", flush=True)
     print(f"  http://{host}:{port}/", flush=True)
     print(f"  Tempo: {config.tempo.bpm} BPM", flush=True)
     print(f"  Input: {config.input.type}", flush=True)
     print(f"  Inference: {config.inference.type} (model: {config.inference.model_name})", flush=True)
-    print(f"  Logging: {session_manager.get_session_dir()}", flush=True)
+    print(f"  Logging root: {args.log_dir}", flush=True)
+    print("  Session: idle (use the Web Start control)", flush=True)
 
     uvicorn.run(app, host=host, port=port, log_level="info")
     return 0
