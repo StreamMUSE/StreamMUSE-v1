@@ -11,8 +11,6 @@ Channel order is `[mel_sustain, mel_onset, acc_sustain, acc_onset]`. Internal
 rests, trailing music, and trailing rests are retained exactly. Measures use 16
 steps (4/4 at 4 steps per beat); the final measure may be partial and is never
 padded. The tool does not restore measures or change `valid_measures`.
-Source NPZ files may also begin with a partial pickup measure; after shifting,
-the timeline is re-split every 16 steps and the final measure remains unpadded.
 
 Run on the remote dataset with:
 
