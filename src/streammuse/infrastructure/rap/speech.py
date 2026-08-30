@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import ctypes
+import ctypes.util
 from math import isfinite
 import re
 import struct
@@ -13,6 +15,7 @@ from threading import Lock
 from typing import Protocol
 
 import numpy as np
+from scipy.signal import resample
 
 from streammuse.application.rap.audio_service import SpeechSynthesizer
 from streammuse.domain.rap import (
@@ -21,9 +24,16 @@ from streammuse.domain.rap import (
     AudioWarningCode,
     AudioWarningSeverity,
     PcmAudio,
+    ProsodyAnalysis,
     RenderedSyllable,
     SyllableRenderRequest,
 )
+
+
+_PHONEME_EVENT = 7
+_WORD_EVENT = 1
+_TRIM_THRESHOLD_DBFS = -45.0
+_TRIM_PADDING_MS = 5.0
 
 
 _ARPABET_TO_ESPEAK = {
@@ -72,6 +82,306 @@ class _RenderKey:
     pitch: int
     render_mode: str
     render_text: str
+
+
+@dataclass(frozen=True)
+class EspeakEventRecord:
+    event_type: int
+    text_position: int
+    length: int
+    sample: int
+    phoneme: str
+
+
+@dataclass(frozen=True)
+class RenderedContinuousPhrase:
+    audio: PcmAudio
+    onset_frames: tuple[int, ...]
+    synthesis_latency_ms: float
+    pronunciation_source: str = "espeak_continuous_events"
+    warnings: tuple[AudioWarning, ...] = ()
+
+
+class _EspeakEventId(ctypes.Union):
+    _fields_ = [
+        ("number", ctypes.c_int),
+        ("name", ctypes.c_char_p),
+        ("string", ctypes.c_char * 8),
+    ]
+
+
+class _EspeakEvent(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("unique_identifier", ctypes.c_uint),
+        ("text_position", ctypes.c_int),
+        ("length", ctypes.c_int),
+        ("audio_position", ctypes.c_int),
+        ("sample", ctypes.c_int),
+        ("user_data", ctypes.c_void_p),
+        ("id", _EspeakEventId),
+    ]
+
+
+_ESPEAK_CALLBACK = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_short),
+    ctypes.c_int,
+    ctypes.POINTER(_EspeakEvent),
+)
+
+
+class EspeakEventPhraseSynthesizer:
+    """Synthesize one connected phrase and retain eSpeak phoneme timestamps."""
+
+    def __init__(
+        self,
+        analyzer,
+        *,
+        output_sample_rate_hz: int = 48_000,
+        library_path: str | None = None,
+    ) -> None:
+        if output_sample_rate_hz <= 0:
+            raise ValueError("output sample rate must be positive")
+        resolved = library_path or ctypes.util.find_library("espeak-ng")
+        if resolved is None:
+            resolved = "/opt/homebrew/lib/libespeak-ng.dylib"
+        try:
+            self._library = ctypes.CDLL(resolved)
+        except OSError as exc:
+            raise OSError("the espeak-ng shared library is required for adaptive audio") from exc
+        self._analyzer = analyzer
+        self._output_sample_rate_hz = output_sample_rate_hz
+        self._lock = Lock()
+        self._chunks: list[np.ndarray] = []
+        self._events: list[EspeakEventRecord] = []
+
+        @_ESPEAK_CALLBACK
+        def callback(
+            wav: ctypes.POINTER(ctypes.c_short),
+            sample_count: int,
+            event_pointer: ctypes.POINTER(_EspeakEvent),
+        ) -> int:
+            if wav and sample_count > 0:
+                self._chunks.append(
+                    np.ctypeslib.as_array(wav, shape=(sample_count,)).copy()
+                )
+            if event_pointer:
+                index = 0
+                while True:
+                    event = event_pointer[index]
+                    if event.type == 0:
+                        break
+                    phoneme = ""
+                    if event.type == _PHONEME_EVENT:
+                        phoneme = bytes(event.id.string).split(b"\0", 1)[0].decode(
+                            "utf-8",
+                            errors="replace",
+                        )
+                    self._events.append(
+                        EspeakEventRecord(
+                            event_type=event.type,
+                            text_position=event.text_position,
+                            length=event.length,
+                            sample=event.sample,
+                            phoneme=phoneme,
+                        )
+                    )
+                    index += 1
+            return 0
+
+        self._callback = callback
+        self._configure_signatures()
+        self.source_sample_rate_hz = self._library.espeak_Initialize(2, 0, None, 1)
+        if self.source_sample_rate_hz <= 0:
+            raise RuntimeError(f"eSpeak initialization failed: {self.source_sample_rate_hz}")
+        self._library.espeak_SetSynthCallback(self._callback)
+
+    def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str,
+        speed_wpm: int,
+        pitch: int,
+    ) -> RenderedContinuousPhrase:
+        with self._lock:
+            self._chunks.clear()
+            self._events.clear()
+            if self._library.espeak_SetVoiceByName(voice.encode("utf-8")) != 0:
+                raise RuntimeError(f"eSpeak voice selection failed: {voice}")
+            if self._library.espeak_SetParameter(1, speed_wpm, 0) != 0:
+                raise RuntimeError(f"eSpeak rate selection failed: {speed_wpm}")
+            if self._library.espeak_SetParameter(3, pitch, 0) != 0:
+                raise RuntimeError(f"eSpeak pitch selection failed: {pitch}")
+
+            encoded = text.encode("utf-8") + b"\0"
+            buffer = ctypes.create_string_buffer(encoded)
+            started = perf_counter()
+            result = self._library.espeak_Synth(
+                ctypes.cast(buffer, ctypes.c_void_p),
+                len(encoded),
+                0,
+                1,
+                0,
+                1,
+                None,
+                None,
+            )
+            if result != 0:
+                raise RuntimeError(f"eSpeak synthesis failed: {result}")
+            self._library.espeak_Synchronize()
+            latency_ms = (perf_counter() - started) * 1000.0
+            if not self._chunks:
+                raise RuntimeError("eSpeak emitted no phrase audio")
+
+            source = np.concatenate(self._chunks).astype(np.float32) / np.float32(32768.0)
+            output_frames = round(
+                len(source) * self._output_sample_rate_hz / self.source_sample_rate_hz
+            )
+            output = resample(source, output_frames).astype(np.float32)
+            phone_events = tuple(
+                event
+                for event in self._events
+                if event.event_type == _PHONEME_EVENT
+                and event.phoneme
+                and not event.phoneme.startswith("_")
+            )
+            if not phone_events:
+                raise RuntimeError("eSpeak emitted no phrase phoneme events")
+            first_phone_frame = _convert_sample_rate_frame(
+                phone_events[0].sample,
+                self.source_sample_rate_hz,
+                self._output_sample_rate_hz,
+            )
+            active = np.flatnonzero(
+                np.abs(output) >= 10 ** (_TRIM_THRESHOLD_DBFS / 20.0)
+            )
+            if active.size == 0:
+                raise RuntimeError("eSpeak emitted silent phrase audio")
+            padding = round(_TRIM_PADDING_MS / 1000.0 * self._output_sample_rate_hz)
+            end_frame = min(len(output), int(active[-1]) + padding + 1)
+            cropped = output[first_phone_frame:end_frame].copy()
+            if not len(cropped):
+                raise RuntimeError("eSpeak phrase is empty after onset trimming")
+            analysis = self._analyzer.analyze(text)
+            onset_frames = map_espeak_events_to_syllable_onsets(
+                analysis,
+                tuple(self._events),
+                source_sample_rate_hz=self.source_sample_rate_hz,
+                output_sample_rate_hz=self._output_sample_rate_hz,
+                crop_start_output_frame=first_phone_frame,
+            )
+            if onset_frames[0] != 0 or onset_frames[-1] >= len(cropped):
+                raise RuntimeError("eSpeak phrase onsets lie outside cropped audio")
+            audio = PcmAudio(
+                AudioFormat(self._output_sample_rate_hz, 1, 4),
+                len(cropped),
+                cropped.tobytes(),
+            )
+            return RenderedContinuousPhrase(
+                audio=audio,
+                onset_frames=onset_frames,
+                synthesis_latency_ms=latency_ms,
+            )
+
+    def _configure_signatures(self) -> None:
+        library = self._library
+        library.espeak_Initialize.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+        ]
+        library.espeak_Initialize.restype = ctypes.c_int
+        library.espeak_SetSynthCallback.argtypes = [_ESPEAK_CALLBACK]
+        library.espeak_SetSynthCallback.restype = None
+        library.espeak_SetVoiceByName.argtypes = [ctypes.c_char_p]
+        library.espeak_SetVoiceByName.restype = ctypes.c_int
+        library.espeak_SetParameter.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        library.espeak_SetParameter.restype = ctypes.c_int
+        library.espeak_Synth.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_uint,
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.c_void_p,
+        ]
+        library.espeak_Synth.restype = ctypes.c_int
+        library.espeak_Synchronize.argtypes = []
+        library.espeak_Synchronize.restype = ctypes.c_int
+
+
+def map_espeak_events_to_syllable_onsets(
+    analysis: ProsodyAnalysis,
+    events: tuple[EspeakEventRecord, ...],
+    *,
+    source_sample_rate_hz: int,
+    output_sample_rate_hz: int,
+    crop_start_output_frame: int,
+) -> tuple[int, ...]:
+    groups: list[list] = []
+    for syllable in analysis.syllables:
+        if syllable.index_in_word == 0:
+            groups.append([])
+        if not groups:
+            raise RuntimeError("prosody analysis begins inside a word")
+        groups[-1].append(syllable)
+    word_events = tuple(event for event in events if event.event_type == _WORD_EVENT)
+    if len(word_events) != len(groups):
+        raise RuntimeError(
+            f"eSpeak word-event mismatch: {len(word_events)} != {len(groups)}"
+        )
+
+    onsets = []
+    for syllable_group, word_event in zip(groups, word_events, strict=True):
+        phones = tuple(
+            event
+            for event in events
+            if event.event_type == _PHONEME_EVENT
+            and event.text_position == word_event.text_position
+            and event.phoneme
+            and not event.phoneme.startswith("_")
+        )
+        vowel_indices = tuple(
+            index
+            for index, event in enumerate(phones)
+            if _is_espeak_event_vowel(event.phoneme)
+        )
+        if len(vowel_indices) != len(syllable_group):
+            word = syllable_group[0].word
+            raise RuntimeError(
+                f"eSpeak vowel-event mismatch for {word!r}: "
+                f"{len(vowel_indices)} != {len(syllable_group)}"
+            )
+        for syllable_index, vowel_index in enumerate(vowel_indices):
+            onset_index = 0 if syllable_index == 0 else vowel_indices[syllable_index - 1] + 1
+            onset_index = min(onset_index, vowel_index)
+            source_frame = _convert_sample_rate_frame(
+                phones[onset_index].sample,
+                source_sample_rate_hz,
+                output_sample_rate_hz,
+            )
+            onsets.append(max(0, source_frame - crop_start_output_frame))
+    if len(onsets) != len(analysis.syllables):
+        raise RuntimeError(
+            f"continuous phrase onset mismatch: {len(onsets)} != {len(analysis.syllables)}"
+        )
+    if any(right <= left for left, right in zip(onsets, onsets[1:])):
+        raise RuntimeError(f"continuous phrase onsets are not strictly increasing: {onsets}")
+    return tuple(onsets)
+
+
+def _convert_sample_rate_frame(frame: int, source_rate: int, target_rate: int) -> int:
+    return round(frame * target_rate / source_rate)
+
+
+def _is_espeak_event_vowel(phoneme: str) -> bool:
+    core = phoneme.lstrip("',")
+    return core.startswith("0") or _is_espeak_vowel(phoneme)
 
 
 def arpabet_syllable_to_espeak(phonemes: tuple[str, ...]) -> tuple[str, ...]:

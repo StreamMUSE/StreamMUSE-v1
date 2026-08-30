@@ -11,7 +11,12 @@ import wave
 import numpy as np
 import pytest
 
-from streammuse.domain.rap import AudioWarningCode, SyllableRenderRequest
+from streammuse.domain.rap import (
+    AudioWarningCode,
+    ProsodyAnalysis,
+    Syllable,
+    SyllableRenderRequest,
+)
 from streammuse.infrastructure.rap import speech as speech_module
 from streammuse.infrastructure.rap.speech import EspeakPhonemeSynthesizer, arpabet_syllable_to_espeak
 
@@ -126,6 +131,43 @@ def test_arpabet_syllable_maps_to_espeak_with_syllable_stress(
     arpabet: tuple[str, ...], expected: tuple[str, ...]
 ) -> None:
     assert arpabet_syllable_to_espeak(arpabet) == expected
+
+
+def test_phrase_event_mapping_preserves_repeated_word_occurrences() -> None:
+    from streammuse.infrastructure.rap.speech import (
+        EspeakEventRecord,
+        map_espeak_events_to_syllable_onsets,
+    )
+
+    syllables = (
+        Syllable("echoes", 0, 2, 1),
+        Syllable("echoes", 1, 2, 0),
+        Syllable("echoes", 0, 2, 1),
+        Syllable("echoes", 1, 2, 0),
+    )
+    analysis = ProsodyAnalysis("echoes echoes", "echoes echoes", syllables, (), (), (), ())
+    events = (
+        EspeakEventRecord(1, 1, 6, 100, ""),
+        EspeakEventRecord(7, 1, 0, 100, "E"),
+        EspeakEventRecord(7, 1, 0, 200, "k"),
+        EspeakEventRecord(7, 1, 0, 300, "oU"),
+        EspeakEventRecord(7, 1, 0, 400, "z"),
+        EspeakEventRecord(1, 8, 6, 500, ""),
+        EspeakEventRecord(7, 8, 0, 500, "E"),
+        EspeakEventRecord(7, 8, 0, 600, "k"),
+        EspeakEventRecord(7, 8, 0, 700, "oU"),
+        EspeakEventRecord(7, 8, 0, 800, "z"),
+    )
+
+    onsets = map_espeak_events_to_syllable_onsets(
+        analysis,
+        events,
+        source_sample_rate_hz=48_000,
+        output_sample_rate_hz=48_000,
+        crop_start_output_frame=100,
+    )
+
+    assert onsets == (0, 100, 400, 500)
 
 
 def test_espeak_synthesizer_uses_explicit_phonemes() -> None:

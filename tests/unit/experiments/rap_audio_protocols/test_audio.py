@@ -15,15 +15,16 @@ from streammuse.experiments.rap_audio_protocols.audio import (
     load_wav_mono_float32,
     mix_stems,
     render_common_drums,
+    validate_request_set,
 )
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget, TwoBarRenderRequest
 
 
-def _requests(total_chunks: int = 25) -> tuple[TwoBarRenderRequest, ...]:
-    return tuple(_request(index) for index in range(total_chunks))
+def _requests(total_chunks: int = 25, *, tempo_bpm: float = 90.0) -> tuple[TwoBarRenderRequest, ...]:
+    return tuple(_request(index, tempo_bpm=tempo_bpm) for index in range(total_chunks))
 
 
-def _request(chunk_index: int) -> TwoBarRenderRequest:
+def _request(chunk_index: int, *, tempo_bpm: float = 90.0) -> TwoBarRenderRequest:
     start_bar = chunk_index * 2
     syllables = tuple(
         SyllableTarget(
@@ -46,6 +47,7 @@ def _request(chunk_index: int) -> TwoBarRenderRequest:
         end_bar=start_bar + 2,
         text=f"chunk {chunk_index}",
         syllables=syllables,
+        tempo_bpm=tempo_bpm,
     )
 
 
@@ -140,6 +142,35 @@ def test_render_common_drums_is_deterministic_for_a_song_index_under_smoke_overr
     assert first.format == AudioFormat(sample_rate_hz=48_000, channels=2, sample_width_bytes=4)
     assert first.frame_count == CHUNK_FRAME_COUNT
     assert first.data == second.data
+
+
+def test_133_bpm_assembly_and_drums_share_globally_rounded_song_duration(tmp_path: Path) -> None:
+    requests = _requests(2, tempo_bpm=133.0)
+    shape = validate_request_set(requests, allow_smoke_test=True)
+    expected_song_frames = round(4 * 4 * 60 / 133 * 48_000)
+    chunk_paths = {}
+    for request in requests:
+        start_frame = round(request.start_bar * 4 * 60 / 133 * 48_000)
+        end_frame = round(request.end_bar * 4 * 60 / 133 * 48_000)
+        path = tmp_path / f"chunk-{request.chunk_index:02d}.wav"
+        _write_pcm16_mono(path, 48_000, np.full(end_frame - start_frame, 0.25, dtype=np.float32))
+        chunk_paths[request.chunk_index] = path
+
+    assembled = assemble_vocal_stem(
+        requests,
+        chunk_paths_by_index=chunk_paths,
+        allow_smoke_test=True,
+    )
+    drums = render_common_drums(requests, song_index=3, allow_smoke_test=True)
+
+    assert shape.expected_frame_count == expected_song_frames
+    assert assembled.audio.frame_count == expected_song_frames
+    assert drums.frame_count == expected_song_frames
+    assert [item.output_frames for item in assembled.diagnostics] == [
+        round(request.end_bar * 4 * 60 / 133 * 48_000)
+        - round(request.start_bar * 4 * 60 / 133 * 48_000)
+        for request in requests
+    ]
 
 
 def test_mix_stems_uses_shared_peak_gain_only_when_the_song_exceeds_limit() -> None:

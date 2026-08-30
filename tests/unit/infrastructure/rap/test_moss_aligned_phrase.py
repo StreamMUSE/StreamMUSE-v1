@@ -190,6 +190,39 @@ class _FakeFullChunkStretcher:
         ) * np.float32(0.4)
 
 
+class _NearTargetDurationSynthesizer(_FakeSynthesizer):
+    def synthesize(
+        self,
+        request: TwoBarRenderRequest,
+        output_wav: Path,
+    ) -> MossPhraseResult:
+        self.calls.append((request, output_wav))
+        samples = (
+            np.sin(np.linspace(0.0, 400.0, 130_560, dtype=np.float32))
+            * np.float32(0.25)
+        )
+        output_wav.parent.mkdir(parents=True, exist_ok=True)
+        wavfile.write(output_wav, 24_000, samples)
+        return MossPhraseResult(
+            output_wav=output_wav,
+            model_id="OpenMOSS-Team/MOSS-TTS-v1.5",
+            model_revision="revision-1",
+            reference_voice_sha256="reference-sha",
+            source_wav_sha256=hashlib.sha256(output_wav.read_bytes()).hexdigest(),
+            sample_rate_hz=24_000,
+            frame_count=len(samples),
+            generation_time_ms=111.0,
+            resolved_generation_settings=MappingProxyType({"token_target": 64}),
+            warnings=(),
+        )
+
+
+class _NearTargetDurationAligner(_FakeAligner):
+    def align(self, source_wav: Path, transcript: str) -> MmsAlignmentResult:
+        result = super().align(source_wav, transcript)
+        return replace(result, source_frame_count=130_560)
+
+
 def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
     tmp_path: Path,
 ) -> None:
@@ -208,7 +241,6 @@ def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
         stretcher_factory=stretcher_factory,
         rubberband_version="rubberband 3.3.0 R3",
     )
-
     result = renderer.render(_request(), tmp_path / "request-1")
 
     assert stretcher_factory_calls == [{"engine": "r3", "smoothing": False}]
@@ -300,6 +332,46 @@ def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
                 "response_package": "response.zip",
             },
         },
+    )
+
+
+def test_default_policy_uses_gentle_sparse_salient_onsets(tmp_path: Path) -> None:
+    stretcher = _FakeFullChunkStretcher()
+    renderer = MossAlignedPhraseRenderer(
+        synthesizer=_NearTargetDurationSynthesizer(),
+        aligner=_NearTargetDurationAligner(),
+        stretcher_factory=lambda **_: stretcher,
+    )
+
+    result = renderer.render(_request(), tmp_path / "request")
+
+    assert len(stretcher.calls) == 1
+    _, _, time_map = stretcher.calls[0]
+    assert len(time_map) == 5
+    ratios = tuple(
+        (target_end - target_start) / (source_end - source_start)
+        for (source_start, target_start), (source_end, target_end) in zip(
+            time_map,
+            time_map[1:],
+        )
+    )
+    assert min(ratios) >= 0.75 - 0.001
+    assert max(ratios) <= 1.35 + 0.001
+    assert len(result.alignment_diagnostics["source_anchors"]) == 3
+    artifact = json.loads(
+        (tmp_path / "request" / "mms_alignment.json").read_text(encoding="utf-8")
+    )
+    assert artifact["warp"]["policy_requested"] == "gentle_sparse_r3"
+    assert artifact["warp"]["policy_resolved"] == "gentle_sparse_r3"
+    assert artifact["warp"]["timing_regularization_applied"] is True
+    assert artifact["warp"]["ratio_bounds"] == [0.75, 1.35]
+    assert artifact["warp"]["selected_anchor_indices"] == [0, 2, 3]
+    assert artifact["warp"]["omitted_anchor_indices"] == [1]
+    assert result.alignment_diagnostics["target_anchors"] == pytest.approx(
+        tuple(
+            anchor["target_seconds"]
+            for anchor in artifact["mapping"]["effective_warp_anchors"]
+        )
     )
 
 

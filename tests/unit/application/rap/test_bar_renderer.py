@@ -49,6 +49,20 @@ class SilentDrumRenderer:
         return PcmAudio(audio_format, frames, bytes(frames * audio_format.channels * audio_format.sample_width_bytes))
 
 
+class ExactLengthTimeStretcher:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    def stretch(self, audio: PcmAudio, target_frames: int) -> PcmAudio:
+        self.calls.append((audio.frame_count, target_frames))
+        samples = np.frombuffer(audio.data, dtype=np.float32).reshape(
+            audio.frame_count,
+            audio.format.channels,
+        )
+        fitted = samples[np.minimum(np.arange(target_frames), audio.frame_count - 1)]
+        return PcmAudio(audio.format, target_frames, fitted.astype(np.float32).tobytes())
+
+
 def planned_bar_with_slots(*, bar: int, ticks: tuple[int, ...]) -> PlannedRapBar:
     template = FlowTemplate(
         template_id="test-flow",
@@ -97,6 +111,7 @@ def test_bar_renderer_places_every_syllable_at_exact_target_sample() -> None:
         audio_format=AudioFormat(48_000, 2),
         synthesizer=synthesizer,
         drums=SilentDrumRenderer(),
+        time_stretcher=ExactLengthTimeStretcher(),
     )
 
     prepared = renderer.render(plan)
@@ -115,6 +130,7 @@ def test_bar_renderer_uses_absolute_samples_at_92_bpm_for_nonzero_bars() -> None
         audio_format=AudioFormat(48_000, 2),
         synthesizer=ImpulseSpeechSynthesizer(frames=1_000),
         drums=SilentDrumRenderer(),
+        time_stretcher=ExactLengthTimeStretcher(),
     )
 
     first = renderer.render(planned_bar_with_slots(bar=1, ticks=(0, 3, 9, 15)))
@@ -139,11 +155,13 @@ def test_bar_renderer_preserves_pronunciation_and_timing_warnings() -> None:
         severity=AudioWarningSeverity.WARNING,
         message="fallback",
     )
+    stretcher = ExactLengthTimeStretcher()
     renderer = DeterministicRapBarRenderer(
         tempo=Tempo(60.0, 4, 4),
         audio_format=AudioFormat(48_000, 2),
         synthesizer=ImpulseSpeechSynthesizer(frames=30_000, warnings=(pronunciation_warning,), sustained=True),
         drums=SilentDrumRenderer(),
+        time_stretcher=stretcher,
     )
 
     prepared = renderer.render(planned_bar_with_slots(bar=0, ticks=(0, 1)))
@@ -152,6 +170,7 @@ def test_bar_renderer_preserves_pronunciation_and_timing_warnings() -> None:
         AudioWarningCode.PRONUNCIATION_FALLBACK,
         AudioWarningCode.TIMING_PRESSURE,
     }
+    assert stretcher.calls == [(30_000, 15_000)]
 
 
 def test_bar_renderer_passes_its_configured_compression_cap_to_syllable_fitting() -> None:
@@ -160,6 +179,7 @@ def test_bar_renderer_passes_its_configured_compression_cap_to_syllable_fitting(
         audio_format=AudioFormat(48_000, 2),
         synthesizer=ImpulseSpeechSynthesizer(frames=144_000, sustained=True),
         drums=SilentDrumRenderer(),
+        time_stretcher=ExactLengthTimeStretcher(),
         max_compression=3.0,
     )
 
@@ -174,6 +194,7 @@ def test_nonfinal_tail_cropped_at_bar_boundary_has_truthful_warning_and_lengths(
         audio_format=AudioFormat(48_000, 2),
         synthesizer=ImpulseSpeechSynthesizer(frames=100_000, sustained=True),
         drums=SilentDrumRenderer(),
+        time_stretcher=ExactLengthTimeStretcher(),
     )
 
     prepared = renderer.render(planned_bar_with_slots(bar=0, ticks=(14, 15)))

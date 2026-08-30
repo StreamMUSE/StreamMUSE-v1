@@ -11,6 +11,7 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample_poly
 
+from streammuse.application.rap.audio_rendering import bar_start_frame
 from streammuse.domain.rap import AudioFormat, PcmAudio
 from streammuse.domain.timing import Tempo
 from streammuse.experiments.rap_audio_protocols.contracts import TwoBarRenderRequest
@@ -66,6 +67,7 @@ class RequestSetShape:
     request_count: int
     total_bars: int
     expected_frame_count: int
+    tempo_bpm: float
 
 
 def validate_wav_metadata(
@@ -105,6 +107,7 @@ def validate_request_set(
         raise ValueError("requests must not be empty")
 
     song_id = requests[0].song_id
+    tempo_bpm = requests[0].tempo_bpm
     for expected_chunk_index, request in enumerate(requests):
         if request.song_id != song_id:
             raise ValueError("requests must belong to one song")
@@ -113,28 +116,31 @@ def validate_request_set(
         expected_start_bar = expected_chunk_index * 2
         if request.start_bar != expected_start_bar or request.end_bar != expected_start_bar + 2:
             raise ValueError("requests must form a contiguous zero-based two-bar sequence")
+        if request.tempo_bpm != tempo_bpm:
+            raise ValueError("requests must use one tempo")
 
     request_count = len(requests)
     total_bars = requests[-1].end_bar
-    expected_frame_count = request_count * CHUNK_FRAME_COUNT
+    tempo = Tempo(tempo_bpm, 4, 4)
+    expected_frame_count = bar_start_frame(total_bars, tempo, TARGET_STEREO_FORMAT)
     if allow_smoke_test:
         return RequestSetShape(
             song_id=song_id,
             request_count=request_count,
             total_bars=total_bars,
             expected_frame_count=expected_frame_count,
+            tempo_bpm=tempo_bpm,
         )
     if request_count != CAMPAIGN_REQUEST_COUNT:
         raise ValueError(f"campaign outputs require exactly {CAMPAIGN_REQUEST_COUNT} requests")
     if total_bars != CAMPAIGN_BAR_COUNT:
         raise ValueError(f"campaign outputs require exactly {CAMPAIGN_BAR_COUNT} bars")
-    if expected_frame_count != SONG_FRAME_COUNT:
-        raise ValueError(f"campaign outputs require exactly {SONG_FRAME_COUNT} frames")
     return RequestSetShape(
         song_id=song_id,
         request_count=request_count,
         total_bars=total_bars,
         expected_frame_count=expected_frame_count,
+        tempo_bpm=tempo_bpm,
     )
 
 
@@ -168,7 +174,16 @@ def assemble_vocal_stem(
             raise ValueError(f"missing chunk WAV for chunk {request.chunk_index}") from exc
         audio = load_wav_mono_float32(path)
         samples = _samples(audio)[:, 0]
-        fitted, diagnostic = _fit_chunk(request.chunk_index, samples)
+        tempo = Tempo(request.tempo_bpm, 4, 4)
+        target_frame_count = (
+            bar_start_frame(request.end_bar, tempo, TARGET_VOCAL_FORMAT)
+            - bar_start_frame(request.start_bar, tempo, TARGET_VOCAL_FORMAT)
+        )
+        fitted, diagnostic = _fit_chunk(
+            request.chunk_index,
+            samples,
+            target_frame_count=target_frame_count,
+        )
         chunks.append(fitted.reshape(-1, 1))
         diagnostics.append(diagnostic)
 
@@ -197,8 +212,9 @@ def render_common_drums(
     shape = validate_request_set(requests, allow_smoke_test=allow_smoke_test)
 
     renderer = ProceduralBoomBapRenderer(seed=20260816 + song_index * 10_000)
+    tempo = Tempo(shape.tempo_bpm, 4, 4)
     bar_samples = [
-        _samples(renderer.render(_COMMON_DRUM_TEMPLATE, _TEMPO, TARGET_STEREO_FORMAT, bar))
+        _samples(renderer.render(_COMMON_DRUM_TEMPLATE, tempo, TARGET_STEREO_FORMAT, bar))
         for bar in range(shape.total_bars)
     ]
     drums = _pcm_audio(TARGET_STEREO_FORMAT, np.concatenate(bar_samples, axis=0))
@@ -260,40 +276,45 @@ def write_float32_wav(path: Path | str, audio: PcmAudio) -> None:
     wavfile.write(destination, audio.format.sample_rate_hz, _samples(audio).astype(np.float32, copy=False))
 
 
-def _fit_chunk(chunk_index: int, samples: np.ndarray) -> tuple[np.ndarray, ChunkAssemblyDiagnostic]:
+def _fit_chunk(
+    chunk_index: int,
+    samples: np.ndarray,
+    *,
+    target_frame_count: int = CHUNK_FRAME_COUNT,
+) -> tuple[np.ndarray, ChunkAssemblyDiagnostic]:
     source_frames = int(samples.shape[0])
-    if source_frames == CHUNK_FRAME_COUNT:
+    if source_frames == target_frame_count:
         return (
             samples.astype(np.float32, copy=False),
             ChunkAssemblyDiagnostic(
                 chunk_index=chunk_index,
                 source_frames=source_frames,
-                output_frames=CHUNK_FRAME_COUNT,
+                output_frames=target_frame_count,
                 action="identity",
                 message="chunk already matched the two-bar target",
             ),
         )
-    if source_frames < CHUNK_FRAME_COUNT:
-        adjusted_frames = CHUNK_FRAME_COUNT - source_frames
+    if source_frames < target_frame_count:
+        adjusted_frames = target_frame_count - source_frames
         padded = np.pad(samples.astype(np.float32, copy=False), (0, adjusted_frames))
         return (
             padded,
             ChunkAssemblyDiagnostic(
                 chunk_index=chunk_index,
                 source_frames=source_frames,
-                output_frames=CHUNK_FRAME_COUNT,
+                output_frames=target_frame_count,
                 action="pad_silence",
                 message="chunk shorter than two bars; padded trailing silence",
                 adjusted_frames=adjusted_frames,
             ),
         )
-    adjusted_frames = source_frames - CHUNK_FRAME_COUNT
+    adjusted_frames = source_frames - target_frame_count
     return (
-        samples[:CHUNK_FRAME_COUNT].astype(np.float32, copy=False),
+        samples[:target_frame_count].astype(np.float32, copy=False),
         ChunkAssemblyDiagnostic(
             chunk_index=chunk_index,
             source_frames=source_frames,
-            output_frames=CHUNK_FRAME_COUNT,
+            output_frames=target_frame_count,
             action="truncate",
             message="chunk exceeded the two-bar target and was truncated",
             adjusted_frames=adjusted_frames,

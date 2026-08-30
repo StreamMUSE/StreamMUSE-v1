@@ -23,6 +23,7 @@ from streammuse.experiments.rap_audio_protocols.warp import (
     parse_textgrid_word_intervals,
     piecewise_pitch_preserving_warp,
     promote_vowel_anchors_to_syllable_onsets,
+    regularize_gentle_sparse_anchors,
     regularize_anchor_targets,
 )
 
@@ -38,6 +39,14 @@ def _syllable(word: str, phonemes: tuple[str, ...], *, target_seconds: float) ->
         absolute_tick=0,
         tick_in_chunk=0,
         target_seconds=target_seconds,
+    )
+
+
+def _single_centered_anchor():
+    return match_vowel_anchors(
+        (PhoneInterval(start_seconds=0.490, end_seconds=0.510, phone="IY1"),),
+        (_syllable("beat", ("B", "IY1", "T"), target_seconds=0.500),),
+        sample_rate_hz=1_000,
     )
 
 
@@ -72,6 +81,67 @@ def test_rubberband_stretcher_does_not_request_a_pitch_shift(monkeypatch: pytest
     assert "--frequency" not in captured_command
 
 
+def test_rubberband_stretcher_returns_exact_output_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_output = np.asarray([0.1, -0.2, 0.3, -0.4], dtype=np.float32)
+
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, raw_output)
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    output = RubberBandStretcher(binary="rubberband")(np.ones(4, dtype=np.float32), 4, 1_000)
+
+    np.testing.assert_array_equal(output, raw_output)
+
+
+@pytest.mark.parametrize("raw_length", [2, 3, 5, 6])
+def test_rubberband_stretcher_only_adjusts_small_length_differences_at_tail(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_length: int,
+) -> None:
+    raw_output = np.arange(1, raw_length + 1, dtype=np.float32)
+
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, raw_output)
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    output = RubberBandStretcher(binary="rubberband")(np.ones(4, dtype=np.float32), 4, 1_000)
+
+    expected = np.pad(raw_output[:4], (0, max(0, 4 - raw_length)))
+    np.testing.assert_array_equal(output, expected)
+
+
+def test_rubberband_stretcher_rejects_large_length_difference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, np.arange(7, dtype=np.float32))
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Rubber Band output length .* target length"):
+        RubberBandStretcher(binary="rubberband")(np.ones(4, dtype=np.float32), 4, 1_000)
+
+
+def test_rubberband_stretcher_rejects_large_underflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, np.asarray([0.25], dtype=np.float32))
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Rubber Band output length .* target length"):
+        RubberBandStretcher(binary="rubberband")(np.ones(4, dtype=np.float32), 4, 1_000)
+
+
 def test_rubberband_time_map_stretcher_uses_one_r3_full_chunk_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -99,6 +169,135 @@ def test_rubberband_time_map_stretcher_uses_one_r3_full_chunk_call(
     assert "--fine" in captured_command
     assert "--smoothing" not in captured_command
     assert captured_time_map == ["0 0", "250 300", "999 1199"]
+
+
+def test_rubberband_time_map_stretcher_returns_exact_output_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_output = np.asarray([0.1, -0.2, 0.3, -0.4], dtype=np.float32)
+
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, raw_output)
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    output = RubberBandTimeMapStretcher(binary="rubberband")(
+        np.ones(4, dtype=np.float32),
+        4,
+        1_000,
+        ((0, 0), (3, 3)),
+    )
+
+    np.testing.assert_array_equal(output, raw_output)
+
+
+@pytest.mark.parametrize("raw_length", [2, 3, 5, 6])
+def test_rubberband_time_map_stretcher_only_adjusts_small_length_differences_at_tail(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_length: int,
+) -> None:
+    raw_output = np.arange(1, raw_length + 1, dtype=np.float32)
+
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, raw_output)
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    output = RubberBandTimeMapStretcher(binary="rubberband")(
+        np.ones(4, dtype=np.float32),
+        4,
+        1_000,
+        ((0, 0), (3, 3)),
+    )
+
+    expected = np.pad(raw_output[:4], (0, max(0, 4 - raw_length)))
+    np.testing.assert_array_equal(output, expected)
+
+
+def test_rubberband_time_map_stretcher_compensates_only_the_end_control_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    captured_time_maps: list[tuple[tuple[int, int], ...]] = []
+    rendered_lengths = (90, 95, 97, 100)
+    expected = np.linspace(-0.4, 0.4, 100, dtype=np.float32)
+
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        commands.append(list(command))
+        time_map_path = Path(command[command.index("--timemap") + 1])
+        captured_time_maps.append(
+            tuple(
+                tuple(map(int, line.split()))
+                for line in time_map_path.read_text(encoding="utf-8").splitlines()
+            )
+        )
+        length = rendered_lengths[len(commands) - 1]
+        rendered = expected if length == 100 else np.arange(length, dtype=np.float32)
+        wavfile.write(Path(command[-1]), 1_000, rendered)
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    output = RubberBandTimeMapStretcher(binary="rubberband")(
+        np.ones(100, dtype=np.float32),
+        100,
+        1_000,
+        ((0, 0), (50, 60), (99, 99)),
+    )
+
+    assert len(commands) == 4
+    assert {
+        command[command.index("--duration") + 1]
+        for command in commands
+    } == {"0.100000000"}
+    assert [time_map[:-1] for time_map in captured_time_maps] == [
+        ((0, 0), (50, 60)),
+    ] * 4
+    assert [time_map[-1] for time_map in captured_time_maps] == [
+        (99, 99),
+        (99, 109),
+        (99, 114),
+        (99, 117),
+    ]
+    np.testing.assert_array_equal(output, expected)
+
+
+def test_rubberband_time_map_stretcher_rejects_large_length_difference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, np.arange(7, dtype=np.float32))
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Rubber Band output length .* target length"):
+        RubberBandTimeMapStretcher(binary="rubberband")(
+            np.ones(4, dtype=np.float32),
+            4,
+            1_000,
+            ((0, 0), (3, 3)),
+        )
+
+
+def test_rubberband_time_map_stretcher_rejects_large_underflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        wavfile.write(Path(command[-1]), 1_000, np.asarray([0.25], dtype=np.float32))
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Rubber Band output length .* target length"):
+        RubberBandTimeMapStretcher(binary="rubberband")(
+            np.ones(4, dtype=np.float32),
+            4,
+            1_000,
+            ((0, 0), (3, 3)),
+        )
 
 
 def test_rubberband_time_map_stretcher_supports_r2_smoothing(
@@ -705,6 +904,57 @@ def test_continuous_pitch_preserving_warp_calls_stretcher_once_with_full_time_ma
     )
 
 
+@pytest.mark.parametrize("frame_delta", (-2, 2))
+def test_continuous_warp_corrects_only_small_tail_length_differences(frame_delta: int) -> None:
+    raw = np.arange(1_000 + frame_delta, dtype=np.float32)
+
+    warped = continuous_pitch_preserving_warp(
+        np.zeros(1_000, dtype=np.float32),
+        sample_rate_hz=1_000,
+        anchors=_single_centered_anchor(),
+        target_frame_count=1_000,
+        stretch_full_chunk=lambda *_args: raw,
+        source_sha256="d" * 64,
+    )
+
+    assert len(warped.samples) == 1_000
+    retained = min(len(raw), 1_000)
+    np.testing.assert_array_equal(warped.samples[:retained], raw[:retained])
+    if frame_delta < 0:
+        np.testing.assert_array_equal(
+            warped.samples[len(raw) :],
+            np.zeros(-frame_delta, dtype=np.float32),
+        )
+
+
+def test_continuous_warp_rejects_material_output_length_difference() -> None:
+    with pytest.raises(RuntimeError, match="warp output length 1003 differs from target length 1000"):
+        continuous_pitch_preserving_warp(
+            np.zeros(1_000, dtype=np.float32),
+            sample_rate_hz=1_000,
+            anchors=_single_centered_anchor(),
+            target_frame_count=1_000,
+            stretch_full_chunk=lambda *_args: np.zeros(1_003, dtype=np.float32),
+            source_sha256="e" * 64,
+        )
+
+
+def test_piecewise_warp_rejects_material_region_length_difference() -> None:
+    with pytest.raises(RuntimeError, match="warp output length .* differs from target length"):
+        piecewise_pitch_preserving_warp(
+            np.zeros(1_000, dtype=np.float32),
+            sample_rate_hz=1_000,
+            anchors=_single_centered_anchor(),
+            target_frame_count=1_000,
+            stretch_region=lambda _samples, target_frames, _sample_rate: np.zeros(
+                target_frames + 3,
+                dtype=np.float32,
+            ),
+            crossfade_seconds=0.0,
+            source_sha256="f" * 64,
+        )
+
+
 def test_regularize_anchor_targets_limits_extreme_local_stretch_ratios() -> None:
     sample_rate_hz = 1_000
     syllables = (
@@ -748,6 +998,70 @@ def test_regularize_anchor_targets_limits_extreme_local_stretch_ratios() -> None
     assert regularized[0].requested_target_seconds == pytest.approx(0.010)
     assert regularized[0].target_sample != 10
     assert regularized[0].boundary_adjusted
+
+
+def test_gentle_sparse_policy_keeps_salient_anchors_with_gentle_ratios() -> None:
+    syllables = tuple(
+        replace(
+            _syllable(
+                f"word{index}",
+                ("AA1",),
+                target_seconds=target_seconds,
+            ),
+            target_stress=target_stress,
+            boundary_strength=boundary_strength,
+        )
+        for index, (target_seconds, target_stress, boundary_strength) in enumerate(
+            (
+                (0.010, 0.2, 0),
+                (0.080, 0.2, 0),
+                (0.500, 0.8, 0),
+                (0.920, 0.2, 2),
+                (0.990, 0.2, 0),
+            )
+        )
+    )
+    anchors = match_vowel_anchors(
+        tuple(
+            PhoneInterval(
+                start_seconds=source_seconds,
+                end_seconds=source_seconds + 0.040,
+                phone="AA1",
+            )
+            for source_seconds in (0.080, 0.280, 0.480, 0.680, 0.880)
+        ),
+        syllables,
+        sample_rate_hz=1_000,
+    )
+
+    selection = regularize_gentle_sparse_anchors(
+        anchors,
+        syllables,
+        sample_rate_hz=1_000,
+        source_frame_count=1_000,
+        target_frame_count=1_000,
+    )
+
+    assert selection.selected_indices == (0, 2, 3, 4)
+    assert selection.omitted_indices == (1,)
+    assert len(selection.regularized_anchors) == 5
+    assert selection.anchors == tuple(
+        selection.regularized_anchors[index]
+        for index in selection.selected_indices
+    )
+    source_points = (0, *(anchor.source_sample for anchor in selection.anchors), 999)
+    target_points = (0, *(anchor.target_sample for anchor in selection.anchors), 999)
+    ratios = tuple(
+        (target_end - target_start) / (source_end - source_start)
+        for source_start, source_end, target_start, target_end in zip(
+            source_points,
+            source_points[1:],
+            target_points,
+            target_points[1:],
+        )
+    )
+    assert min(ratios) >= 0.75 - 0.01
+    assert max(ratios) <= 1.35 + 0.01
 
 
 def test_regularize_anchor_targets_prioritises_high_stress_timing() -> None:

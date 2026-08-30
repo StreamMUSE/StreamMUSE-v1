@@ -85,6 +85,15 @@ def test_parser_accepts_remote_moss_renderer_configuration() -> None:
     assert args.rap_audio_transport == "opus"
 
 
+def test_parser_accepts_adaptive_continuous_espeak_renderer() -> None:
+    args = build_parser().parse_args(
+        ["--rap-audio-renderer", "espeak_adaptive", "--tempo", "60"]
+    )
+
+    assert args.rap_audio_renderer == "espeak_adaptive"
+    assert args.tempo == 60.0
+
+
 def test_audio_parser_accepts_explicit_research_configuration() -> None:
     args = build_parser().parse_args(
         [
@@ -163,6 +172,22 @@ def test_audio_cli_rejects_non_48khz_before_constructing_audio_dependencies(tmp_
 
     with pytest.raises(ValueError, match="48,000 Hz"):
         build_demo(args, audio_factories=FailIfCalledAudioFactories())
+
+
+def test_audio_cli_requires_rubberband_for_pitch_preserving_duration_fitting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "streammuse.presentation.rap_demo.cli.shutil.which",
+        lambda command: "/test/espeak-ng" if command == "espeak-ng" else None,
+    )
+    args = build_parser().parse_args(
+        ["--audio-output", "wav", "--log-dir", str(tmp_path)]
+    )
+
+    with pytest.raises(OSError, match="rubberband"):
+        build_demo(args)
 
 
 @pytest.mark.parametrize(
@@ -260,6 +285,58 @@ def test_audio_build_uses_mac_synthesis_renderer_playback_and_recording(tmp_path
         manifest = json.loads((demo.session_dir / "session.json").read_text(encoding="utf-8"))
         assert manifest["audio"]["output"] == "composite"
         assert manifest["audio"]["artifact_paths"]["wav"].endswith("mixed.wav")
+    finally:
+        demo.close()
+
+
+def test_adaptive_espeak_build_constructs_phrase_and_time_map_dependencies(tmp_path: Path) -> None:
+    class SilentSynthesizer:
+        def synthesize(self, request):
+            raise AssertionError(f"rendering should not start during assembly: {request}")
+
+    class AudioFactories(RapAudioFactories):
+        phrase_created = False
+        time_map_created = False
+
+        def create_synthesizer(self):
+            return SilentSynthesizer()
+
+        def create_phrase_synthesizer(self, *, analyzer, sample_rate_hz):
+            assert analyzer is not None
+            assert sample_rate_hz == 48_000
+            self.phrase_created = True
+            return SimpleNamespace()
+
+        def create_time_map_stretcher(self):
+            self.time_map_created = True
+            return SimpleNamespace()
+
+        def create_sink(self, *, output, audio_format, audio_file, audio_device):
+            return NullAudioSink(audio_format=audio_format)
+
+    factories = AudioFactories()
+    args = build_parser().parse_args(
+        [
+            "--rap-audio-renderer",
+            "espeak_adaptive",
+            "--audio-output",
+            "wav",
+            "--tempo",
+            "60",
+            "--lookahead-bars",
+            "4",
+            "--log-dir",
+            str(tmp_path),
+        ]
+    )
+
+    demo = build_demo(args, audio_factories=factories)
+    try:
+        assert factories.phrase_created is True
+        assert factories.time_map_created is True
+        manifest = json.loads((demo.session_dir / "session.json").read_text(encoding="utf-8"))
+        assert manifest["audio"]["renderer"] == "espeak_adaptive"
+        assert manifest["audio"]["adaptive_anchor_policy"] == "gate_d_adaptive_error"
     finally:
         demo.close()
 
@@ -480,7 +557,7 @@ def test_build_demo_records_resolved_terminal_layout(tmp_path: Path) -> None:
     try:
         manifest = json.loads((demo.session_dir / "session.json").read_text(encoding="utf-8"))
         assert demo.session_metadata["terminal_layout"] == "stream"
-        assert demo.session_metadata["tempo_bpm"] == 92.0
+        assert demo.session_metadata["tempo_bpm"] == 90.0
         assert manifest["terminal_layout"] == "stream"
     finally:
         demo.close()

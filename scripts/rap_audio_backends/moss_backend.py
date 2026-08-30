@@ -645,6 +645,7 @@ def _request_from_payload(payload: dict[str, Any]) -> TwoBarRenderRequest:
         end_bar=int(payload["end_bar"]),
         text=str(payload["text"]),
         syllables=tuple(_syllable_from_payload(item) for item in payload["syllables"]),
+        tempo_bpm=float(payload.get("tempo_bpm", 90.0)),
     )
 
 

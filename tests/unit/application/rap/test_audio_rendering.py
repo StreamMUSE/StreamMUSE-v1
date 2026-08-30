@@ -20,6 +20,16 @@ def mono_pcm(frames: int, value: float = 0.25, sample_rate: int = 48_000) -> Pcm
     return PcmAudio(AudioFormat(sample_rate, 1), frames, samples.tobytes())
 
 
+class RecordingTimeStretcher:
+    def __init__(self) -> None:
+        self.calls: list[tuple[PcmAudio, int]] = []
+
+    def stretch(self, audio: PcmAudio, target_frames: int) -> PcmAudio:
+        self.calls.append((audio, target_frames))
+        samples = np.full((target_frames, audio.format.channels), -0.125, dtype=np.float32)
+        return PcmAudio(audio.format, target_frames, samples.tobytes())
+
+
 def test_sixty_bpm_bar_and_tick_frames_are_exact() -> None:
     tempo = Tempo(60.0, 4, 4)
     audio_format = AudioFormat(48_000, 2)
@@ -62,7 +72,13 @@ def test_pcm_audio_boundaries_reject_non_float32_audio() -> None:
     with pytest.raises(ValueError, match="float32"):
         trim_silence(audio, threshold_dbfs=-45.0, padding_ms=5.0)
     with pytest.raises(ValueError, match="float32"):
-        fit_syllable(audio, available_frames=2, final_in_bar=False, context=context)
+        fit_syllable(
+            audio,
+            available_frames=2,
+            final_in_bar=False,
+            context=context,
+            time_stretcher=RecordingTimeStretcher(),
+        )
     with pytest.raises(ValueError, match="float32"):
         mix_at(np.zeros((2, 1), dtype=np.float32), audio, onset_frame=0, gain=1.0)
 
@@ -71,21 +87,40 @@ def test_fit_syllable_leaves_audio_unchanged_when_it_fits() -> None:
     source = mono_pcm(frames=300)
     context = FitContext(bar=1, slot_index=2, word="fits")
 
-    fitted = fit_syllable(source, available_frames=400, final_in_bar=False, context=context)
+    stretcher = RecordingTimeStretcher()
+    fitted = fit_syllable(
+        source,
+        available_frames=400,
+        final_in_bar=False,
+        context=context,
+        time_stretcher=stretcher,
+    )
 
     assert fitted.audio == source
     assert fitted.compression_ratio == pytest.approx(1.0)
     assert fitted.overlap_frames == 0
     assert fitted.warnings == ()
+    assert stretcher.calls == []
 
 
 def test_fit_syllable_compresses_to_available_frames() -> None:
     source = mono_pcm(frames=600)
     context = FitContext(bar=1, slot_index=3, word="compress")
+    stretcher = RecordingTimeStretcher()
 
-    fitted = fit_syllable(source, available_frames=400, final_in_bar=False, context=context)
+    fitted = fit_syllable(
+        source,
+        available_frames=400,
+        final_in_bar=False,
+        context=context,
+        time_stretcher=stretcher,
+    )
 
     assert fitted.audio.frame_count == 400
+    assert stretcher.calls == [(source, 400)]
+    assert np.frombuffer(fitted.audio.data, dtype=np.float32).tolist() == pytest.approx(
+        [-0.125] * 400
+    )
     assert fitted.compression_ratio == pytest.approx(1.5)
     assert fitted.overlap_frames == 0
     assert [warning.code for warning in fitted.warnings] == [AudioWarningCode.TIMING_PRESSURE]
@@ -95,7 +130,13 @@ def test_long_nonfinal_syllable_caps_compression_and_reports_overlap() -> None:
     source = mono_pcm(frames=1_000, value=0.25)
     context = FitContext(bar=2, slot_index=4, word="timing")
 
-    fitted = fit_syllable(source, available_frames=300, final_in_bar=False, context=context)
+    fitted = fit_syllable(
+        source,
+        available_frames=300,
+        final_in_bar=False,
+        context=context,
+        time_stretcher=RecordingTimeStretcher(),
+    )
 
     assert fitted.audio.frame_count == 500
     assert fitted.compression_ratio == pytest.approx(2.0)
@@ -112,6 +153,7 @@ def test_fit_syllable_uses_configured_compression_cap() -> None:
         available_frames=300,
         final_in_bar=False,
         context=context,
+        time_stretcher=RecordingTimeStretcher(),
         max_compression=3.0,
     )
 
@@ -124,13 +166,20 @@ def test_final_syllable_is_forced_to_bar_boundary() -> None:
     source = mono_pcm(frames=1_000, value=0.25)
     context = FitContext(bar=2, slot_index=8, word="ending")
 
-    fitted = fit_syllable(source, available_frames=300, final_in_bar=True, context=context)
+    fitted = fit_syllable(
+        source,
+        available_frames=300,
+        final_in_bar=True,
+        context=context,
+        time_stretcher=RecordingTimeStretcher(),
+    )
 
     assert fitted.audio.frame_count == 300
     assert [warning.code for warning in fitted.warnings] == [
         AudioWarningCode.TIMING_PRESSURE,
         AudioWarningCode.FORCED_BAR_FIT,
     ]
+    assert fitted.warnings[-1].action == "pitch_preserving_stretch_to_bar"
 
 
 def test_trim_silence_uses_dbfs_threshold_and_padding() -> None:

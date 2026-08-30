@@ -340,7 +340,7 @@ def test_coordinator_produces_complete_warning_and_latency_evidence_for_terminal
                 warnings=(
                     AudioWarning(AudioWarningCode.PRONUNCIATION_FALLBACK, AudioWarningSeverity.WARNING, "fallback", slot_index=3, word="StreamMUSE", action="fallback"),
                     AudioWarning(AudioWarningCode.TIMING_PRESSURE, AudioWarningSeverity.WARNING, "pressure", slot_index=3, word="StreamMUSE", available_ms=80.0, rendered_ms=100.0, compression_ratio=1.25, overlap_ms=1.0, action="compress"),
-                    AudioWarning(AudioWarningCode.FORCED_BAR_FIT, AudioWarningSeverity.WARNING, "fit", slot_index=3, word="StreamMUSE", action="resample_to_bar"),
+                    AudioWarning(AudioWarningCode.FORCED_BAR_FIT, AudioWarningSeverity.WARNING, "fit", slot_index=3, word="StreamMUSE", action="pitch_preserving_stretch_to_bar"),
                     AudioWarning(AudioWarningCode.SYNTHESIS_FAILED, AudioWarningSeverity.ERROR, "failed", slot_index=3, word="StreamMUSE", action="empty_pcm"),
                 ),
             )

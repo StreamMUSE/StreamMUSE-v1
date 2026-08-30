@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
+from streammuse.experiments.rap_audio_protocols import artifacts
 from streammuse.experiments.rap_audio_protocols.artifacts import (
     append_chunk_record,
     build_protocol_artifact_manifest,
@@ -73,6 +74,24 @@ def _record(
 def _write_listening_wav(path: Path, *, frames: int, channels: int) -> None:
     shape = (frames,) if channels == 1 else (frames, channels)
     wavfile.write(path, 48_000, np.zeros(shape, dtype=np.int16))
+
+
+@pytest.mark.parametrize(
+    ("title", "renderer", "stem", "extension", "expected"),
+    (
+        ("Concrete Court", "robotic", "mix", ".wav", "concrete_court_robotic_mix.wav"),
+        ("Lights After Midnight", "MOSS + MFA", "vocals", "wav", "lights_after_midnight_moss_mfa_vocals.wav"),
+        ("The Next Sound", "robotic", "render log", ".jsonl", "the_next_sound_robotic_render_log.jsonl"),
+    ),
+)
+def test_listening_artifact_filename_names_song_renderer_and_stem(
+    title: str,
+    renderer: str,
+    stem: str,
+    extension: str,
+    expected: str,
+) -> None:
+    assert artifacts.listening_artifact_filename(title, renderer, stem, extension=extension) == expected
 
 
 def test_protocol_manifests_share_the_same_common_drum_hash(tmp_path: Path) -> None:

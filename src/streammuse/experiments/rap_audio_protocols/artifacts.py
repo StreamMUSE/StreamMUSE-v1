@@ -32,6 +32,21 @@ def file_sha256(path: Path | str) -> str:
     return digest.hexdigest()
 
 
+def listening_artifact_filename(
+    song_title: str,
+    renderer: str,
+    stem: str,
+    *,
+    extension: str = ".wav",
+) -> str:
+    """Build a stable listener-facing filename with explicit provenance."""
+    suffix = extension if extension.startswith(".") else f".{extension}"
+    if suffix == ".":
+        raise ValueError("artifact extension must not be empty")
+    parts = tuple(_artifact_slug(value) for value in (song_title, renderer, stem))
+    return "_".join(parts) + suffix.lower()
+
+
 def read_chunk_record_index(path: Path | str) -> dict[tuple[ProtocolId, str, int], ChunkRenderRecord]:
     ledger_path = Path(path)
     if not ledger_path.exists():
@@ -274,6 +289,13 @@ def _normalise_optional_sha256(value: Any, *, field_name: str) -> str | None:
 
 def _is_sha256_hex(value: str) -> bool:
     return re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _artifact_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    if not slug:
+        raise ValueError("artifact filename labels must contain letters or digits")
+    return slug
 
 
 def _source_chunk_sha256_is_valid(record: ChunkRenderRecord) -> bool:

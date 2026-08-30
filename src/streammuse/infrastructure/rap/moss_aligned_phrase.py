@@ -11,6 +11,7 @@ import time
 import wave
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
@@ -32,6 +33,7 @@ from streammuse.experiments.rap_audio_protocols.warp import (
     RubberBandTimeMapStretcher,
     VowelAnchor,
     continuous_pitch_preserving_warp,
+    regularize_gentle_sparse_anchors,
 )
 from streammuse.infrastructure.rap.mms_forced_alignment import (
     MmsAlignmentResult,
@@ -49,6 +51,13 @@ _MAX_WARNINGS = 32
 _MAX_WARNING_LENGTH = 512
 _WIDE_STRETCH_MIN = 0.5
 _WIDE_STRETCH_MAX = 2.0
+_GENTLE_STRETCH_MIN = 0.75
+_GENTLE_STRETCH_MAX = 1.35
+
+
+class MossWarpPolicy(str, Enum):
+    GENTLE_SPARSE_R3 = "gentle_sparse_r3"
+    ALL_ONSETS_R3 = "all_onsets_r3"
 
 
 class _Synthesizer(Protocol):
@@ -77,9 +86,24 @@ StretcherFactory = Callable[..., _FullChunkStretcher]
 class _WarpPreparation:
     samples: np.ndarray
     interior_anchors: tuple[VowelAnchor, ...]
+    interior_anchor_indices: tuple[int, ...]
+    boundary_anchor_indices: tuple[int, ...]
     diagnostic_anchors: tuple[VowelAnchor, ...]
     source_sha256: str
     endpoint_policy: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class _WarpPlan:
+    anchors: tuple[VowelAnchor, ...]
+    requested_policy: MossWarpPolicy
+    resolved_policy: MossWarpPolicy
+    selected_request_indices: tuple[int, ...]
+    omitted_request_indices: tuple[int, ...]
+    timing_regularization_applied: bool
+    ratio_bounds: tuple[float, float] | None
+    target_drift_seconds: tuple[float, ...]
+    warnings: tuple[str, ...]
 
 
 class MossAlignedPhraseRenderer(PhraseVocalRenderer):
@@ -93,6 +117,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         onset_mapper: OnsetMapper = map_syllable_onsets,
         stretcher_factory: StretcherFactory = RubberBandTimeMapStretcher,
         rubberband_version: str = "Rubber Band R3",
+        warp_policy: MossWarpPolicy | str = MossWarpPolicy.GENTLE_SPARSE_R3,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._synthesizer = synthesizer
@@ -100,6 +125,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         self._onset_mapper = onset_mapper
         self._stretcher = stretcher_factory(engine="r3", smoothing=False)
         self._rubberband_version = rubberband_version
+        self._warp_policy = MossWarpPolicy(warp_policy)
         self._clock = clock
         self._lock = threading.Lock()
 
@@ -192,8 +218,17 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
                 source_sha256=moss_result.source_wav_sha256,
             )
+            warp_plan = _resolve_warp_plan(
+                request,
+                warp_input,
+                target_frame_count=target_frame_count,
+                sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
+                requested_policy=self._warp_policy,
+            )
             research_warnings = tuple(
-                dict.fromkeys((*moss_result.warnings, *mapped.warnings))
+                dict.fromkeys(
+                    (*moss_result.warnings, *mapped.warnings, *warp_plan.warnings)
+                )
             )
             _write_json_atomic(
                 alignment_path,
@@ -204,6 +239,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                     mapped=mapped,
                     diagnostic_anchors=warp_input.diagnostic_anchors,
                     effective_anchors=(),
+                    warp_plan=warp_plan,
                     endpoint_policy=warp_input.endpoint_policy,
                     stretch_ratios=(),
                     output_wav=None,
@@ -216,7 +252,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             warped = continuous_pitch_preserving_warp(
                 warp_input.samples,
                 sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
-                anchors=warp_input.interior_anchors,
+                anchors=warp_plan.anchors,
                 target_frame_count=target_frame_count,
                 stretch_full_chunk=self._stretcher,
                 source_sha256=warp_input.source_sha256,
@@ -245,6 +281,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                     (
                         *moss_result.warnings,
                         *mapped.warnings,
+                        *warp_plan.warnings,
                         *(
                             f"wide local stretch ratio retained: {ratio:.3f}"
                             for ratio in stretch_ratios
@@ -261,6 +298,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 mapped=mapped,
                 diagnostic_anchors=warp_input.diagnostic_anchors,
                 effective_anchors=warped.anchor_map,
+                warp_plan=warp_plan,
                 endpoint_policy=warp_input.endpoint_policy,
                 stretch_ratios=stretch_ratios,
                 output_wav=vocal_wav,
@@ -271,7 +309,11 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             )
             alignment_diagnostics = _alignment_diagnostics(
                 mapped=mapped,
-                diagnostic_anchors=warp_input.diagnostic_anchors,
+                diagnostic_anchors=_effective_diagnostic_anchors(
+                    warp_input,
+                    warp_plan,
+                    warped.anchor_map,
+                ),
                 stretch_ratios=stretch_ratios,
             )
             audio_diagnostics = {
@@ -409,6 +451,8 @@ def _prepare_warp_input(
         return _WarpPreparation(
             samples=original,
             interior_anchors=complete_anchors,
+            interior_anchor_indices=tuple(range(len(complete_anchors))),
+            boundary_anchor_indices=(),
             diagnostic_anchors=complete_anchors,
             source_sha256=original_warp_sha256,
             endpoint_policy={
@@ -457,6 +501,8 @@ def _prepare_warp_input(
     return _WarpPreparation(
         samples=cropped,
         interior_anchors=normalized[1:],
+        interior_anchor_indices=tuple(range(1, len(normalized))),
+        boundary_anchor_indices=(0,),
         diagnostic_anchors=normalized,
         source_sha256=warp_input_sha256,
         endpoint_policy={
@@ -471,6 +517,115 @@ def _prepare_warp_input(
             "warp_input_encoding": "float32le",
             "warp_input_float32le_sha256": warp_input_sha256,
         },
+    )
+
+
+def _resolve_warp_plan(
+    request: TwoBarRenderRequest,
+    preparation: _WarpPreparation,
+    *,
+    target_frame_count: int,
+    sample_rate_hz: int,
+    requested_policy: MossWarpPolicy,
+) -> _WarpPlan:
+    if len(request.syllables) != len(preparation.diagnostic_anchors):
+        raise PhraseRenderFailed(
+            "warp preparation no longer matches the planned syllable count"
+        )
+    all_indices = tuple(range(len(request.syllables)))
+    if requested_policy is MossWarpPolicy.ALL_ONSETS_R3:
+        return _WarpPlan(
+            anchors=preparation.interior_anchors,
+            requested_policy=requested_policy,
+            resolved_policy=requested_policy,
+            selected_request_indices=all_indices,
+            omitted_request_indices=(),
+            timing_regularization_applied=False,
+            ratio_bounds=None,
+            target_drift_seconds=tuple(0.0 for _ in all_indices),
+            warnings=(),
+        )
+
+    interior_syllables = tuple(
+        request.syllables[index]
+        for index in preparation.interior_anchor_indices
+    )
+    try:
+        selection = regularize_gentle_sparse_anchors(
+            preparation.interior_anchors,
+            interior_syllables,
+            sample_rate_hz=sample_rate_hz,
+            source_frame_count=len(preparation.samples),
+            target_frame_count=target_frame_count,
+            min_stretch_ratio=_GENTLE_STRETCH_MIN,
+            max_stretch_ratio=_GENTLE_STRETCH_MAX,
+        )
+    except ValueError as exc:
+        warning = (
+            "gentle sparse R3 unavailable; using all-onset R3: "
+            f"{exc}"
+        )
+        return _WarpPlan(
+            anchors=preparation.interior_anchors,
+            requested_policy=requested_policy,
+            resolved_policy=MossWarpPolicy.ALL_ONSETS_R3,
+            selected_request_indices=all_indices,
+            omitted_request_indices=(),
+            timing_regularization_applied=False,
+            ratio_bounds=None,
+            target_drift_seconds=tuple(0.0 for _ in all_indices),
+            warnings=(warning,),
+        )
+
+    selected_interior_indices = tuple(
+        preparation.interior_anchor_indices[index]
+        for index in selection.selected_indices
+    )
+    selected_request_indices = tuple(
+        (*preparation.boundary_anchor_indices, *selected_interior_indices)
+    )
+    selected_set = frozenset(selected_request_indices)
+    omitted_request_indices = tuple(
+        index for index in all_indices if index not in selected_set
+    )
+    target_drift = [0.0] * len(all_indices)
+    for request_index, anchor in zip(
+        preparation.interior_anchor_indices,
+        selection.regularized_anchors,
+    ):
+        target_drift[request_index] = (
+            anchor.target_seconds - anchor.requested_target_seconds
+        )
+    return _WarpPlan(
+        anchors=selection.anchors,
+        requested_policy=requested_policy,
+        resolved_policy=requested_policy,
+        selected_request_indices=selected_request_indices,
+        omitted_request_indices=omitted_request_indices,
+        timing_regularization_applied=True,
+        ratio_bounds=(_GENTLE_STRETCH_MIN, _GENTLE_STRETCH_MAX),
+        target_drift_seconds=tuple(target_drift),
+        warnings=(),
+    )
+
+
+def _effective_diagnostic_anchors(
+    preparation: _WarpPreparation,
+    plan: _WarpPlan,
+    effective_anchors: Sequence[VowelAnchor],
+) -> tuple[VowelAnchor, ...]:
+    boundary_indices = frozenset(preparation.boundary_anchor_indices)
+    interior_indices = tuple(
+        index
+        for index in plan.selected_request_indices
+        if index not in boundary_indices
+    )
+    effective_by_index = dict(zip(interior_indices, effective_anchors, strict=True))
+    return tuple(
+        preparation.diagnostic_anchors[index]
+        if index in boundary_indices
+        else effective_by_index[index]
+        for index in plan.selected_request_indices
     )
 
 
@@ -579,6 +734,7 @@ def _complete_alignment_artifact(
     mapped: SyllableOnsetMap,
     diagnostic_anchors: Sequence[VowelAnchor],
     effective_anchors: Sequence[VowelAnchor],
+    warp_plan: _WarpPlan,
     endpoint_policy: Mapping[str, object],
     stretch_ratios: tuple[float, ...],
     output_wav: bytes | None,
@@ -726,7 +882,19 @@ def _complete_alignment_artifact(
             "engine": "r3",
             "smoothing": False,
             "stress_applied": False,
-            "timing_regularization_applied": False,
+            "policy_requested": warp_plan.requested_policy.value,
+            "policy_resolved": warp_plan.resolved_policy.value,
+            "timing_regularization_applied": (
+                warp_plan.timing_regularization_applied
+            ),
+            "ratio_bounds": (
+                list(warp_plan.ratio_bounds)
+                if warp_plan.ratio_bounds is not None
+                else None
+            ),
+            "selected_anchor_indices": warp_plan.selected_request_indices,
+            "omitted_anchor_indices": warp_plan.omitted_request_indices,
+            "target_drift_seconds": warp_plan.target_drift_seconds,
             "local_warp_ratios": stretch_ratios,
         },
         "output": output,

@@ -66,6 +66,7 @@ _INVALID_HEALTH_VALUE = object()
 _CANDIDATE_PROFILES = {
     "realtime": {"max_tokens_per_choice": 32, "temperature": 1.0},
 }
+_MOSS_WARP_POLICIES = ("gentle_sparse_r3", "all_onsets_r3")
 
 
 class _ChunkOrchestrator(Protocol):
@@ -100,6 +101,7 @@ class RapRenderServerConfig:
     aligner_device: str
     aligner_cache: Path | None
     candidate_profile: str
+    moss_warp_policy: str = "gentle_sparse_r3"
     wire_audio_codec: str = "pcm"
 
 
@@ -776,6 +778,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--candidate-profile", choices=tuple(_CANDIDATE_PROFILES), default="realtime"
     )
+    parser.add_argument(
+        "--moss-warp-policy",
+        choices=_MOSS_WARP_POLICIES,
+        default="gentle_sparse_r3",
+    )
     parser.add_argument("--wire-audio-codec", choices=("pcm", "opus"), default="pcm")
     return parser
 
@@ -802,6 +809,7 @@ def main(
         aligner_device=args.aligner_device,
         aligner_cache=Path(args.aligner_cache) if args.aligner_cache else None,
         candidate_profile=args.candidate_profile,
+        moss_warp_policy=args.moss_warp_policy,
         wire_audio_codec=args.wire_audio_codec,
     )
     run_server = serve
@@ -889,6 +897,7 @@ def _compose_real_worker(
             synthesizer=synthesizer,
             aligner=aligner,
             rubberband_version=str(rubberband_health["version"]),
+            warp_policy=config.moss_warp_policy,
         )
         _register_close(resources, renderer)
         orchestrator = dependencies.RapChunkOrchestrator(

@@ -16,7 +16,7 @@ the decision loop.
 
 ## Run Sessions
 
-All commands below use the built-in looping 92 BPM scenario: four bars about
+All commands below use the built-in looping 90 BPM scenario: four bars about
 space, four about the deep sea, and four about code, each with a different
 hand-authored nine-slot flow template. Each run creates a unique directory
 under `logs/rap/`.

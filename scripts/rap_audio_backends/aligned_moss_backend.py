@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -37,6 +38,7 @@ from streammuse.experiments.rap_audio_protocols.warp import (
     piecewise_pitch_preserving_warp,
     promote_vowel_anchors_to_syllable_onsets,
     regularize_anchor_targets,
+    regularize_gentle_sparse_anchors,
 )
 
 
@@ -48,6 +50,7 @@ class AlignedWarpMode(str, Enum):
     CONTINUOUS_VOWEL_R3 = "continuous_vowel_r3"
     CONTINUOUS_ONSET_R3 = "continuous_onset_r3"
     CONTINUOUS_ONSET_CONSTRAINED_R3_STRESS = "continuous_onset_constrained_r3_stress"
+    CONTINUOUS_ONSET_GENTLE_SPARSE_R3 = "continuous_onset_gentle_sparse_r3"
     CONTINUOUS_ONSET_R2_SMOOTH = "continuous_onset_r2_smooth"
 
 
@@ -55,6 +58,7 @@ _ONSET_MODES = frozenset(
     {
         AlignedWarpMode.CONTINUOUS_ONSET_R3,
         AlignedWarpMode.CONTINUOUS_ONSET_CONSTRAINED_R3_STRESS,
+        AlignedWarpMode.CONTINUOUS_ONSET_GENTLE_SPARSE_R3,
         AlignedWarpMode.CONTINUOUS_ONSET_R2_SMOOTH,
     }
 )
@@ -220,7 +224,7 @@ def render_aligned_chunk(
                     load_textgrid_word_intervals(textgrid_path),
                     request.syllables,
                     sample_rate_hz=sample_rate_hz,
-                    request_words=tuple(request.text.split()),
+                    request_words=_request_words(request.text),
                     target_duration_seconds=request.duration_seconds,
                 )
                 if not any(
@@ -256,6 +260,36 @@ def render_aligned_chunk(
                 "min_stretch_ratio": 0.5,
                 "max_stretch_ratio": 2.0,
                 "stress_priority": 4.0,
+                "target_drift_seconds": list(target_drift_seconds),
+                "max_absolute_target_drift_seconds": max(
+                    abs(value) for value in target_drift_seconds
+                ),
+            }
+        elif selected_mode is AlignedWarpMode.CONTINUOUS_ONSET_GENTLE_SPARSE_R3:
+            selection = regularize_gentle_sparse_anchors(
+                anchors,
+                request.syllables,
+                sample_rate_hz=sample_rate_hz,
+                source_frame_count=len(samples),
+                target_frame_count=target_frame_count,
+            )
+            target_drift_seconds = tuple(
+                anchor.target_seconds - anchor.requested_target_seconds
+                for anchor in selection.regularized_anchors
+            )
+            anchors = selection.anchors
+            regularization_payload = {
+                "applied": True,
+                "policy": "gentle_sparse_r3",
+                "min_stretch_ratio": 0.75,
+                "max_stretch_ratio": 1.35,
+                "stress_priority": 4.0,
+                "minimum_target_stress": 0.8,
+                "minimum_boundary_strength": 2,
+                "input_anchor_count": len(selection.regularized_anchors),
+                "effective_anchor_count": len(selection.anchors),
+                "selected_anchor_indices": list(selection.selected_indices),
+                "omitted_anchor_indices": list(selection.omitted_indices),
                 "target_drift_seconds": list(target_drift_seconds),
                 "max_absolute_target_drift_seconds": max(
                     abs(value) for value in target_drift_seconds
@@ -451,6 +485,10 @@ def verify_source_wav_sha(path: Path | str, expected_source_sha256: str) -> str:
             f"expected {expected_source_sha256}, got {actual_sha256}"
         )
     return actual_sha256
+
+
+def _request_words(text: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z0-9]+)*", text))
 
 
 def _chunk_stem(request: TwoBarRenderRequest) -> str:

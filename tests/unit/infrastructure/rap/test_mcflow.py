@@ -112,6 +112,32 @@ def test_parse_mcflow_file_defaults_an_initial_null_stress_to_unaccented(tmp_pat
     assert parsed.measures[0].syllables[0].stress == 0.0
 
 
+def test_parse_mcflow_file_recognizes_ipa_spine_rests(tmp_path: Path) -> None:
+    """Catches real-corpus IPA rests being emitted as phantom lyric syllables."""
+    source = tmp_path / "input.rap"
+    source.write_text(
+        "\n".join(
+            (
+                "**recip\t**stress\t**break\t**rhyme\t**ipa\t**lyrics",
+                "*M4/4\t*M4/4\t*M4/4\t*M4/4\t*M4/4\t*M4/4",
+                "=1\t=1\t=1\t=1\t=1\t=1",
+                "4\t1\t.\tA\t/ta/\ttav",
+                "4\t.\t.\t.\tR\t.",
+                "4\t0\t.\t.\t/ko/\tkor",
+                "4r\t.\t.\t.\t.\t.",
+                "*-\t*-\t*-\t*-\t*-\t*-",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_mcflow_file(source)
+
+    assert [syllable.onset for syllable in parsed.measures[0].syllables] == [Fraction(0), Fraction(1, 2)]
+    assert parsed.measures[0].duration == Fraction(1)
+
+
 def test_extract_records_anonymous_quantization_rejections(tmp_path: Path) -> None:
     """Catches measures skipped without a structured explanation."""
     source = tmp_path / "unquantized.rap"
@@ -265,6 +291,41 @@ def test_extract_shifts_a_phrase_break_annotated_on_a_rest(tmp_path: Path) -> No
     extraction = extract_anonymous_templates(source)
 
     assert extraction.templates[0].slots[-1].boundary_strength == 4
+
+
+def test_extract_accepts_phrase_start_at_beginning_of_file(tmp_path: Path) -> None:
+    """Catches a redundant opening phrase marker rejecting the first measure."""
+    source = tmp_path / "input.rap"
+    content = FIXTURE.read_bytes().replace(b"16\t1\t.\t.\tA", b"16\t1\t.\t4\tA", 1)
+    source.write_bytes(content)
+
+    extraction = extract_anonymous_templates(source)
+
+    assert [template.name for template in extraction.templates] == [
+        "anonymous_measure_1",
+        "anonymous_measure_2",
+    ]
+    assert not extraction.rejections
+    assert [slot.boundary_strength for slot in extraction.templates[0].slots] == [0, 0, 0, 3]
+
+
+def test_extract_accepts_opening_phrase_start_after_pickup_rest(tmp_path: Path) -> None:
+    """Catches a pickup rest making the first phrase marker look unrepresentable."""
+    source = tmp_path / "input.rap"
+    content = FIXTURE.read_bytes()
+    first_syllable = b"16\t1\t.\t.\tA\t/ta/\ttav\t.\n"
+    pickup = b"16r\t.\t.\t.\t.\tR\tR\t.\n"
+    content = content.replace(first_syllable, pickup + first_syllable.replace(b"\t.\tA", b"\t4\tA"), 1)
+    content = content.replace(b"16r\t.\t.\t.\t.\t.\tR\t.\n", b"", 1)
+    source.write_bytes(content)
+
+    extraction = extract_anonymous_templates(source)
+
+    assert [template.name for template in extraction.templates] == [
+        "anonymous_measure_1",
+        "anonymous_measure_2",
+    ]
+    assert not extraction.rejections
 
 
 def test_extract_rejects_phrase_break_that_would_cross_a_rejected_measure(tmp_path: Path) -> None:

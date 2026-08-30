@@ -16,7 +16,11 @@ from streammuse.application.rap.audio_rendering import (
     tick_frame_in_bar,
     trim_silence,
 )
-from streammuse.application.rap.audio_service import DrumRenderer, SpeechSynthesizer
+from streammuse.application.rap.audio_service import (
+    AudioTimeStretcher,
+    DrumRenderer,
+    SpeechSynthesizer,
+)
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.domain.rap import (
     AudioFormat,
@@ -48,6 +52,7 @@ class DeterministicRapBarRenderer:
         audio_format: AudioFormat,
         synthesizer: SpeechSynthesizer,
         drums: DrumRenderer,
+        time_stretcher: AudioTimeStretcher,
         voice: str = "en-us",
         speed_wpm: int = 175,
         pitch: int = 50,
@@ -58,6 +63,7 @@ class DeterministicRapBarRenderer:
         self._audio_format = audio_format
         self._synthesizer = synthesizer
         self._drums = drums
+        self._time_stretcher = time_stretcher
         self.voice = voice
         self.speed_wpm = speed_wpm
         self.pitch = pitch
@@ -106,6 +112,7 @@ class DeterministicRapBarRenderer:
                 available_frames=available_frames,
                 final_in_bar=index == len(scheduled) - 1,
                 context=FitContext(plan.bar, item.slot.slot_index, item.syllable.word),
+                time_stretcher=self._time_stretcher,
                 max_compression=self.max_compression,
             )
             rendered_frames = min(fitted.audio.frame_count, frames - target_sample)

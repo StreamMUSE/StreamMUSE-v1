@@ -40,9 +40,9 @@ audio to the Mac.
 Allow the realtime demonstration to switch between:
 
 - `espeak`: the current local, isolated-syllable renderer;
-- `moss_aligned_remote`: an H200-hosted, two-bar MOSS + MFA + Rubber Band
-  renderer that approximates the quality and timing method of the current
-  offline system.
+- `moss_aligned_remote`: an H200-hosted, two-bar MOSS + forced alignment +
+  Rubber Band renderer that approximates the quality and timing method of the
+  current offline system.
 
 Both modes must produce immutable, exact-duration audio scheduled by the same
 Mac sample clock. Missing or late remote audio must never stop the clock or
@@ -67,7 +67,7 @@ This change does not add:
 2. Remote MOSS audio is prepared as an entire two-bar vocal chunk, not emitted
    tick by tick.
 3. The H200 performs candidate generation, prosody analysis, evaluation,
-   selection, MOSS synthesis, MFA alignment, and Rubber Band warping within one
+   selection, MOSS synthesis, forced alignment, and Rubber Band warping within one
    externally visible chunk operation.
 4. Internal H200 components remain independently testable and configurable.
 5. The request includes both bars' complete flow schedules, topic context,
@@ -103,7 +103,7 @@ H200 RapChunkOrchestrator
           |
   MossPhraseSynthesizer ----------------> MOSS worker / GPU
           |
-  MfaForcedAligner ---------------------> CPU
+  ResidentMmsForcedAligner -------------> GPU (MFA remains offline reference)
           |
   RubberBandTimeWarper -----------------> CPU
           |
@@ -202,7 +202,7 @@ MOSS utterance.
 
 Candidate generation is budget-aware:
 
-1. Reserve a configurable render budget for MOSS, MFA, warping, packaging, and
+1. Reserve a configurable render budget for MOSS, alignment, warping, packaging, and
    return transfer.
 2. Spend only the remaining budget on candidate generation.
 3. Generate candidates in configurable independent waves.
@@ -226,10 +226,15 @@ For the selected lyric pair, the H200:
 2. Synthesizes the complete text as one connected MOSS utterance.
 3. Validates that the waveform is finite, non-silent, and within configured
    source-duration limits.
-4. Runs MFA against the exact selected transcript.
-5. Maps aligned phones and words to planned syllables using the existing strict
-   and documented fallback matching rules.
-6. Promotes matched vowel anchors to syllable onsets where supported.
+4. Runs the resident torchaudio MMS forced aligner against the exact selected
+   transcript. MFA remains available as the offline/reference aligner because
+   a measured warmed MFA CLI run took 49.63 seconds for two phrases, while a
+   warmed resident MMS pass took 0.037 seconds for the same two phrases.
+5. Maps MMS character/word spans to planned syllable onsets using the existing
+   CMU word/syllable analysis. Unmatched words use an explicit
+   transcript-proportional fallback and produce warnings.
+6. Exposes the aligner behind one injected anchor contract so MFA-derived phone
+   anchors can still be used for offline A/B comparison.
 7. Constructs a strictly monotonic source-to-target onset map.
 8. Applies the current continuous Rubber Band R3 pitch-preserving warp.
 9. Trims or pads only at the outer chunk boundary to the exact expected frame
@@ -263,8 +268,8 @@ after validation.
 - requested, parseable, valid, and selectable candidate counts;
 - selected score and component scores;
 - bounded top-candidate and rejection summaries;
-- generation, evaluation, MOSS, MFA, warp, packaging, and total server timing;
-- MFA fallback counts, source and target anchors, local warp ratios, and
+- generation, evaluation, MOSS, aligner, warp, packaging, and total server timing;
+- aligner identity/confidence/fallback counts, source and target anchors, local warp ratios, and
   warnings;
 - WAV format, frame count, duration, peak, and SHA-256 hash;
 - model and tool versions required for reproduction.
@@ -359,7 +364,8 @@ The H200 deployment contains:
 
 - the existing vLLM OpenAI-compatible server;
 - a persistent MOSS worker with its model and reference voice loaded;
-- MFA and Rubber Band runtime environments;
+- resident torchaudio MMS alignment and Rubber Band runtime environments, plus
+  MFA for offline/reference experiments;
 - the StreamMUSE package at the same protocol revision as the Mac;
 - the new FastAPI chunk orchestrator bound to `127.0.0.1`;
 - explicit GPU assignments so vLLM and MOSS do not unexpectedly contend.
@@ -385,7 +391,7 @@ MOSS mode from starting but does not damage the eSpeak mode.
 
 ### Integration Tests
 
-- Fake vLLM, MOSS, MFA, and warper components exercise the full orchestrator.
+- Fake vLLM, MOSS, aligner, and warper components exercise the full orchestrator.
 - A fake remote endpoint exercises client request, package validation, drum
   mixing, and playback commitment without an H200.
 - Existing eSpeak CLI, WAV, live, composite, terminal, and website workflows
@@ -395,7 +401,7 @@ MOSS mode from starting but does not damage the eSpeak mode.
 
 - Cold and warm two-bar smoke renders using a known lyric and flow schedule.
 - Repeated end-to-end measurements separating generation, evaluation, MOSS,
-  MFA, warp, packaging, transfer, and Mac mix latency.
+  alignment, warp, packaging, transfer, and Mac mix latency.
 - Candidate-profile sweeps under the complete chunk deadline, not only LLM
   latency in isolation.
 - At least one continuous 20-bar 90 BPM run recording MOSS acceptance rate,

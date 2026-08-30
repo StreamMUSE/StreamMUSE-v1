@@ -46,6 +46,10 @@ class SpeechSynthesizer(Protocol):
     def synthesize(self, request: SyllableRenderRequest) -> RenderedSyllable: ...
 
 
+class AudioTimeStretcher(Protocol):
+    def stretch(self, audio: PcmAudio, target_frames: int) -> PcmAudio: ...
+
+
 class DrumRenderer(Protocol):
     def render(self, template: FlowTemplate, tempo: Tempo, audio_format: AudioFormat, bar: int) -> PcmAudio: ...
 

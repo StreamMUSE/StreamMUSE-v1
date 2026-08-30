@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from math import ceil, isfinite
 
 import numpy as np
-from scipy.signal import resample
 
+from streammuse.application.rap.audio_service import AudioTimeStretcher
 from streammuse.domain.rap import (
     AudioFormat,
     AudioWarning,
@@ -81,6 +81,7 @@ def fit_syllable(
     available_frames: int,
     final_in_bar: bool,
     context: FitContext,
+    time_stretcher: AudioTimeStretcher,
     max_compression: float = 2.0,
 ) -> FittedSyllable:
     _require_float32_format(audio.format)
@@ -99,7 +100,17 @@ def fit_syllable(
     if forced_bar_fit:
         target_frames = available_frames
 
-    fitted_audio = _resample_audio(audio, target_frames)
+    fitted_audio = (
+        audio
+        if target_frames == source_frames
+        else time_stretcher.stretch(audio, target_frames)
+    )
+    if fitted_audio.format != audio.format:
+        raise ValueError("time stretcher must preserve the PCM format")
+    if fitted_audio.frame_count != target_frames:
+        raise ValueError(
+            f"time stretcher returned {fitted_audio.frame_count} frames, expected {target_frames}"
+        )
     compression_ratio = source_frames / target_frames
     overlap_frames = max(0, target_frames - available_frames)
     warnings: list[AudioWarning] = []
@@ -131,7 +142,7 @@ def fit_syllable(
                 available_ms=available_frames / audio.format.sample_rate_hz * 1000,
                 rendered_ms=target_frames / audio.format.sample_rate_hz * 1000,
                 compression_ratio=compression_ratio,
-                action="resample_to_bar",
+                action="pitch_preserving_stretch_to_bar",
             )
         )
     return FittedSyllable(fitted_audio, compression_ratio, overlap_frames, tuple(warnings))
@@ -191,11 +202,3 @@ def _samples_from_audio(audio: PcmAudio) -> np.ndarray:
 def _audio_from_samples(audio_format: AudioFormat, samples: np.ndarray) -> PcmAudio:
     normalised = _normalise_samples(samples).astype(np.float32, copy=False)
     return PcmAudio(audio_format, normalised.shape[0], normalised.tobytes())
-
-
-def _resample_audio(audio: PcmAudio, target_frames: int) -> PcmAudio:
-    if target_frames == audio.frame_count:
-        return audio
-    samples = _samples_from_audio(audio)
-    fitted = resample(samples, target_frames, axis=0).astype(np.float32)
-    return _audio_from_samples(audio.format, fitted)

@@ -5,7 +5,10 @@
 The normal remote-MOSS runtime runs a loopback-bound chunk orchestrator on the
 H200. That one service calls the H200-local vLLM process, selects two lines,
 renders one connected MOSS phrase, aligns it, applies Rubber Band R3, and
-returns an exact two-bar vocal package. The Mac runs the authoritative rap
+returns an exact two-bar vocal package. The default warp keeps first/last,
+strongly stressed, and phrase-boundary syllable onsets while constraining local
+stretch ratios to `0.75x-1.35x`; this is the listening-tested gentle sparse
+policy. The Mac runs the authoritative rap
 clock, local eSpeak fallback, drum rendering, playback, WAV recording, session
 logging, and the web monitor. The browser never owns audio; closing it does not
 stop the Mac process.
@@ -15,9 +18,34 @@ For the normal runtime, forward only H200 port `8020`. The H200-local vLLM port
 is not a Mac runtime dependency, and the website is never forwarded from the
 H200.
 
-The existing local eSpeak renderer remains available as a startup-selected
-legacy mode. It does not change the clock, website controls, or artifact
-layout.
+The local eSpeak renderer remains available as a startup-selected baseline.
+It preserves the robotic source voice but now uses local Rubber Band R3 for
+pitch-preserving syllable compression. It does not change the clock, website
+controls, or artifact layout.
+
+## Choose The Renderer And Transport
+
+Renderer and wire transport are independent startup choices:
+
+| Choice | Use | Required flags |
+|---|---|---|
+| Local eSpeak | Device-free baseline, no H200 or tunnel; robotic syllables with local pitch-preserving R3 duration fitting | `--rap-audio-renderer espeak` |
+| Adaptive eSpeak (Gate D) | Recommended local demo voice; one connected eSpeak phrase with sparse adaptive onset anchors and one full-bar R3 warp | `--rap-audio-renderer espeak_adaptive --tempo 60 --lookahead-bars 4` |
+| Remote MOSS | Connected two-bar MOSS phrase, MMS alignment, and gentle sparse R3 timing on H200 | `--rap-audio-renderer moss_aligned_remote --rap-render-url http://127.0.0.1:8020` |
+| Opus wire transport | Recommended for remote MOSS; 48 kbps Opus is decoded back to exact-duration PCM on the Mac | H200: `--wire-audio-codec opus`; Mac: `--rap-audio-transport opus` |
+| PCM wire transport | Lossless compatibility and A/B baseline; substantially larger response | Mac: `--rap-audio-transport pcm` (default) |
+
+An Opus-enabled server still serves canonical PCM to a PCM client. An Opus
+client also accepts PCM as a compatibility fallback, so the server can be
+temporarily started with `--wire-audio-codec pcm` without changing the client.
+The canonical `response.zip` and `vocal.wav` remain PCM in both modes; Opus is
+only a derived wire representation.
+
+The H200 render server defaults to `--moss-warp-policy gentle_sparse_r3`.
+Use `--moss-warp-policy all_onsets_r3` only for an explicit legacy comparison
+or rollback. When gentle regularization is mathematically infeasible for an
+outlier MOSS source duration, the server uses that legacy policy for the one
+chunk and emits a visible warning instead of dropping the vocal.
 
 ## Normal Runtime: Start H200 Services
 
@@ -82,8 +110,8 @@ export NVIDIA_LIBS
 
 "$MOSS_ENV/bin/python" -m pip install --no-deps --editable "$REPO_ROOT"
 
-PATH="$MOSS_ENV/bin:$ALIGN_ENV/bin:$RUBBERBAND_ROOT/usr/bin:$FFMPEG7_ENV/bin:$PATH" \
-LD_LIBRARY_PATH="$ALIGN_ENV/lib:$RUBBERBAND_ROOT/usr/lib/x86_64-linux-gnu:$FFMPEG7_ENV/lib:$MOSS_ENV/lib/python3.12/site-packages/torch/lib:$NVIDIA_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+PATH="$FFMPEG7_ENV/bin:$MOSS_ENV/bin:$ALIGN_ENV/bin:$RUBBERBAND_ROOT/usr/bin:$PATH" \
+LD_LIBRARY_PATH="$FFMPEG7_ENV/lib:$ALIGN_ENV/lib:$RUBBERBAND_ROOT/usr/lib/x86_64-linux-gnu:$MOSS_ENV/lib/python3.12/site-packages/torch/lib:$NVIDIA_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
 "$MOSS_ENV/bin/streammuse-rap-render-server" \
   --host 127.0.0.1 \
@@ -96,7 +124,9 @@ CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
   --moss-reference-wav "$MOSS_REFERENCE" \
   --aligner-device cuda:0 \
   --aligner-cache "$ASSET_ROOT/mms-cache" \
-  --candidate-profile realtime
+  --candidate-profile realtime \
+  --moss-warp-policy gentle_sparse_r3 \
+  --wire-audio-codec opus
 ```
 
 The snapshot and reference above are the paths verified on the current H200.
@@ -117,9 +147,12 @@ curl --fail --silent --show-error http://127.0.0.1:8020/health \
 Install the local fallback and audio dependencies from a Mac terminal:
 
 ```bash
-brew install espeak-ng portaudio
+brew install espeak-ng portaudio ffmpeg rubberband
 uv sync
 command -v espeak-ng
+command -v ffmpeg
+command -v rubberband
+ffmpeg -hide_banner -encoders 2>/dev/null | grep libopus
 ```
 
 In Mac terminal A, forward only the chunk service:
@@ -143,6 +176,7 @@ website. The command does not construct a Mac-side vLLM client.
 ```bash
 uv run streammuse-rap-demo \
   --rap-audio-renderer moss_aligned_remote \
+  --rap-audio-transport opus \
   --rap-render-url http://127.0.0.1:8020 \
   --rap-render-profile realtime \
   --rap-render-startup-timeout 120 \
@@ -199,6 +233,29 @@ The displayed `total` timing is Mac-observed end to end: HTTP request through
 download plus Mac validation/mix. Generation, evaluation, MOSS, aligner, R3,
 and package are server stages; transfer and Mac are shown separately.
 
+The `5.0` second rolling timeout is also bounded by the musical commit
+deadline; increasing it cannot create more than two bars of lookahead. On the
+Mac-H200 path measured on 2026-08-21, the comparable first live response fell
+from 198,193 bytes and 8.228 seconds with PCM to 36,188 bytes and 5.974 seconds
+with 48 kbps Opus. That is an 81.7% payload reduction and a 27.4% end-to-end
+latency reduction. Eight paired cached requests over one persistent tunnel
+averaged 1.585 seconds for Opus and 1.761 seconds for PCM; the same cached Opus
+response took 5.7 ms when requested directly on H200. The remaining fixed
+tunnel delay and roughly 3.4 seconds of generation/render work still caused
+18 of 20 bars to use fallback at 90 BPM with two-bar lookahead.
+
+Opus is therefore the recommended transport, but it does not by itself make
+this particular route meet the two-bar deadline. Retain two-bar lookahead only
+with a lower-latency path or faster render pipeline; otherwise schedule more
+headroom explicitly. See `rap-opus-transport-experiment-2026-08-21.md` and
+`realtime-remote-moss-acceptance-2026-08-21.md` for retained evidence. Do not
+hide fallback by merely raising the timeout.
+
+For a PCM comparison, keep the Opus-enabled server running and change only the
+Mac flag to `--rap-audio-transport pcm`. To disable Opus generation entirely,
+start the server with `--wire-audio-codec pcm`; the remaining commands are
+unchanged.
+
 ## Normal Runtime Shutdown
 
 1. Select Stop in the Mac website or call the stop endpoint and wait for the
@@ -221,24 +278,28 @@ The `lsof` commands should return no matching listener, and the final curl
 should fail after shutdown. On H200, rerun the `nvidia-smi` process query and
 verify only the two PIDs started for this session disappeared.
 
-## Return To The Local eSpeak Renderer
+## Run The Recommended Local Gate D Renderer
 
-Stop the remote-mode Mac process, then use this exact device-free legacy
-command. It requires no H200 service or tunnel and preserves the prior isolated
-eSpeak renderer for fallback and regression comparison.
+This is the recommended device-free vocal path for the current 60 BPM demo.
+It pronounces each bar as one connected eSpeak phrase, preserves natural word
+cadence, and applies the listening-tested adaptive-error anchor policy from
+`anchor_policy_gate_D.wav`.
 
 ```bash
 uv run streammuse-rap-demo \
   --generator phrase_bank \
-  --rap-audio-renderer espeak \
+  --rap-audio-renderer espeak_adaptive \
   --audio-output wav \
-  --tempo 90 \
-  --lookahead-bars 2 \
+  --tempo 60 \
+  --lookahead-bars 4 \
   --max-bars 12 \
   --terminal-layout stream \
   --terminal-detail full \
   --no-web
 ```
+
+For an immediate rollback to the isolated-syllable baseline, change only
+`--rap-audio-renderer espeak`.
 
 ## Optional Diagnostics: Start A Direct H200 vLLM Endpoint
 
@@ -282,9 +343,10 @@ local rendering and device dependencies, then resolve the project environment
 from the repository root:
 
 ```bash
-brew install espeak-ng portaudio
+brew install espeak-ng portaudio ffmpeg rubberband
 uv sync
 command -v espeak-ng
+command -v rubberband
 ```
 
 In another Mac terminal, optionally forward the H200 model endpoint for this
@@ -315,7 +377,7 @@ The second command must return a chat completion before starting a sweep. If it
 fails, retain its curl output and do not report a candidate sweep as remote
 evidence.
 
-## Optional Legacy Direct-vLLM eSpeak Demo
+## Direct-vLLM Adaptive eSpeak Demo
 
 Run this optional comparison in a third Mac terminal after opening the direct
 vLLM diagnostic tunnel. It records an IEEE-float WAV while playing through the
@@ -329,10 +391,11 @@ uv run streammuse-rap-demo \
   --generator local_chat \
   --model-url http://127.0.0.1:8001/v1 \
   --model qwen-rap \
+  --rap-audio-renderer espeak_adaptive \
   --audio-output composite \
   --tempo 60 \
   --candidate-count 36 \
-  --lookahead-bars 3 \
+  --lookahead-bars 4 \
   --minimum-score 0.30 \
   --max-bars 0 \
   --terminal-layout split \
@@ -367,10 +430,11 @@ writes only completed bars to `mixed.wav`.
 ```bash
 uv run streammuse-rap-demo \
   --generator phrase_bank \
+  --rap-audio-renderer espeak_adaptive \
   --audio-output wav \
   --tempo 60 \
   --candidate-count 12 \
-  --lookahead-bars 3 \
+  --lookahead-bars 4 \
   --max-bars 12 \
   --terminal-layout stream \
   --terminal-detail summary \
@@ -463,11 +527,15 @@ If the website port is occupied, select any unused `--port` and open the
 corresponding `127.0.0.1` URL. Do not forward the website for the split
 Mac/H200 flow.
 
-### eSpeak And Audio Warnings
+### eSpeak, Rubber Band, And Audio Warnings
 
-`espeak-ng` must be present before audio mode starts. A `synthesis_failed`
-warning means the renderer substituted empty vocal PCM for that syllable; drum
-PCM and the timing/WAV path can still run. Homebrew eSpeak 1.52 may advertise a
+`espeak-ng` and `rubberband` must be present before audio mode starts. Rubber
+Band receives an exact target duration with no pitch-shift option. An output
+length difference of at most two audio frames is corrected only at the quiet tail;
+a larger difference fails instead of falling back to duration resampling. A
+`synthesis_failed` warning means the renderer substituted empty vocal PCM for
+that syllable; drum PCM and the timing/WAV path can still run. Homebrew eSpeak
+1.52 may advertise a
 streaming RIFF/data length that is larger than stdout's actual PCM payload. The
 adapter validates format and frame alignment, then derives the frame count from
 the complete payload rather than trusting that streaming length. Reproduce the
@@ -485,3 +553,19 @@ warnings and its `audio_render_completed` events report nonzero
 session artifact; request bodies, credentials, and query strings are excluded.
 The complete Task 10 evidence is recorded in
 `rap-acceptance-report-2026-08-09.md`.
+
+### Opus And FFmpeg
+
+Both hosts need an FFmpeg build that advertises the `libopus` encoder. On the
+H200, keep `$FFMPEG7_ENV/bin` and `$FFMPEG7_ENV/lib` before the MOSS and aligner
+paths. Otherwise the MOSS environment may select an older FFmpeg build and
+fail at startup with a missing `libx264.so.138` dependency.
+
+```bash
+command -v ffmpeg
+ffmpeg -hide_banner -encoders 2>/dev/null | grep libopus
+```
+
+The render server probes this capability before loading MOSS. The Mac client
+does the same before starting an Opus session. A server in Opus mode can still
+serve PCM; select `--rap-audio-transport pcm` on the Mac for immediate rollback.

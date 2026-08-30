@@ -61,6 +61,24 @@ class RapAudioFactories:
 
         return ProceduralBoomBapRenderer(seed=seed)
 
+    def create_time_stretcher(self):
+        from streammuse.infrastructure.rap.time_stretch import RubberBandTimeStretcher
+
+        return RubberBandTimeStretcher()
+
+    def create_phrase_synthesizer(self, *, analyzer, sample_rate_hz: int):
+        from streammuse.infrastructure.rap.speech import EspeakEventPhraseSynthesizer
+
+        return EspeakEventPhraseSynthesizer(
+            analyzer,
+            output_sample_rate_hz=sample_rate_hz,
+        )
+
+    def create_time_map_stretcher(self):
+        from streammuse.infrastructure.rap.time_stretch import RubberBandTimeMapStretcher
+
+        return RubberBandTimeMapStretcher()
+
     def create_remote_client(self, *, base_url: str, clock: Callable[[], float], audio_transport: str):
         from streammuse.infrastructure.rap.remote_chunk_client import RemoteChunkClient
 
@@ -110,7 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-count", type=int, default=8)
     parser.add_argument("--lookahead-bars", type=int, default=2)
     parser.add_argument("--audio-output", choices=("none", "live", "wav", "composite"), default="none")
-    parser.add_argument("--rap-audio-renderer", choices=("espeak", "moss_aligned_remote"), default="espeak")
+    parser.add_argument(
+        "--rap-audio-renderer",
+        choices=("espeak", "espeak_adaptive", "moss_aligned_remote"),
+        default="espeak",
+    )
     parser.add_argument("--rap-audio-transport", choices=("pcm", "opus"), default="pcm")
     parser.add_argument("--rap-render-url", default="http://127.0.0.1:8020")
     parser.add_argument("--rap-render-profile", choices=("realtime",), default="realtime")
@@ -328,6 +350,16 @@ def _build_audio_demo(
         "voice_speed": args.voice_speed,
         "voice_pitch": args.voice_pitch,
         "max_compression": args.max_compression,
+        "time_stretcher": (
+            "rubberband_r3_sparse_timemap"
+            if args.rap_audio_renderer == "espeak_adaptive"
+            else "rubberband_r3"
+        ),
+        "adaptive_anchor_policy": (
+            "gate_d_adaptive_error"
+            if args.rap_audio_renderer == "espeak_adaptive"
+            else None
+        ),
         "audio_device": args.audio_device,
         "renderer": args.rap_audio_renderer,
         "transport": args.rap_audio_transport if args.rap_audio_renderer == "moss_aligned_remote" else "pcm",
@@ -338,7 +370,7 @@ def _build_audio_demo(
         "artifact_paths": {"wav": str(audio_file)} if args.audio_output in ("wav", "composite") else {},
     }
     generator = stop_primary = close_primary = None
-    if args.rap_audio_renderer == "espeak":
+    if args.rap_audio_renderer in {"espeak", "espeak_adaptive"}:
         generator, stop_primary, close_primary = _build_generator(args)
     recorder = None
     dispatcher = None
@@ -363,16 +395,38 @@ def _build_audio_demo(
         dispatcher.start()
         synthesizer = audio_factories.create_synthesizer()
         drums = audio_factories.create_drums(seed=args.seed)
-        renderer = DeterministicRapBarRenderer(
+        time_stretcher = audio_factories.create_time_stretcher()
+        fallback_renderer = DeterministicRapBarRenderer(
             tempo=tempo,
             audio_format=audio_format,
             synthesizer=synthesizer,
             drums=drums,
+            time_stretcher=time_stretcher,
             voice=args.voice,
             speed_wpm=args.voice_speed,
             pitch=args.voice_pitch,
             max_compression=args.max_compression,
         )
+        renderer = fallback_renderer
+        if args.rap_audio_renderer == "espeak_adaptive":
+            from streammuse.application.rap.adaptive_bar_renderer import (
+                AdaptiveContinuousRapBarRenderer,
+            )
+
+            renderer = AdaptiveContinuousRapBarRenderer(
+                tempo=tempo,
+                audio_format=audio_format,
+                phrase_synthesizer=audio_factories.create_phrase_synthesizer(
+                    analyzer=analyzer,
+                    sample_rate_hz=audio_format.sample_rate_hz,
+                ),
+                drums=drums,
+                time_map_stretcher=audio_factories.create_time_map_stretcher(),
+                fallback_renderer=fallback_renderer,
+                voice=args.voice,
+                speed_wpm=args.voice_speed,
+                pitch=args.voice_pitch,
+            )
         sink = audio_factories.create_sink(
             output=args.audio_output,
             audio_format=audio_format,
@@ -387,7 +441,7 @@ def _build_audio_demo(
             monotonic=clock,
         )
         planning_bar_limit = args.max_bars or (None if scenario.loop else scenario.total_bars)
-        if args.rap_audio_renderer == "espeak":
+        if args.rap_audio_renderer in {"espeak", "espeak_adaptive"}:
             coordinator = BarAudioCoordinator(renderer, publisher=publisher)
             controller = RollingRapController(
                 tempo=tempo,
@@ -541,6 +595,8 @@ def _validate_audio_options(args: argparse.Namespace, *, require_external: bool)
         raise ValueError("voice must not be empty")
     if shutil.which("espeak-ng") is None:
         raise OSError("audio output requires the espeak-ng executable")
+    if shutil.which("rubberband") is None:
+        raise OSError("audio output requires the rubberband executable")
     if args.audio_output in ("live", "composite"):
         try:
             importlib.import_module("sounddevice")

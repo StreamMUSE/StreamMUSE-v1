@@ -1279,6 +1279,7 @@ def test_cli_defaults_to_loopback_and_refuses_public_bind_without_opt_in() -> No
 
     assert defaults.host == "127.0.0.1"
     assert defaults.vllm_url == "http://127.0.0.1:8000/v1"
+    assert defaults.moss_warp_policy == "gentle_sparse_r3"
     assert status == 2
 
 
@@ -1543,6 +1544,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         "synthesizer": moss,
         "aligner": aligner,
         "rubberband_version": "rubberband-version",
+        "warp_policy": "gentle_sparse_r3",
     }
     orchestrator, planner, wired_renderer, workspace_root = calls["orchestrator"]  # type: ignore[misc]
     assert composition.orchestrator is orchestrator

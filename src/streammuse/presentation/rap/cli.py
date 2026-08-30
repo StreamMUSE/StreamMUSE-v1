@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--topic", default="the moment")
-    parser.add_argument("--tempo", type=float, default=92.0, help="Tempo in beats per minute")
+    parser.add_argument("--tempo", type=float, default=90.0, help="Tempo in beats per minute")
     parser.add_argument("--pattern", choices=available_patterns(), default="boom_bap")
     parser.add_argument("--bars", type=int, default=4)
     parser.add_argument("--candidate-count", type=int, default=12)

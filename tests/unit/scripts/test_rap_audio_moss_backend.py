@@ -65,6 +65,22 @@ def _request(chunk_index: int = 0, *, song_id: str = "01_space_exploration") -> 
     )
 
 
+def test_load_requests_jsonl_preserves_explicit_tempo_and_defaults_legacy(
+    tmp_path: Path,
+) -> None:
+    module = _load_module("scripts.rap_audio_backends.moss_backend_tempo_loading")
+    payload = _request().to_payload()
+    payload["tempo_bpm"] = 133.0
+    current_path = tmp_path / "current.jsonl"
+    current_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    legacy_path = tmp_path / "legacy.jsonl"
+    payload.pop("tempo_bpm")
+    legacy_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert module.load_requests_jsonl(current_path)[0].tempo_bpm == 133.0
+    assert module.load_requests_jsonl(legacy_path)[0].tempo_bpm == 90.0
+
+
 class FakeTensor:
     def __init__(self, name: str) -> None:
         self.name = name

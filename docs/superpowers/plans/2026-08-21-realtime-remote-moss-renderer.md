@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a selectable realtime mode in which one H200 request generates and selects two bars of lyrics, renders them through persistent MOSS + MFA + Rubber Band R3, and returns exact-duration vocals for deadline-safe Mac playback with local eSpeak fallback.
+**Goal:** Add a selectable realtime mode in which one H200 request generates and selects two bars of lyrics, renders them through persistent MOSS + resident forced alignment + Rubber Band R3, and returns exact-duration vocals for deadline-safe Mac playback with local eSpeak fallback.
 
 **Architecture:** Preserve the current bar-oriented eSpeak path. Add a parallel two-bar `RapChunkPreparationStrategy`: the remote implementation calls a private H200 orchestrator that composes existing lyric generation/ranking and offline aligned-MOSS components, while a new rolling chunk controller validates, mixes, and commits returned audio through the existing Mac playback service. The external operation is one request and one binary ZIP response; internal generation, evaluation, synthesis, alignment, and warping remain separate replaceable components.
 
@@ -30,7 +30,7 @@
 
 **P1, complete after P0:** Full website projection, detailed artifact retention, broader profile sweeps, and listening comparison in Task 7 and the latter half of Task 8.
 
-If execution time becomes constrained, reduce candidate-profile breadth and UI polish. Do not omit exact-duration validation, fallback, real MOSS/MFA/R3 execution, H200 testing, or eSpeak regression coverage.
+If execution time becomes constrained, reduce candidate-profile breadth and UI polish. Do not omit exact-duration validation, fallback, real MOSS/alignment/R3 execution, H200 testing, or eSpeak regression coverage.
 
 ## File Structure
 
@@ -43,7 +43,8 @@ If execution time becomes constrained, reduce candidate-profile breadth and UI p
 - `src/streammuse/infrastructure/rap/chunk_package.py`: canonical JSON and safe ZIP encode/decode.
 - `src/streammuse/infrastructure/rap/remote_chunk_client.py`: cancellable httpx client for health and render operations.
 - `src/streammuse/infrastructure/rap/moss_tts.py`: persistent MOSS runtime and one-phrase waveform generation extracted from the offline backend.
-- `src/streammuse/infrastructure/rap/moss_aligned_phrase.py`: realtime adapter combining MOSS, MFA, and `continuous_onset_r3` warping.
+- `src/streammuse/infrastructure/rap/mms_forced_alignment.py`: resident torchaudio MMS character/word alignment and syllable-onset mapping.
+- `src/streammuse/infrastructure/rap/moss_aligned_phrase.py`: realtime adapter combining MOSS, an injected aligner, and `continuous_onset_r3` warping.
 - `src/streammuse/presentation/rap_render_server.py`: dependency-injected FastAPI app and H200 server CLI.
 - Matching unit tests under `tests/unit/domain/rap/`, `tests/unit/application/rap/`, `tests/unit/infrastructure/rap/`, and `tests/unit/presentation/`.
 
@@ -252,20 +253,22 @@ Run: `uv run pytest tests/unit/application/rap/test_chunk_orchestration.py tests
 
 Commit with: `git commit -m "add server-side rap chunk planning"`.
 
-### Task 3: Persistent MOSS, MFA, And R3 Phrase Renderer [P0]
+### Task 3: Persistent MOSS, Resident MMS Alignment, And R3 Phrase Renderer [P0]
 
 **Files:**
 - Create: `src/streammuse/infrastructure/rap/moss_tts.py`
+- Create: `src/streammuse/infrastructure/rap/mms_forced_alignment.py`
 - Create: `src/streammuse/infrastructure/rap/moss_aligned_phrase.py`
 - Modify: `scripts/rap_audio_backends/moss_backend.py`
 - Modify: `scripts/rap_audio_backends/aligned_moss_backend.py`
 - Test: `tests/unit/infrastructure/rap/test_moss_tts.py`
+- Test: `tests/unit/infrastructure/rap/test_mms_forced_alignment.py`
 - Test: `tests/unit/infrastructure/rap/test_moss_aligned_phrase.py`
 - Test: existing `tests/unit/scripts/test_rap_audio_moss_backend.py`
 - Test: existing `tests/unit/scripts/test_rap_audio_aligned_moss_backend.py`
 
 **Interfaces:**
-- Consumes: `TwoBarRenderRequest`, `PhraseVocalRenderer`, existing MOSS generation parameters, MFA models, and `continuous_pitch_preserving_warp()`.
+- Consumes: `TwoBarRenderRequest`, `PhraseVocalRenderer`, existing MOSS generation parameters, torchaudio `MMS_FA`, and `continuous_pitch_preserving_warp()`.
 - Produces: `PersistentMossSynthesizer`, `MossAlignedPhraseRenderer`, and `PhraseRenderResult` containing WAV bytes/path, alignment metrics, versions, hashes, and stage timing.
 
 - [ ] **Step 1: Write failing persistent-runtime tests**
@@ -286,11 +289,11 @@ class PersistentMossSynthesizer:
 
 - [ ] **Step 3: Write failing alignment-adapter tests**
 
-Inject fake MOSS, MFA, and full-chunk stretcher implementations. Verify transcript staging, strict phone matching, documented word fallback, onset promotion, plain `continuous_onset_r3`, exact frame count, hash propagation, stage timings, and cleanup. MFA failure and impossible/non-monotonic anchor maps must raise `PhraseRenderFailed`.
+Inject fake MOSS, aligner, and full-chunk stretcher implementations. Verify exact transcript alignment, character/word-to-syllable onset mapping, documented transcript-proportional fallback, plain `continuous_onset_r3`, exact frame count, hash propagation, stage timings, and cleanup. Alignment failure and impossible/non-monotonic anchor maps must raise `PhraseRenderFailed`.
 
 - [ ] **Step 4: Implement `MossAlignedPhraseRenderer`**
 
-Reuse the proven functions from `streammuse.experiments.rap_audio_protocols.warp` and the aligned offline backend. Run MFA in a request-private corpus/output directory. Return 24 kHz mono PCM16 in the service package even when internal processing uses float32 WAV.
+Reuse the proven functions from `streammuse.experiments.rap_audio_protocols.warp` and the aligned offline backend. Keep the MMS model resident, resample source audio to its 16 kHz input only for alignment, convert its character spans into 24 kHz source syllable anchors, and retain MFA as an optional offline/reference adapter. Return 24 kHz mono PCM16 in the service package even when internal processing uses float32 WAV.
 
 - [ ] **Step 5: Run local compatibility tests**
 
@@ -306,7 +309,7 @@ uv run pytest \
 
 - [ ] **Step 6: Perform the first real H200 worker smoke before building the client**
 
-SSH to `Andrew.Yang@masdar`, inspect `nvidia-smi`, choose an unused physical GPU, and use the existing MOSS/MFA/Rubber Band environments and reference voice documented in `docs/developer-guide/rap-audio-protocol-comparison.md`. Render one known 90 BPM two-bar request twice in the same process. Record cold/warm MOSS, MFA, R3, and total latency plus GPU assignment. This is an early feasibility gate; retain output and logs under a new request-specific H200 artifact directory.
+SSH to `Andrew.Yang@masdar`, inspect `nvidia-smi`, choose an unused physical GPU, and use the existing MOSS/torchaudio/Rubber Band environments and reference voice documented in `docs/developer-guide/rap-audio-protocol-comparison.md`. Render one known 90 BPM two-bar request twice in the same process. Record cold/warm MOSS, MMS alignment, R3, and total latency plus GPU assignment. Compare at least one result against MFA reference anchors. This is an early feasibility gate; retain output and logs under a new request-specific H200 artifact directory.
 
 - [ ] **Step 7: Commit the reusable real renderer**
 
@@ -334,11 +337,11 @@ Run blocking orchestration outside the event-loop thread. A successful response 
 
 - [ ] **Step 3: Implement atomic idempotent storage**
 
-Store canonical request JSON, full candidate ledger, source WAV, TextGrid, aligned WAV, response package, and failure JSON under `<artifact-root>/<request-id>/`. An identical completed request returns the cached package; a conflicting body returns HTTP 409. Use atomic rename for the final package marker.
+Store canonical request JSON, full candidate ledger, source WAV, active-aligner diagnostics (and a TextGrid only when the aligner actually produces one), aligned WAV, response package, and failure JSON under `<artifact-root>/<request-id>/`. An identical completed request returns the cached package; a conflicting body returns HTTP 409. Use atomic rename for the final package marker.
 
 - [ ] **Step 4: Add the server CLI**
 
-Expose explicit options for host, port, artifact root, vLLM URL/model, MOSS model/device/reference WAV, MFA dictionary/acoustic model, and candidate profile. Default host is `127.0.0.1`; reject `0.0.0.0` unless `--allow-public-bind` is supplied.
+Expose explicit options for host, port, artifact root, vLLM URL/model, MOSS model/device/reference WAV, aligner device/cache, and candidate profile. Default host is `127.0.0.1`; reject `0.0.0.0` unless `--allow-public-bind` is supplied.
 
 - [ ] **Step 5: Test and commit**
 
@@ -506,7 +509,7 @@ Commit with: `git commit -m "switch realtime rap between eSpeak and remote MOSS"
 
 - [ ] **Step 1: Write failing projector and terminal tests**
 
-Assert display of renderer, request/chunk state, two selected lines, both flow schedules, candidate counts, selected component scores, generation/MOSS/MFA/R3/transfer/total timing, remaining slack, warp/fallback warnings, and final MOSS/eSpeak commitment. Preserve dense two-column behavior and current eSpeak snapshots.
+Assert display of renderer, request/chunk state, two selected lines, both flow schedules, candidate counts, selected component scores, generation/MOSS/aligner/R3/transfer/total timing, remaining slack, warp/fallback warnings, and final MOSS/eSpeak commitment. Preserve dense two-column behavior and current eSpeak snapshots.
 
 - [ ] **Step 2: Implement bounded monitoring payloads**
 
@@ -518,14 +521,16 @@ Use existing layout and colors. Add no controls beyond Start, Stop, and Reset. R
 
 - [ ] **Step 4: Update the quickstart**
 
-Document H200 vLLM and render-server commands, explicit unused-GPU selection, the two-port tunnel:
+Document H200 vLLM and render-server commands, explicit unused-GPU selection, and the normal single render-service tunnel:
 
 ```bash
 ssh -o ExitOnForwardFailure=yes -N \
-  -L 8001:127.0.0.1:8001 \
   -L 8020:127.0.0.1:8020 \
   Andrew.Yang@masdar
 ```
+
+vLLM stays private behind the H200 chunk service; document any direct vLLM
+forward only as an optional diagnostic command.
 
 Document Mac eSpeak and remote-MOSS commands, health checks, session artifacts, shutdown, and the exact legacy command for temporarily returning to eSpeak.
 
@@ -543,7 +548,7 @@ Commit with: `git commit -m "expose remote rap render diagnostics"`.
 - Modify implementation/tests only for defects demonstrated by evidence.
 
 **Interfaces:**
-- Consumes: committed P0 implementation, SSH host `Andrew.Yang@masdar`, unused H200 GPUs, real Qwen vLLM, persistent MOSS, MFA, Rubber Band, and Mac WAV sink.
+- Consumes: committed P0 implementation, SSH host `Andrew.Yang@masdar`, unused H200 GPUs, real Qwen vLLM, persistent MOSS, resident MMS alignment, Rubber Band, MFA reference artifacts, and Mac WAV sink.
 - Produces: verified commands, stage latency distributions, candidate/fallback statistics, exact-duration audio, and a documented recommendation.
 
 - [ ] **Step 1: Run the complete local regression gate**
@@ -566,7 +571,7 @@ Send a real 90 BPM request containing two actual flow schedules. Verify selected
 
 - [ ] **Step 5: Measure warm stage and transfer latency**
 
-Run at least ten warm requests across the three existing flow templates. Report p50/p95/max for candidate generation, evaluation, MOSS, MFA, R3, packaging, SSH transfer, Mac validation/mix, and total. Report candidate requested/parseable/valid/selectable counts and failures by stage.
+Run at least ten warm requests across the three existing flow templates. Report p50/p95/max for candidate generation, evaluation, MOSS, alignment, R3, packaging, SSH transfer, Mac validation/mix, and total. Report candidate requested/parseable/valid/selectable counts and failures by stage.
 
 - [ ] **Step 6: Tune the realtime profile inside the H200 boundary**
 

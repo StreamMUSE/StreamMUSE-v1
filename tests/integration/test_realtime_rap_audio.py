@@ -184,6 +184,13 @@ class FakeSpeech:
         )
 
 
+class FailIfCalledTimeStretcher:
+    def stretch(self, audio: PcmAudio, target_frames: int) -> PcmAudio:
+        raise AssertionError(
+            f"one-frame fake speech should not be stretched to {target_frames}: {audio}"
+        )
+
+
 class BlockingSuccessorRenderer:
     """Block exactly the fallback needed for the next complete-bar restart."""
 
@@ -301,6 +308,7 @@ def test_audio_reset_starts_a_new_recorder_and_wav_epoch(tmp_path: Path) -> None
             audio_format=audio_format,
             synthesizer=FakeSpeech(),
             drums=ProceduralBoomBapRenderer(seed=7),
+            time_stretcher=FailIfCalledTimeStretcher(),
         ),
         successor_bar=1,
     )
@@ -399,6 +407,7 @@ def test_stop_arms_sink_while_successor_fallback_is_blocked_then_restarts(tmp_pa
             audio_format=audio_format,
             synthesizer=FakeSpeech(),
             drums=ProceduralBoomBapRenderer(seed=7),
+            time_stretcher=FailIfCalledTimeStretcher(),
         ),
         successor_bar=1,
     )
@@ -614,6 +623,7 @@ def test_rolling_audio_runs_without_gap_when_generator_is_late(tmp_path: Path) -
         audio_format=audio_format,
         synthesizer=FakeSpeech(),
         drums=ProceduralBoomBapRenderer(seed=7),
+        time_stretcher=FailIfCalledTimeStretcher(),
     )
     coordinator = BarAudioCoordinator(renderer, publisher=publisher)
     controller: RollingRapController
@@ -693,6 +703,7 @@ def _build_audio_runtime(
         audio_format=audio_format,
         synthesizer=FakeSpeech(),
         drums=ProceduralBoomBapRenderer(seed=7),
+        time_stretcher=FailIfCalledTimeStretcher(),
     )
     coordinator = BarAudioCoordinator(renderer, publisher=publisher)
     controller: RollingRapController

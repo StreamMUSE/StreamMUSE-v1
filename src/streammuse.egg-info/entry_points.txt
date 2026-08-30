@@ -3,5 +3,6 @@ streammuse-cli = streammuse.presentation.cli.cli:main
 streammuse-debug = streammuse.presentation.debug.cli:main
 streammuse-rap = streammuse.presentation.rap.cli:main
 streammuse-rap-demo = streammuse.presentation.rap_demo.cli:main
+streammuse-rap-render-server = streammuse.presentation.rap_render_server:main
 streammuse-task = streammuse.presentation.task.cli:main
 streammuse-web = streammuse.presentation.web.server:main

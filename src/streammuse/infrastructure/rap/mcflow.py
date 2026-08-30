@@ -181,7 +181,9 @@ def parse_mcflow_file(path: str | Path) -> ParsedMcFlow:
             duration = Fraction(0)
             record_parse_error("invalid_reciprocal_duration", "reciprocal duration is unsupported")
         lyric = fields[spine_index["**lyrics"]]
-        is_rest = reciprocal.endswith("r") or lyric == "R"
+        ipa_index = spine_index.get("**ipa")
+        ipa = fields[ipa_index] if ipa_index is not None else "."
+        is_rest = reciprocal.endswith("r") or lyric == "R" or ipa == "R"
         stress_token = fields[spine_index["**stress"]]
         if stress_token == ".":
             stress = previous_stress
@@ -445,6 +447,12 @@ def _apply_phrase_starts(
             _replace_boundary(slots, preceding[-1], phrase_start.strength)
         elif previous is not None:
             _replace_boundary(previous[1], len(previous[1]) - 1, phrase_start.strength)
+        elif (
+            measure.ordinal == 1
+            and measure.syllables
+            and phrase_start.onset == measure.syllables[0].onset
+        ):
+            continue
         else:
             return True
     return False

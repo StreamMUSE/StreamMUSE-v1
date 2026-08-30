@@ -28,6 +28,7 @@ def test_catalog_rejects_empty_catalog_and_unknown_template() -> None:
 def test_default_scenario_is_valid_against_builtin_templates() -> None:
     scenario = default_scenario()
 
+    assert scenario.tempo_bpm == 90.0
     assert scenario.total_bars == 12
     assert [scenario.segment_for_bar(bar).topic for bar in (0, 4, 8, 12)] == ["space", "deep sea", "code", "space"]
     assert all(BUILTIN_TEMPLATES.get(segment.template_id) for segment in scenario.segments)

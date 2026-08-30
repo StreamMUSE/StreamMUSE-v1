@@ -14,7 +14,7 @@ def default_scenario() -> RapScenario:
     """Return the fixed looping research demonstration scenario."""
     scenario = RapScenario(
         scenario_id="default_research_demo",
-        tempo_bpm=92.0,
+        tempo_bpm=90.0,
         loop=True,
         segments=(
             ScenarioSegment(0, 4, "space", "baseline_syncopated_9", ("space dreams rise while bright stars cross dark night",)),

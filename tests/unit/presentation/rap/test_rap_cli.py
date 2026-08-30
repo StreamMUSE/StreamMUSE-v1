@@ -27,6 +27,7 @@ def test_default_cli_run_writes_an_inspectable_schedule_json(tmp_path: Path, cap
     assert main(["--topic", "space travel", "--bars", "1", "--output-json", str(output)]) == 0
 
     payload = json.loads(output.read_text())
+    assert payload["tempo"]["bpm"] == 90.0
     assert payload["pattern"] == "boom_bap"
     assert payload["lines"][0]["events"][0]["tick"] == 0
     assert payload["lines"][0]["events"][0]["label"]

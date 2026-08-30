@@ -489,6 +489,89 @@ def test_render_aligned_chunk_supports_auditable_constrained_onset_stress_mode(
     assert len(diagnostics["timing_regularization"]["target_drift_seconds"]) == 18
 
 
+def test_render_aligned_chunk_supports_gentle_sparse_r3_without_stress(
+    tmp_path: Path,
+) -> None:
+    backend = _load_backend()
+    base_request = _request()
+    selected_indices = (0, 4, 10, 17)
+    request = replace(
+        base_request,
+        syllables=tuple(
+            replace(
+                syllable,
+                target_stress=0.8 if index == 4 else 0.2,
+                boundary_strength=2 if index == 10 else 0,
+            )
+            for index, syllable in enumerate(base_request.syllables)
+        ),
+    )
+    source_wav = tmp_path / "source.wav"
+    _, source_sha256 = _write_source_wav(source_wav)
+    textgrid_path = tmp_path / "aligned.TextGrid"
+    output_wav = tmp_path / "warped.wav"
+    _write_textgrid(textgrid_path)
+    calls: list[tuple[tuple[int, int], ...]] = []
+
+    def recording_stretcher(
+        samples: np.ndarray,
+        target_frames: int,
+        sample_rate_hz: int,
+        time_map: tuple[tuple[int, int], ...],
+    ) -> np.ndarray:
+        calls.append(time_map)
+        return _linear_full_chunk_stretcher(
+            samples,
+            target_frames,
+            sample_rate_hz,
+            time_map,
+        )
+
+    result = backend.render_aligned_chunk(
+        request=request,
+        source_wav_path=source_wav,
+        expected_source_sha256=source_sha256,
+        textgrid_path=textgrid_path,
+        output_wav_path=output_wav,
+        mode="continuous_onset_gentle_sparse_r3",
+        stretch_full_chunk=recording_stretcher,
+    )
+
+    diagnostics = json.loads(
+        output_wav.with_suffix(output_wav.suffix + ".alignment.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result.record.success
+    assert result.mode == "continuous_onset_gentle_sparse_r3"
+    assert not result.stress_applied
+    assert len(calls) == 1
+    assert len(calls[0]) == len(selected_indices) + 2
+    assert len(result.anchor_map) == len(selected_indices)
+    assert all(anchor.anchor_kind == "syllable_onset" for anchor in result.anchor_map)
+    assert min(result.stretch_ratios) >= 0.75 - 0.01
+    assert max(result.stretch_ratios) <= 1.35 + 0.01
+    assert diagnostics["stress"]["applied"] is False
+    regularization = diagnostics["timing_regularization"]
+    assert regularization["applied"] is True
+    assert regularization["policy"] == "gentle_sparse_r3"
+    assert regularization["min_stretch_ratio"] == 0.75
+    assert regularization["max_stretch_ratio"] == 1.35
+    assert regularization["stress_priority"] == 4.0
+    assert regularization["minimum_target_stress"] == 0.8
+    assert regularization["minimum_boundary_strength"] == 2
+    assert regularization["input_anchor_count"] == 18
+    assert regularization["effective_anchor_count"] == 4
+    assert regularization["selected_anchor_indices"] == list(selected_indices)
+    assert regularization["omitted_anchor_indices"] == [
+        index for index in range(18) if index not in selected_indices
+    ]
+    assert len(regularization["target_drift_seconds"]) == 18
+    assert regularization["max_absolute_target_drift_seconds"] == pytest.approx(
+        max(abs(value) for value in regularization["target_drift_seconds"])
+    )
+
+
 def test_render_aligned_chunk_falls_back_only_for_liftoff_spn_word(tmp_path: Path) -> None:
     backend = _load_backend()
     request = _liftoff_request()
@@ -1001,6 +1084,18 @@ def test_render_aligned_chunk_fails_closed_when_request_word_sequence_cannot_mat
     assert not result.record.success
     assert "request word sequence" in (result.record.error or "")
     assert np.count_nonzero(wavfile.read(output_wav)[1]) == 0
+
+
+def test_request_words_split_hyphenated_compounds_and_preserve_contractions() -> None:
+    backend = _load_backend()
+
+    assert backend._request_words("byte-strewn shores, don't stop") == (
+        "byte",
+        "strewn",
+        "shores",
+        "don't",
+        "stop",
+    )
 
 
 def test_render_aligned_chunk_returns_explicit_failure_for_missing_vowel_anchor(tmp_path: Path) -> None:

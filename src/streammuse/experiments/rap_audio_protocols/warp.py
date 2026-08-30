@@ -43,6 +43,7 @@ _LONG_INTERVAL_RE = re.compile(
     r'\s*text\s*=\s*"((?:""|[^"])*)"',
     re.MULTILINE,
 )
+_MAX_TIME_MAP_RENDER_ATTEMPTS = 6
 _LONG_INTERVAL_SIZE_RE = re.compile(
     r"^[ \t]*intervals:[ \t]*size[ \t]*=[ \t]*(\d+)[ \t]*$",
     re.MULTILINE,
@@ -144,6 +145,22 @@ class WarpedChunk:
     stretch_regions: tuple[StretchRegionDiagnostic, ...]
 
 
+@dataclass(frozen=True)
+class GentleSparseAnchorSelection:
+    anchors: tuple[VowelAnchor, ...]
+    regularized_anchors: tuple[VowelAnchor, ...]
+    selected_indices: tuple[int, ...]
+
+    @property
+    def omitted_indices(self) -> tuple[int, ...]:
+        selected = frozenset(self.selected_indices)
+        return tuple(
+            index
+            for index in range(len(self.regularized_anchors))
+            if index not in selected
+        )
+
+
 class RubberBandStretcher:
     """Lazy CLI boundary for pitch-preserving local stretching."""
 
@@ -180,7 +197,11 @@ class RubberBandStretcher:
                 stderr = exc.stderr.strip() if exc.stderr else "unknown rubberband failure"
                 raise RuntimeError(f"rubberband stretch failed: {stderr}") from exc
             _, stretched = wavfile.read(output_path)
-        return _coerce_region_length(_to_mono_float32(stretched), target_frames)
+        return _enforce_target_length(
+            _to_mono_float32(stretched),
+            target_frames,
+            output_name="Rubber Band",
+        )
 
 
 class RubberBandTimeMapStretcher:
@@ -218,38 +239,74 @@ class RubberBandTimeMapStretcher:
             output_path = Path(temp_dir) / "output.wav"
             time_map_path = Path(temp_dir) / "time_map.txt"
             wavfile.write(input_path, sample_rate_hz, np.asarray(samples, dtype=np.float32))
-            time_map_path.write_text(
-                "".join(f"{source} {target}\n" for source, target in time_map),
-                encoding="utf-8",
-            )
             engine_args = ["--fine"] if self._engine == "r3" else []
             if self._smoothing:
                 engine_args.append("--smoothing")
-            try:
-                subprocess.run(
-                    [
-                        self._binary,
-                        "--quiet",
-                        "--duration",
-                        f"{target_frames / sample_rate_hz:.9f}",
-                        "--timemap",
-                        str(time_map_path),
-                        *engine_args,
-                        *self._extra_args,
-                        str(input_path),
-                        str(output_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
+            active_time_map = time_map
+            for attempt in range(_MAX_TIME_MAP_RENDER_ATTEMPTS):
+                time_map_path.write_text(
+                    "".join(
+                        f"{source} {target}\n"
+                        for source, target in active_time_map
+                    ),
+                    encoding="utf-8",
                 )
-            except FileNotFoundError as exc:
-                raise RuntimeError("rubberband binary is not installed") from exc
-            except subprocess.CalledProcessError as exc:
-                stderr = exc.stderr.strip() if exc.stderr else "unknown rubberband failure"
-                raise RuntimeError(f"rubberband time-map warp failed: {stderr}") from exc
-            _, stretched = wavfile.read(output_path)
-        return _coerce_region_length(_to_mono_float32(stretched), target_frames)
+                output_path.unlink(missing_ok=True)
+                try:
+                    subprocess.run(
+                        [
+                            self._binary,
+                            "--quiet",
+                            "--duration",
+                            f"{target_frames / sample_rate_hz:.9f}",
+                            "--timemap",
+                            str(time_map_path),
+                            *engine_args,
+                            *self._extra_args,
+                            str(input_path),
+                            str(output_path),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                except FileNotFoundError as exc:
+                    raise RuntimeError("rubberband binary is not installed") from exc
+                except subprocess.CalledProcessError as exc:
+                    stderr = exc.stderr.strip() if exc.stderr else "unknown rubberband failure"
+                    raise RuntimeError(f"rubberband time-map warp failed: {stderr}") from exc
+                _, stretched = wavfile.read(output_path)
+                stretched_mono = _to_mono_float32(stretched)
+                if abs(len(stretched_mono) - target_frames) <= 2:
+                    return _enforce_target_length(
+                        stretched_mono,
+                        target_frames,
+                        output_name="Rubber Band",
+                    )
+                if attempt + 1 < _MAX_TIME_MAP_RENDER_ATTEMPTS:
+                    if len(stretched_mono) == 0:
+                        continue
+                    endpoint_delta = target_frames - len(stretched_mono)
+                    source_endpoint, target_endpoint = active_time_map[-1]
+                    corrected_endpoint = target_endpoint + endpoint_delta
+                    if corrected_endpoint <= active_time_map[-2][1]:
+                        return _enforce_target_length(
+                            stretched_mono,
+                            target_frames,
+                            output_name="Rubber Band",
+                        )
+                    active_time_map = (
+                        *active_time_map[:-1],
+                        (source_endpoint, corrected_endpoint),
+                    )
+                    continue
+                return _enforce_target_length(
+                    stretched_mono,
+                    target_frames,
+                    output_name="Rubber Band",
+                )
+
+        raise RuntimeError("rubberband time-map duration fitting exhausted unexpectedly")
 
 
 def is_arpabet_vowel(phone: str) -> bool:
@@ -560,6 +617,43 @@ def regularize_anchor_targets(
     return regularized
 
 
+def regularize_gentle_sparse_anchors(
+    anchors: Sequence[VowelAnchor],
+    syllables: Sequence[SyllableTarget],
+    *,
+    sample_rate_hz: int,
+    source_frame_count: int,
+    target_frame_count: int,
+    min_stretch_ratio: float = 0.75,
+    max_stretch_ratio: float = 1.35,
+    minimum_target_stress: float = 0.8,
+    minimum_boundary_strength: int = 2,
+) -> GentleSparseAnchorSelection:
+    """Regularize all onsets, then retain only rhythmically salient anchors."""
+    regularized = regularize_anchor_targets(
+        anchors,
+        syllables,
+        sample_rate_hz=sample_rate_hz,
+        source_frame_count=source_frame_count,
+        target_frame_count=target_frame_count,
+        min_stretch_ratio=min_stretch_ratio,
+        max_stretch_ratio=max_stretch_ratio,
+    )
+    last_index = len(regularized) - 1
+    selected_indices = tuple(
+        index
+        for index, syllable in enumerate(syllables)
+        if index in {0, last_index}
+        or syllable.target_stress >= minimum_target_stress
+        or syllable.boundary_strength >= minimum_boundary_strength
+    )
+    return GentleSparseAnchorSelection(
+        anchors=tuple(regularized[index] for index in selected_indices),
+        regularized_anchors=regularized,
+        selected_indices=selected_indices,
+    )
+
+
 def continuous_pitch_preserving_warp(
     samples: np.ndarray,
     *,
@@ -606,7 +700,7 @@ def continuous_pitch_preserving_warp(
         sample_rate_hz,
         time_map,
     )
-    warped = _coerce_region_length(warped, target_frame_count)
+    warped = _enforce_target_length(warped, target_frame_count)
     diagnostics = tuple(
         StretchRegionDiagnostic(
             source_start_sample=source_start,
@@ -680,7 +774,7 @@ def piecewise_pitch_preserving_warp(
     ):
         source_region = mono[source_start : source_end + 1]
         target_length = (target_end - target_start) + 1
-        stretched = _coerce_region_length(stretcher(source_region, target_length, sample_rate_hz), target_length)
+        stretched = _enforce_target_length(stretcher(source_region, target_length, sample_rate_hz), target_length)
         if region_index > 0:
             rendered_regions[-1][-1] = _preserve_boundary_sample(
                 rendered_regions[-1][-1],
@@ -1277,17 +1371,24 @@ def _to_mono_float32(samples: np.ndarray) -> np.ndarray:
     return np.mean(float_samples, axis=1, dtype=np.float32)
 
 
-def _coerce_region_length(samples: np.ndarray, target_frames: int) -> np.ndarray:
+def _enforce_target_length(
+    samples: np.ndarray,
+    target_frames: int,
+    *,
+    output_name: str = "warp",
+) -> np.ndarray:
     region = np.asarray(samples, dtype=np.float32).reshape(-1)
-    if len(region) == target_frames:
-        return region
-    if len(region) == 0:
-        return np.zeros(target_frames, dtype=np.float32)
-    if len(region) == 1:
-        return np.full(target_frames, region[0], dtype=np.float32)
-    source_positions = np.linspace(0.0, 1.0, len(region), dtype=np.float32)
-    target_positions = np.linspace(0.0, 1.0, target_frames, dtype=np.float32)
-    return np.interp(target_positions, source_positions, region).astype(np.float32, copy=False)
+    length_difference = len(region) - target_frames
+    if abs(length_difference) > 2:
+        raise RuntimeError(
+            f"{output_name} output length {len(region)} differs from target length "
+            f"{target_frames} by {abs(length_difference)} frames"
+        )
+    if length_difference > 0:
+        return region[:target_frames]
+    if length_difference < 0:
+        return np.pad(region, (0, -length_difference), mode="constant")
+    return region
 
 
 def _validate_time_map(time_map: Sequence[tuple[int, int]]) -> None:
