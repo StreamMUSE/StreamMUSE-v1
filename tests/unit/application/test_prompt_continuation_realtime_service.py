@@ -5,6 +5,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from streammuse.application.services.prompt_continuation_realtime_service import (
     PromptContinuationRealtimeService,
 )
@@ -107,6 +109,54 @@ def _make_service() -> PromptContinuationRealtimeService:
     )
     service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
     return service
+
+
+def _stamp_single_input_event(*, input_snap_forward_fraction: float) -> MusicalEvent:
+    class _OneEventInput:
+        def read_events(self):
+            return iter([_note(60, 99)])
+
+        def close(self):
+            return None
+
+    service = PromptContinuationRealtimeService(
+        input_source=_OneEventInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        input_snap_forward_fraction=input_snap_forward_fraction,
+        now=lambda: 0.490,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._running = True
+
+    service._input_worker()
+
+    return service._event_q.get_nowait()
+
+
+def test_prompt_input_fraction_zero_keeps_floor_quantization() -> None:
+    assert _stamp_single_input_event(input_snap_forward_fraction=0.0).tick == 3
+
+
+def test_prompt_input_fraction_point_four_snaps_490ms_to_step_four() -> None:
+    assert _stamp_single_input_event(input_snap_forward_fraction=0.4).tick == 4
+
+
+def test_prompt_continuation_rejects_non_four_steps_per_beat() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"Prompt\+Continuation requires exactly 4 steps per beat; got 8",
+    ):
+        PromptContinuationRealtimeService(
+            input_source=_NoopInput(),
+            prompt_client=_FakePromptClient(),
+            output_sink=_RecordingOutput(),
+            tempo=Tempo(bpm=120.0, ticks_per_beat=8, beats_per_bar=4),
+            scheduler=PlaybackScheduler(),
+        )
 
 
 def test_prompt_count_in_emits_metronome_only_before_formal_timeline():

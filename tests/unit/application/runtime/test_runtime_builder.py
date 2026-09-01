@@ -250,6 +250,7 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     config = ApplicationConfig(
         continuation_mode="prompt_continuation",
         count_in_beats=4,
+        input_snap_forward_fraction=0.25,
         inference=InferenceConfig(
             prompt_length_ticks=64,
             generation_interval_ticks=4,
@@ -281,6 +282,33 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     assert service_cls.call_args.kwargs["prompt_length_ticks"] == 64
     assert service_cls.call_args.kwargs["generation_interval_ticks"] == 4
     assert service_cls.call_args.kwargs["count_in_beats"] == 4
+    assert service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.25
+
+
+@patch("streammuse.application.runtime.builder.RealTimeMusicService")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
+@patch("streammuse.application.runtime.builder.OutputSinkFactory")
+def test_builder_allows_eight_steps_per_beat_for_standard_runtime(
+    output_factory,
+    inference_factory,
+    input_factory,
+    service_cls,
+    tmp_path,
+) -> None:
+    config = ApplicationConfig(
+        tempo=TempoConfig(bpm=120.0, ticks_per_beat=8, beats_per_bar=4),
+        output=OutputConfig(type="console"),
+    )
+    output_factory.create.return_value = MagicMock()
+    inference_factory.create.return_value = MagicMock()
+    input_factory.create.return_value = MagicMock()
+    service_cls.return_value = MagicMock(running=False)
+
+    session = RuntimeSessionBuilder(config=config, log_dir=str(tmp_path)).build_cli()
+
+    assert session.service is service_cls.return_value
+    assert service_cls.call_args.kwargs["tempo"].ticks_per_beat == 8
 
 
 def test_runtime_session_cleanup_is_idempotent_and_closes_output_after_clear_error() -> None:

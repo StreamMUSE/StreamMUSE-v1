@@ -162,6 +162,7 @@ class RuntimeSessionBuilder:
                 prompt_length_ticks=self._prompt_length_ticks(default=32),
                 generation_interval_ticks=self.config.inference.generation_interval_ticks,
                 count_in_beats=self.config.count_in_beats,
+                input_snap_forward_fraction=self._input_snap_forward_fraction(),
             )
         else:
             inference_engine = InferenceEngineFactory.create(self.config)

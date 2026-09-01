@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from streammuse.application.services.input_timing import stamp_user_input_event
 from streammuse.domain.interfaces import InputSource, OutputSink
 from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
@@ -79,6 +80,7 @@ class PromptContinuationRealtimeService:
         prompt_length_ticks: int = 32,
         generation_interval_ticks: int = 4,
         count_in_beats: int = 0,
+        input_snap_forward_fraction: float = 0.0,
         protocol_poll_interval_s: float = 0.05,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -89,6 +91,11 @@ class PromptContinuationRealtimeService:
             raise ValueError("generation_interval_ticks must be > 0")
         if int(count_in_beats) < 0:
             raise ValueError("count_in_beats must be >= 0")
+        if tempo.ticks_per_beat != 4:
+            raise ValueError(
+                "Prompt+Continuation requires exactly 4 steps per beat; "
+                f"got {tempo.ticks_per_beat}"
+            )
         self._input = input_source
         self._client = prompt_client
         self._output = output_sink
@@ -98,6 +105,7 @@ class PromptContinuationRealtimeService:
         self._generation_interval_ticks = int(generation_interval_ticks)
         self._count_in_beats = int(count_in_beats)
         self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
+        self._input_snap_forward_fraction = float(input_snap_forward_fraction)
         self._protocol_poll_interval_s = float(protocol_poll_interval_s)
         self._now = now
         self._sleep = sleep
@@ -231,16 +239,11 @@ class PromptContinuationRealtimeService:
             if not self._running:
                 break
             elapsed = self._now() - start
-            tick = self._tempo.seconds_to_tick(elapsed)
-            stamped = MusicalEvent(
-                tick=tick,
-                pitch=ev.pitch,
-                event_type=ev.event_type,
-                velocity=ev.velocity,
-                channel=ev.channel,
-                program=ev.program,
-                is_placeholder=ev.is_placeholder,
-                source="user",
+            stamped = stamp_user_input_event(
+                ev,
+                elapsed_seconds=elapsed,
+                tempo=self._tempo,
+                snap_forward_fraction=self._input_snap_forward_fraction,
             )
             self._event_q.put(stamped)
 
