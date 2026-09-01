@@ -58,6 +58,13 @@ class _ControlAction:
     observed_until_tick: int
 
 
+@dataclass(frozen=True)
+class _PlayableBatch:
+    accompaniment: list[MusicalEvent]
+    status: dict[str, Any]
+    arrival_time_s: float | None = None
+
+
 class PromptContinuationRealtimeService:
     """Drive prompt-continuation endpoints from a realtime input source.
 
@@ -118,7 +125,7 @@ class PromptContinuationRealtimeService:
 
         self._event_q: queue.Queue[MusicalEvent] = queue.Queue()
         self._control_q: queue.Queue[_ControlAction] = queue.Queue()
-        self._playable_q: queue.Queue[tuple[list[MusicalEvent], dict[str, Any]]] = queue.Queue()
+        self._playable_q: queue.Queue[object] = queue.Queue()
 
         self._prompt_events: list[MusicalEvent] = []
         self._pending_append_events: list[MusicalEvent] = []
@@ -160,6 +167,11 @@ class PromptContinuationRealtimeService:
             "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES",
             "",
         ).lower() in {"1", "true", "yes", "on"}
+        self._system_trace_frames: dict[int, dict[str, Any]] = {}
+        system_trace_logger = getattr(output_sink, "log_system_trace", None)
+        self._system_trace_logger = (
+            system_trace_logger if callable(system_trace_logger) else None
+        )
 
     def _trace(self, kind: str, **payload: Any) -> None:
         if not self._trace_path:
@@ -329,6 +341,9 @@ class PromptContinuationRealtimeService:
                         )
                         if marker != self._last_playable_marker:
                             accompaniment, playable_status = self._client.playable()
+                            arrival_time_s = None
+                            if self._system_trace_logger is not None:
+                                arrival_time_s = float(self._now())
                             self._trace(
                                 "playable_fetch",
                                 accompaniment_event_count=len(accompaniment),
@@ -356,7 +371,13 @@ class PromptContinuationRealtimeService:
                                     "client_playable_representation"
                                 ),
                             )
-                            self._playable_q.put((accompaniment, playable_status))
+                            self._playable_q.put(
+                                _PlayableBatch(
+                                    accompaniment=list(accompaniment),
+                                    status=dict(playable_status),
+                                    arrival_time_s=arrival_time_s,
+                                )
+                            )
                             self._last_playable_marker = marker
                             self._output.output_status("ready", "Prompt-continuation accompaniment is playable")
                 except Exception as exc:
@@ -411,17 +432,32 @@ class PromptContinuationRealtimeService:
         self._pending_append_events = []
         self._last_append_observed_tick = observed_until_tick
 
-    def _schedule_playable(self, accompaniment: list[MusicalEvent], *, current_tick: int) -> None:
+    def _schedule_playable(
+        self,
+        accompaniment: list[MusicalEvent],
+        *,
+        current_tick: int,
+        arrival_time_s: float | None = None,
+    ) -> None:
         if self._scheduling_mode == "paired_future_only":
-            self._schedule_playable_paired_future_only(accompaniment, current_tick=int(current_tick))
+            self._schedule_playable_paired_future_only(
+                accompaniment,
+                current_tick=int(current_tick),
+                arrival_time_s=arrival_time_s,
+            )
             return
-        self._schedule_playable_streaming_events(accompaniment, current_tick=int(current_tick))
+        self._schedule_playable_streaming_events(
+            accompaniment,
+            current_tick=int(current_tick),
+            arrival_time_s=arrival_time_s,
+        )
 
     def _schedule_playable_paired_future_only(
         self,
         accompaniment: list[MusicalEvent],
         *,
         current_tick: int,
+        arrival_time_s: float | None = None,
     ) -> None:
         input_tick_stats = self._event_tick_stats(accompaniment, current_tick=int(current_tick))
         scheduled = 0
@@ -430,6 +466,20 @@ class PromptContinuationRealtimeService:
         skipped_duplicate = 0
         clipped_sustains = 0
         skipped_unpaired = 0
+
+        if self._system_trace_logger is not None:
+            for event in accompaniment:
+                if (event.is_placeholder or event.pitch == -1) and int(event.tick) >= int(
+                    current_tick
+                ):
+                    self._record_system_trace_event(
+                        self._to_model_event(event, current_tick=int(current_tick)),
+                        scheduled_tick=int(event.tick),
+                        logical_tick=int(event.tick),
+                        arrival_time_s=arrival_time_s,
+                        action="scheduled",
+                        policy="future_placeholder",
+                    )
 
         events_to_schedule, dropped_past, clipped_sustains = self._clip_playable_to_current_tick(
             accompaniment,
@@ -449,6 +499,14 @@ class PromptContinuationRealtimeService:
             for event in (note_on, note_off):
                 model_event = self._to_model_event(event, current_tick=int(current_tick))
                 self._scheduler.schedule(model_event, int(event.tick))
+                self._record_system_trace_event(
+                    model_event,
+                    scheduled_tick=int(event.tick),
+                    logical_tick=int(event.tick),
+                    arrival_time_s=arrival_time_s,
+                    action="scheduled",
+                    policy="paired_future_only",
+                )
                 self._mark_event_scheduled(event)
                 scheduled += 1
             self._ensure_count(self._scheduled_model_note_counts, note_key, occurrence)
@@ -480,6 +538,7 @@ class PromptContinuationRealtimeService:
         accompaniment: list[MusicalEvent],
         *,
         current_tick: int,
+        arrival_time_s: float | None = None,
     ) -> None:
         """Schedule playable history as a streaming event log."""
         current_tick = int(current_tick)
@@ -496,6 +555,15 @@ class PromptContinuationRealtimeService:
         for event in accompaniment:
             if event.is_placeholder or event.pitch == -1:
                 placeholder_count += 1
+                if self._system_trace_logger is not None and int(event.tick) >= current_tick:
+                    self._record_system_trace_event(
+                        self._to_model_event(event, current_tick=current_tick),
+                        scheduled_tick=int(event.tick),
+                        logical_tick=int(event.tick),
+                        arrival_time_s=arrival_time_s,
+                        action="scheduled",
+                        policy="future_placeholder",
+                    )
                 continue
             usable_events.append(event)
 
@@ -548,6 +616,14 @@ class PromptContinuationRealtimeService:
 
             model_event = self._to_model_event(event, current_tick=current_tick)
             self._scheduler.schedule(model_event, schedule_tick)
+            self._record_system_trace_event(
+                model_event,
+                scheduled_tick=schedule_tick,
+                logical_tick=event_tick,
+                arrival_time_s=arrival_time_s,
+                action="scheduled",
+                policy="recovered_late_event" if schedule_tick != event_tick else "future_event",
+            )
             self._ensure_count(self._handled_model_event_counts, event_key, occurrence)
             self._ensure_count(self._played_model_event_counts, event_key, occurrence)
             scheduled += 1
@@ -590,6 +666,132 @@ class PromptContinuationRealtimeService:
         key = self._event_key(event)
         self._handled_model_event_counts[key] += 1
         self._played_model_event_counts[key] += 1
+
+    @staticmethod
+    def _is_model_note_on(event: MusicalEvent) -> bool:
+        return (
+            event.source == "model"
+            and not event.is_placeholder
+            and int(event.pitch) != -1
+            and event.event_type == EventType.NOTE_ON
+            and int(event.velocity) > 0
+        )
+
+    @staticmethod
+    def _is_explicit_rest(event: MusicalEvent) -> bool:
+        return event.source == "model" and (event.is_placeholder or int(event.pitch) == -1)
+
+    def _record_system_trace_event(
+        self,
+        event: MusicalEvent,
+        *,
+        scheduled_tick: int,
+        logical_tick: int,
+        arrival_time_s: float | None,
+        action: str,
+        policy: str,
+    ) -> None:
+        if self._system_trace_logger is None:
+            return
+        if not self._is_model_note_on(event) and not self._is_explicit_rest(event):
+            return
+
+        frame = self._system_trace_frames.setdefault(
+            int(scheduled_tick),
+            {
+                "emitted_model_note_on_count": 0,
+                "explicit_rest": False,
+                "note_provenance": None,
+                "rest_provenance": None,
+            },
+        )
+        provenance: dict[str, Any] = {
+            "arrival_time_s": arrival_time_s,
+            "logical_tick": int(logical_tick),
+            "scheduled_tick": int(scheduled_tick),
+            "generation_start_tick": None,
+            "request_id": None,
+            "action": str(action),
+            "policy": str(policy),
+        }
+        if self._is_model_note_on(event):
+            frame["emitted_model_note_on_count"] = int(frame["emitted_model_note_on_count"]) + 1
+            if frame["note_provenance"] is None:
+                frame["note_provenance"] = provenance
+            return
+
+        frame["explicit_rest"] = True
+        if frame["rest_provenance"] is None:
+            frame["rest_provenance"] = provenance
+
+    def _emit_system_trace_frame(
+        self,
+        *,
+        tick: int,
+        nominal_tick_time_s: float,
+        deadline_time_s: float,
+        model_events: list[MusicalEvent],
+    ) -> None:
+        logger = self._system_trace_logger
+        if logger is None:
+            return
+        frame = self._system_trace_frames.pop(
+            int(tick),
+            {
+                "emitted_model_note_on_count": 0,
+                "explicit_rest": False,
+                "note_provenance": None,
+                "rest_provenance": None,
+            },
+        )
+        emitted_model_note_on_count = sum(
+            1 for event in model_events if self._is_model_note_on(event)
+        )
+        explicit_rest = bool(frame["explicit_rest"]) or any(
+            self._is_explicit_rest(event) for event in model_events
+        )
+        if emitted_model_note_on_count > 0:
+            decision = "note"
+            provenance = frame["note_provenance"]
+        elif explicit_rest:
+            decision = "rest"
+            provenance = frame["rest_provenance"]
+        else:
+            decision = "missing"
+            provenance = None
+
+        if not isinstance(provenance, dict):
+            provenance = {}
+        arrival_time_s = provenance.get("arrival_time_s")
+        row: dict[str, Any] = {
+            "schema_version": 1,
+            "mode": "realtime",
+            "condition": "prompt_continuation",
+            "clock_domain": "service_now",
+            "tick": int(tick),
+            "nominal_tick_time_s": float(nominal_tick_time_s),
+            "deadline_time_s": float(deadline_time_s),
+            "decision": decision,
+            "arrived_by_deadline": bool(
+                arrival_time_s is not None and float(arrival_time_s) <= float(deadline_time_s)
+            ),
+            "arrival_time_s": (
+                float(arrival_time_s) if arrival_time_s is not None else None
+            ),
+            "logical_tick": provenance.get("logical_tick"),
+            "scheduled_tick": provenance.get("scheduled_tick"),
+            "generation_start_tick": provenance.get("generation_start_tick"),
+            "request_id": provenance.get("request_id"),
+            "action": provenance.get("action"),
+            "policy": provenance.get("policy"),
+            "emitted_model_note_on_count": int(emitted_model_note_on_count),
+            "explicit_rest": bool(explicit_rest),
+            "observed_emit_time_s": float(self._now()),
+        }
+        try:
+            logger(row)
+        except Exception:
+            return
 
     def _to_model_event(self, event: MusicalEvent, *, current_tick: int) -> MusicalEvent:
         return MusicalEvent(
@@ -882,6 +1084,19 @@ class PromptContinuationRealtimeService:
         skipped_unpaired += sum(len(pitch_events) for pitch_events in active.values())
         return pairs, skipped_unpaired
 
+    @staticmethod
+    def _normalize_playable_item(item: object) -> _PlayableBatch:
+        if isinstance(item, _PlayableBatch):
+            return item
+        if isinstance(item, tuple) and len(item) == 2:
+            accompaniment, status = item
+            return _PlayableBatch(
+                accompaniment=list(accompaniment),
+                status=dict(status),
+                arrival_time_s=None,
+            )
+        raise TypeError(f"Unsupported playable item: {type(item).__name__}")
+
     def _tick_loop(self, *, max_ticks: int | None) -> None:
         assert self._runtime is not None
         self._run_count_in()
@@ -893,6 +1108,7 @@ class PromptContinuationRealtimeService:
                 break
 
             target_time = start + self._tempo.tick_to_seconds(tick)
+            deadline_time = target_time + self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO
             delay = target_time - self._now()
             if delay > 0:
                 self._sleep(delay)
@@ -908,14 +1124,25 @@ class PromptContinuationRealtimeService:
 
             while True:
                 try:
-                    accompaniment, _status = self._playable_q.get_nowait()
+                    playable = self._normalize_playable_item(self._playable_q.get_nowait())
                 except queue.Empty:
                     break
-                self._schedule_playable(accompaniment, current_tick=tick)
+                self._schedule_playable(
+                    playable.accompaniment,
+                    current_tick=tick,
+                    arrival_time_s=playable.arrival_time_s,
+                )
 
             self._output_metronome_tick(tick=tick, bar=mt.bar, beat=mt.beat)
-            for event in self._scheduler.get_events_at_tick(tick):
+            model_events_to_play = self._scheduler.get_events_at_tick(tick)
+            for event in model_events_to_play:
                 self._output.output_event(event, source=event.source)
+            self._emit_system_trace_frame(
+                tick=tick,
+                nominal_tick_time_s=target_time,
+                deadline_time_s=deadline_time,
+                model_events=model_events_to_play,
+            )
 
             tick += 1
 

@@ -42,6 +42,7 @@ class SessionLoggerOutputSink:
             close_active_notes_on_finalize
         )
         self._schedule_trace_path = self.session_dir / "model_schedule_trace.jsonl"
+        self._system_trace_path = self.session_dir / "system_trace.jsonl"
         self._theoretical_midi_path = self.session_dir / "theoretical_model.mid"
         self._theoretical_summary_path = self.session_dir / "theoretical_model_summary.json"
         self._lifecycle_path = self.session_dir / "request_lifecycle.jsonl"
@@ -146,6 +147,12 @@ class SessionLoggerOutputSink:
         with self._schedule_trace_path.open("a", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, sort_keys=True) + "\n")
+
+    def log_system_trace(self, row: Dict[str, Any]) -> None:
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self._artifact_lock:
+            with self._system_trace_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(dict(row), sort_keys=True) + "\n")
 
     def log_request_lifecycle(self, row: Dict[str, Any]) -> None:
         if self.json_sink:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import queue
 import threading
@@ -11,7 +12,10 @@ import pytest
 
 from streammuse.application.config import ApplicationConfig, InputConfig
 from streammuse.application.factories import InputSourceFactory
-from streammuse.application.services.real_time_music_service import RealTimeMusicService
+from streammuse.application.services.real_time_music_service import (
+    InferenceResponse,
+    RealTimeMusicService,
+)
 from streammuse.domain.interfaces.timing_info import TimingInfo
 from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import PlaybackScheduler, Tempo
@@ -36,6 +40,10 @@ def _make_service() -> RealTimeMusicService:
         now=lambda: 0.0,
         sleep=lambda _: None,
     )
+
+
+def test_standard_realtime_default_now_is_time_time() -> None:
+    assert inspect.signature(RealTimeMusicService).parameters["now"].default is time.time
 
 
 def test_metronome_tick_is_emitted_in_playback_phase_before_music_events():
@@ -517,6 +525,206 @@ def _model_event(
         program=program,
         source="model",
     )
+
+
+def _placeholder(tick: int) -> MusicalEvent:
+    return MusicalEvent(
+        tick=tick,
+        pitch=-1,
+        event_type=EventType.NOTE_ON,
+        is_placeholder=True,
+        source="model",
+    )
+
+
+def test_standard_system_trace_records_note_rest_missing_and_provenance() -> None:
+    class _TraceOutput(NoopOutput):
+        def __init__(self) -> None:
+            self.events = []
+            self.system_trace_rows = []
+
+        def output_event(self, event, source):
+            self.events.append((source, event))
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 100.0,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=100.0, timeline_start_time=100.0)
+    service._running = True
+    service._inference_response_queue.put(
+        InferenceResponse(
+            request_id="req-1",
+            accompaniment_events=[
+                _model_event(48, 0, EventType.NOTE_ON),
+                _placeholder(1),
+            ],
+            generation_start_tick=0,
+            arrival_time_s=100.01,
+        )
+    )
+
+    service._tick_loop(max_ticks=3)
+
+    assert [(source, event.pitch, event.event_type) for source, event in output.events] == [
+        ("model", 48, EventType.NOTE_ON),
+        ("model", -1, EventType.NOTE_ON),
+    ]
+    rows = output.system_trace_rows
+    assert [row["tick"] for row in rows] == [0, 1, 2]
+
+    note_row = rows[0]
+    assert note_row["schema_version"] == 1
+    assert note_row["mode"] == "realtime"
+    assert note_row["condition"] == "standard"
+    assert note_row["clock_domain"] == "service_now"
+    assert note_row["nominal_tick_time_s"] == pytest.approx(100.0)
+    assert note_row["deadline_time_s"] == pytest.approx(100.0125)
+    assert note_row["arrival_time_s"] > note_row["nominal_tick_time_s"]
+    assert note_row["arrived_by_deadline"] is True
+    assert note_row["decision"] == "note"
+    assert note_row["logical_tick"] == 0
+    assert note_row["scheduled_tick"] == 0
+    assert note_row["generation_start_tick"] == 0
+    assert note_row["request_id"] == "req-1"
+    assert note_row["action"] == "scheduled"
+    assert note_row["policy"] == "future_open_note"
+    assert note_row["emitted_model_note_on_count"] == 1
+    assert note_row["explicit_rest"] is False
+
+    rest_row = rows[1]
+    assert rest_row["decision"] == "rest"
+    assert rest_row["arrived_by_deadline"] is True
+    assert rest_row["arrival_time_s"] == pytest.approx(100.01)
+    assert rest_row["logical_tick"] == 1
+    assert rest_row["scheduled_tick"] == 1
+    assert rest_row["generation_start_tick"] == 0
+    assert rest_row["request_id"] == "req-1"
+    assert rest_row["policy"] == "future_placeholder"
+    assert rest_row["emitted_model_note_on_count"] == 0
+    assert rest_row["explicit_rest"] is True
+
+    missing_row = rows[2]
+    assert missing_row["decision"] == "missing"
+    assert missing_row["arrived_by_deadline"] is False
+    assert missing_row["arrival_time_s"] is None
+    assert missing_row["logical_tick"] is None
+    assert missing_row["scheduled_tick"] is None
+    assert missing_row["generation_start_tick"] is None
+    assert missing_row["request_id"] is None
+    assert missing_row["action"] is None
+    assert missing_row["policy"] is None
+    assert missing_row["emitted_model_note_on_count"] == 0
+    assert missing_row["explicit_rest"] is False
+
+
+def test_standard_system_trace_is_inert_without_callable_logger() -> None:
+    now_calls = 0
+
+    def counting_now() -> float:
+        nonlocal now_calls
+        now_calls += 1
+        return 0.0
+
+    class _RecordingOutput(NoopOutput):
+        def __init__(self) -> None:
+            self.events = []
+
+        def output_event(self, event, source):
+            self.events.append((source, event.pitch, event.event_type))
+
+    output = _RecordingOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=counting_now,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._running = True
+    service._inference_response_queue.put(
+        InferenceResponse(
+            request_id="req-no-trace",
+            accompaniment_events=[_model_event(48, 0, EventType.NOTE_ON)],
+            generation_start_tick=0,
+            arrival_time_s=0.0,
+        )
+    )
+
+    assert service._process_inference_responses(current_tick=0) == 1
+    assert service._system_trace_frames == {}
+
+    service._tick_loop(max_ticks=1)
+
+    assert now_calls == 2
+    assert output.events == [("model", 48, EventType.NOTE_ON)]
+
+
+def test_standard_pop_future_replacement_clears_stale_system_trace_hit() -> None:
+    class _TraceOutput(NoopOutput):
+        def __init__(self) -> None:
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    service._inference_response_queue.put(
+        InferenceResponse(
+            request_id="req-stale",
+            accompaniment_events=[_model_event(48, 4, EventType.NOTE_ON)],
+            generation_start_tick=4,
+            arrival_time_s=0.01,
+        )
+    )
+    assert service._process_inference_responses(current_tick=0) == 1
+    assert 4 in service._system_trace_frames
+
+    service._inference_response_queue.put(
+        InferenceResponse(
+            request_id="req-replacement",
+            accompaniment_events=[],
+            generation_start_tick=4,
+            arrival_time_s=0.02,
+        )
+    )
+    assert service._process_inference_responses(current_tick=0) == 1
+    model_events = service._scheduler.get_events_at_tick(4)
+    assert model_events == []
+
+    service._emit_system_trace_frame(
+        tick=4,
+        nominal_tick_time_s=0.5,
+        deadline_time_s=0.5125,
+        model_events=model_events,
+    )
+
+    row = output.system_trace_rows[-1]
+    assert row["tick"] == 4
+    assert row["decision"] == "missing"
+    assert row["emitted_model_note_on_count"] == 0
+    assert row["explicit_rest"] is False
 
 
 def test_plan_model_events_partial_note_clamps_onset_and_keeps_note_off() -> None:

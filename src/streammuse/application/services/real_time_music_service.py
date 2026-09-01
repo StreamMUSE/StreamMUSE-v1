@@ -54,6 +54,7 @@ class InferenceResponse:
     accompaniment_events: List[MusicalEvent]
     generation_start_tick: int
     response_metadata: dict[str, object] = field(default_factory=dict)
+    arrival_time_s: float | None = None
 
     def __iter__(self):
         """Keep legacy two-value unpacking used by tests and local tools."""
@@ -187,6 +188,11 @@ class RealTimeMusicService:
         self._inference_request_queue: queue.Queue[object] = queue.Queue()
         self._inference_response_queue: queue.Queue[object] = queue.Queue()
         self._active_model_note_keys: set[EventKey] = set()
+        self._system_trace_frames: dict[int, dict[str, object]] = {}
+        system_trace_logger = getattr(output_sink, "log_system_trace", None)
+        self._system_trace_logger = (
+            system_trace_logger if callable(system_trace_logger) else None
+        )
 
         self._lifecycle_session_id = f"rt-{uuid.uuid4().hex}"
         self._request_counter = 0
@@ -1152,6 +1158,140 @@ class RealTimeMusicService:
             return
         self._output.log_model_schedule(rows)  # type: ignore[union-attr]
 
+    @staticmethod
+    def _is_model_note_on(event: MusicalEvent) -> bool:
+        return (
+            event.source == "model"
+            and not event.is_placeholder
+            and int(event.pitch) != -1
+            and event.event_type == EventType.NOTE_ON
+            and int(event.velocity) > 0
+        )
+
+    @staticmethod
+    def _is_explicit_rest(event: MusicalEvent) -> bool:
+        return event.source == "model" and (event.is_placeholder or int(event.pitch) == -1)
+
+    def _clear_system_trace_frames_from_tick(self, from_tick: int) -> None:
+        if self._system_trace_logger is None:
+            return
+        for tick in [tick for tick in self._system_trace_frames if tick >= int(from_tick)]:
+            self._system_trace_frames.pop(tick, None)
+
+    def _record_system_trace_scheduled_event(
+        self,
+        scheduled: ScheduledModelEvent,
+        *,
+        request_id: str | None,
+        generation_start_tick: int | None,
+        arrival_time_s: float | None,
+        action: str,
+    ) -> None:
+        if self._system_trace_logger is None:
+            return
+        event = scheduled.event
+        if not self._is_model_note_on(event) and not self._is_explicit_rest(event):
+            return
+
+        frame = self._system_trace_frames.setdefault(
+            int(scheduled.scheduled_tick),
+            {
+                "emitted_model_note_on_count": 0,
+                "explicit_rest": False,
+                "note_provenance": None,
+                "rest_provenance": None,
+            },
+        )
+        provenance = {
+            "arrival_time_s": arrival_time_s,
+            "logical_tick": int(scheduled.logical_tick),
+            "scheduled_tick": int(scheduled.scheduled_tick),
+            "generation_start_tick": (
+                int(generation_start_tick) if generation_start_tick is not None else None
+            ),
+            "request_id": request_id,
+            "action": str(action),
+            "policy": str(scheduled.policy),
+        }
+        if self._is_model_note_on(event):
+            frame["emitted_model_note_on_count"] = int(frame["emitted_model_note_on_count"]) + 1
+            if frame["note_provenance"] is None:
+                frame["note_provenance"] = provenance
+            return
+
+        frame["explicit_rest"] = True
+        if frame["rest_provenance"] is None:
+            frame["rest_provenance"] = provenance
+
+    def _emit_system_trace_frame(
+        self,
+        *,
+        tick: int,
+        nominal_tick_time_s: float,
+        deadline_time_s: float,
+        model_events: list[MusicalEvent],
+    ) -> None:
+        logger = self._system_trace_logger
+        if logger is None:
+            return
+        frame = self._system_trace_frames.pop(
+            int(tick),
+            {
+                "emitted_model_note_on_count": 0,
+                "explicit_rest": False,
+                "note_provenance": None,
+                "rest_provenance": None,
+            },
+        )
+        emitted_model_note_on_count = sum(
+            1 for event in model_events if self._is_model_note_on(event)
+        )
+        explicit_rest = bool(frame["explicit_rest"]) or any(
+            self._is_explicit_rest(event) for event in model_events
+        )
+        if emitted_model_note_on_count > 0:
+            decision = "note"
+            provenance = frame["note_provenance"]
+        elif explicit_rest:
+            decision = "rest"
+            provenance = frame["rest_provenance"]
+        else:
+            decision = "missing"
+            provenance = None
+
+        if not isinstance(provenance, dict):
+            provenance = {}
+        arrival_time_s = provenance.get("arrival_time_s")
+        row: dict[str, object] = {
+            "schema_version": 1,
+            "mode": "realtime",
+            "condition": "standard",
+            "clock_domain": "service_now",
+            "tick": int(tick),
+            "nominal_tick_time_s": float(nominal_tick_time_s),
+            "deadline_time_s": float(deadline_time_s),
+            "decision": decision,
+            "arrived_by_deadline": bool(
+                arrival_time_s is not None and float(arrival_time_s) <= float(deadline_time_s)
+            ),
+            "arrival_time_s": (
+                float(arrival_time_s) if arrival_time_s is not None else None
+            ),
+            "logical_tick": provenance.get("logical_tick"),
+            "scheduled_tick": provenance.get("scheduled_tick"),
+            "generation_start_tick": provenance.get("generation_start_tick"),
+            "request_id": provenance.get("request_id"),
+            "action": provenance.get("action"),
+            "policy": provenance.get("policy"),
+            "emitted_model_note_on_count": int(emitted_model_note_on_count),
+            "explicit_rest": bool(explicit_rest),
+            "observed_emit_time_s": float(self._now()),
+        }
+        try:
+            logger(row)
+        except Exception:
+            return
+
     def _observe_model_output_event(self, event: MusicalEvent) -> None:
         if event.is_placeholder or event.pitch == -1:
             return
@@ -1273,6 +1413,7 @@ class RealTimeMusicService:
                     from_tick=generation_start_tick,
                     source="model",
                 )
+                self._clear_system_trace_frames_from_tick(generation_start_tick)
 
                 plan = self._plan_model_events_for_playback(
                     acc_events,
@@ -1320,6 +1461,13 @@ class RealTimeMusicService:
                 self._record_operational_plan(plan)
 
                 for scheduled in forced_events + plan.scheduled_events:
+                    self._record_system_trace_scheduled_event(
+                        scheduled,
+                        request_id=response.request_id,
+                        generation_start_tick=generation_start_tick,
+                        arrival_time_s=response.arrival_time_s,
+                        action="scheduled",
+                    )
                     self._scheduler.schedule(scheduled.event, scheduled.scheduled_tick)
 
                 if (
@@ -1401,6 +1549,7 @@ class RealTimeMusicService:
 
             # 1. Absolute time sync: sleep until this tick's wall-clock boundary.
             target_time = start + self._tempo.tick_to_seconds(tick)
+            deadline_time = target_time + self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO
             self._sleep_until(target_time)
 
             # 2. Emit tick info.
@@ -1452,11 +1601,21 @@ class RealTimeMusicService:
             self._output_metronome_tick(tick=tick, bar=mt.bar, beat=mt.beat)
             for ev in user_events_to_play:
                 self._output.output_event(ev, source="user")
-            for ev in sorted(self._scheduler.get_events_at_tick(tick), key=self._event_order_key):
+            model_events_to_play = sorted(
+                self._scheduler.get_events_at_tick(tick),
+                key=self._event_order_key,
+            )
+            for ev in model_events_to_play:
                 if ev.source == "model":
                     self._output_model_event(ev)
                 else:
                     self._output.output_event(ev, source=ev.source)
+            self._emit_system_trace_frame(
+                tick=tick,
+                nominal_tick_time_s=target_time,
+                deadline_time_s=deadline_time,
+                model_events=model_events_to_play,
+            )
 
             # 8. Beat tail (tick 4n-1, n≥1): always send for next beat, even if no new events.
             ticks_per_beat = self._tempo.ticks_per_beat
@@ -1657,6 +1816,7 @@ class RealTimeMusicService:
                                 accompaniment_events=list(acc_events),
                                 generation_start_tick=request.generation_start_tick,
                                 response_metadata=response_metadata,
+                                arrival_time_s=response_receive_time,
                             )
                         )
 

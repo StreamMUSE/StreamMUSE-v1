@@ -556,6 +556,99 @@ def test_composite_output_sink_fans_out_model_schedule_trace(tmp_path):
     assert json.loads((tmp_path / "model_schedule_trace.jsonl").read_text().splitlines()[0])["pitch"] == 60
 
 
+def test_session_logger_writes_system_trace_jsonl(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+
+    sink.log_system_trace(
+        {
+            "schema_version": 1,
+            "mode": "realtime",
+            "condition": "standard",
+            "clock_domain": "service_now",
+            "tick": 4,
+            "nominal_tick_time_s": 1.0,
+            "deadline_time_s": 1.0125,
+            "decision": "note",
+            "arrived_by_deadline": True,
+            "arrival_time_s": 1.01,
+            "logical_tick": 4,
+            "scheduled_tick": 4,
+            "generation_start_tick": 4,
+            "request_id": "req-1",
+            "action": "scheduled",
+            "policy": "future_note",
+            "emitted_model_note_on_count": 1,
+            "explicit_rest": False,
+        }
+    )
+    sink.close()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "system_trace.jsonl").read_text().splitlines()
+    ]
+    assert rows == [
+        {
+            "schema_version": 1,
+            "mode": "realtime",
+            "condition": "standard",
+            "clock_domain": "service_now",
+            "tick": 4,
+            "nominal_tick_time_s": 1.0,
+            "deadline_time_s": 1.0125,
+            "decision": "note",
+            "arrived_by_deadline": True,
+            "arrival_time_s": 1.01,
+            "logical_tick": 4,
+            "scheduled_tick": 4,
+            "generation_start_tick": 4,
+            "request_id": "req-1",
+            "action": "scheduled",
+            "policy": "future_note",
+            "emitted_model_note_on_count": 1,
+            "explicit_rest": False,
+        }
+    ]
+
+
+def test_composite_output_sink_fans_out_system_trace_and_skips_plain_sinks(tmp_path):
+    class PlainSink:
+        def output_event(self, event, source):
+            _ = event, source
+
+        def output_tick(self, tick, bar, beat):
+            _ = tick, bar, beat
+
+        def output_stats(self, **kwargs):
+            _ = kwargs
+
+        def output_status(self, state, message=""):
+            _ = state, message
+
+        def output_config(self, config):
+            _ = config
+
+        def close(self):
+            return None
+
+    session_sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+    composite = CompositeOutputSink([PlainSink(), session_sink])
+
+    composite.log_system_trace({"tick": 2, "decision": "missing"})
+    composite.close()
+
+    row = json.loads((tmp_path / "system_trace.jsonl").read_text())
+    assert row == {"decision": "missing", "tick": 2}
+
+
 def test_composite_output_sink_fans_out_lifecycle_and_validity(tmp_path):
     session_sink = SessionLoggerOutputSink(
         session_dir=tmp_path,

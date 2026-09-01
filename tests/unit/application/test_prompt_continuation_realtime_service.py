@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import queue
 import threading
 import time
@@ -9,6 +10,8 @@ import pytest
 
 from streammuse.application.services.prompt_continuation_realtime_service import (
     PromptContinuationRealtimeService,
+    _ControlAction,
+    _PlayableBatch,
 )
 from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import PlaybackScheduler, Tempo
@@ -90,6 +93,16 @@ def _note_off(pitch: int, tick: int) -> MusicalEvent:
     return MusicalEvent(tick=tick, pitch=pitch, event_type=EventType.NOTE_OFF, velocity=0)
 
 
+def _placeholder(tick: int) -> MusicalEvent:
+    return MusicalEvent(
+        tick=tick,
+        pitch=-1,
+        event_type=EventType.NOTE_ON,
+        is_placeholder=True,
+        source="model",
+    )
+
+
 def _event_signature(events):
     return [(event.pitch, event.event_type) for event in events]
 
@@ -109,6 +122,13 @@ def _make_service() -> PromptContinuationRealtimeService:
     )
     service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
     return service
+
+
+def test_prompt_continuation_default_now_is_time_time() -> None:
+    assert (
+        inspect.signature(PromptContinuationRealtimeService).parameters["now"].default
+        is time.time
+    )
 
 
 def _stamp_single_input_event(*, input_snap_forward_fraction: float) -> MusicalEvent:
@@ -205,6 +225,164 @@ def test_prompt_count_in_starts_formal_timeline_at_tick_zero():
 
     assert output.ticks == [(0, 0, 0)]
     assert output.metronome_ticks[-1] == (0, 0, 0)
+
+
+def test_prompt_continuation_system_trace_records_note_rest_missing() -> None:
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 50.0,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=50.0, timeline_start_time=50.0)
+    service._running = True
+    service._playable_q.put(
+        _PlayableBatch(
+            accompaniment=[_note(55, 0), _placeholder(1)],
+            status={"phase": "ready"},
+            arrival_time_s=50.02,
+        )
+    )
+
+    service._tick_loop(max_ticks=3)
+
+    assert [(source, event.pitch) for event, source in output.events] == [("model", 55)]
+    rows = output.system_trace_rows
+    assert [row["tick"] for row in rows] == [0, 1, 2]
+
+    note_row = rows[0]
+    assert note_row["schema_version"] == 1
+    assert note_row["mode"] == "realtime"
+    assert note_row["condition"] == "prompt_continuation"
+    assert note_row["clock_domain"] == "service_now"
+    assert note_row["nominal_tick_time_s"] == pytest.approx(50.0)
+    assert note_row["deadline_time_s"] == pytest.approx(50.0125)
+    assert note_row["arrival_time_s"] > note_row["deadline_time_s"]
+    assert note_row["arrived_by_deadline"] is False
+    assert note_row["decision"] == "note"
+    assert note_row["logical_tick"] == 0
+    assert note_row["scheduled_tick"] == 0
+    assert note_row["generation_start_tick"] is None
+    assert note_row["request_id"] is None
+    assert note_row["action"] == "scheduled"
+    assert note_row["policy"] == "future_event"
+    assert note_row["emitted_model_note_on_count"] == 1
+    assert note_row["explicit_rest"] is False
+
+    rest_row = rows[1]
+    assert rest_row["decision"] == "rest"
+    assert rest_row["arrival_time_s"] == pytest.approx(50.02)
+    assert rest_row["arrived_by_deadline"] is True
+    assert rest_row["logical_tick"] == 1
+    assert rest_row["scheduled_tick"] == 1
+    assert rest_row["action"] == "scheduled"
+    assert rest_row["policy"] == "future_placeholder"
+    assert rest_row["emitted_model_note_on_count"] == 0
+    assert rest_row["explicit_rest"] is True
+
+    missing_row = rows[2]
+    assert missing_row["decision"] == "missing"
+    assert missing_row["arrived_by_deadline"] is False
+    assert missing_row["arrival_time_s"] is None
+    assert missing_row["logical_tick"] is None
+    assert missing_row["scheduled_tick"] is None
+    assert missing_row["generation_start_tick"] is None
+    assert missing_row["request_id"] is None
+    assert missing_row["action"] is None
+    assert missing_row["policy"] is None
+    assert missing_row["emitted_model_note_on_count"] == 0
+    assert missing_row["explicit_rest"] is False
+
+
+def test_prompt_continuation_system_trace_is_inert_without_callable_logger(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE", raising=False)
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_TRACE_PATH", raising=False)
+    now_calls = 0
+
+    def counting_now() -> float:
+        nonlocal now_calls
+        now_calls += 1
+        return 0.0
+
+    output = _RecordingOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=counting_now,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._running = True
+
+    service._schedule_playable([_note(55, 0)], current_tick=0, arrival_time_s=0.01)
+    assert service._system_trace_frames == {}
+
+    service._tick_loop(max_ticks=1)
+
+    assert now_calls == 1
+    assert [(source, event.pitch) for event, source in output.events] == [("model", 55)]
+
+
+def test_prompt_continuation_cumulative_duplicates_keep_first_trace_provenance(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE", raising=False)
+
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._running = True
+    cumulative = [_note(55, 0), _placeholder(1)]
+    service._playable_q.put(
+        _PlayableBatch(cumulative, {"phase": "ready"}, arrival_time_s=0.01)
+    )
+    service._playable_q.put(
+        _PlayableBatch(cumulative, {"phase": "ready"}, arrival_time_s=0.02)
+    )
+
+    service._tick_loop(max_ticks=2)
+
+    assert [(source, event.pitch) for event, source in output.events] == [("model", 55)]
+    rows = {row["tick"]: row for row in output.system_trace_rows}
+    assert rows[0]["decision"] == "note"
+    assert rows[0]["arrival_time_s"] == pytest.approx(0.01)
+    assert rows[0]["emitted_model_note_on_count"] == 1
+    assert rows[1]["decision"] == "rest"
+    assert rows[1]["arrival_time_s"] == pytest.approx(0.01)
+    assert rows[1]["emitted_model_note_on_count"] == 0
 
 
 def test_prompt_count_in_input_waits_and_stamps_first_event_at_tick_zero():
@@ -443,6 +621,48 @@ def test_prompt_continuation_schedule_playable_paired_mode_is_selectable(monkeyp
     assert service._scheduler.get_events_at_tick(52) == []
     assert _event_signature(service._scheduler.get_events_at_tick(53)) == [(60, EventType.NOTE_ON)]
     assert _event_signature(service._scheduler.get_events_at_tick(56)) == [(60, EventType.NOTE_OFF)]
+
+
+def test_prompt_continuation_paired_mode_traces_future_placeholder_without_playing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE", "paired_future_only")
+
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._running = True
+
+    service._schedule_playable([_placeholder(1)], current_tick=0, arrival_time_s=0.01)
+    assert service._scheduler.get_events_at_tick(1) == []
+    assert 1 in service._system_trace_frames
+
+    service._tick_loop(max_ticks=2)
+
+    assert output.events == []
+    row = output.system_trace_rows[1]
+    assert row["tick"] == 1
+    assert row["decision"] == "rest"
+    assert row["arrival_time_s"] == pytest.approx(0.01)
+    assert row["policy"] == "future_placeholder"
+    assert row["emitted_model_note_on_count"] == 0
+    assert row["explicit_rest"] is True
 
 
 def test_prompt_continuation_schedule_playable_paired_mode_clips_sustaining_notes(monkeypatch):
@@ -708,6 +928,57 @@ def test_protocol_worker_fetches_playable_after_rest_append():
     assert not worker.is_alive()
     assert client.status_calls >= 1
     assert client.playable_calls == 1
+
+
+def test_protocol_worker_playable_fetch_without_system_logger_skips_trace_clock_read(
+    monkeypatch,
+):
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_TRACE_PATH", raising=False)
+    now_calls = 0
+
+    def counting_now() -> float:
+        nonlocal now_calls
+        now_calls += 1
+        return 0.0
+
+    class _StoppingPromptClient(_FakePromptClient):
+        def __init__(self):
+            super().__init__()
+            self.stop = lambda: None
+
+        def playable(self):
+            response = super().playable()
+            self.stop()
+            return response
+
+    client = _StoppingPromptClient()
+    client.playable_responses = [[_note(55, 36)]]
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=client,
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        protocol_poll_interval_s=0.01,
+        now=counting_now,
+        sleep=lambda _: None,
+    )
+    client.stop = lambda: setattr(service, "_running", False)
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._running = True
+    service._control_q.put(
+        _ControlAction(kind="start", melody_events=[_note(60, 0)], observed_until_tick=32)
+    )
+    service._control_q.put(
+        _ControlAction(kind="append", melody_events=[], observed_until_tick=36)
+    )
+
+    service._protocol_worker()
+
+    playable = service._normalize_playable_item(service._playable_q.get_nowait())
+    assert client.playable_calls == 1
+    assert playable.arrival_time_s is None
+    assert now_calls == 1
 
 
 def test_protocol_worker_fetches_playable_more_than_once_after_append():
