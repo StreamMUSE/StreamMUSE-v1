@@ -34,3 +34,23 @@ The generated directory contains the complete ordered test list and hash,
 Each piece includes the untouched `source.npz`, `melody_120bpm.mid`, and
 `gt_120bpm.mid`. The MIDI files are derived directly from the piano roll at
 fixed 120 BPM with explicit `Melody` and `Accompaniment` track names.
+
+## Leading-rest-trimmed matched inputs
+
+Prepare the MIDI-file system cohort in a separate directory before running the
+matched evaluator:
+
+```bash
+python scripts/trim_matched_eval_inputs.py \
+  --cohort-manifest output/metrics/beat_test_cohort_v1/cohort_manifest.json \
+  --output-dir output/metrics/beat_test_cohort_v1_trimmed
+```
+
+Use the derived `cohort_manifest.json` with `run_matched_system_eval.py`. The
+Melody and GT MIDI receive the same Melody-derived cutoff. GT notes ending
+before the cutoff are removed, while notes crossing it are rehydrated at tick
+0. `trim_audit.csv` records all shifts and hashes.
+
+Only MIDI artifacts are shifted. `source_npz` remains an original, unshifted
+reference, so the offline NPZ control has a different time origin unless the
+same cutoff is applied separately.
