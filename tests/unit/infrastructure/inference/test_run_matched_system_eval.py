@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
 import sys
@@ -61,6 +62,80 @@ def test_load_cohort_manifest_resolves_paths_and_checks_hash(
     assert pieces[0].piece_id == "piece-01"
     assert pieces[0].midi_path == midi.resolve()
     assert pieces[0].melody_input_sha256 == script.file_sha256(midi)
+
+
+def test_load_cohort_manifest_accepts_builder_samples_schema(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    sample_dir = tmp_path / "001"
+    sample_dir.mkdir()
+    midi = sample_dir / "melody_120bpm.mid"
+    midi.write_bytes(b"MThd-builder-sample")
+    byte_hash = script.file_sha256(midi)
+    canonical_hash = "c" * 64
+    manifest = tmp_path / "cohort_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_contract": "checkpoint-aligned legacy BEAT 192788 NPZ",
+                "split": {"split_seed": 42},
+                "selection": {"count": 1, "seed": 0},
+                "samples": [
+                    {
+                        "order": 1,
+                        "piece_id": "001",
+                        "selection_rank": 1,
+                        "test_position": 12,
+                        "source_npz": "001/source.npz",
+                        "melody_midi": "001/melody_120bpm.mid",
+                        "gt_midi": "001/gt_120bpm.mid",
+                        "num_measures": 32,
+                        "num_steps": 512,
+                        "melody_note_count": 80,
+                        "accompaniment_note_count": 160,
+                        "source_npz_sha256": "a" * 64,
+                        "melody_midi_sha256": byte_hash,
+                        "gt_midi_sha256": "b" * 64,
+                        "canonical_melody_input_sha256": canonical_hash,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pieces = script.load_cohort_manifest(manifest)
+
+    assert len(pieces) == 1
+    assert pieces[0].midi_path == midi.resolve()
+    assert pieces[0].melody_input_sha256 == byte_hash
+    assert pieces[0].canonical_melody_input_sha256 == canonical_hash
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["samples"][0]["melody_midi_sha256"] = "d" * 64
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="MIDI hash mismatch"):
+        script.load_cohort_manifest(manifest)
+
+
+def test_default_seed_contract_is_three_trials(matched_runner) -> None:
+    script = matched_runner
+    args = script.parse_args(
+        [
+            "--cohort-manifest",
+            "cohort.json",
+            "--output-root",
+            "output",
+            "--prompt-checkpoint",
+            "prompt.safetensors",
+            "--continuation-checkpoint",
+            "continuation.safetensors",
+        ]
+    )
+
+    assert args.seeds == "0,1,2"
 
 
 def test_server_environments_freeze_mode_specific_contracts(
@@ -222,6 +297,105 @@ def test_validate_session_requires_contiguous_schema_v2_deadlines(
         )
 
 
+def test_eval_manifest_csv_matches_toolkit_contract(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    output_root = tmp_path / "portable_results"
+    complete_a = output_root / "trials" / "a"
+    complete_b = output_root / "trials" / "b"
+    complete_a.mkdir(parents=True)
+    complete_b.mkdir(parents=True)
+    melody_hash = "e" * 64
+    systems = script.SYSTEM_IDS
+    trials = [
+        {
+            "piece_id": "piece-01",
+            "seed": 0,
+            "system_id": systems[0],
+            "session_dir": str(complete_a.resolve()),
+            "run_status": "complete",
+            "melody_input_sha256": melody_hash,
+            "failure_reason": "must be blanked for complete rows",
+        },
+        {
+            "piece_id": "piece-01",
+            "seed": 0,
+            "system_id": systems[1],
+            "session_dir": None,
+            "run_status": "failed",
+            "melody_input_sha256": melody_hash,
+            "failure_reason": "model failure",
+        },
+        {
+            "piece_id": "piece-01",
+            "seed": 1,
+            "system_id": systems[0],
+            "session_dir": None,
+            "run_status": "failed",
+            "melody_input_sha256": melody_hash,
+            "failure_reason": "timeout",
+        },
+        {
+            "piece_id": "piece-01",
+            "seed": 1,
+            "system_id": systems[1],
+            "session_dir": str(complete_b.resolve()),
+            "run_status": "complete",
+            "melody_input_sha256": melody_hash,
+            "failure_reason": None,
+        },
+    ]
+    manifest_path = output_root / "eval_manifest.csv"
+
+    script.write_eval_manifest(manifest_path, trials)
+
+    with manifest_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        assert tuple(reader.fieldnames or ()) == script.EVAL_MANIFEST_FIELDS
+    assert len(rows) == 4
+    assert {row["run_status"] for row in rows} == {"complete", "failed"}
+    assert all(
+        row["failure_reason"] == ""
+        for row in rows
+        if row["run_status"] == "complete"
+    )
+    assert all(
+        row["failure_reason"]
+        for row in rows
+        if row["run_status"] == "failed"
+    )
+    assert all(
+        not Path(row["session_dir"]).is_absolute()
+        for row in rows
+        if row["session_dir"]
+    )
+    assert not (output_root / ".eval_manifest.csv.tmp").exists()
+
+    evaluator = (
+        Path(__file__).resolve().parents[4].parent
+        / "eval-matched-system-v2"
+        / "src"
+        / "eval_toolkit"
+        / "system_trace_v2.py"
+    )
+    if evaluator.is_file():
+        module_name = "_streammuse_test_eval_system_trace_v2"
+        spec = importlib.util.spec_from_file_location(module_name, evaluator)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+            parsed = module.load_manifest(
+                manifest_path, expected_piece_count=1, expected_seed_count=2
+            )
+        finally:
+            sys.modules.pop(module_name, None)
+        assert len(parsed) == 4
+
+
 def test_dry_run_builds_matched_piece_seed_system_matrix(
     matched_runner, tmp_path: Path
 ) -> None:
@@ -280,3 +454,10 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
         assert command[command.index("--ticks-per-beat") + 1] == "4"
         assert command[command.index("--run-stop-tick") + 1] == "128"
     assert (output / "run_manifest.json").is_file()
+    with (output / "eval_manifest.csv").open(
+        "r", encoding="utf-8", newline=""
+    ) as handle:
+        eval_rows = list(csv.DictReader(handle))
+    assert len(eval_rows) == 4
+    assert {row["run_status"] for row in eval_rows} == {"missing"}
+    assert all(row["failure_reason"] == "dry_run_not_executed" for row in eval_rows)

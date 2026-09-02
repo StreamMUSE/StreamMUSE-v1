@@ -8,6 +8,7 @@ It does not run offline inference or compute music/system metrics.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import math
@@ -46,6 +47,16 @@ SAMPLING = {
     "repetition_penalty": 1.0,
 }
 PROMPT_CANDIDATES = 5
+EVAL_MANIFEST_FIELDS = (
+    "piece_id",
+    "seed",
+    "system_id",
+    "session_dir",
+    "run_status",
+    "melody_input_sha256",
+    "failure_reason",
+)
+SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,7 @@ class CohortPiece:
     piece_id: str
     midi_path: Path
     melody_input_sha256: str
+    canonical_melody_input_sha256: str | None = None
 
 
 @dataclass
@@ -73,7 +85,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--prompt-checkpoint", type=Path, required=True)
     parser.add_argument("--continuation-checkpoint", type=Path, required=True)
-    parser.add_argument("--seeds", default="0,1")
+    parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument(
         "--systems",
         default=",".join(SYSTEM_IDS),
@@ -111,6 +123,70 @@ def write_json(path: Path, payload: Any) -> None:
     temporary.replace(path)
 
 
+def _eval_run_status(record: Mapping[str, Any]) -> str:
+    status = str(record.get("run_status", "pending"))
+    if status == "complete":
+        return "complete"
+    if status == "failed":
+        return "failed"
+    return "missing"
+
+
+def _relative_session_dir(record: Mapping[str, Any], manifest_path: Path) -> str:
+    value = record.get("session_dir")
+    if not value:
+        return ""
+    session_path = Path(str(value)).expanduser()
+    if not session_path.is_absolute():
+        session_path = manifest_path.parent / session_path
+    return Path(
+        os.path.relpath(session_path.resolve(), manifest_path.parent.resolve())
+    ).as_posix()
+
+
+def write_eval_manifest(path: Path, trials: Sequence[Mapping[str, Any]]) -> None:
+    """Atomically write the evaluator's exact seven-column trial manifest."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(EVAL_MANIFEST_FIELDS))
+        writer.writeheader()
+        for trial in trials:
+            status = _eval_run_status(trial)
+            session_dir = _relative_session_dir(trial, path)
+            if status == "complete" and not session_dir:
+                raise ValueError("complete eval rows require session_dir")
+            if status == "complete":
+                failure_reason = ""
+            else:
+                failure_reason = str(trial.get("failure_reason") or "").strip()
+                if not failure_reason:
+                    source_status = str(trial.get("run_status", "pending"))
+                    failure_reason = {
+                        "pending": "not_run_yet",
+                        "running": "trial_in_progress",
+                        "dry_run": "dry_run_not_executed",
+                    }.get(source_status, "trial_not_available")
+            writer.writerow(
+                {
+                    "piece_id": trial["piece_id"],
+                    "seed": trial["seed"],
+                    "system_id": trial["system_id"],
+                    "session_dir": session_dir,
+                    "run_status": status,
+                    "melody_input_sha256": trial["melody_input_sha256"],
+                    "failure_reason": failure_reason,
+                }
+            )
+    temporary.replace(path)
+
+
+def persist_run_manifests(output_root: Path, manifest: Mapping[str, Any]) -> None:
+    write_json(output_root / "run_manifest.json", manifest)
+    write_eval_manifest(output_root / "eval_manifest.csv", manifest["trials"])
+
+
 def _parse_unique_ints(raw: str, label: str) -> list[int]:
     values = [int(value.strip()) for value in raw.split(",") if value.strip()]
     if not values or len(values) != len(set(values)):
@@ -128,26 +204,39 @@ def _parse_systems(raw: str) -> list[str]:
     return values
 
 
-def _read_manifest_rows(path: Path) -> list[Mapping[str, Any]]:
+def _read_manifest_rows(path: Path) -> tuple[list[Mapping[str, Any]], str]:
     if path.suffix.lower() == ".jsonl":
         rows = [
             json.loads(line)
             for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+        schema = "jsonl"
     else:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(payload, list):
             rows = payload
+            schema = "list"
         elif isinstance(payload, dict):
-            rows = payload.get("pieces", payload.get("entries"))
+            if isinstance(payload.get("samples"), list):
+                rows = payload["samples"]
+                schema = "samples"
+            elif isinstance(payload.get("pieces"), list):
+                rows = payload["pieces"]
+                schema = "pieces"
+            else:
+                rows = payload.get("entries")
+                schema = "entries"
         else:
             rows = None
+            schema = "unknown"
         if not isinstance(rows, list):
-            raise ValueError("cohort manifest must be a list or contain 'pieces'")
+            raise ValueError(
+                "cohort manifest must be a list or contain samples, pieces, or entries"
+            )
     if not all(isinstance(row, Mapping) for row in rows):
         raise ValueError("every cohort manifest row must be an object")
-    return rows
+    return rows, schema
 
 
 def load_cohort_manifest(path: Path, smoke_limit: int = 0) -> list[CohortPiece]:
@@ -156,7 +245,7 @@ def load_cohort_manifest(path: Path, smoke_limit: int = 0) -> list[CohortPiece]:
         raise FileNotFoundError(f"cohort manifest not found: {manifest_path}")
     if smoke_limit < 0:
         raise ValueError("--smoke-limit must be >= 0")
-    rows = _read_manifest_rows(manifest_path)
+    rows, manifest_schema = _read_manifest_rows(manifest_path)
     if smoke_limit:
         rows = rows[:smoke_limit]
     if not rows:
@@ -173,7 +262,9 @@ def load_cohort_manifest(path: Path, smoke_limit: int = 0) -> list[CohortPiece]:
         seen_ids.add(piece_id)
 
         artifact = row.get("midi_path", row.get("melody_midi"))
-        expected_hash = row.get("melody_input_sha256")
+        expected_hash = row.get(
+            "melody_midi_sha256", row.get("melody_input_sha256")
+        )
         if isinstance(artifact, Mapping):
             expected_hash = artifact.get("sha256", expected_hash)
             artifact = artifact.get("path")
@@ -185,6 +276,21 @@ def load_cohort_manifest(path: Path, smoke_limit: int = 0) -> list[CohortPiece]:
         midi_path = midi_path.resolve()
         if not midi_path.is_file():
             raise FileNotFoundError(f"MIDI input not found for {piece_id}: {midi_path}")
+        if manifest_schema == "samples" and row.get("melody_midi_sha256") is None:
+            raise ValueError(
+                f"cohort sample {piece_id} has no melody_midi_sha256"
+            )
+        if expected_hash is not None and not SHA256_PATTERN.fullmatch(
+            str(expected_hash)
+        ):
+            raise ValueError(f"invalid MIDI SHA-256 for {piece_id}: {expected_hash}")
+        canonical_hash = row.get("canonical_melody_input_sha256")
+        if canonical_hash is not None and not SHA256_PATTERN.fullmatch(
+            str(canonical_hash)
+        ):
+            raise ValueError(
+                f"invalid canonical melody SHA-256 for {piece_id}: {canonical_hash}"
+            )
         actual_hash = file_sha256(midi_path)
         if expected_hash is not None and str(expected_hash).lower() != actual_hash:
             raise ValueError(
@@ -196,6 +302,9 @@ def load_cohort_manifest(path: Path, smoke_limit: int = 0) -> list[CohortPiece]:
                 piece_id=piece_id,
                 midi_path=midi_path,
                 melody_input_sha256=actual_hash,
+                canonical_melody_input_sha256=(
+                    str(canonical_hash).lower() if canonical_hash is not None else None
+                ),
             )
         )
     return pieces
@@ -818,6 +927,7 @@ def _trial_record(
         "run_status": "pending",
         "melody_input_path": str(piece.midi_path),
         "melody_input_sha256": piece.melody_input_sha256,
+        "canonical_melody_input_sha256": piece.canonical_melody_input_sha256,
         "failure_reason": None,
         "trial_dir": str(trial_dir.resolve()),
         "requested_seeds": {
@@ -936,7 +1046,7 @@ def run_trial(
             {
                 "runtime_after_trial": runtime_after,
                 "session_validation": session_validation,
-                "run_status": "success",
+                "run_status": "complete",
                 "failure_reason": None,
             }
         )
@@ -990,7 +1100,27 @@ def _dry_run_trial(
     return record
 
 
-def _append_failed_system_trials(
+def _trial_key(record: Mapping[str, Any]) -> tuple[str, int, str]:
+    return (
+        str(record["piece_id"]),
+        int(record["seed"]),
+        str(record["system_id"]),
+    )
+
+
+def _replace_trial(manifest: dict[str, Any], record: Mapping[str, Any]) -> None:
+    key = _trial_key(record)
+    matches = [
+        index
+        for index, current in enumerate(manifest["trials"])
+        if _trial_key(current) == key
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"planned trial key occurs {len(matches)} times: {key}")
+    manifest["trials"][matches[0]] = dict(record)
+
+
+def _mark_failed_system_trials(
     *,
     manifest: dict[str, Any],
     output_root: Path,
@@ -1022,8 +1152,8 @@ def _append_failed_system_trials(
         record["run_status"] = "failed"
         record["failure_reason"] = reason
         write_json(trial_dir / "trial_manifest.json", record)
-        manifest["trials"].append(record)
-        write_json(output_root / "run_manifest.json", manifest)
+        _replace_trial(manifest, record)
+        persist_run_manifests(output_root, manifest)
 
 
 def _validate_matched_hashes(trials: Sequence[Mapping[str, Any]]) -> None:
@@ -1048,14 +1178,35 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
     output_root = args.output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     manifest_path = output_root / "run_manifest.json"
-    if manifest_path.exists():
-        raise FileExistsError(f"refusing to overwrite existing run: {manifest_path}")
+    eval_manifest_path = output_root / "eval_manifest.csv"
+    if manifest_path.exists() or eval_manifest_path.exists():
+        raise FileExistsError(f"refusing to overwrite existing run: {output_root}")
 
     prompt_checkpoint = checkpoint_identity(args.prompt_checkpoint, "prompt")
     continuation_checkpoint = checkpoint_identity(
         args.continuation_checkpoint, "continuation"
     )
     code = code_identity()
+    planned_trials = [
+        _trial_record(
+            piece=piece,
+            seed=seed,
+            system_id=system_id,
+            trial_dir=(
+                output_root
+                / "trials"
+                / system_id
+                / _safe_piece_name(piece.piece_id)
+                / f"seed_{seed}"
+            ),
+            code=code,
+            prompt_checkpoint=prompt_checkpoint,
+            continuation_checkpoint=continuation_checkpoint,
+        )
+        for system_id in systems
+        for piece in pieces
+        for seed in seeds
+    ]
     manifest: dict[str, Any] = {
         "schema_version": "streammuse.matched_system_eval.run_manifest.v1",
         "created_at_unix_s": time.time(),
@@ -1089,9 +1240,9 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             "prompt": prompt_checkpoint,
             "continuation": continuation_checkpoint,
         },
-        "trials": [],
+        "trials": planned_trials,
     }
-    write_json(manifest_path, manifest)
+    persist_run_manifests(output_root, manifest)
 
     for system_index, system_id in enumerate(systems):
         if args.dry_run:
@@ -1105,20 +1256,19 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         / _safe_piece_name(piece.piece_id)
                         / f"seed_{seed}"
                     )
-                    manifest["trials"].append(
-                        _dry_run_trial(
-                            system_id=system_id,
-                            piece=piece,
-                            seed=seed,
-                            trial_dir=trial_dir,
-                            python_bin=args.python_bin,
-                            base_url=base_url,
-                            code=code,
-                            prompt_checkpoint=prompt_checkpoint,
-                            continuation_checkpoint=continuation_checkpoint,
-                        )
+                    record = _dry_run_trial(
+                        system_id=system_id,
+                        piece=piece,
+                        seed=seed,
+                        trial_dir=trial_dir,
+                        python_bin=args.python_bin,
+                        base_url=base_url,
+                        code=code,
+                        prompt_checkpoint=prompt_checkpoint,
+                        continuation_checkpoint=continuation_checkpoint,
                     )
-                    write_json(manifest_path, manifest)
+                    _replace_trial(manifest, record)
+                    persist_run_manifests(output_root, manifest)
             continue
 
         handle: ServerHandle | None = None
@@ -1142,34 +1292,31 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         / _safe_piece_name(piece.piece_id)
                         / f"seed_{seed}"
                     )
-                    manifest["trials"].append(
-                        run_trial(
-                            handle=handle,
-                            piece=piece,
-                            seed=seed,
-                            trial_dir=trial_dir,
-                            python_bin=args.python_bin,
-                            timeout_s=args.trial_timeout_s,
-                            code=code,
-                            prompt_checkpoint=prompt_checkpoint,
-                            continuation_checkpoint=continuation_checkpoint,
-                        )
+                    record = run_trial(
+                        handle=handle,
+                        piece=piece,
+                        seed=seed,
+                        trial_dir=trial_dir,
+                        python_bin=args.python_bin,
+                        timeout_s=args.trial_timeout_s,
+                        code=code,
+                        prompt_checkpoint=prompt_checkpoint,
+                        continuation_checkpoint=continuation_checkpoint,
                     )
-                    write_json(manifest_path, manifest)
+                    _replace_trial(manifest, record)
+                    persist_run_manifests(output_root, manifest)
         except Exception as exc:
-            existing_keys = {
-                (str(row["piece_id"]), int(row["seed"]), str(row["system_id"]))
-                for row in manifest["trials"]
-            }
             pending_trials = [
                 (piece, seed)
                 for piece in pieces
                 for seed in seeds
-                if (
-                    (piece.piece_id, seed, system_id) not in existing_keys
+                if any(
+                    _trial_key(row) == (piece.piece_id, seed, system_id)
+                    and row["run_status"] == "pending"
+                    for row in manifest["trials"]
                 )
             ]
-            _append_failed_system_trials(
+            _mark_failed_system_trials(
                 manifest=manifest,
                 output_root=output_root,
                 system_id=system_id,
@@ -1187,7 +1334,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
     statuses = [str(trial["run_status"]) for trial in manifest["trials"]]
     if args.dry_run:
         manifest["run_status"] = "dry_run"
-    elif statuses and all(status == "success" for status in statuses):
+    elif statuses and all(status == "complete" for status in statuses):
         manifest["run_status"] = "success"
     else:
         manifest["run_status"] = "completed_with_failures"
@@ -1195,7 +1342,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
     manifest["summary"] = {
         status: statuses.count(status) for status in sorted(set(statuses))
     }
-    write_json(manifest_path, manifest)
+    persist_run_manifests(output_root, manifest)
     return manifest
 
 
