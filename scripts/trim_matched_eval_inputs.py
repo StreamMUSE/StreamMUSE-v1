@@ -18,6 +18,7 @@ from typing import Any
 import mido
 
 STEPS_PER_BEAT = 4
+MIDI_VELOCITY = 80
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 AUDIT_FIELDS = (
     "order",
@@ -78,14 +79,11 @@ def file_sha256(path: Path) -> str:
 
 
 def _canonical_sha256(value: Any) -> str:
-    payload = (
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
+    payload = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -180,7 +178,7 @@ def canonical_melody_sha256(
                 note.onset_tick // ticks_per_step,
                 note.offset_tick // ticks_per_step,
                 note.pitch,
-                note.velocity,
+                MIDI_VELOCITY,
             ]
         )
     return _canonical_sha256(

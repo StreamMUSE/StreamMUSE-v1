@@ -36,6 +36,7 @@ def _note_track(
     notes: list[tuple[int, int, int]],
     *,
     include_timing: bool,
+    velocity: int = 80,
 ) -> mido.MidiTrack:
     track = mido.MidiTrack()
     track.append(mido.MetaMessage("track_name", name=name, time=0))
@@ -54,7 +55,7 @@ def _note_track(
                 onset,
                 1,
                 mido.Message(
-                    "note_on", channel=0, note=pitch, velocity=80, time=0
+                    "note_on", channel=0, note=pitch, velocity=velocity, time=0
                 ),
             )
         )
@@ -81,9 +82,17 @@ def _write_midi(
     melody_notes: list[tuple[int, int, int]],
     accompaniment_notes: list[tuple[int, int, int]] | None = None,
     ticks_per_beat: int = 480,
+    melody_velocity: int = 80,
 ) -> None:
     midi = mido.MidiFile(type=1, ticks_per_beat=ticks_per_beat)
-    midi.tracks.append(_note_track("Melody", melody_notes, include_timing=True))
+    midi.tracks.append(
+        _note_track(
+            "Melody",
+            melody_notes,
+            include_timing=True,
+            velocity=melody_velocity,
+        )
+    )
     if accompaniment_notes is not None:
         midi.tracks.append(
             _note_track(
@@ -117,6 +126,27 @@ def _track_notes(path: Path, track_name: str) -> list[tuple[int, int, int]]:
     return sorted(notes)
 
 
+def _builder_canonical_hash(
+    notes: list[tuple[int, int, int]], *, ticks_per_beat: int = 480
+) -> str:
+    ticks_per_step = ticks_per_beat // 4
+    canonical_notes = [
+        [onset // ticks_per_step, offset // ticks_per_step, pitch, 80]
+        for onset, offset, pitch in sorted(notes, key=lambda note: (note[0], note[2], note[1]))
+    ]
+    payload = {
+        "bpm": 120,
+        "notes": canonical_notes,
+        "schema_version": 1,
+        "steps_per_beat": 4,
+        "track_name": "Melody",
+    }
+    serialized = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
 def _write_manifest(
     script: ModuleType,
     root: Path,
@@ -129,7 +159,7 @@ def _write_manifest(
     melody = root / "melody.mid"
     gt = root / "gt.mid"
     melody_notes = melody_notes or [(960, 1440, 60), (1920, 2400, 62)]
-    _write_midi(melody, melody_notes=melody_notes)
+    _write_midi(melody, melody_notes=melody_notes, melody_velocity=37)
     _write_midi(
         gt,
         melody_notes=melody_notes,
@@ -139,9 +169,8 @@ def _write_manifest(
             (1920, 2400, 52),
         ],
         ticks_per_beat=gt_ticks_per_beat,
+        melody_velocity=37,
     )
-    midi = mido.MidiFile(melody)
-    notes = script._extract_melody_notes(midi, str(melody))
     manifest = root / "cohort_manifest.json"
     manifest.write_text(
         json.dumps(
@@ -157,10 +186,8 @@ def _write_manifest(
                         "melody_midi_sha256": script.file_sha256(melody),
                         "gt_midi": gt.name,
                         "gt_midi_sha256": script.file_sha256(gt),
-                        "canonical_melody_input_sha256": (
-                            script.canonical_melody_sha256(
-                                notes, ticks_per_beat=midi.ticks_per_beat
-                            )
+                        "canonical_melody_input_sha256": _builder_canonical_hash(
+                            melody_notes
                         ),
                     }
                 ],
@@ -227,23 +254,17 @@ def test_prepare_trims_melody_and_gt_with_note_aware_cutoff(
     assert pieces[0].melody_input_sha256 == row["melody_midi_sha256"]
 
 
-def test_canonical_hash_uses_formal_newline_serialization(
+def test_canonical_hash_matches_builder_and_ignores_actual_midi_velocity(
     trim_script: ModuleType,
 ) -> None:
-    payload = {"notes": [[0, 4, 60, 80]], "track_name": "Melody"}
-    serialized = (
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode("utf-8")
+    notes = (
+        trim_script.MidiNote(0, 60, 480, 37, 0),
+        trim_script.MidiNote(480, 64, 960, 101, 0),
+    )
 
-    assert trim_script._canonical_sha256(payload) == hashlib.sha256(
-        serialized
-    ).hexdigest()
+    assert trim_script.canonical_melody_sha256(
+        notes, ticks_per_beat=480
+    ) == _builder_canonical_hash([(0, 480, 60), (480, 960, 64)])
 
 
 def test_zero_offset_midi_outputs_are_byte_preserving(
@@ -256,6 +277,7 @@ def test_zero_offset_midi_outputs_are_byte_preserving(
     )
     source = json.loads(manifest.read_text(encoding="utf-8"))["samples"][0]
     output = tmp_path / "zero-output"
+    output.mkdir()
 
     result = trim_script.prepare_trimmed_cohort(
         cohort_manifest=manifest, output_dir=output
