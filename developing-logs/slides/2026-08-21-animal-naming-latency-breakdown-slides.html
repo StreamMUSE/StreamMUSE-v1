@@ -1,0 +1,1292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Animal Naming 语音延迟分解</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #dfe5e8;
+      --paper: #ffffff;
+      --ink: #172126;
+      --muted: #5f6c72;
+      --line: #d3dce0;
+      --soft: #f3f6f7;
+      --teal: #087f8c;
+      --green: #3f8f57;
+      --gold: #c48516;
+      --red: #c84e4e;
+      --blue: #3d6fa6;
+      --violet: #795f9e;
+      --dark: #122126;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button { font: inherit; }
+
+    #deck {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 1600px;
+      height: 900px;
+      transform: translate(-50%, -50%) scale(var(--deck-scale, 1));
+      transform-origin: center;
+      background: var(--paper);
+      box-shadow: 0 24px 70px rgba(18, 33, 38, 0.18);
+    }
+
+    .slide {
+      display: none;
+      position: absolute;
+      inset: 0;
+      width: 1600px;
+      height: 900px;
+      padding: 58px 76px 62px;
+      overflow: hidden;
+      background: var(--paper);
+    }
+
+    .slide.active { display: block; }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 8px;
+      background: var(--teal);
+    }
+
+    .slide[data-accent="blue"]::before { background: var(--blue); }
+    .slide[data-accent="gold"]::before { background: var(--gold); }
+    .slide[data-accent="red"]::before { background: var(--red); }
+    .slide[data-accent="green"]::before { background: var(--green); }
+    .slide[data-accent="violet"]::before { background: var(--violet); }
+
+    h1,
+    h2,
+    h3,
+    p { margin-top: 0; }
+
+    h1 {
+      margin-bottom: 20px;
+      font-size: 76px;
+      line-height: 1.04;
+      font-weight: 820;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin-bottom: 22px;
+      font-size: 47px;
+      line-height: 1.1;
+      font-weight: 810;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin-bottom: 10px;
+      font-size: 24px;
+      line-height: 1.2;
+      font-weight: 780;
+      letter-spacing: 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--teal);
+      font-size: 16px;
+      line-height: 1;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 1180px;
+      color: var(--muted);
+      font-size: 27px;
+      line-height: 1.45;
+    }
+
+    .body {
+      font-size: 21px;
+      line-height: 1.48;
+    }
+
+    .muted { color: var(--muted); }
+    .teal { color: var(--teal); }
+    .blue { color: var(--blue); }
+    .gold { color: var(--gold); }
+    .red { color: var(--red); }
+    .green { color: var(--green); }
+    .violet { color: var(--violet); }
+    .strong { font-weight: 800; }
+    .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+
+    .footer {
+      position: absolute;
+      left: 76px;
+      right: 218px;
+      bottom: 23px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #77838a;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .footer .source {
+      max-width: 1280px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .counter {
+      flex: 0 0 64px;
+      margin-left: 20px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 750;
+    }
+
+    .progress {
+      position: fixed;
+      left: 0;
+      top: 0;
+      z-index: 30;
+      width: var(--progress, 5.26%);
+      height: 4px;
+      background: var(--teal);
+      transition: width 160ms ease;
+    }
+
+    .controls {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 40;
+      display: flex;
+      gap: 8px;
+    }
+
+    .controls button {
+      width: 44px;
+      height: 44px;
+      border: 1px solid #bac5ca;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.95);
+      color: var(--ink);
+      box-shadow: 0 5px 18px rgba(18, 33, 38, 0.12);
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: 760;
+    }
+
+    .controls button:hover,
+    .controls button:focus-visible {
+      border-color: var(--teal);
+      color: var(--teal);
+      outline: 2px solid rgba(8, 127, 140, 0.24);
+    }
+
+    .cover {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 68px;
+      align-items: center;
+      height: 100%;
+    }
+
+    .cover-meta {
+      margin-top: 34px;
+      padding-left: 20px;
+      border-left: 6px solid var(--teal);
+      color: var(--muted);
+      font-size: 21px;
+      line-height: 1.55;
+    }
+
+    .wave-panel {
+      position: relative;
+      height: 610px;
+      border-left: 1px solid var(--line);
+      padding-left: 56px;
+      display: grid;
+      align-content: center;
+      gap: 32px;
+    }
+
+    .wave {
+      height: 150px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+    }
+
+    .wave span {
+      display: block;
+      width: 11px;
+      height: var(--h);
+      min-height: 5px;
+      border-radius: 2px;
+      background: var(--teal);
+    }
+
+    .path-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .path-segment {
+      min-height: 92px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--soft);
+    }
+
+    .path-segment strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 22px;
+    }
+
+    .path-segment span {
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .scope-grid,
+    .two-col,
+    .three-col {
+      display: grid;
+      gap: 34px;
+    }
+
+    .scope-grid { grid-template-columns: 0.86fr 1.14fr; }
+    .two-col { grid-template-columns: 1fr 1fr; }
+    .three-col { grid-template-columns: repeat(3, 1fr); }
+
+    .rule-band {
+      padding: 25px 28px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: var(--soft);
+    }
+
+    .stat-line {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: baseline;
+      gap: 20px;
+      padding: 18px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .stat-line:last-child { border-bottom: 0; }
+
+    .stat-line .label {
+      color: var(--muted);
+      font-size: 20px;
+    }
+
+    .stat-line .value {
+      font-size: 34px;
+      font-weight: 820;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .percentile-row {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      margin-top: 24px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .percentile-cell {
+      padding: 20px 16px;
+      border-right: 1px solid var(--line);
+    }
+
+    .percentile-cell:last-child { border-right: 0; }
+
+    .percentile-cell strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 25px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .percentile-cell span {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .flow {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin: 24px 0 34px;
+    }
+
+    .flow-step {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      padding: 20px 20px 18px;
+      border: 1px solid var(--line);
+      border-right: 0;
+      background: var(--paper);
+    }
+
+    .flow-step:last-child { border-right: 1px solid var(--line); }
+
+    .flow-step::after {
+      content: "";
+      position: absolute;
+      z-index: 2;
+      right: -11px;
+      top: 50%;
+      width: 20px;
+      height: 20px;
+      border-top: 2px solid var(--muted);
+      border-right: 2px solid var(--muted);
+      background: var(--paper);
+      transform: translateY(-50%) rotate(45deg);
+    }
+
+    .flow-step:last-child::after { display: none; }
+
+    .flow-step .small {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 760;
+      text-transform: uppercase;
+    }
+
+    .flow-step strong {
+      display: block;
+      font-size: 20px;
+      line-height: 1.25;
+    }
+
+    .flow-step .ms {
+      display: block;
+      margin-top: 8px;
+      color: var(--teal);
+      font-size: 26px;
+      font-weight: 820;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chart-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .chart-title h3 { margin: 0; }
+
+    .legend {
+      display: flex;
+      gap: 20px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 20px;
+      height: 8px;
+      margin-right: 7px;
+      border-radius: 2px;
+      background: var(--teal);
+    }
+
+    .legend .p95::before {
+      height: 2px;
+      border-top: 2px dashed var(--red);
+      background: transparent;
+    }
+
+    .bar-chart {
+      border-top: 1px solid var(--line);
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 310px 1fr 108px;
+      gap: 18px;
+      align-items: center;
+      min-height: 59px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .bar-label {
+      font-size: 17px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .bar-track {
+      position: relative;
+      height: 20px;
+      background: #e9eef0;
+      border-radius: 3px;
+    }
+
+    .bar-p50 {
+      position: absolute;
+      left: 0;
+      top: 3px;
+      width: var(--p50);
+      height: 14px;
+      border-radius: 2px;
+      background: var(--teal);
+    }
+
+    .bar-p95 {
+      position: absolute;
+      left: var(--p95);
+      top: -5px;
+      width: 0;
+      height: 30px;
+      border-left: 3px solid var(--red);
+    }
+
+    .bar-value {
+      font-size: 16px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .stack {
+      display: flex;
+      width: 100%;
+      height: 74px;
+      margin: 22px 0 12px;
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+
+    .stack > div {
+      display: grid;
+      place-items: center;
+      min-width: 54px;
+      color: white;
+      font-size: 18px;
+      font-weight: 780;
+      text-align: center;
+      line-height: 1.18;
+    }
+
+    .stack .s1 { background: var(--blue); }
+    .stack .s2 { background: var(--teal); }
+    .stack .s3 { background: var(--gold); color: var(--dark); }
+    .stack .s4 { background: var(--red); }
+    .stack .s5 { background: var(--violet); }
+
+    .scale {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .callout {
+      padding: 22px 24px;
+      border-left: 6px solid var(--teal);
+      background: var(--soft);
+      font-size: 21px;
+      line-height: 1.46;
+    }
+
+    .callout.red-border { border-left-color: var(--red); }
+    .callout.gold-border { border-left-color: var(--gold); }
+    .callout.blue-border { border-left-color: var(--blue); }
+
+    .equation {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin: 24px 0;
+      font-size: 28px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .equation .operator { color: var(--muted); }
+
+    .timeline {
+      position: relative;
+      height: 220px;
+      margin: 34px 0 16px;
+      border-bottom: 2px solid var(--dark);
+    }
+
+    .timeline .mark {
+      position: absolute;
+      bottom: -8px;
+      width: 2px;
+      height: 44px;
+      background: var(--dark);
+    }
+
+    .timeline .mark::after {
+      content: "";
+      position: absolute;
+      left: -5px;
+      bottom: -5px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--dark);
+    }
+
+    .timeline .label {
+      position: absolute;
+      bottom: 48px;
+      width: 220px;
+      transform: translateX(-50%);
+      text-align: center;
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    .timeline .label strong {
+      display: block;
+      margin-top: 5px;
+      font-size: 25px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .timeline .phase {
+      position: absolute;
+      bottom: 7px;
+      height: 24px;
+      opacity: 0.9;
+    }
+
+    .metric-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 15px;
+      line-height: 1.18;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric-table th,
+    .metric-table td {
+      padding: 8px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      vertical-align: middle;
+    }
+
+    .metric-table th {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .metric-table th:first-child,
+    .metric-table td:first-child {
+      width: 47%;
+      text-align: left;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      overflow-wrap: anywhere;
+    }
+
+    .metric-table.compact { font-size: 13px; }
+    .metric-table.compact th,
+    .metric-table.compact td { padding: 6px 7px; }
+
+    .section-label {
+      margin: 18px 0 8px;
+      color: var(--teal);
+      font-size: 15px;
+      font-weight: 820;
+      text-transform: uppercase;
+    }
+
+    .finding-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .finding {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 20px;
+      align-items: start;
+      padding: 17px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .finding:last-child { border-bottom: 0; }
+
+    .finding .rank {
+      color: var(--teal);
+      font-size: 30px;
+      font-weight: 850;
+    }
+
+    .finding strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 21px;
+    }
+
+    .finding p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.4;
+    }
+
+    .caveat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0 42px;
+      border-top: 1px solid var(--line);
+    }
+
+    .caveat {
+      padding: 20px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .caveat strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 20px;
+    }
+
+    .caveat span {
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.38;
+    }
+
+    .next-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 26px;
+      margin-top: 34px;
+    }
+
+    .next-step {
+      min-height: 245px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper);
+    }
+
+    .next-step .num {
+      display: block;
+      margin-bottom: 18px;
+      color: var(--teal);
+      font-size: 42px;
+      line-height: 1;
+      font-weight: 850;
+    }
+
+    .next-step p {
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.42;
+    }
+
+    @media print {
+      html,
+      body {
+        width: auto;
+        height: auto;
+        overflow: visible;
+        background: white;
+      }
+
+      #deck {
+        position: static;
+        width: auto;
+        height: auto;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .slide {
+        display: block;
+        position: relative;
+        page-break-after: always;
+      }
+
+      .controls,
+      .progress { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main id="deck" aria-live="polite">
+    <div class="progress" aria-hidden="true"></div>
+
+    <section class="slide active" data-title="封面">
+      <div class="cover">
+        <div>
+          <p class="eyebrow">StreamMUSE · Interactive Voice</p>
+          <h1>Animal Naming<br>语音延迟分解</h1>
+          <p class="lead">从 Human 开麦、VAD、STT，到远端 LLM、TTS、DAC playback，再到下一轮重新开麦。</p>
+          <div class="cover-meta">
+            1 个真实 trace · 20 个 timed turns<br>
+            10 Human + 10 LLM · 0 skipped<br>
+            数据源：<span class="mono">interactive-2f3c10ae</span>
+          </div>
+        </div>
+        <div class="wave-panel" aria-label="语音交互路径示意">
+          <div class="wave" aria-hidden="true">
+            <span style="--h:18px"></span><span style="--h:30px"></span><span style="--h:55px"></span><span style="--h:92px"></span><span style="--h:126px"></span><span style="--h:78px"></span><span style="--h:42px"></span><span style="--h:104px"></span><span style="--h:136px"></span><span style="--h:88px"></span><span style="--h:38px"></span><span style="--h:66px"></span><span style="--h:118px"></span><span style="--h:72px"></span><span style="--h:26px"></span><span style="--h:48px"></span><span style="--h:84px"></span><span style="--h:40px"></span>
+          </div>
+          <div class="path-strip">
+            <div class="path-segment"><strong>Human</strong><span>Mic · VAD · STT</span></div>
+            <div class="path-segment"><strong>Reasoning</strong><span>Parser · Referee · LLM</span></div>
+            <div class="path-segment"><strong>Speech</strong><span>TTS · DAC · Guard</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">/private/tmp/streammuse-animal-latency-current/breakdown_summary.md</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="如何读表" data-accent="blue">
+      <p class="eyebrow">Reading the summary</p>
+      <h2>这份文件统计什么</h2>
+      <div class="scope-grid">
+        <div>
+          <div class="stat-line"><span class="label">Timed turns</span><span class="value blue">20</span></div>
+          <div class="stat-line"><span class="label">Human / LLM</span><span class="value">10 / 10</span></div>
+          <div class="stat-line"><span class="label">Skipped</span><span class="value green">0</span></div>
+          <div class="stat-line"><span class="label">Trace files</span><span class="value">1</span></div>
+        </div>
+        <div>
+          <div class="rule-band body">
+            它汇总 <span class="mono">response_trace.jsonl</span> 中每个 turn 的 monotonic-clock timing。有效和无效回答都会进入 latency 统计；它测量“多久”，不判断“识别得对不对”。
+          </div>
+          <div class="percentile-row">
+            <div class="percentile-cell"><strong>n</strong><span>样本数</span></div>
+            <div class="percentile-cell"><strong>mean</strong><span>平均值</span></div>
+            <div class="percentile-cell"><strong>p50</strong><span>中位数</span></div>
+            <div class="percentile-cell"><strong>p90</strong><span>90% 以下</span></div>
+            <div class="percentile-cell"><strong>p95</strong><span>95% 以下</span></div>
+            <div class="percentile-cell"><strong>max</strong><span>最大值</span></div>
+          </div>
+          <div class="callout red-border" style="margin-top:24px">
+            每种 actor 只有 10 个样本。p90/p95/p99 使用线性插值，p95 与 p99 还不是稳定的正式 benchmark。
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">统计单位统一为 ms；JSON companion 还包含 min 与 stdev</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="测量路径">
+      <p class="eyebrow">Measurement model</p>
+      <h2>一次完整对话经过哪些锚点</h2>
+      <div class="flow">
+        <div class="flow-step"><span class="small">Input</span><strong>打开麦克风</strong><span class="ms">Mic</span></div>
+        <div class="flow-step"><span class="small">VAD</span><strong>首帧到末帧语音</strong><span class="ms">Voice</span></div>
+        <div class="flow-step"><span class="small">Endpoint</span><strong>尾部静音确认</strong><span class="ms">VAD end</span></div>
+        <div class="flow-step"><span class="small">Recognition</span><strong>faster-whisper</strong><span class="ms">ASR</span></div>
+        <div class="flow-step"><span class="small">Decision</span><strong>Parser + Referee</strong><span class="ms">Game</span></div>
+      </div>
+      <div class="flow">
+        <div class="flow-step"><span class="small">Inference</span><strong>远端 LLM 请求</strong><span class="ms">Text</span></div>
+        <div class="flow-step"><span class="small">Synthesis</span><strong>文本合成 WAV</strong><span class="ms">TTS</span></div>
+        <div class="flow-step"><span class="small">Playback</span><strong>首个 DAC sample</strong><span class="ms">DAC</span></div>
+        <div class="flow-step"><span class="small">Drain</span><strong>音频播放完成</strong><span class="ms">Audio end</span></div>
+        <div class="flow-step"><span class="small">Protection</span><strong>Guard 后重新开麦</strong><span class="ms">Next turn</span></div>
+      </div>
+      <div class="two-col">
+        <div class="callout blue-border"><strong>Turn-local metrics</strong><br>描述一个 Human 或 LLM turn 内部的阶段，例如 STT pipeline、HTTP、TTS 和 validation。</div>
+        <div class="callout gold-border"><strong>Conversation metrics</strong><br>跨越相邻 turn，把 Human 最后语音一直追踪到 LLM 文本、DAC、播放完成和下一轮 mic callback。</div>
+      </div>
+      <div class="footer"><span class="source">所有锚点使用 monotonic clock；新增埋点不改变 deadline 或游戏判定</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="Human 整轮" data-accent="blue">
+      <p class="eyebrow">Human turn</p>
+      <h2>Human 整轮的 p50 约为 2.11 秒</h2>
+      <div class="stack" aria-label="Human 回合 p50 阶段分解">
+        <div class="s1" style="width:42.3%">等待开口<br>895</div>
+        <div class="s2" style="width:29.9%">实际说话<br>633</div>
+        <div class="s3" style="width:14.8%">尾部静音<br>313</div>
+        <div class="s5" style="width:4.8%">关闭整理<br>约 100</div>
+        <div class="s4" style="width:8.2%">ASR<br>175</div>
+      </div>
+      <div class="scale"><span>0 ms</span><span>约 2,116 ms</span></div>
+      <div class="bar-chart" style="margin-top:30px">
+        <div class="bar-row"><div class="bar-label">等待开口</div><div class="bar-track"><span class="bar-p50" style="--p50:52.6%"></span><span class="bar-p95" style="--p95:94.8%"></span></div><div class="bar-value">895 / 1612</div></div>
+        <div class="bar-row"><div class="bar-label">实际发言区间</div><div class="bar-track"><span class="bar-p50" style="--p50:37.3%"></span><span class="bar-p95" style="--p95:46.7%"></span></div><div class="bar-value">633 / 794</div></div>
+        <div class="bar-row"><div class="bar-label">VAD endpoint delay</div><div class="bar-track"><span class="bar-p50" style="--p50:18.4%"></span><span class="bar-p95" style="--p95:18.6%"></span></div><div class="bar-value">313 / 316</div></div>
+        <div class="bar-row"><div class="bar-label">完整 response source</div><div class="bar-track"><span class="bar-p50" style="--p50:71.9%"></span><span class="bar-p95" style="--p95:100%"></span></div><div class="bar-value">2113 / 2940</div></div>
+      </div>
+      <div class="callout" style="margin-top:24px">等待开口包含麦克风启动和 Human reaction time，因此 <span class="mono">turn.response_source_ms</span> 不是纯系统延迟。</div>
+      <div class="footer"><span class="source">图中数值为 p50 / p95，完整 response source 使用独立 2940 ms scale</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="语音转文字" data-accent="green">
+      <p class="eyebrow">Speech-to-text turn</p>
+      <h2>语音转文字：说完到 ASR text 的 p50 为 592 ms</h2>
+      <div class="two-col">
+        <div>
+          <div class="chart-title"><h3>关键指标</h3><div class="legend"><span>p50</span><span class="p95">p95</span></div></div>
+          <div class="bar-chart">
+            <div class="bar-row"><div class="bar-label">Last voice → VAD endpoint</div><div class="bar-track"><span class="bar-p50" style="--p50:47.8%"></span><span class="bar-p95" style="--p95:48.2%"></span></div><div class="bar-value">313 / 316</div></div>
+            <div class="bar-row"><div class="bar-label">Last voice → ASR text</div><div class="bar-track"><span class="bar-p50" style="--p50:91.0%"></span><span class="bar-p95" style="--p95:100%"></span></div><div class="bar-value">592 / 653</div></div>
+            <div class="bar-row"><div class="bar-label">Last voice → decision</div><div class="bar-track"><span class="bar-p50" style="--p50:90.5%"></span><span class="bar-p95" style="--p95:100%"></span></div><div class="bar-value">593 / 655</div></div>
+          </div>
+        </div>
+        <div>
+          <div class="rule-band body">
+            <strong>为什么不是 175 ms？</strong><br><br>
+            说完后还要等待约 313 ms trailing silence，然后执行 resample、关闭 PortAudio stream，再运行约 175 ms ASR。
+          </div>
+          <div class="equation">
+            <span class="gold">313</span><span class="operator">+</span><span class="violet">约 104</span><span class="operator">+</span><span class="red">175</span><span class="operator">≈</span><span class="teal">592 ms</span>
+          </div>
+          <div class="callout blue-border">
+            Parser、terminal render 与 game validation 加起来远低于 1 ms，所以 <span class="mono">last_voice_to_decision</span> 几乎等于 <span class="mono">last_voice_to_asr_text</span>。
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">系统可控延迟应优先看 last_voice_to_decision，而不是包含 Human reaction 的整轮时间</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="LLM 轮次">
+      <p class="eyebrow">LLM turn</p>
+      <h2>LLM 请求到播完：p50 约 1.93 秒</h2>
+      <div class="timeline" aria-label="LLM 请求到音频结束的 p50 时间轴">
+        <div class="phase" style="left:0;width:18.3%;background:var(--blue)"></div>
+        <div class="phase" style="left:18.3%;width:49%;background:var(--gold)"></div>
+        <div class="phase" style="left:67.3%;width:32.7%;background:var(--red)"></div>
+        <div class="mark" style="left:0%"><div class="label" style="transform:none;text-align:left">LLM request<strong>0 ms</strong></div></div>
+        <div class="mark" style="left:18.3%"><div class="label">Text ready<strong>353 ms</strong></div></div>
+        <div class="mark" style="left:67.3%"><div class="label">First DAC<strong>1302 ms</strong></div></div>
+        <div class="mark" style="left:100%"><div class="label" style="transform:translateX(-100%);text-align:right">Audio drained<strong>1928 ms</strong></div></div>
+      </div>
+      <div class="equation">
+        <span class="blue">353</span><span class="operator">+</span><span class="gold">943</span><span class="operator">+</span><span class="red">约 646</span><span class="operator">≈</span><span class="teal">1928 ms</span>
+      </div>
+      <div class="three-col">
+        <div class="rule-band body"><strong>Request → text</strong><br><span class="muted">LLM HTTP 与 response parsing</span></div>
+        <div class="rule-band body"><strong>Text → first DAC</strong><br><span class="muted">TTS synthesis 与 player startup</span></div>
+        <div class="rule-band body"><strong>First DAC → drained</strong><br><span class="muted">近似实际播放区间</span></div>
+      </div>
+      <div class="footer"><span class="source">first_dac_sample 来自 PortAudio outputBufferDacTime 映射，不是外部麦克风实测</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="端到端分析" data-accent="violet">
+      <p class="eyebrow">End-to-end conversation path</p>
+      <h2>Human 说完到机器播完：p50 约 2.52 秒</h2>
+      <div class="timeline" aria-label="Human 最后语音到 LLM 播放结束的 p50 时间轴">
+        <div class="phase" style="left:0;width:37.7%;background:var(--blue)"></div>
+        <div class="phase" style="left:37.7%;width:37.8%;background:var(--gold)"></div>
+        <div class="phase" style="left:75.5%;width:24.5%;background:var(--red)"></div>
+        <div class="mark" style="left:0%"><div class="label" style="transform:none;text-align:left">Human last voice<strong>0 ms</strong></div></div>
+        <div class="mark" style="left:37.7%"><div class="label">LLM text<strong>950 ms</strong></div></div>
+        <div class="mark" style="left:75.5%"><div class="label">First DAC<strong>1902 ms</strong></div></div>
+        <div class="mark" style="left:100%"><div class="label" style="transform:translateX(-100%);text-align:right">Audio drained<strong>2522 ms</strong></div></div>
+      </div>
+      <div class="two-col" style="margin-top:24px">
+        <div>
+          <div class="stat-line"><span class="label">Last voice → LLM text</span><span class="value violet">950 ms</span></div>
+          <div class="stat-line"><span class="label">Last voice → first DAC</span><span class="value">1902 ms</span></div>
+          <div class="stat-line"><span class="label">Last voice → audio drained</span><span class="value">2522 ms</span></div>
+        </div>
+        <div>
+          <div class="callout">
+            播放完成到下一 Human turn 收到第一块 microphone callback 的 p50 是 <strong>745 ms</strong>。
+          </div>
+          <div class="callout gold-border" style="margin-top:20px">
+            其中约 500 ms 是 echo guard，其余是 turn bookkeeping、开麦和 PortAudio first callback。
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">audio_drained_to_mic_callback n=9，因为第一轮 Human 前没有上一轮 LLM 音频</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="ASR 内部" data-accent="red">
+      <p class="eyebrow">ASR pipeline</p>
+      <h2>ASR p50 175 ms，主要计算藏在 segment iteration</h2>
+      <div class="bar-chart">
+        <div class="bar-row"><div class="bar-label mono">input_prepare</div><div class="bar-track"><span class="bar-p50" style="--p50:0.03%"></span><span class="bar-p95" style="--p95:0.05%"></span></div><div class="bar-value">0.056 / 0.104</div></div>
+        <div class="bar-row"><div class="bar-label mono">model_call</div><div class="bar-track"><span class="bar-p50" style="--p50:1.5%"></span><span class="bar-p95" style="--p95:2.3%"></span></div><div class="bar-value">3.5 / 5.2</div></div>
+        <div class="bar-row"><div class="bar-label mono">segment_iteration</div><div class="bar-track"><span class="bar-p50" style="--p50:73.9%"></span><span class="bar-p95" style="--p95:98.2%"></span></div><div class="bar-value">170 / 226</div></div>
+        <div class="bar-row"><div class="bar-label mono">text_assembly</div><div class="bar-track"><span class="bar-p50" style="--p50:0.01%"></span><span class="bar-p95" style="--p95:0.01%"></span></div><div class="bar-value">0.005 / 0.007</div></div>
+        <div class="bar-row"><div class="bar-label mono">quality_gate</div><div class="bar-track"><span class="bar-p50" style="--p50:0.01%"></span><span class="bar-p95" style="--p95:0.02%"></span></div><div class="bar-value">0.023 / 0.037</div></div>
+        <div class="bar-row"><div class="bar-label mono strong">pipeline_total</div><div class="bar-track"><span class="bar-p50" style="--p50:76.0%"></span><span class="bar-p95" style="--p95:100%"></span></div><div class="bar-value strong">175 / 230</div></div>
+      </div>
+      <div class="callout red-border" style="margin-top:28px">
+        <strong>不要把 3.5 ms 当成 Whisper inference latency。</strong> <span class="mono">faster-whisper.transcribe()</span> 返回 lazy generator，大部分推理在消费 segments 时发生；正确的整体指标是 <span class="mono">pipeline_total_ms</span>。
+      </div>
+      <div class="footer"><span class="source">p50 / p95；图的横轴上限为 230 ms</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="LLM" data-accent="blue">
+      <p class="eyebrow">Remote LLM</p>
+      <h2>LLM p50 353 ms，几乎全部是 HTTP round trip</h2>
+      <div class="two-col">
+        <div>
+          <div class="stack" aria-label="LLM pipeline p50 分解">
+            <div class="s1" style="width:99.94%">HTTP round trip<br>352.5 ms</div>
+            <div class="s2" style="width:0.06%"></div>
+          </div>
+          <div class="scale"><span>payload / parse 均小于 0.1 ms</span><span>pipeline 352.5 ms</span></div>
+          <div class="bar-chart" style="margin-top:30px">
+            <div class="bar-row"><div class="bar-label">HTTP round trip</div><div class="bar-track"><span class="bar-p50" style="--p50:51.9%"></span><span class="bar-p95" style="--p95:99.9%"></span></div><div class="bar-value">352 / 679</div></div>
+            <div class="bar-row"><div class="bar-label">Pipeline total</div><div class="bar-track"><span class="bar-p50" style="--p50:51.9%"></span><span class="bar-p95" style="--p95:100%"></span></div><div class="bar-value">353 / 679</div></div>
+          </div>
+        </div>
+        <div>
+          <div class="stat-line"><span class="label">p50</span><span class="value blue">352.5 ms</span></div>
+          <div class="stat-line"><span class="label">p95</span><span class="value">678.7 ms</span></div>
+          <div class="stat-line"><span class="label">max</span><span class="value">723.0 ms</span></div>
+          <div class="callout gold-border" style="margin-top:28px">
+            当前请求是 non-streaming。这个值包含 SSH forwarding、服务端排队、模型生成和返回，但不能拆出真正的 TTFT。
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">要区分 network、vLLM queue 与 generation，需要 server trace 或 streaming request</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="TTS" data-accent="gold">
+      <p class="eyebrow">Speech output</p>
+      <h2>TTS synthesis 是当前最大的计算延迟</h2>
+      <div class="chart-title"><h3>p50 / p95 对比</h3><div class="legend"><span>p50</span><span class="p95">p95</span></div></div>
+      <div class="bar-chart">
+        <div class="bar-row"><div class="bar-label">Synthesis</div><div class="bar-track"><span class="bar-p50" style="--p50:43.0%"></span><span class="bar-p95" style="--p95:61.9%"></span></div><div class="bar-value">901 / 1297</div></div>
+        <div class="bar-row"><div class="bar-label"><span class="mono">say</span> command</div><div class="bar-track"><span class="bar-p50" style="--p50:42.4%"></span><span class="bar-p95" style="--p95:61.5%"></span></div><div class="bar-value">887 / 1288</div></div>
+        <div class="bar-row"><div class="bar-label">Speaker play call</div><div class="bar-track"><span class="bar-p50" style="--p50:38.0%"></span><span class="bar-p95" style="--p95:41.8%"></span></div><div class="bar-value">795 / 876</div></div>
+        <div class="bar-row"><div class="bar-label">First DAC → inactive</div><div class="bar-track"><span class="bar-p50" style="--p50:30.9%"></span><span class="bar-p95" style="--p95:34.7%"></span></div><div class="bar-value">646 / 727</div></div>
+        <div class="bar-row"><div class="bar-label strong">Speech pipeline total</div><div class="bar-track"><span class="bar-p50" style="--p50:81.6%"></span><span class="bar-p95" style="--p95:100%"></span></div><div class="bar-value strong">1709 / 2094</div></div>
+      </div>
+      <div class="two-col" style="margin-top:25px">
+        <div class="callout gold-border"><span class="mono">wav_decode</span> p50 13 ms，临时文件 setup p50 0.6 ms；真正的大头是 macOS <span class="mono">say</span> command。</div>
+        <div class="callout blue-border"><span class="mono">cache_lookup≈0</span> 只表示字典查询很快。这局十个动物都不同，trace 中全部是 <span class="mono">cache_miss_synthesized</span>。</div>
+      </div>
+      <div class="footer"><span class="source">图的横轴上限为 TTS pipeline p95 2094 ms</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="启动与缓存" data-accent="green">
+      <p class="eyebrow">Startup and cache</p>
+      <h2>启动成本存在于 JSON，但 Markdown 没有展示</h2>
+      <div class="two-col">
+        <div>
+          <div class="bar-chart">
+            <div class="bar-row"><div class="bar-label">STT model resolution</div><div class="bar-track"><span class="bar-p50" style="--p50:100%"></span></div><div class="bar-value">1908 ms</div></div>
+            <div class="bar-row"><div class="bar-label">STT model load</div><div class="bar-track"><span class="bar-p50" style="--p50:9.3%"></span></div><div class="bar-value">177 ms</div></div>
+            <div class="bar-row"><div class="bar-label">STT warmup</div><div class="bar-track"><span class="bar-p50" style="--p50:8.4%"></span></div><div class="bar-value">160 ms</div></div>
+            <div class="bar-row"><div class="bar-label">TTS prewarm</div><div class="bar-track"><span class="bar-p50" style="--p50:0.1%"></span></div><div class="bar-value">0.002 ms</div></div>
+          </div>
+        </div>
+        <div>
+          <div class="rule-band body">
+            <strong>为什么 TTS prewarm 为零？</strong><br><br>
+            Animal Naming 有 91 个可能输出，V1 禁止启动时一次性合成整个 whitelist，因此 <span class="mono">prewarm_entry_count=0</span>。
+          </div>
+          <div class="callout red-border" style="margin-top:24px">
+            这也意味着本局十个不同动物全部走 cold on-demand synthesis，单局内 memory cache 没有收益。
+          </div>
+          <div class="callout blue-border" style="margin-top:20px">
+            Markdown renderer 当前只输出 turn metrics；startup 数值保存在 <span class="mono">breakdown_summary.json</span> 的 <span class="mono">startup</span> 数组。
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span class="source">启动成本应该与 steady-state turn latency 分开报告</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="结论" data-accent="red">
+      <p class="eyebrow">What the trace says</p>
+      <h2>当前瓶颈排序</h2>
+      <div class="finding-list">
+        <div class="finding"><span class="rank">01</span><div><strong>TTS synthesis</strong><p>p50 901 ms，p95 1297 ms；比 LLM inference 更慢，是最大的系统计算延迟。</p></div></div>
+        <div class="finding"><span class="rank">02</span><div><strong>Human reaction + speaking</strong><p>等待开口 p50 895 ms，发言 p50 633 ms；它们影响 deadline 体验，但不应被误认为系统 inference。</p></div></div>
+        <div class="finding"><span class="rank">03</span><div><strong>VAD endpoint + stream cleanup</strong><p>尾部静音约 313 ms，加上关闭与整理，使说完到 ASR 文本约 592 ms。</p></div></div>
+        <div class="finding"><span class="rank">04</span><div><strong>LLM HTTP</strong><p>p50 353 ms，p95 679 ms；本地 JSON 和 parsing overhead 可以忽略。</p></div></div>
+        <div class="finding"><span class="rank">05</span><div><strong>STT inference</strong><p>pipeline p50 175 ms，p95 230 ms；当前不是延迟大头，但准确率仍需独立 qualification。</p></div></div>
+      </div>
+      <div class="footer"><span class="source">延迟快不等于识别准确；这两类指标必须分开报告</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="指标口径" data-accent="gold">
+      <p class="eyebrow">Metric semantics</p>
+      <h2>Human E2E 需要拆成两种口径</h2>
+      <div class="two-col">
+        <div class="rule-band body">
+          <h3>体验口径</h3>
+          <p><span class="mono">turn.response_source_ms</span></p>
+          <div class="stat-line"><span class="label">p50</span><span class="value gold">2113 ms</span></div>
+          <div class="stat-line"><span class="label">p95</span><span class="value">2940 ms</span></div>
+          <p class="muted" style="margin:18px 0 0">包括开麦、Human reaction、说话、VAD、STT。</p>
+        </div>
+        <div class="rule-band body">
+          <h3>系统口径</h3>
+          <p><span class="mono">human.last_voice_to_decision_ms</span></p>
+          <div class="stat-line"><span class="label">p50</span><span class="value green">593 ms</span></div>
+          <div class="stat-line"><span class="label">p95</span><span class="value">655 ms</span></div>
+          <p class="muted" style="margin:18px 0 0">排除 Human reaction，更适合衡量系统优化。</p>
+        </div>
+      </div>
+      <div class="callout red-border" style="margin-top:30px">
+        如果 acceptance criterion 只写“Human end-to-end p95 ≤ 2500 ms”，这局会得到 2940 ms 并判 fail，但主要原因是用户等待开口。正式报告应同时给出体验口径与系统口径。
+      </div>
+      <div class="footer"><span class="source">deadline 体验与系统性能有关，但不能用一个数字混在一起解释</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="附录：ASR 与 LLM">
+      <p class="eyebrow">Appendix A</p>
+      <h2>完整统计：ASR 与 LLM component</h2>
+      <p class="section-label">ASR pipeline</p>
+      <table class="metric-table">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>component.asr_pipeline.input_prepare_ms</td><td>10</td><td>0.064</td><td>0.056</td><td>0.097</td><td>0.104</td><td>0.111</td><td>0.112</td></tr>
+          <tr><td>component.asr_pipeline.model_call_ms</td><td>10</td><td>3.602</td><td>3.489</td><td>5.120</td><td>5.226</td><td>5.311</td><td>5.332</td></tr>
+          <tr><td>component.asr_pipeline.pipeline_total_ms</td><td>10</td><td>183.512</td><td>174.868</td><td>204.269</td><td>229.575</td><td>249.820</td><td>254.881</td></tr>
+          <tr><td>component.asr_pipeline.quality_gate_ms</td><td>10</td><td>0.024</td><td>0.023</td><td>0.028</td><td>0.037</td><td>0.044</td><td>0.046</td></tr>
+          <tr><td>component.asr_pipeline.segment_iteration_ms</td><td>10</td><td>179.816</td><td>169.892</td><td>199.348</td><td>225.775</td><td>246.916</td><td>252.201</td></tr>
+          <tr><td>component.asr_pipeline.text_assembly_ms</td><td>10</td><td>0.005</td><td>0.005</td><td>0.007</td><td>0.007</td><td>0.007</td><td>0.007</td></tr>
+        </tbody>
+      </table>
+      <p class="section-label">LLM client</p>
+      <table class="metric-table compact">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>component.llm_client.http_round_trip_ms</td><td>10</td><td>409.938</td><td>352.481</td><td>634.283</td><td>678.562</td><td>713.985</td><td>722.841</td></tr>
+          <tr><td>component.llm_client.json_decode_ms</td><td>10</td><td>0.033</td><td>0.019</td><td>0.079</td><td>0.091</td><td>0.099</td><td>0.102</td></tr>
+          <tr><td>component.llm_client.payload_build_ms</td><td>10</td><td>0.004</td><td>0.002</td><td>0.006</td><td>0.007</td><td>0.008</td><td>0.008</td></tr>
+          <tr><td>component.llm_client.pipeline_total_ms</td><td>10</td><td>409.992</td><td>352.528</td><td>634.402</td><td>678.692</td><td>714.124</td><td>722.982</td></tr>
+          <tr><td>component.llm_client.pre_request_ms</td><td>10</td><td>0.002</td><td>0.002</td><td>0.002</td><td>0.002</td><td>0.002</td><td>0.002</td></tr>
+          <tr><td>component.llm_client.response_parse_ms</td><td>10</td><td>0.015</td><td>0.013</td><td>0.028</td><td>0.029</td><td>0.030</td><td>0.030</td></tr>
+          <tr><td>component.llm_client.status_check_ms</td><td>10</td><td>0.001</td><td>0.001</td><td>0.002</td><td>0.003</td><td>0.003</td><td>0.003</td></tr>
+        </tbody>
+      </table>
+      <div class="footer"><span class="source">原始 breakdown_summary.md · 所有数值单位 ms</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="附录：Speech Output 1" data-accent="gold">
+      <p class="eyebrow">Appendix B</p>
+      <h2>完整统计：Speech output 与 speaker</h2>
+      <table class="metric-table">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>component.speech_output.cache_lookup_ms</td><td>10</td><td>0.000</td><td>0.000</td><td>0.000</td><td>0.000</td><td>0.000</td><td>0.000</td></tr>
+          <tr><td>component.speech_output.pipeline_total_ms</td><td>10</td><td>1761.356</td><td>1708.981</td><td>1849.385</td><td>2094.138</td><td>2289.941</td><td>2338.892</td></tr>
+          <tr><td>component.speech_output.speaker.audio_prepare_ms</td><td>10</td><td>3.913</td><td>3.852</td><td>4.508</td><td>4.809</td><td>5.051</td><td>5.111</td></tr>
+          <tr><td>component.speech_output.speaker.first_dac_to_inactive_ms</td><td>10</td><td>646.592</td><td>646.015</td><td>724.043</td><td>726.686</td><td>728.801</td><td>729.330</td></tr>
+          <tr><td>component.speech_output.speaker.pipeline_total_ms</td><td>10</td><td>687.686</td><td>687.065</td><td>767.525</td><td>768.571</td><td>769.409</td><td>769.618</td></tr>
+          <tr><td>component.speech_output.speaker.start_to_first_callback_ms</td><td>10</td><td>28.688</td><td>28.323</td><td>30.840</td><td>30.899</td><td>30.947</td><td>30.959</td></tr>
+          <tr><td>component.speech_output.speaker.start_to_first_dac_ms</td><td>10</td><td>34.328</td><td>33.959</td><td>36.474</td><td>36.537</td><td>36.586</td><td>36.599</td></tr>
+          <tr><td>component.speech_output.speaker.stream_open_ms</td><td>10</td><td>2.780</td><td>2.683</td><td>3.268</td><td>3.280</td><td>3.289</td><td>3.291</td></tr>
+          <tr><td>component.speech_output.speaker.stream_start_ms</td><td>10</td><td>28.356</td><td>28.144</td><td>30.036</td><td>30.308</td><td>30.525</td><td>30.580</td></tr>
+          <tr><td>component.speech_output.speaker_play_ms</td><td>10</td><td>794.986</td><td>794.993</td><td>875.268</td><td>876.295</td><td>877.117</td><td>877.323</td></tr>
+        </tbody>
+      </table>
+      <div class="callout" style="margin-top:20px;font-size:17px">Outer <span class="mono">speaker_play</span> 包含完整调用与 cleanup；nested speaker <span class="mono">pipeline_total</span> 结束于 stream inactive，因此两者不会完全相等。</div>
+      <div class="footer"><span class="source">原始 breakdown_summary.md · 所有数值单位 ms</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="附录：Speech Output 2" data-accent="gold">
+      <p class="eyebrow">Appendix C</p>
+      <h2>完整统计：Synthesizer 与跨回合指标</h2>
+      <p class="section-label">Synthesis</p>
+      <table class="metric-table compact">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>component.speech_output.synthesis_ms</td><td>10</td><td>966.360</td><td>900.947</td><td>988.478</td><td>1296.861</td><td>1543.567</td><td>1605.243</td></tr>
+          <tr><td>component.speech_output.synthesizer.command_execution_ms</td><td>10</td><td>953.210</td><td>887.305</td><td>974.756</td><td>1288.031</td><td>1538.651</td><td>1601.306</td></tr>
+          <tr><td>component.speech_output.synthesizer.pipeline_total_ms</td><td>10</td><td>966.064</td><td>900.700</td><td>988.237</td><td>1296.581</td><td>1543.255</td><td>1604.924</td></tr>
+          <tr><td>component.speech_output.synthesizer.temporary_file_setup_ms</td><td>10</td><td>1.028</td><td>0.571</td><td>2.477</td><td>3.235</td><td>3.840</td><td>3.992</td></tr>
+          <tr><td>component.speech_output.synthesizer.wav_decode_ms</td><td>10</td><td>11.826</td><td>13.096</td><td>14.513</td><td>14.613</td><td>14.693</td><td>14.713</td></tr>
+        </tbody>
+      </table>
+      <p class="section-label">Conversation</p>
+      <table class="metric-table compact">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>conversation.audio_drained_to_mic_callback_ms</td><td>9</td><td>743.155</td><td>744.733</td><td>752.583</td><td>754.416</td><td>755.882</td><td>756.249</td></tr>
+          <tr><td>conversation.human_last_voice_to_audio_drained_ms</td><td>10</td><td>2670.385</td><td>2522.139</td><td>3046.020</td><td>3298.880</td><td>3501.169</td><td>3551.741</td></tr>
+          <tr><td>conversation.human_last_voice_to_first_dac_ms</td><td>10</td><td>2023.793</td><td>1902.452</td><td>2336.531</td><td>2650.164</td><td>2901.071</td><td>2963.797</td></tr>
+          <tr><td>conversation.human_last_voice_to_llm_text_ms</td><td>10</td><td>1016.159</td><td>949.862</td><td>1314.902</td><td>1314.929</td><td>1314.951</td><td>1314.957</td></tr>
+        </tbody>
+      </table>
+      <div class="footer"><span class="source">原始 breakdown_summary.md · 所有数值单位 ms</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="附录：Human 与 LLM 派生指标" data-accent="blue">
+      <p class="eyebrow">Appendix D</p>
+      <h2>完整统计：Human 与 LLM derived metrics</h2>
+      <p class="section-label">Human</p>
+      <table class="metric-table compact">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>human.endpoint_delay_ms</td><td>10</td><td>310.605</td><td>312.634</td><td>315.732</td><td>316.115</td><td>316.420</td><td>316.497</td></tr>
+          <tr><td>human.last_voice_to_asr_text_ms</td><td>10</td><td>601.556</td><td>591.577</td><td>622.190</td><td>652.594</td><td>676.918</td><td>682.999</td></tr>
+          <tr><td>human.last_voice_to_decision_ms</td><td>10</td><td>602.944</td><td>593.444</td><td>624.368</td><td>654.523</td><td>678.648</td><td>684.679</td></tr>
+          <tr><td>human.mic_open_to_first_callback_ms</td><td>10</td><td>123.798</td><td>122.310</td><td>130.946</td><td>134.902</td><td>138.066</td><td>138.857</td></tr>
+          <tr><td>human.voiced_utterance_ms</td><td>10</td><td>658.291</td><td>633.427</td><td>733.412</td><td>793.768</td><td>842.052</td><td>854.123</td></tr>
+          <tr><td>human.wait_for_speech_ms</td><td>10</td><td>1058.685</td><td>894.536</td><td>1521.100</td><td>1612.064</td><td>1684.836</td><td>1703.028</td></tr>
+        </tbody>
+      </table>
+      <p class="section-label">LLM to speech</p>
+      <table class="metric-table compact">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>llm.request_to_audio_drained_ms</td><td>10</td><td>2064.421</td><td>1927.763</td><td>2365.870</td><td>2662.920</td><td>2900.559</td><td>2959.969</td></tr>
+          <tr><td>llm.request_to_first_dac_ms</td><td>10</td><td>1417.829</td><td>1301.531</td><td>1656.382</td><td>2014.203</td><td>2300.461</td><td>2372.025</td></tr>
+          <tr><td>llm.request_to_text_ms</td><td>10</td><td>410.195</td><td>352.714</td><td>634.753</td><td>678.969</td><td>714.341</td><td>723.185</td></tr>
+          <tr><td>llm.text_to_first_dac_ms</td><td>10</td><td>1007.634</td><td>942.998</td><td>1029.246</td><td>1339.043</td><td>1586.881</td><td>1648.840</td></tr>
+        </tbody>
+      </table>
+      <div class="footer"><span class="source">原始 breakdown_summary.md · 所有数值单位 ms</span><span class="counter"></span></div>
+    </section>
+
+    <section class="slide" data-title="附录：Turn metrics" data-accent="violet">
+      <p class="eyebrow">Appendix E</p>
+      <h2>完整统计：Turn-level metrics</h2>
+      <table class="metric-table compact">
+        <thead><tr><th>Metric</th><th>n</th><th>mean</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr></thead>
+        <tbody>
+          <tr><td>turn.game_validation_ms</td><td>20</td><td>0.037</td><td>0.030</td><td>0.073</td><td>0.082</td><td>0.084</td><td>0.085</td></tr>
+          <tr><td>turn.guard_ms</td><td>10</td><td>453.896</td><td>504.933</td><td>505.467</td><td>507.052</td><td>508.321</td><td>508.638</td></tr>
+          <tr><td>turn.llm_output_render_ms</td><td>10</td><td>0.058</td><td>0.023</td><td>0.072</td><td>0.214</td><td>0.328</td><td>0.357</td></tr>
+          <tr><td>turn.llm_prompt_render_ms</td><td>10</td><td>0.008</td><td>0.006</td><td>0.011</td><td>0.012</td><td>0.012</td><td>0.012</td></tr>
+          <tr><td>turn.llm_request_ms</td><td>10</td><td>410.195</td><td>352.714</td><td>634.753</td><td>678.969</td><td>714.341</td><td>723.185</td></tr>
+          <tr><td>turn.pipeline_to_decision_ms</td><td>20</td><td>2474.162</td><td>2399.310</td><td>3133.754</td><td>3163.900</td><td>3385.059</td><td>3440.348</td></tr>
+          <tr><td>turn.prompt_build_ms</td><td>20</td><td>0.042</td><td>0.029</td><td>0.050</td><td>0.072</td><td>0.328</td><td>0.392</td></tr>
+          <tr><td>turn.prompt_render_ms</td><td>10</td><td>0.108</td><td>0.045</td><td>0.271</td><td>0.365</td><td>0.440</td><td>0.459</td></tr>
+          <tr><td>turn.response_source_ms</td><td>10</td><td>2319.476</td><td>2112.768</td><td>2934.738</td><td>2939.520</td><td>2943.346</td><td>2944.303</td></tr>
+          <tr><td>turn.speech_output_ms</td><td>10</td><td>1761.716</td><td>1709.314</td><td>1849.694</td><td>2094.535</td><td>2290.408</td><td>2339.376</td></tr>
+          <tr><td>turn.spoken_response_parse_ms</td><td>10</td><td>0.102</td><td>0.064</td><td>0.224</td><td>0.241</td><td>0.254</td><td>0.258</td></tr>
+          <tr><td>turn.spoken_text_render_ms</td><td>10</td><td>0.077</td><td>0.074</td><td>0.125</td><td>0.132</td><td>0.137</td><td>0.139</td></tr>
+          <tr><td>turn.transcript_render_ms</td><td>10</td><td>0.037</td><td>0.028</td><td>0.064</td><td>0.079</td><td>0.091</td><td>0.094</td></tr>
+        </tbody>
+      </table>
+      <div class="callout red-border" style="margin-top:18px;font-size:17px"><span class="mono">pipeline_to_decision</span> 的 n=20 混合 Human 与 LLM；应优先使用 actor-specific metrics，不应把这个 p50 当作统一系统响应时间。</div>
+      <div class="footer"><span class="source">原始 breakdown_summary.md · 所有数值单位 ms</span><span class="counter"></span></div>
+    </section>
+
+    <div class="controls" aria-label="幻灯片控制">
+      <button type="button" id="prev" aria-label="上一页" title="上一页">←</button>
+      <button type="button" id="next" aria-label="下一页" title="下一页">→</button>
+      <button type="button" id="fullscreen" aria-label="全屏" title="全屏">⛶</button>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      const deck = document.getElementById('deck');
+      const slides = Array.from(deck.querySelectorAll('.slide'));
+      const progress = deck.querySelector('.progress');
+      const prevButton = document.getElementById('prev');
+      const nextButton = document.getElementById('next');
+      const fullscreenButton = document.getElementById('fullscreen');
+      let index = 0;
+      let touchStartX = null;
+
+      function fitDeck() {
+        const scale = Math.min(window.innerWidth / 1600, window.innerHeight / 900);
+        deck.style.setProperty('--deck-scale', String(scale));
+      }
+
+      function show(nextIndex) {
+        index = Math.max(0, Math.min(slides.length - 1, nextIndex));
+        slides.forEach((slide, slideIndex) => {
+          const active = slideIndex === index;
+          slide.classList.toggle('active', active);
+          slide.setAttribute('aria-hidden', active ? 'false' : 'true');
+          const counter = slide.querySelector('.counter');
+          if (counter) counter.textContent = `${index + 1} / ${slides.length}`;
+        });
+        progress.style.width = `${((index + 1) / slides.length) * 100}%`;
+        document.title = `${slides[index].dataset.title} · Animal Naming 延迟分解`;
+        prevButton.disabled = index === 0;
+        nextButton.disabled = index === slides.length - 1;
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen?.();
+        } else {
+          document.exitFullscreen?.();
+        }
+      }
+
+      prevButton.addEventListener('click', () => show(index - 1));
+      nextButton.addEventListener('click', () => show(index + 1));
+      fullscreenButton.addEventListener('click', toggleFullscreen);
+
+      document.addEventListener('keydown', (event) => {
+        if (['ArrowRight', 'PageDown', ' '].includes(event.key)) {
+          event.preventDefault();
+          show(index + 1);
+        } else if (['ArrowLeft', 'PageUp'].includes(event.key)) {
+          event.preventDefault();
+          show(index - 1);
+        } else if (event.key === 'Home') {
+          show(0);
+        } else if (event.key === 'End') {
+          show(slides.length - 1);
+        } else if (event.key.toLowerCase() === 'f') {
+          toggleFullscreen();
+        }
+      });
+
+      document.addEventListener('touchstart', (event) => {
+        touchStartX = event.changedTouches[0]?.clientX ?? null;
+      }, { passive: true });
+
+      document.addEventListener('touchend', (event) => {
+        if (touchStartX === null) return;
+        const endX = event.changedTouches[0]?.clientX ?? touchStartX;
+        const delta = endX - touchStartX;
+        if (Math.abs(delta) > 50) show(index + (delta < 0 ? 1 : -1));
+        touchStartX = null;
+      }, { passive: true });
+
+      window.addEventListener('resize', fitDeck);
+      fitDeck();
+      show(0);
+    })();
+  </script>
+</body>
+</html>
