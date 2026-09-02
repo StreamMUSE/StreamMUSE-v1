@@ -668,6 +668,64 @@ def test_prompt_continuation_enqueues_start_after_prompt_window():
     assert [event.pitch for event in action.melody_events] == [60, 62]
 
 
+def test_prompt_start_waits_for_closed_observation_window() -> None:
+    tempo = Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4)
+    now_value = [0.0]
+    injected = [False]
+    service = None
+
+    def fake_now() -> float:
+        return now_value[0]
+
+    def fake_sleep(duration: float) -> None:
+        nonlocal service
+        tick_31_buffer_end = tempo.tick_to_seconds(31) + (
+            tempo.seconds_per_tick
+            * PromptContinuationRealtimeService._INPUT_BUFFER_RATIO
+        )
+        tick_32_boundary = tempo.tick_to_seconds(32)
+        sleep_end = now_value[0] + duration
+        if (
+            not injected[0]
+            and now_value[0] >= tick_31_buffer_end - 1e-9
+            and sleep_end >= tick_32_boundary - 1e-9
+        ):
+            assert service is not None
+            assert service._start_enqueued is False
+            service._event_q.put(_note(62, 31))
+            service._event_q.put(_note(64, 32))
+            injected[0] = True
+        now_value[0] = sleep_end
+
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=tempo,
+        scheduler=PlaybackScheduler(),
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        now=fake_now,
+        sleep=fake_sleep,
+    )
+    service._runtime = SimpleNamespace(
+        session_start_time=0.0,
+        timeline_start_time=0.0,
+    )
+    service._running = True
+
+    service._tick_loop(max_ticks=33)
+
+    assert injected[0] is True
+    action = service._control_q.get_nowait()
+    assert action.kind == "start"
+    assert action.observed_until_tick == 32
+    assert [(event.pitch, event.tick) for event in action.melody_events] == [(62, 31)]
+    assert [(event.pitch, event.tick) for event in service._pending_append_events] == [
+        (64, 32)
+    ]
+
+
 def test_prompt_continuation_append_keeps_empty_rest_chunks():
     service = _make_service()
     service._start_enqueued = True

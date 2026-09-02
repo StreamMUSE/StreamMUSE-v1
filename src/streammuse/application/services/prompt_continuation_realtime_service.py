@@ -1288,7 +1288,9 @@ class PromptContinuationRealtimeService:
 
             self._drain_user_events()
             observed_until_tick = tick + 1
-            self._maybe_enqueue_start(observed_until_tick)
+            # The prompt window [0, prompt_length_ticks) is not fully observed
+            # until the wall clock reaches its exclusive end boundary.
+            self._maybe_enqueue_start(tick)
             self._maybe_enqueue_append(observed_until_tick)
 
             while True:
