@@ -171,6 +171,8 @@ class PromptContinuationRealtimeService:
             "",
         ).lower() in {"1", "true", "yes", "on"}
         self._system_trace_frames: dict[int, dict[str, Any]] = {}
+        self._system_trace_coverage_end_tick = 0
+        self._system_trace_playable_request_counter = 0
         system_trace_logger = getattr(output_sink, "log_system_trace", None)
         self._system_trace_logger = (
             system_trace_logger if callable(system_trace_logger) else None
@@ -347,6 +349,10 @@ class PromptContinuationRealtimeService:
                             arrival_time_s = None
                             if self._system_trace_logger is not None:
                                 arrival_time_s = float(self._now())
+                                self._record_playable_availability(
+                                    playable_status,
+                                    availability_time_s=arrival_time_s,
+                                )
                             self._trace(
                                 "playable_fetch",
                                 accompaniment_event_count=len(accompaniment),
@@ -767,6 +773,96 @@ class PromptContinuationRealtimeService:
         if frame["rest_provenance"] is None:
             frame["rest_provenance"] = provenance
 
+    def _log_system_trace_availability_span(
+        self,
+        *,
+        start_tick: int,
+        end_tick_exclusive: int,
+        availability_time_s: float,
+        generation_start_tick: int,
+        request_id: str,
+        source_stage: str,
+    ) -> None:
+        logger = self._system_trace_logger
+        if logger is None:
+            return
+        start_tick = int(start_tick)
+        end_tick_exclusive = int(end_tick_exclusive)
+        if start_tick >= end_tick_exclusive:
+            raise ValueError(
+                "availability span must satisfy start_tick < end_tick_exclusive"
+            )
+        row: dict[str, Any] = {
+            "schema_version": 2,
+            "record_type": "availability_span",
+            "mode": "realtime",
+            "condition": "prompt_continuation",
+            "clock_domain": "service_now",
+            "start_tick": start_tick,
+            "end_tick_exclusive": end_tick_exclusive,
+            "availability_time_s": float(availability_time_s),
+            "generation_start_tick": int(generation_start_tick),
+            "request_id": str(request_id),
+            "source_stage": str(source_stage),
+        }
+        try:
+            logger(row)
+        except Exception:
+            return
+
+    def _record_playable_availability(
+        self,
+        playable_status: dict[str, Any],
+        *,
+        availability_time_s: float,
+    ) -> None:
+        if self._system_trace_logger is None:
+            return
+        coverage_beats = playable_status.get("accompaniment_history_beats")
+        if coverage_beats is None:
+            return
+        try:
+            coverage_end_tick = int(coverage_beats) * int(self._tempo.ticks_per_beat)
+        except (TypeError, ValueError):
+            return
+
+        coverage_start_tick = int(self._system_trace_coverage_end_tick)
+        if coverage_end_tick <= coverage_start_tick:
+            return
+
+        self._system_trace_playable_request_counter += 1
+        request_id_value = playable_status.get("request_id")
+        request_id = (
+            str(request_id_value)
+            if request_id_value is not None and str(request_id_value).strip()
+            else f"playable-{self._system_trace_playable_request_counter:04d}"
+        )
+        prompt_end_tick = int(self._prompt_length_ticks)
+        segments = (
+            (
+                coverage_start_tick,
+                min(coverage_end_tick, prompt_end_tick),
+                "prompt",
+            ),
+            (
+                max(coverage_start_tick, prompt_end_tick),
+                coverage_end_tick,
+                "continuation",
+            ),
+        )
+        for start_tick, end_tick_exclusive, source_stage in segments:
+            if start_tick >= end_tick_exclusive:
+                continue
+            self._log_system_trace_availability_span(
+                start_tick=start_tick,
+                end_tick_exclusive=end_tick_exclusive,
+                availability_time_s=availability_time_s,
+                generation_start_tick=start_tick,
+                request_id=request_id,
+                source_stage=source_stage,
+            )
+        self._system_trace_coverage_end_tick = coverage_end_tick
+
     def _emit_system_trace_frame(
         self,
         *,
@@ -807,7 +903,8 @@ class PromptContinuationRealtimeService:
             provenance = {}
         arrival_time_s = provenance.get("arrival_time_s")
         row: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "record_type": "frame_deadline",
             "mode": "realtime",
             "condition": "prompt_continuation",
             "clock_domain": "service_now",

@@ -263,7 +263,8 @@ def test_prompt_continuation_system_trace_records_note_rest_missing() -> None:
     assert [row["tick"] for row in rows] == [0, 1, 2]
 
     note_row = rows[0]
-    assert note_row["schema_version"] == 1
+    assert note_row["schema_version"] == 2
+    assert note_row["record_type"] == "frame_deadline"
     assert note_row["mode"] == "realtime"
     assert note_row["condition"] == "prompt_continuation"
     assert note_row["clock_domain"] == "service_now"
@@ -306,6 +307,132 @@ def test_prompt_continuation_system_trace_records_note_rest_missing() -> None:
     assert missing_row["explicit_rest"] is False
 
 
+def test_prompt_first_late_playable_fetch_records_past_coverage() -> None:
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        prompt_length_ticks=32,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    service._record_playable_availability(
+        {"accompaniment_history_beats": 4, "request_id": "late-fetch"},
+        availability_time_s=20.0,
+    )
+
+    assert output.system_trace_rows == [
+        {
+            "schema_version": 2,
+            "record_type": "availability_span",
+            "mode": "realtime",
+            "condition": "prompt_continuation",
+            "clock_domain": "service_now",
+            "start_tick": 0,
+            "end_tick_exclusive": 16,
+            "availability_time_s": 20.0,
+            "generation_start_tick": 0,
+            "request_id": "late-fetch",
+            "source_stage": "prompt",
+        }
+    ]
+
+
+def test_prompt_playable_coverage_is_incremental_without_duplicates() -> None:
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        prompt_length_ticks=32,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    service._record_playable_availability(
+        {"accompaniment_history_beats": 8, "request_id": "fetch-1"},
+        availability_time_s=1.0,
+    )
+    service._record_playable_availability(
+        {"accompaniment_history_beats": 8, "request_id": "fetch-repeat"},
+        availability_time_s=2.0,
+    )
+    service._record_playable_availability(
+        {"accompaniment_history_beats": 10, "request_id": "fetch-2"},
+        availability_time_s=3.0,
+    )
+
+    spans = output.system_trace_rows
+    assert [(row["start_tick"], row["end_tick_exclusive"]) for row in spans] == [
+        (0, 32),
+        (32, 40),
+    ]
+    assert [row["request_id"] for row in spans] == ["fetch-1", "fetch-2"]
+    assert [row["availability_time_s"] for row in spans] == [1.0, 3.0]
+
+
+def test_prompt_playable_coverage_splits_at_prompt_boundary() -> None:
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        prompt_length_ticks=32,
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    service._record_playable_availability(
+        {"accompaniment_history_beats": 10, "request_id": "cross-boundary"},
+        availability_time_s=4.0,
+    )
+
+    assert [
+        (
+            row["start_tick"],
+            row["end_tick_exclusive"],
+            row["generation_start_tick"],
+            row["source_stage"],
+        )
+        for row in output.system_trace_rows
+    ] == [
+        (0, 32, 0, "prompt"),
+        (32, 40, 32, "continuation"),
+    ]
+
+
 def test_prompt_continuation_system_trace_is_inert_without_callable_logger(
     monkeypatch,
 ) -> None:
@@ -332,7 +459,12 @@ def test_prompt_continuation_system_trace_is_inert_without_callable_logger(
     service._running = True
 
     service._schedule_playable([_note(55, 0)], current_tick=0, arrival_time_s=0.01)
+    service._record_playable_availability(
+        {"accompaniment_history_beats": 8},
+        availability_time_s=0.01,
+    )
     assert service._system_trace_frames == {}
+    assert service._system_trace_coverage_end_tick == 0
 
     service._tick_loop(max_ticks=1)
 
@@ -1126,6 +1258,78 @@ def test_protocol_worker_playable_fetch_without_system_logger_skips_trace_clock_
     assert client.playable_calls == 1
     assert playable.arrival_time_s is None
     assert now_calls == 1
+
+
+def test_protocol_worker_records_availability_after_playable_returns(monkeypatch):
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_TRACE_PATH", raising=False)
+
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    class _StoppingPromptClient(_FakePromptClient):
+        def __init__(self):
+            super().__init__()
+            self.playable_returned = False
+            self.stop = lambda: None
+
+        def playable(self):
+            self.playable_calls += 1
+            self.playable_returned = True
+            self.stop()
+            return [], {
+                "phase": "ready",
+                "accompaniment_history_beats": 2,
+                "request_id": "http-playable",
+            }
+
+    client = _StoppingPromptClient()
+
+    def now() -> float:
+        return 7.0 if client.playable_returned else 1.0
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=client,
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        protocol_poll_interval_s=0.01,
+        now=now,
+        sleep=lambda _: None,
+    )
+    client.stop = lambda: setattr(service, "_running", False)
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._running = True
+    service._control_q.put(
+        _ControlAction(kind="start", melody_events=[_note(60, 0)], observed_until_tick=32)
+    )
+    service._control_q.put(
+        _ControlAction(kind="append", melody_events=[], observed_until_tick=36)
+    )
+
+    service._protocol_worker()
+
+    assert output.system_trace_rows == [
+        {
+            "schema_version": 2,
+            "record_type": "availability_span",
+            "mode": "realtime",
+            "condition": "prompt_continuation",
+            "clock_domain": "service_now",
+            "start_tick": 0,
+            "end_tick_exclusive": 8,
+            "availability_time_s": 7.0,
+            "generation_start_tick": 0,
+            "request_id": "http-playable",
+            "source_stage": "prompt",
+        }
+    ]
 
 
 def test_protocol_worker_fetches_playable_more_than_once_after_append():

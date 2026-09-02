@@ -579,11 +579,16 @@ def test_standard_system_trace_records_note_rest_missing_and_provenance() -> Non
         ("model", 48, EventType.NOTE_ON),
         ("model", -1, EventType.NOTE_ON),
     ]
-    rows = output.system_trace_rows
+    rows = [
+        row
+        for row in output.system_trace_rows
+        if row["record_type"] == "frame_deadline"
+    ]
     assert [row["tick"] for row in rows] == [0, 1, 2]
 
     note_row = rows[0]
-    assert note_row["schema_version"] == 1
+    assert note_row["schema_version"] == 2
+    assert note_row["record_type"] == "frame_deadline"
     assert note_row["mode"] == "realtime"
     assert note_row["condition"] == "standard"
     assert note_row["clock_domain"] == "service_now"
@@ -625,6 +630,132 @@ def test_standard_system_trace_records_note_rest_missing_and_provenance() -> Non
     assert missing_row["policy"] is None
     assert missing_row["emitted_model_note_on_count"] == 0
     assert missing_row["explicit_rest"] is False
+
+
+def test_standard_empty_accompaniment_records_span_after_successful_plan(
+    monkeypatch,
+) -> None:
+    plan_completed = False
+
+    class _TraceOutput(NoopOutput):
+        def __init__(self) -> None:
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            assert plan_completed is True
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_length_frames=4,
+        now=lambda: 99.0,
+        sleep=lambda _: None,
+    )
+    original_plan = service._plan_model_events_for_playback
+
+    def observed_plan(*args, **kwargs):
+        nonlocal plan_completed
+        plan = original_plan(*args, **kwargs)
+        plan_completed = True
+        return plan
+
+    monkeypatch.setattr(service, "_plan_model_events_for_playback", observed_plan)
+    service._inference_response_queue.put(
+        InferenceResponse(
+            request_id="req-empty",
+            accompaniment_events=[],
+            generation_start_tick=8,
+            arrival_time_s=12.5,
+        )
+    )
+
+    assert service._process_inference_responses(current_tick=12) == 1
+
+    assert output.system_trace_rows == [
+        {
+            "schema_version": 2,
+            "record_type": "availability_span",
+            "mode": "realtime",
+            "condition": "standard",
+            "clock_domain": "service_now",
+            "start_tick": 8,
+            "end_tick_exclusive": 12,
+            "availability_time_s": 12.5,
+            "generation_start_tick": 8,
+            "request_id": "req-empty",
+            "source_stage": "continuation",
+        }
+    ]
+
+
+def test_standard_plan_failure_does_not_record_availability_span(monkeypatch) -> None:
+    class _TraceOutput(NoopOutput):
+        def __init__(self) -> None:
+            self.system_trace_rows = []
+
+        def log_system_trace(self, row):
+            self.system_trace_rows.append(dict(row))
+
+    output = _TraceOutput()
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        generation_length_frames=4,
+        now=lambda: 99.0,
+        sleep=lambda _: None,
+    )
+    service._inference_response_queue.put(
+        InferenceResponse(
+            request_id="req-invalid-plan",
+            accompaniment_events=[],
+            generation_start_tick=8,
+            arrival_time_s=12.5,
+        )
+    )
+
+    def fail_plan(*args, **kwargs):
+        raise ValueError("invalid playback plan")
+
+    monkeypatch.setattr(service, "_plan_model_events_for_playback", fail_plan)
+
+    with pytest.raises(ValueError, match="invalid playback plan"):
+        service._process_inference_responses(current_tick=12)
+
+    assert output.system_trace_rows == []
+
+
+def test_standard_availability_span_rejects_empty_range() -> None:
+    class _TraceOutput(NoopOutput):
+        def log_system_trace(self, row):
+            raise AssertionError("invalid spans must not reach the logger")
+
+    service = RealTimeMusicService(
+        input_source=NoopInput(),
+        inference_engine=NoopInference(),
+        output_sink=_TraceOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+    with pytest.raises(ValueError, match="start_tick < end_tick_exclusive"):
+        service._log_system_trace_availability_span(
+            start_tick=4,
+            end_tick_exclusive=4,
+            availability_time_s=1.0,
+            generation_start_tick=4,
+            request_id="req-invalid",
+            source_stage="continuation",
+        )
 
 
 def test_standard_system_trace_is_inert_without_callable_logger() -> None:

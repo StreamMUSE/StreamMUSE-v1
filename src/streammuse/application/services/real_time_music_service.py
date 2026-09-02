@@ -1223,6 +1223,43 @@ class RealTimeMusicService:
         if frame["rest_provenance"] is None:
             frame["rest_provenance"] = provenance
 
+    def _log_system_trace_availability_span(
+        self,
+        *,
+        start_tick: int,
+        end_tick_exclusive: int,
+        availability_time_s: float,
+        generation_start_tick: int,
+        request_id: str,
+        source_stage: str,
+    ) -> None:
+        logger = self._system_trace_logger
+        if logger is None:
+            return
+        start_tick = int(start_tick)
+        end_tick_exclusive = int(end_tick_exclusive)
+        if start_tick >= end_tick_exclusive:
+            raise ValueError(
+                "availability span must satisfy start_tick < end_tick_exclusive"
+            )
+        row: dict[str, object] = {
+            "schema_version": 2,
+            "record_type": "availability_span",
+            "mode": "realtime",
+            "condition": "standard",
+            "clock_domain": "service_now",
+            "start_tick": start_tick,
+            "end_tick_exclusive": end_tick_exclusive,
+            "availability_time_s": float(availability_time_s),
+            "generation_start_tick": int(generation_start_tick),
+            "request_id": str(request_id),
+            "source_stage": str(source_stage),
+        }
+        try:
+            logger(row)
+        except Exception:
+            return
+
     def _emit_system_trace_frame(
         self,
         *,
@@ -1263,7 +1300,8 @@ class RealTimeMusicService:
             provenance = {}
         arrival_time_s = provenance.get("arrival_time_s")
         row: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "record_type": "frame_deadline",
             "mode": "realtime",
             "condition": "standard",
             "clock_domain": "service_now",
@@ -1409,6 +1447,13 @@ class RealTimeMusicService:
                 response = self._normalize_response(item)
                 acc_events = response.accompaniment_events
                 generation_start_tick = response.generation_start_tick
+                availability_time_s: float | None = None
+                if self._system_trace_logger is not None:
+                    availability_time_s = (
+                        float(response.arrival_time_s)
+                        if response.arrival_time_s is not None
+                        else float(self._now())
+                    )
                 removed_future = self._scheduler.pop_future_events(
                     from_tick=generation_start_tick,
                     source="model",
@@ -1421,6 +1466,18 @@ class RealTimeMusicService:
                     generation_start_tick=generation_start_tick,
                     active_model_keys=set(self._active_model_note_keys),
                 )
+                if availability_time_s is not None:
+                    self._log_system_trace_availability_span(
+                        start_tick=generation_start_tick,
+                        end_tick_exclusive=(
+                            int(generation_start_tick)
+                            + int(self._generation_length_frames)
+                        ),
+                        availability_time_s=availability_time_s,
+                        generation_start_tick=generation_start_tick,
+                        request_id=response.request_id,
+                        source_stage="continuation",
+                    )
 
                 forced_events: list[ScheduledModelEvent] = []
                 for removed in removed_future:
