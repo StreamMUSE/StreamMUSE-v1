@@ -169,6 +169,8 @@ def test_server_environments_freeze_mode_specific_contracts(
 
     assert standard["LEKAI_CHECKPOINT_PATH"] == str(continuation.resolve())
     assert standard["LEKAI_REQUIRE_SESSION"] == "1"
+    assert standard["LEKAI_TIME_SIGNATURE_INDEX"] == "0"
+    assert standard["LEKAI_PROMPT_TIME_SIGNATURE_INDEX"] == "0"
     assert "LEKAI_PROMPT_CHECKPOINT_PATH" not in standard
     assert prompt_continuation["LEKAI_PROMPT_CHECKPOINT_PATH"] == str(prompt.resolve())
     assert prompt_continuation["LEKAI_CONTINUATION_CHECKPOINT_PATH"] == str(
@@ -176,6 +178,8 @@ def test_server_environments_freeze_mode_specific_contracts(
     )
     assert "LEKAI_CHECKPOINT_PATH" not in prompt_continuation
     assert "LEKAI_REQUIRE_SESSION" not in prompt_continuation
+    assert prompt_continuation["LEKAI_TIME_SIGNATURE_INDEX"] == "0"
+    assert prompt_continuation["LEKAI_PROMPT_TIME_SIGNATURE_INDEX"] == "0"
     assert prompt_continuation["LEKAI_PROMPT_SELECTION_MODE"] == "rule_s"
     assert prompt_continuation["LEKAI_PROMPT_BATCH_CANDIDATES"] == "5"
     assert prompt_continuation["LEKAI_PROMPT_TEMPERATURE"] == "1.05"
@@ -442,6 +446,11 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     result = script.run_evaluation(args)
 
     assert result["run_status"] == "dry_run"
+    assert result["evaluation_contract"]["checkpoint_conditioning"] == {
+        "time_signature": "4/4",
+        "continuation_time_signature_index": 0,
+        "prompt_time_signature_index": 0,
+    }
     assert result["summary"] == {"dry_run": 4}
     assert len(result["trials"]) == 4
     assert {row["piece_id"] for row in result["trials"]} == {"first"}

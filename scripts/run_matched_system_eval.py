@@ -40,6 +40,8 @@ GENERATION_INTERVAL_TICKS = 4
 GENERATION_LENGTH_FRAMES = 4
 HISTORY_MAX_TICKS = 128
 PROMPT_CONTEXT_BEATS = 32
+CHECKPOINT_TIME_SIGNATURE = "4/4"
+CHECKPOINT_TIME_SIGNATURE_INDEX = 0
 SAMPLING = {
     "temperature": 1.05,
     "top_p": 0.98,
@@ -389,7 +391,10 @@ def build_server_environment(
             "LEKAI_DEFAULT_BPM": str(BPM),
             "LEKAI_DEVICE": "cuda",
             "LEKAI_DTYPE": "float16",
-            "LEKAI_TIME_SIGNATURE_INDEX": "4",
+            "LEKAI_TIME_SIGNATURE_INDEX": str(CHECKPOINT_TIME_SIGNATURE_INDEX),
+            "LEKAI_PROMPT_TIME_SIGNATURE_INDEX": str(
+                CHECKPOINT_TIME_SIGNATURE_INDEX
+            ),
             "LEKAI_RT_TEMPERATURE": str(SAMPLING["temperature"]),
             "LEKAI_RT_TOP_P": str(SAMPLING["top_p"]),
             "LEKAI_RT_TOP_K": str(SAMPLING["top_k"]),
@@ -508,6 +513,7 @@ def runtime_contract_errors(
         "ticks_per_beat": TICKS_PER_BEAT,
         "prompt_context_beats": PROMPT_CONTEXT_BEATS,
         "history_retention_ticks": HISTORY_MAX_TICKS,
+        "time_signature_index": CHECKPOINT_TIME_SIGNATURE_INDEX,
         **SAMPLING,
     }
     for key, expected in expected_values.items():
@@ -1228,6 +1234,13 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             "generation_interval_ticks": GENERATION_INTERVAL_TICKS,
             "generation_length_frames": GENERATION_LENGTH_FRAMES,
             "late_recovery": False,
+            "checkpoint_conditioning": {
+                "time_signature": CHECKPOINT_TIME_SIGNATURE,
+                "continuation_time_signature_index": (
+                    CHECKPOINT_TIME_SIGNATURE_INDEX
+                ),
+                "prompt_time_signature_index": CHECKPOINT_TIME_SIGNATURE_INDEX,
+            },
             "streammuse_v2_prompt": {
                 "selection_mode": "rule_s",
                 "candidate_count": PROMPT_CANDIDATES,
