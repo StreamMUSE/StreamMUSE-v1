@@ -275,3 +275,43 @@ def test_scheduler_clear_invalidates_running_work():
     assert cleared["phase"] == "idle"
     assert scheduler.status()["phase"] == "idle"
     assert continuation_engine.generate_calls == []
+
+
+def test_scheduler_drain_and_clear_waits_for_running_worker():
+    prompt_engine = _BlockingPromptEngine()
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        observed_until_tick=32,
+    )
+    assert prompt_engine.started.wait(timeout=2.0)
+
+    finished = threading.Event()
+    result = {}
+
+    def reset_worker():
+        result.update(scheduler.drain_and_clear())
+        finished.set()
+
+    thread = threading.Thread(target=reset_worker, daemon=True)
+    thread.start()
+    assert not finished.wait(timeout=0.05)
+
+    prompt_engine.release.set()
+    thread.join(timeout=2.0)
+
+    assert finished.is_set()
+    assert result["phase"] == "idle"
+    assert result["is_running"] is False
+    assert result["melody_event_count"] == 0
+    assert result["accompaniment_event_count"] == 0
+    assert continuation_engine.generate_calls == []

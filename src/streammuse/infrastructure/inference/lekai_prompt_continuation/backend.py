@@ -164,6 +164,12 @@ class LekaiPromptContinuationBackend:
     def clear_history(self) -> dict[str, Any]:
         return self._engine.clear_history()
 
+    def reset_session(self, *, prompt_seed: int, continuation_seed: int) -> dict[str, Any]:
+        return self._engine.reset_session(
+            prompt_seed=int(prompt_seed),
+            continuation_seed=int(continuation_seed),
+        )
+
     def injection_status(self) -> dict[str, bool | int | str]:
         status = dict(self._engine.injection_status())
         status["runtime_model_name"] = self.MODEL_NAME

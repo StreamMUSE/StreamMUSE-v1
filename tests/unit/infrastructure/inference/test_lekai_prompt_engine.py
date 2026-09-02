@@ -81,3 +81,21 @@ def test_prompt_engine_exposes_paired_batch_selection_modes(monkeypatch):
 
     monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "rule_s")
     assert engine.runtime_info()["selection_mode"] == "rule_s"
+
+
+def test_prompt_engine_session_seed_overrides_environment_and_clears_diagnostics(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_SEED", "12")
+    engine = LekaiPromptEngine()
+    engine._last_prompt_token_ids = [1, 2]
+    engine._last_generated_token_ids = [1, 2, 3]
+    engine._last_new_token_ids = [3]
+    engine._last_generated_acc_beats = 8
+    engine._last_generation_metadata = {"selection_mode": "rule_s"}
+
+    actual_seed = engine.reset_session(34)
+
+    assert actual_seed == 34
+    assert engine.runtime_info()["sample_seed"] == 34
+    assert engine.last_generation_log()["prompt_tokens"] == []
+    assert engine.last_generation_log()["generated_tokens"] == []
+    assert engine.last_generation_log()["generated_acc_beats"] == 0

@@ -1,5 +1,11 @@
+import torch
+
 from streammuse.infrastructure.inference.lekai_prompt_continuation import (
     LekaiPromptContinuationBackend,
+)
+from streammuse.infrastructure.inference.lekai_http_backend import LekaiHttpBackend
+from streammuse.infrastructure.inference.lekai_prompt_continuation.continuation_engine import (
+    LekaiContinuationEngine,
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.engine import (
     LekaiPromptContinuationEngine,
@@ -13,6 +19,7 @@ def _note_on(pitch: int, tick: int) -> dict:
 class _FakePromptEngine:
     def __init__(self):
         self.calls = []
+        self.reset_calls = []
 
     def runtime_info(self):
         return {
@@ -36,11 +43,17 @@ class _FakePromptEngine:
         )
         return [_note_on(48, 0)]
 
+    def reset_session(self, seed):
+        self.reset_calls.append(int(seed))
+        return int(seed)
+
 
 class _FakeContinuationEngine:
     def __init__(self):
         self.generate_calls = []
         self.inject_calls = []
+        self.reset_calls = []
+        self.session_epoch = 0
 
     def configure(self, config):
         self.config = config
@@ -83,6 +96,17 @@ class _FakeContinuationEngine:
 
     def clear_history(self):
         return {"success": True, "message": "ok"}
+
+    def reset_session(self, seed):
+        self.reset_calls.append(int(seed))
+        self.session_epoch += 1
+        return {
+            "success": True,
+            "session_id": f"session-{self.session_epoch}",
+            "session_epoch": self.session_epoch,
+            "effective_seed": int(seed),
+            "pending_boundary_generations": 0,
+        }
 
     def injection_status(self):
         return {
@@ -251,3 +275,51 @@ def test_prompt_continuation_backend_inject_clear_status_contract():
 
     assert backend.injection_status()["is_injected"] is False
     assert backend.catchup_status()["melody_history_beats"] == 0
+
+
+def test_prompt_continuation_reset_clears_history_and_passes_both_seeds():
+    prompt_engine = _FakePromptEngine()
+    continuation_engine = _FakeContinuationEngine()
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    backend = LekaiPromptContinuationBackend(engine=engine)
+    backend.inject_history(
+        melody_events=[_note_on(60, 0)],
+        accompaniment_events=[_note_on(48, 0)],
+        injection_length_ticks=16,
+    )
+
+    result = backend.reset_session(prompt_seed=111, continuation_seed=222)
+
+    assert result == {
+        "success": True,
+        "prompt_seed": 111,
+        "continuation_effective_seed": 222,
+        "session_id": "session-1",
+        "session_epoch": 1,
+        "pending_boundary_generations": 0,
+        "scheduler_phase": "idle",
+        "scheduler_is_running": False,
+    }
+    assert prompt_engine.reset_calls == [111]
+    assert continuation_engine.reset_calls == [222]
+    assert backend.catchup_status()["melody_history_beats"] == 0
+    assert backend.raw_accompaniment_history() == []
+
+
+def test_prompt_continuation_reset_replays_continuation_rng_sequence():
+    prompt_engine = _FakePromptEngine()
+    continuation_backend = LekaiHttpBackend()
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=prompt_engine,
+        continuation_engine=LekaiContinuationEngine(backend=continuation_backend),
+    )
+
+    engine.reset_session(prompt_seed=7, continuation_seed=31415)
+    first = torch.rand(8, generator=continuation_backend._sample_generator)
+    engine.reset_session(prompt_seed=7, continuation_seed=31415)
+    second = torch.rand(8, generator=continuation_backend._sample_generator)
+
+    assert torch.equal(first, second)

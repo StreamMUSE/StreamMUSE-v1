@@ -61,6 +61,7 @@ class LekaiPromptEngine:
         self._last_generated_token_ids: list[int] = []
         self._last_new_token_ids: list[int] = []
         self._last_generation_metadata: dict[str, Any] = {}
+        self._session_seed: Optional[int] = None
 
         if checkpoint_path:
             self._load_model(checkpoint_path)
@@ -162,15 +163,32 @@ class LekaiPromptEngine:
             False,
         )
 
-    def _seed_if_configured(self) -> None:
+    def _configured_seed(self) -> Optional[int]:
+        if self._session_seed is not None:
+            return int(self._session_seed)
         seed = self._env_optional_int("LEKAI_PROMPT_SEED")
         if seed is None:
             seed = self._env_optional_int("LEKAI_SEED")
+        return seed
+
+    def _seed_if_configured(self) -> None:
+        seed = self._configured_seed()
         if seed is None:
             return
         torch.manual_seed(int(seed))
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(int(seed))
+
+    def reset_session(self, seed: int) -> int:
+        """Set the per-session Prompt RNG seed and discard prior diagnostics."""
+
+        self._session_seed = int(seed)
+        self._last_generated_acc_beats = 0
+        self._last_prompt_token_ids = []
+        self._last_generated_token_ids = []
+        self._last_new_token_ids = []
+        self._last_generation_metadata = {}
+        return int(self._session_seed)
 
     def _prompt_condition_length_ticks(self, prompt_length_ticks: int) -> int:
         time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
@@ -284,6 +302,7 @@ class LekaiPromptEngine:
             "batch_candidate_count": (
                 self._batch_candidate_count() if selection_mode != "single" else 1
             ),
+            "sample_seed": self._configured_seed(),
         }
 
     def _active_pitches_before_tick(

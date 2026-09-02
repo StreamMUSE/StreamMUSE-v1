@@ -82,6 +82,22 @@ class ResetSessionResponse(BaseModel):
     pending_boundary_generations: int
 
 
+class PromptContinuationResetSessionRequest(BaseModel):
+    prompt_seed: int
+    continuation_seed: int
+
+
+class PromptContinuationResetSessionResponse(BaseModel):
+    success: bool
+    prompt_seed: int
+    continuation_effective_seed: int
+    session_id: str
+    session_epoch: int
+    pending_boundary_generations: int
+    scheduler_phase: str
+    scheduler_is_running: bool
+
+
 class DirectInjectionRequest(BaseModel):
     melody_notes: List[MelodyNoteEvent]
     accompaniment_notes: List[AccompanimentNoteEvent]
@@ -516,6 +532,28 @@ async def reset_session(request: ResetSessionRequest) -> ResetSessionResponse:
         )
     result = backend.reset_session(seed=int(request.seed))
     return ResetSessionResponse(**result)
+
+
+@app.post(
+    "/prompt_continuation/debug/reset_session",
+    response_model=PromptContinuationResetSessionResponse,
+)
+async def prompt_continuation_reset_session(
+    request: PromptContinuationResetSessionRequest,
+) -> PromptContinuationResetSessionResponse:
+    if not _debug_reset_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "debug session reset is disabled; set "
+                "LEKAI_ENABLE_DEBUG_RESET=true only on a dedicated local server"
+            ),
+        )
+    result = prompt_continuation_backend.reset_session(
+        prompt_seed=int(request.prompt_seed),
+        continuation_seed=int(request.continuation_seed),
+    )
+    return PromptContinuationResetSessionResponse(**result)
 
 
 @app.post("/inject_notes", response_model=DirectInjectionResponse)

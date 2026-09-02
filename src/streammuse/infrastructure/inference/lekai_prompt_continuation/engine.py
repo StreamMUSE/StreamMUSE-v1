@@ -7,6 +7,7 @@ loading models or constructing inference inputs directly.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any, Optional
 
 from streammuse.infrastructure.inference.lekai_http_backend import (
@@ -55,6 +56,7 @@ class LekaiPromptContinuationEngine:
             checkpoint_path=resolved_continuation_checkpoint
         )
         self._catchup_state = CatchUpState()
+        self._session_gate = threading.RLock()
         self._scheduler = LekaiPromptContinuationScheduler(
             prompt_engine=self._prompt_engine,
             continuation_engine=self._continuation_engine,
@@ -172,15 +174,16 @@ class LekaiPromptContinuationEngine:
         checkpoint_path: Optional[str],
         observed_until_tick: Optional[int] = None,
     ) -> dict[str, int | bool | str | None]:
-        return self._scheduler.start(
-            melody_events=melody_events,
-            prompt_length_ticks=prompt_length_ticks,
-            generation_interval_ticks=generation_interval_ticks,
-            inference_mode=inference_mode,
-            model_name=model_name,
-            checkpoint_path=checkpoint_path,
-            observed_until_tick=observed_until_tick,
-        )
+        with self._session_gate:
+            return self._scheduler.start(
+                melody_events=melody_events,
+                prompt_length_ticks=prompt_length_ticks,
+                generation_interval_ticks=generation_interval_ticks,
+                inference_mode=inference_mode,
+                model_name=model_name,
+                checkpoint_path=checkpoint_path,
+                observed_until_tick=observed_until_tick,
+            )
 
     def append_melody_events(
         self,
@@ -188,10 +191,11 @@ class LekaiPromptContinuationEngine:
         *,
         observed_until_tick: Optional[int] = None,
     ) -> dict[str, int | bool | str | None]:
-        return self._scheduler.append_melody(
-            melody_events=melody_events,
-            observed_until_tick=observed_until_tick,
-        )
+        with self._session_gate:
+            return self._scheduler.append_melody(
+                melody_events=melody_events,
+                observed_until_tick=observed_until_tick,
+            )
 
     def scheduler_status(self) -> dict[str, int | bool | str | None]:
         return self._scheduler.status()
@@ -229,7 +233,8 @@ class LekaiPromptContinuationEngine:
             model_name=str(model_name),
             checkpoint_path=checkpoint_path,
         )
-        return self._generate_from_request(request)
+        with self._session_gate:
+            return self._generate_from_request(request)
 
     def _generate_from_request(
         self,
@@ -287,25 +292,48 @@ class LekaiPromptContinuationEngine:
         accompaniment_events: list[EventPayload],
         injection_length_ticks: int,
     ) -> dict[str, int | bool | str]:
-        injection_beats = self._ticks_to_beats(injection_length_ticks)
-        self._catchup_state.set_history_lengths(
-            melody_beats=injection_beats,
-            accompaniment_beats=injection_beats,
-        )
-        result = self._continuation_engine.inject_history(
-            melody_events=copy_events(melody_events),
-            accompaniment_events=copy_events(accompaniment_events),
-            injection_length_ticks=injection_length_ticks,
-        )
-        result.update(self._prefixed_catchup_snapshot())
-        return result
+        with self._session_gate:
+            injection_beats = self._ticks_to_beats(injection_length_ticks)
+            self._catchup_state.set_history_lengths(
+                melody_beats=injection_beats,
+                accompaniment_beats=injection_beats,
+            )
+            result = self._continuation_engine.inject_history(
+                melody_events=copy_events(melody_events),
+                accompaniment_events=copy_events(accompaniment_events),
+                injection_length_ticks=injection_length_ticks,
+            )
+            result.update(self._prefixed_catchup_snapshot())
+            return result
 
     def clear_history(self) -> dict[str, Any]:
-        self._catchup_state.reset()
-        self._scheduler.clear()
-        result = self._continuation_engine.clear_history()
-        result.update(self._prefixed_catchup_snapshot())
-        return result
+        with self._session_gate:
+            self._catchup_state.reset()
+            self._scheduler.clear()
+            result = self._continuation_engine.clear_history()
+            result.update(self._prefixed_catchup_snapshot())
+            return result
+
+    def reset_session(self, *, prompt_seed: int, continuation_seed: int) -> dict[str, Any]:
+        """Atomically retire P+C work and create independently seeded state."""
+
+        with self._session_gate:
+            scheduler_status = self._scheduler.drain_and_clear()
+            self._catchup_state.reset()
+            actual_prompt_seed = self._prompt_engine.reset_session(int(prompt_seed))
+            continuation = self._continuation_engine.reset_session(int(continuation_seed))
+            return {
+                "success": True,
+                "prompt_seed": int(actual_prompt_seed),
+                "continuation_effective_seed": int(continuation["effective_seed"]),
+                "session_id": str(continuation["session_id"]),
+                "session_epoch": int(continuation["session_epoch"]),
+                "pending_boundary_generations": int(
+                    continuation.get("pending_boundary_generations", 0)
+                ),
+                "scheduler_phase": str(scheduler_status["phase"]),
+                "scheduler_is_running": bool(scheduler_status["is_running"]),
+            }
 
     def injection_status(self) -> dict[str, bool | int | str]:
         status = dict(self._continuation_engine.injection_status())

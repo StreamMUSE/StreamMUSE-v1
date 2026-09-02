@@ -263,3 +263,55 @@ def test_reset_endpoint_is_fail_closed_by_default(monkeypatch):
     assert response.status_code == 403
     assert "LEKAI_ENABLE_DEBUG_RESET" in response.json()["detail"]
     assert fresh_backend.runtime_info()["session_epoch"] == 0
+
+
+def test_prompt_continuation_reset_endpoint_is_dedicated_and_delegates(monkeypatch):
+    monkeypatch.setenv("LEKAI_ENABLE_DEBUG_RESET", "true")
+
+    class _ResetBackend:
+        def reset_session(self, *, prompt_seed, continuation_seed):
+            return {
+                "success": True,
+                "prompt_seed": prompt_seed,
+                "continuation_effective_seed": continuation_seed,
+                "session_id": "pc-session",
+                "session_epoch": 4,
+                "pending_boundary_generations": 0,
+                "scheduler_phase": "idle",
+                "scheduler_is_running": False,
+            }
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _ResetBackend())
+
+    response = TestClient(app).post(
+        "/prompt_continuation/debug/reset_session",
+        json={"prompt_seed": 101, "continuation_seed": 202},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["prompt_seed"] == 101
+    assert response.json()["continuation_effective_seed"] == 202
+    assert response.json()["session_id"] == "pc-session"
+    assert response.json()["session_epoch"] == 4
+
+
+def test_prompt_continuation_reset_endpoint_is_fail_closed_by_default(monkeypatch):
+    monkeypatch.delenv("LEKAI_ENABLE_DEBUG_RESET", raising=False)
+
+    class _UnexpectedResetBackend:
+        def reset_session(self, **kwargs):
+            pytest.fail(f"reset should not be called: {kwargs}")
+
+    monkeypatch.setattr(
+        server_lekai,
+        "prompt_continuation_backend",
+        _UnexpectedResetBackend(),
+    )
+
+    response = TestClient(app).post(
+        "/prompt_continuation/debug/reset_session",
+        json={"prompt_seed": 101, "continuation_seed": 202},
+    )
+
+    assert response.status_code == 403
+    assert "LEKAI_ENABLE_DEBUG_RESET" in response.json()["detail"]

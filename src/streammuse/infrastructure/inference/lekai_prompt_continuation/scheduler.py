@@ -201,6 +201,36 @@ class LekaiPromptContinuationScheduler:
             self._empty_continuation_output_streak = 0
             return self.status()
 
+    def drain_and_clear(self) -> dict[str, int | bool | str | None]:
+        """Invalidate current work, wait for its worker, then clear all state."""
+
+        with self._lock:
+            self._run_id += 1
+            future = self._future
+        if future is not None:
+            try:
+                future.result()
+            except Exception:
+                # A failed retired run must not prevent the next session reset.
+                pass
+        with self._lock:
+            self._phase = "idle"
+            self._error = None
+            self._future = None
+            self._melody_history = []
+            self._prompt_melody_input = []
+            self._prompt_accompaniment_history = []
+            self._accompaniment_history = []
+            self._continuation_sent_melody_event_count = 0
+            self._catchup_state.reset()
+            self._continuation_calls = 0
+            self._last_continuation_event_count = 0
+            self._last_continuation_note_on_count = 0
+            self._last_continuation_min_tick = None
+            self._last_continuation_max_tick = None
+            self._empty_continuation_output_streak = 0
+            return self.status()
+
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 

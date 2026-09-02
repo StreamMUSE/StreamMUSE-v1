@@ -68,5 +68,8 @@ class LekaiContinuationEngine:
     def clear_history(self) -> dict[str, Any]:
         return self._backend.clear_history()
 
+    def reset_session(self, seed: int) -> dict[str, Any]:
+        return self._backend.reset_session(seed=int(seed))
+
     def injection_status(self) -> dict[str, bool | int | str]:
         return self._backend.injection_status()
