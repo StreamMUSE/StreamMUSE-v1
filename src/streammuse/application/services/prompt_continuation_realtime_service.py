@@ -18,6 +18,7 @@ from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
 
 
 EventKey = tuple[int, int, str, int, int, int]
+ModelNoteKey = tuple[int, int, int]
 NoteSpanKey = tuple[int, int, int, int, int]
 
 
@@ -133,6 +134,8 @@ class PromptContinuationRealtimeService:
         self._last_append_observed_tick = 0
         self._handled_model_event_counts: Counter[EventKey] = Counter()
         self._played_model_event_counts: Counter[EventKey] = Counter()
+        self._active_model_note_keys: set[ModelNoteKey] = set()
+        self._pending_late_note_off_keys: set[ModelNoteKey] = set()
         self._scheduled_model_note_counts: Counter[NoteSpanKey] = Counter()
         self._rehydrated_model_note_span_counts: Counter[NoteSpanKey] = Counter()
         self._append_generation = 0
@@ -549,6 +552,9 @@ class PromptContinuationRealtimeService:
         recovered_late_event_count = 0
         dropped_past = 0
         dropped_too_late_note_on = 0
+        closed_late_active_note_off = 0
+        skipped_pending_late_note_off = 0
+        dropped_orphan_late_note_off = 0
         rehydrated_note_count = 0
         placeholder_count = 0
         usable_events: list[MusicalEvent] = []
@@ -602,19 +608,53 @@ class PromptContinuationRealtimeService:
 
             event_tick = int(event.tick)
             schedule_tick = event_tick
+            event_to_schedule = event
+            policy = "future_event"
             if event_tick < current_tick:
                 if not self._recover_late_events:
-                    dropped_past += 1
-                    self._ensure_count(self._handled_model_event_counts, event_key, occurrence)
-                    continue
-                if self._would_drop_late_note_on(event, current_tick=current_tick):
+                    if event.event_type == EventType.NOTE_OFF:
+                        model_key = self._model_event_key(event)
+                        if model_key in self._active_model_note_keys:
+                            if model_key in self._pending_late_note_off_keys:
+                                skipped_pending_late_note_off += 1
+                                self._ensure_count(
+                                    self._handled_model_event_counts,
+                                    event_key,
+                                    occurrence,
+                                )
+                                continue
+                            self._pending_late_note_off_keys.add(model_key)
+                            schedule_tick = current_tick
+                            event_to_schedule = self._clone_event_at_tick(event, current_tick)
+                            policy = "late_active_note_off"
+                            closed_late_active_note_off += 1
+                        else:
+                            dropped_past += 1
+                            dropped_orphan_late_note_off += 1
+                            self._ensure_count(
+                                self._handled_model_event_counts,
+                                event_key,
+                                occurrence,
+                            )
+                            continue
+                    else:
+                        dropped_past += 1
+                        self._ensure_count(
+                            self._handled_model_event_counts,
+                            event_key,
+                            occurrence,
+                        )
+                        continue
+                elif self._would_drop_late_note_on(event, current_tick=current_tick):
                     dropped_too_late_note_on += 1
                     self._ensure_count(self._handled_model_event_counts, event_key, occurrence)
                     continue
-                schedule_tick = current_tick
-                recovered_late_event_count += 1
+                else:
+                    schedule_tick = current_tick
+                    policy = "recovered_late_event"
+                    recovered_late_event_count += 1
 
-            model_event = self._to_model_event(event, current_tick=current_tick)
+            model_event = self._to_model_event(event_to_schedule, current_tick=current_tick)
             self._scheduler.schedule(model_event, schedule_tick)
             self._record_system_trace_event(
                 model_event,
@@ -622,7 +662,7 @@ class PromptContinuationRealtimeService:
                 logical_tick=event_tick,
                 arrival_time_s=arrival_time_s,
                 action="scheduled",
-                policy="recovered_late_event" if schedule_tick != event_tick else "future_event",
+                policy=policy,
             )
             self._ensure_count(self._handled_model_event_counts, event_key, occurrence)
             self._ensure_count(self._played_model_event_counts, event_key, occurrence)
@@ -634,6 +674,9 @@ class PromptContinuationRealtimeService:
             f"recovered {recovered_late_event_count} late event(s); "
             f"dropped {dropped_past} past event(s); "
             f"dropped {dropped_too_late_note_on} too-late note_on event(s); "
+            f"closed {closed_late_active_note_off} active note(s) from late note_off; "
+            f"skipped {skipped_pending_late_note_off} pending late note_off event(s); "
+            f"dropped {dropped_orphan_late_note_off} orphan late note_off event(s); "
             f"rehydrated {rehydrated_note_count} active note(s); "
             f"skipped {skipped_duplicate} duplicate event(s); "
             f"skipped {placeholder_count} placeholder event(s).",
@@ -805,6 +848,35 @@ class PromptContinuationRealtimeService:
             source="model",
             backup_level=max(0, int(event.tick) - int(current_tick)),
         )
+
+    @staticmethod
+    def _model_event_key(event: MusicalEvent) -> ModelNoteKey:
+        return (int(event.pitch), int(event.channel), int(event.program))
+
+    @staticmethod
+    def _emission_order_key(event: MusicalEvent) -> tuple[int, int, int, int, int]:
+        event_priority = 0 if event.event_type == EventType.NOTE_OFF else 1
+        return (
+            event_priority,
+            int(event.pitch),
+            int(event.channel),
+            int(event.program),
+            int(event.tick),
+        )
+
+    def _observe_model_output_event(self, event: MusicalEvent) -> None:
+        if event.is_placeholder or int(event.pitch) == -1:
+            return
+        key = self._model_event_key(event)
+        if event.event_type == EventType.NOTE_ON and int(event.velocity) > 0:
+            self._active_model_note_keys.add(key)
+        elif event.event_type == EventType.NOTE_OFF:
+            self._active_model_note_keys.discard(key)
+            self._pending_late_note_off_keys.discard(key)
+
+    def _output_model_event(self, event: MusicalEvent) -> None:
+        self._output.output_event(event, source=event.source)
+        self._observe_model_output_event(event)
 
     def _would_drop_late_note_on(self, event: MusicalEvent, *, current_tick: int) -> bool:
         return (
@@ -1134,9 +1206,15 @@ class PromptContinuationRealtimeService:
                 )
 
             self._output_metronome_tick(tick=tick, bar=mt.bar, beat=mt.beat)
-            model_events_to_play = self._scheduler.get_events_at_tick(tick)
+            model_events_to_play = sorted(
+                self._scheduler.get_events_at_tick(tick),
+                key=self._emission_order_key,
+            )
             for event in model_events_to_play:
-                self._output.output_event(event, source=event.source)
+                if event.source == "model":
+                    self._output_model_event(event)
+                else:
+                    self._output.output_event(event, source=event.source)
             self._emit_system_trace_frame(
                 tick=tick,
                 nominal_tick_time_s=target_time,
