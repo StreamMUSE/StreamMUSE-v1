@@ -83,6 +83,16 @@ def test_prompt_engine_exposes_paired_batch_selection_modes(monkeypatch):
     assert engine.runtime_info()["selection_mode"] == "rule_s"
 
 
+def test_prompt_engine_accepts_rule_s_v3_aliases(monkeypatch):
+    engine = LekaiPromptEngine()
+
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "rule_s_v3")
+    assert engine.runtime_info()["selection_mode"] == "rule_s_v3"
+
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "rule-s-v3")
+    assert engine.runtime_info()["selection_mode"] == "rule_s_v3"
+
+
 def test_prompt_engine_session_seed_overrides_environment_and_clears_diagnostics(monkeypatch):
     monkeypatch.setenv("LEKAI_PROMPT_SEED", "12")
     engine = LekaiPromptEngine()

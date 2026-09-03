@@ -1,14 +1,23 @@
+import math
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_batch_selector import (
+    RULE_S_V3_DURATION_EPSILON,
+    RULE_S_V3_DURATION_TAU,
+    RULE_S_V3_WEIGHTS,
     accompaniment_features_from_pianoroll,
+    duration_match_score,
+    low_register_penalty_from_pianoroll,
     median_note_duration_from_pianoroll,
     score_prompt_batch_ppl,
     select_rule_s_candidate,
     select_rule_s_v2_candidate,
+    select_rule_s_v3_candidate,
+    tonal_fit_score,
 )
 
 
@@ -23,7 +32,12 @@ def _candidate(
     beats=8,
     mel_duration=1.0,
     acc_duration=1.0,
+    mel_evidence=None,
+    acc_evidence=None,
+    low_penalty=0.0,
 ):
+    mel_evidence = mel_evidence or [8.0, 0, 0, 0, 4.0, 0, 0, 4.0, 0, 0, 0, 0]
+    acc_evidence = acc_evidence or [8.0, 0, 0, 0, 4.0, 0, 0, 4.0, 0, 0, 0, 0]
     return {
         "candidate_number": number,
         "generated_beats": beats,
@@ -36,6 +50,9 @@ def _candidate(
         "acc_average_voice_number": voices,
         "mel_median_note_duration_ticks": mel_duration,
         "acc_median_note_duration_ticks": acc_duration,
+        "mel_pitch_class_duration_evidence": mel_evidence,
+        "acc_pitch_class_duration_evidence": acc_evidence,
+        "low_register_penalty": low_penalty,
     }
 
 
@@ -133,6 +150,135 @@ def test_rule_s_v2_penalizes_median_duration_mismatch_without_changing_v1():
     assert v2["candidates"][0]["duration_ratio"] == 1.0
     assert v2["candidates"][0]["duration_mismatch"] == 0.0
     assert v2["candidates"][1]["duration_mismatch"] > 2.0
+
+
+def test_rule_s_v3_exact_formula_has_no_average_voice_term_and_preserves_v1():
+    candidates = [
+        _candidate(
+            1, ppl=2.0, pitch_range=20, entropy=2.0, voices=1, low_penalty=0.25
+        ),
+        _candidate(
+            2, ppl=2.0, pitch_range=20, entropy=2.0, voices=99, low_penalty=0.25
+        ),
+    ]
+
+    v1_before = select_rule_s_candidate(candidates)
+    v3 = select_rule_s_v3_candidate(candidates)
+    v1_after = select_rule_s_candidate(candidates)
+
+    row = v3["candidates"][0]
+    expected = sum(
+        RULE_S_V3_WEIGHTS[metric] * 0.75
+        for metric in (
+            "prompt_ppl",
+            "acc_pitch_range",
+            "acc_pitch_class_entropy",
+            "duration_match",
+            "tonal_fit",
+        )
+    ) + RULE_S_V3_WEIGHTS["low_register_penalty"] * 0.25
+    assert row["rule_s_v3_score"] == pytest.approx(expected)
+    assert "acc_average_voice_number" not in row["rule_s_v3_contributions"]
+    assert v3["selected_candidate_number"] == 1
+    assert v1_before == v1_after
+    assert v1_before["selected_candidate_number"] == 2
+
+
+def test_rule_s_v3_duration_match_prefers_equal_medians():
+    exact = duration_match_score(4.0, 4.0)
+    double = duration_match_score(8.0, 4.0)
+
+    assert exact == 1.0
+    assert double == pytest.approx(
+        math.exp(
+            -abs(
+                math.log(
+                    (8.0 + RULE_S_V3_DURATION_EPSILON)
+                    / (4.0 + RULE_S_V3_DURATION_EPSILON)
+                )
+            )
+            / RULE_S_V3_DURATION_TAU
+        )
+    )
+    assert exact > double
+
+
+def test_rule_s_v3_tonal_fit_prefers_compatible_pitch_classes():
+    melody = [8.0, 0, 0, 0, 4.0, 0, 0, 4.0, 0, 0, 0, 0]
+    compatible = [4.0, 0, 0, 0, 4.0, 0, 0, 4.0, 0, 0, 0, 0]
+    incompatible = [0, 4.0, 0, 4.0, 0, 0, 4.0, 0, 4.0, 0, 4.0, 0]
+
+    compatible_fit, confidence = tonal_fit_score(melody, compatible)
+    incompatible_fit, _ = tonal_fit_score(melody, incompatible)
+
+    assert confidence is not None and 0.0 < confidence <= 1.0
+    assert compatible_fit is not None and incompatible_fit is not None
+    assert compatible_fit > incompatible_fit
+
+
+def test_rule_s_v3_low_register_penalty_is_absolute_duration_weighted_hinge():
+    roll = np.zeros((2, 88, 8), dtype=np.uint8)
+    roll[0, 0, 0:4] = 1  # MIDI 21: full hinge penalty.
+    roll[1, 0, 0] = 1
+    roll[0, 39, 4:8] = 1  # MIDI 60: no penalty.
+    roll[1, 39, 4] = 1
+
+    penalty = low_register_penalty_from_pianoroll(roll, length_ticks=8)
+    decision = select_rule_s_v3_candidate(
+        [
+            _candidate(
+                1,
+                ppl=2,
+                pitch_range=10,
+                entropy=1,
+                voices=1,
+                low_penalty=penalty,
+            )
+        ]
+    )
+
+    assert penalty == 0.5
+    assert decision["candidates"][0]["rule_s_v3_contributions"][
+        "low_register_penalty"
+    ] == -0.25
+
+
+def test_rule_s_v3_missing_optional_metrics_remains_eligible():
+    candidate = _candidate(
+        1,
+        ppl=2,
+        pitch_range=10,
+        entropy=1,
+        voices=1,
+        mel_duration=0,
+        mel_evidence=[0.0] * 12,
+    )
+
+    decision = select_rule_s_v3_candidate([candidate])
+    row = decision["candidates"][0]
+
+    assert decision["selected_candidate_number"] == 1
+    assert decision["eligible_count"] == 1
+    assert row["duration_match"] is None
+    assert row["tonal_fit"] is None
+    assert row["rule_s_v3_contributions"]["duration_match"] == 0.0
+    assert row["rule_s_v3_contributions"]["tonal_fit"] == 0.0
+
+
+def test_rule_s_v3_ineligible_fallback_and_tie_are_deterministic():
+    tied = [
+        _candidate(1, ppl=2, pitch_range=10, entropy=1, voices=1),
+        _candidate(2, ppl=2, pitch_range=10, entropy=1, voices=1),
+    ]
+    unavailable = [
+        _candidate(1, ppl=None, pitch_range=0, entropy=0, voices=0, notes=0),
+        _candidate(2, ppl=None, pitch_range=0, entropy=0, voices=0, notes=0),
+    ]
+
+    assert select_rule_s_v3_candidate(tied)["selected_candidate_number"] == 1
+    fallback = select_rule_s_v3_candidate(unavailable)
+    assert fallback["selected_index"] == 0
+    assert fallback["fallback_reason"] == "no_eligible_candidate"
 
 
 def test_prompt_ppl_scores_only_accompaniment_content_tokens():

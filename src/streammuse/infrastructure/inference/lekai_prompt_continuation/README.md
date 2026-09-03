@@ -216,6 +216,15 @@ prompt_beats % beats_per_bar == 0
 
 That is a prompt-model/data-preparation constraint, not a frontend display rule.
 
+## Prompt Batch Selection
+
+`LEKAI_PROMPT_SELECTION_MODE=rule_s_v3` (also `rule-s-v3`) adds prompt-only
+duration, tonal, and low-register compatibility to batch selection. Its duration
+match uses `tau = ln(2)` (about `0.6931`), so a 2x median-duration ratio yields
+`exp(-1)`. Its squared low-register hinge starts below MIDI 36 and reaches 1 at
+MIDI 21. The v3 weights are initial heuristics; the frozen v1 weights came from
+pilot Spearman correlations. Existing modes and defaults are unchanged.
+
 ## Time-Signature Handling
 
 The realtime path keeps the source piece's `beats_per_bar` instead of assuming

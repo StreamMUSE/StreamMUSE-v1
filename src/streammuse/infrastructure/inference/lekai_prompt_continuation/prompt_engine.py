@@ -27,8 +27,12 @@ from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_model.
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_batch_selector import (
     accompaniment_features_from_pianoroll,
+    duration_weighted_pitch_class_evidence,
+    low_register_penalty_from_pianoroll,
+    melody_features_from_pianoroll,
     score_prompt_batch_ppl,
     select_rule_s_candidate,
+    select_rule_s_v3_candidate,
     trim_at_eos,
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.token_conversion import (
@@ -125,11 +129,13 @@ class LekaiPromptEngine:
             "rule_s": "rule_s",
             "rule-s": "rule_s",
             "best_of_n": "rule_s",
+            "rule_s_v3": "rule_s_v3",
+            "rule-s-v3": "rule_s_v3",
         }
         if raw not in aliases:
             raise ValueError(
                 "LEKAI_PROMPT_SELECTION_MODE must be single, batch_first, or "
-                f"rule_s, got {raw!r}"
+                f"rule_s/rule_s_v3, got {raw!r}"
             )
         return aliases[raw]
 
@@ -487,6 +493,7 @@ class LekaiPromptEngine:
         candidate_number: int,
         prompt_length_ticks: int,
         ppl_score: dict[str, Any],
+        include_rule_s_v3_features: bool = False,
     ) -> dict[str, Any]:
         trimmed = trim_at_eos(
             sequence.detach().cpu(),
@@ -509,10 +516,25 @@ class LekaiPromptEngine:
                 (2, 88, int(prompt_length_ticks)),
                 dtype=np.uint8,
             )
-        features = accompaniment_features_from_pianoroll(
+        features: dict[str, Any] = accompaniment_features_from_pianoroll(
             acc_pr,
             length_ticks=int(prompt_length_ticks),
         )
+        if include_rule_s_v3_features:
+            features.update(
+                {
+                    "acc_pitch_class_duration_evidence": (
+                        duration_weighted_pitch_class_evidence(
+                            acc_pr,
+                            length_ticks=int(prompt_length_ticks),
+                        ).tolist()
+                    ),
+                    "low_register_penalty": low_register_penalty_from_pianoroll(
+                        acc_pr,
+                        length_ticks=int(prompt_length_ticks),
+                    ),
+                }
+            )
         ppl_available = bool(ppl_score.get("available"))
         return {
             "candidate_number": int(candidate_number),
@@ -539,7 +561,7 @@ class LekaiPromptEngine:
         selection_mode: str,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         assert self._model is not None
-        if selection_mode not in {"batch_first", "rule_s"}:
+        if selection_mode not in {"batch_first", "rule_s", "rule_s_v3"}:
             raise ValueError(f"invalid batch selection mode: {selection_mode}")
         candidate_count = self._batch_candidate_count()
 
@@ -576,10 +598,33 @@ class LekaiPromptEngine:
                 candidate_number=index + 1,
                 prompt_length_ticks=int(prompt_length_ticks),
                 ppl_score=ppl_scores[index],
+                include_rule_s_v3_features=selection_mode == "rule_s_v3",
             )
             for index in range(candidate_count)
         ]
-        rule_s_decision = select_rule_s_candidate(candidates)
+        if selection_mode == "rule_s_v3":
+            melody_beats, _acc_beats = self._tokenizer.parse_generated_sequence(
+                prompt_tokens.detach().cpu()
+            )
+            if melody_beats:
+                melody_pr = self._tokenizer.decode_beats_to_pianoroll(
+                    melody_beats,
+                    track_marker_id=self._tokenizer.vocab.track_marker_mel,
+                )
+            else:
+                melody_pr = np.zeros(
+                    (2, 88, int(prompt_length_ticks)),
+                    dtype=np.uint8,
+                )
+            melody_features = melody_features_from_pianoroll(
+                melody_pr,
+                length_ticks=min(int(prompt_length_ticks), melody_pr.shape[2]),
+            )
+            for candidate in candidates:
+                candidate.update(melody_features)
+            rule_s_decision = select_rule_s_v3_candidate(candidates)
+        else:
+            rule_s_decision = select_rule_s_candidate(candidates)
         selected_index = (
             0
             if selection_mode == "batch_first"
@@ -595,7 +640,7 @@ class LekaiPromptEngine:
             "eligible_candidate_count": int(rule_s_decision["eligible_count"]),
             "selection_fallback_reason": (
                 rule_s_decision["fallback_reason"]
-                if selection_mode == "rule_s"
+                if selection_mode in {"rule_s", "rule_s_v3"}
                 else None
             ),
             "rule_s_id": rule_s_decision["rule_id"],

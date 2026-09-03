@@ -11,6 +11,7 @@ import torch
 
 RULE_S_ID = "empty_filter_discovery_spearman_weighted_rank_v1"
 RULE_S_V2_ID = "rule_s_v1_plus_median_duration_mismatch_v2"
+RULE_S_V3_ID = "rule_s_prompt_musical_compatibility_v3"
 RULE_S_WEIGHTS = {
     "prompt_ppl": -0.45,
     "acc_pitch_range": 0.47699162299076214,
@@ -19,6 +20,151 @@ RULE_S_WEIGHTS = {
 }
 RULE_S_V2_DURATION_WEIGHT = 0.49
 RULE_S_V2_EXPECTED_LOG_DURATION_RATIO = 0.0
+RULE_S_V3_WEIGHTS = {
+    "prompt_ppl": -0.45,
+    "acc_pitch_range": 0.47699162299076214,
+    "acc_pitch_class_entropy": 0.4666666666666666,
+    "duration_match": 0.3,
+    "tonal_fit": 0.5,
+    "low_register_penalty": -0.5,
+}
+RULE_S_V3_DURATION_EPSILON = 1e-6
+RULE_S_V3_DURATION_TAU = math.log(2.0)
+RULE_S_V3_LOW_REGISTER_MIDI = 36
+RULE_S_V3_LOW_REGISTER_SPAN = 15.0
+
+# Soft major/minor pitch-class templates. Values are compatibility strengths,
+# not probabilities; rotations provide all 24 keys.
+_MAJOR_TONAL_TEMPLATE = np.asarray(
+    [1.0, 0.1, 0.65, 0.1, 0.8, 0.7, 0.1, 0.9, 0.1, 0.65, 0.1, 0.6],
+    dtype=np.float64,
+)
+_MINOR_TONAL_TEMPLATE = np.asarray(
+    [1.0, 0.1, 0.6, 0.8, 0.1, 0.7, 0.1, 0.9, 0.65, 0.1, 0.6, 0.1],
+    dtype=np.float64,
+)
+
+
+def duration_weighted_pitch_class_evidence(
+    pianoroll: np.ndarray,
+    *,
+    length_ticks: int | None = None,
+) -> np.ndarray:
+    """Return unnormalized note-duration evidence for the 12 pitch classes."""
+
+    if pianoroll.ndim != 3 or pianoroll.shape[0] < 2:
+        raise ValueError("expected pianoroll with shape (2, pitch, time)")
+    length_ticks = pianoroll.shape[2] if length_ticks is None else int(length_ticks)
+    if length_ticks <= 0:
+        raise ValueError("length_ticks must be positive")
+
+    sustain = np.asarray(pianoroll[0, :, :length_ticks] > 0, dtype=np.bool_)
+    onset = np.asarray(pianoroll[1, :, :length_ticks] > 0, dtype=np.bool_)
+    evidence = np.zeros(12, dtype=np.float64)
+    for pitch_index in np.flatnonzero(onset.any(axis=1)):
+        for start in np.flatnonzero(onset[pitch_index]):
+            end = int(start) + 1
+            while end < sustain.shape[1] and sustain[pitch_index, end]:
+                end += 1
+            evidence[(int(pitch_index) + 21) % 12] += end - int(start)
+    return evidence
+
+
+def low_register_penalty_from_pianoroll(
+    pianoroll: np.ndarray,
+    *,
+    length_ticks: int,
+) -> float:
+    """Duration-weighted squared hinge below MIDI 36, clamped to [0, 1]."""
+
+    if pianoroll.ndim != 3 or pianoroll.shape[0] < 2:
+        raise ValueError("expected pianoroll with shape (2, pitch, time)")
+    length_ticks = int(length_ticks)
+    if length_ticks <= 0:
+        raise ValueError("length_ticks must be positive")
+
+    sustain = np.asarray(pianoroll[0, :, :length_ticks] > 0, dtype=np.bool_)
+    onset = np.asarray(pianoroll[1, :, :length_ticks] > 0, dtype=np.bool_)
+    weighted_penalty = 0.0
+    total_duration = 0.0
+    for pitch_index in np.flatnonzero(onset.any(axis=1)):
+        midi_pitch = int(pitch_index) + 21
+        hinge = max(0.0, RULE_S_V3_LOW_REGISTER_MIDI - midi_pitch)
+        for start in np.flatnonzero(onset[pitch_index]):
+            end = int(start) + 1
+            while end < sustain.shape[1] and sustain[pitch_index, end]:
+                end += 1
+            duration = float(end - int(start))
+            weighted_penalty += duration * (hinge / RULE_S_V3_LOW_REGISTER_SPAN) ** 2
+            total_duration += duration
+    if total_duration <= 0:
+        return 0.0
+    return float(np.clip(weighted_penalty / total_duration, 0.0, 1.0))
+
+
+def duration_match_score(
+    median_acc_duration: float | None,
+    median_mel_duration: float | None,
+    *,
+    epsilon: float = RULE_S_V3_DURATION_EPSILON,
+    tau: float = RULE_S_V3_DURATION_TAU,
+) -> float | None:
+    """Return symmetric log-ratio duration compatibility, or None if unavailable."""
+
+    try:
+        acc = float(median_acc_duration)
+        mel = float(median_mel_duration)
+    except (TypeError, ValueError):
+        return None
+    if (
+        acc <= 0
+        or mel <= 0
+        or not math.isfinite(acc)
+        or not math.isfinite(mel)
+        or epsilon <= 0
+        or tau <= 0
+        or not math.isfinite(epsilon)
+        or not math.isfinite(tau)
+    ):
+        return None
+    return math.exp(-abs(math.log((acc + epsilon) / (mel + epsilon))) / tau)
+
+
+def tonal_fit_score(
+    melody_evidence: list[float] | np.ndarray,
+    accompaniment_evidence: list[float] | np.ndarray,
+) -> tuple[float | None, float | None]:
+    """Return soft key-template fit and melody key confidence in [0, 1]."""
+
+    melody = np.asarray(melody_evidence, dtype=np.float64).copy()
+    accompaniment = np.asarray(accompaniment_evidence, dtype=np.float64).copy()
+    if melody.shape != (12,) or accompaniment.shape != (12,):
+        return None, None
+    if (
+        not np.all(np.isfinite(melody))
+        or not np.all(np.isfinite(accompaniment))
+        or np.any(melody < 0)
+        or np.any(accompaniment < 0)
+    ):
+        return None, None
+    if melody.sum() <= 0 or accompaniment.sum() <= 0:
+        return None, None
+    melody /= melody.sum()
+    accompaniment /= accompaniment.sum()
+
+    templates = [
+        np.roll(template, tonic)
+        for template in (_MAJOR_TONAL_TEMPLATE, _MINOR_TONAL_TEMPLATE)
+        for tonic in range(12)
+    ]
+    fits = np.asarray([float(np.dot(melody, template)) for template in templates])
+    best_template = templates[int(np.argmax(fits))]
+    uniform_fit = float(best_template.mean())
+    confidence = float(
+        np.clip((float(fits.max()) - uniform_fit) / (1.0 - uniform_fit), 0.0, 1.0)
+    )
+    compatibility = float(np.clip(np.dot(accompaniment, best_template), 0.0, 1.0))
+    return confidence * compatibility, confidence
 
 
 def median_note_duration_from_pianoroll(
@@ -102,6 +248,27 @@ def accompaniment_features_from_pianoroll(
             pianoroll,
             length_ticks=length_ticks,
         ),
+    }
+
+
+def melody_features_from_pianoroll(
+    pianoroll: np.ndarray,
+    *,
+    length_ticks: int,
+) -> dict[str, float | int | list[float]]:
+    """Compute the prompt-melody evidence required by Rule-S v3."""
+
+    evidence = duration_weighted_pitch_class_evidence(
+        pianoroll,
+        length_ticks=length_ticks,
+    )
+    return {
+        "mel_note_count": int(np.asarray(pianoroll[1, :, :length_ticks] > 0).sum()),
+        "mel_median_note_duration_ticks": median_note_duration_from_pianoroll(
+            pianoroll,
+            length_ticks=length_ticks,
+        ),
+        "mel_pitch_class_duration_evidence": evidence.tolist(),
     }
 
 
@@ -264,6 +431,117 @@ def select_rule_s_v2_candidate(
         "fallback_reason": None,
         "duration_weight": duration_weight,
         "expected_log_duration_ratio": expected_log_duration_ratio,
+        "candidates": scored,
+    }
+
+
+def select_rule_s_v3_candidate(
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Score Rule-S v3 without changing the frozen v1/v2 selectors."""
+
+    if not candidates:
+        raise ValueError("at least one Prompt candidate is required")
+
+    scored = [dict(candidate) for candidate in candidates]
+    eligible = [
+        candidate
+        for candidate in scored
+        if int(candidate["generated_beats"]) >= int(candidate["required_beats"])
+        and int(candidate["acc_note_count"]) > 0
+        and bool(candidate["prompt_ppl_available"])
+        and math.isfinite(float(candidate["prompt_ppl"]))
+    ]
+
+    ranked_metrics = (
+        "prompt_ppl",
+        "acc_pitch_range",
+        "acc_pitch_class_entropy",
+        "duration_match",
+        "tonal_fit",
+    )
+    for candidate in scored:
+        candidate["eligible"] = candidate in eligible
+        candidate["rule_s_v3_score"] = None
+        candidate["rule_s_v3_ranks"] = {metric: None for metric in ranked_metrics}
+        candidate["rule_s_v3_contributions"] = {
+            metric: 0.0 for metric in RULE_S_V3_WEIGHTS
+        }
+        candidate["duration_match"] = duration_match_score(
+            candidate.get("acc_median_note_duration_ticks", 0.0),
+            candidate.get("mel_median_note_duration_ticks", 0.0),
+        )
+        tonal_fit, key_confidence = tonal_fit_score(
+            candidate.get("mel_pitch_class_duration_evidence", []),
+            candidate.get("acc_pitch_class_duration_evidence", []),
+        )
+        candidate["tonal_fit"] = tonal_fit
+        candidate["melody_key_confidence"] = key_confidence
+        low_penalty = candidate.get("low_register_penalty")
+        try:
+            low_penalty_value = float(low_penalty)
+        except (TypeError, ValueError):
+            low_penalty_value = math.nan
+        candidate["low_register_penalty"] = (
+            float(np.clip(low_penalty_value, 0.0, 1.0))
+            if math.isfinite(low_penalty_value)
+            else None
+        )
+        candidate["duration_match_available"] = candidate["duration_match"] is not None
+        candidate["tonal_fit_available"] = candidate["tonal_fit"] is not None
+        candidate["low_register_penalty_available"] = (
+            candidate["low_register_penalty"] is not None
+        )
+
+    if not eligible:
+        return {
+            "rule_id": RULE_S_V3_ID,
+            "selected_index": 0,
+            "selected_candidate_number": int(scored[0]["candidate_number"]),
+            "eligible_count": 0,
+            "fallback_reason": "no_eligible_candidate",
+            "candidates": scored,
+        }
+
+    for metric in ranked_metrics:
+        available = [
+            candidate
+            for candidate in eligible
+            if candidate.get(metric) is not None
+            and math.isfinite(float(candidate[metric]))
+        ]
+        for candidate in available:
+            rank = normalized_average_rank(available, candidate, metric)
+            contribution = RULE_S_V3_WEIGHTS[metric] * rank
+            candidate["rule_s_v3_ranks"][metric] = rank
+            candidate["rule_s_v3_contributions"][metric] = contribution
+
+    for candidate in eligible:
+        if candidate["low_register_penalty"] is not None:
+            candidate["rule_s_v3_contributions"]["low_register_penalty"] = (
+                RULE_S_V3_WEIGHTS["low_register_penalty"]
+                * float(candidate["low_register_penalty"])
+            )
+        candidate["rule_s_v3_score"] = sum(
+            candidate["rule_s_v3_contributions"].values()
+        )
+
+    selected = max(
+        eligible,
+        key=lambda candidate: (
+            float(candidate["rule_s_v3_score"]),
+            -float(candidate["prompt_ppl"]),
+            -int(candidate["candidate_number"]),
+        ),
+    )
+    return {
+        "rule_id": RULE_S_V3_ID,
+        "selected_index": int(selected["candidate_number"]) - 1,
+        "selected_candidate_number": int(selected["candidate_number"]),
+        "eligible_count": len(eligible),
+        "fallback_reason": None,
+        "duration_tau": RULE_S_V3_DURATION_TAU,
+        "duration_epsilon": RULE_S_V3_DURATION_EPSILON,
         "candidates": scored,
     }
 
