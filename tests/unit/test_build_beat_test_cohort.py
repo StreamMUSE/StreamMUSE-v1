@@ -130,7 +130,9 @@ def test_full_builder_writes_audit_artifacts_and_count_prefix(tmp_path: Path) ->
     payload = _test_payload(entries, seed=42, ratio=0.5)
     test_entries = payload.splitlines()
     selection_seed = 7
-    permutation = np.random.RandomState(selection_seed).permutation(len(test_entries))
+    permutation = np.random.RandomState(selection_seed).permutation(
+        len(test_entries)
+    )
     first_checked = test_entries[int(permutation[0])]
     for entry in entries:
         _write_npz(
@@ -176,6 +178,53 @@ def test_full_builder_writes_audit_artifacts_and_count_prefix(tmp_path: Path) ->
     assert json.loads((output_dir / "cohort_manifest.json").read_text())["split"][
         "test_files"
     ] == 10
+
+
+def test_explicit_exclusion_is_audited_and_next_eligible_candidate_fills_count(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    entries = [f"{index:03d}.npz" for index in range(20)]
+    payload = _test_payload(entries, seed=42, ratio=0.5)
+    test_entries = payload.splitlines()
+    selection_seed = 7
+    permutation = np.random.RandomState(selection_seed).permutation(len(test_entries))
+    selection_ids = [Path(test_entries[int(index)]).stem for index in permutation]
+    for entry in entries:
+        _write_npz(data_dir / entry)
+    with (data_dir / ".lengths_cache.pkl").open("wb") as handle:
+        pickle.dump({"data_files": entries}, handle)
+    contract = cohort.SplitContract(
+        total_files=20,
+        test_files=10,
+        split_seed=42,
+        test_ratio=0.5,
+        test_list_sha256=hashlib.sha256(payload.encode()).hexdigest(),
+    )
+    output_dir = tmp_path / "cohort"
+
+    manifest = cohort.build_cohort(
+        data_dir=data_dir,
+        output_dir=output_dir,
+        count=2,
+        selection_seed=selection_seed,
+        contract=contract,
+        expected_first_ids=(),
+        exclude_piece_ids=[selection_ids[0]],
+    )
+
+    assert [row["piece_id"] for row in manifest["samples"]] == selection_ids[1:3]
+    assert len(manifest["samples"]) == 2
+    with (output_dir / "candidate_audit.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        audit = list(csv.DictReader(handle))
+    assert audit[0]["piece_id"] == selection_ids[0]
+    assert audit[0]["eligible"] == "False"
+    assert audit[0]["selected_order"] == ""
+    assert audit[0]["exclusion_reasons"] == cohort.EXPLICIT_EXCLUSION_REASON
+    assert [row["selected_order"] for row in audit[1:]] == ["1", "2"]
 
 
 def test_default_contract_freezes_existing_first_five() -> None:

@@ -47,6 +47,7 @@ EXPECTED_FIRST_FIVE = (
 STEPS_PER_BEAT = 4
 MIDI_TICKS_PER_BEAT = 480
 MIDI_VELOCITY = 80
+EXPLICIT_EXCLUSION_REASON = "explicit_piece_id_exclusion"
 
 
 @dataclass(frozen=True)
@@ -438,9 +439,13 @@ def build_cohort(
     selection_seed: int = DEFAULT_SELECTION_SEED,
     contract: SplitContract = SplitContract(),
     expected_first_ids: Sequence[str] = EXPECTED_FIRST_FIVE,
+    exclude_piece_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     if count <= 0:
         raise ValueError("count must be positive")
+    excluded = {str(piece_id).strip() for piece_id in exclude_piece_ids}
+    if "" in excluded:
+        raise ValueError("exclude_piece_ids must not contain an empty piece_id")
     data_dir = data_dir.resolve()
     output_dir = output_dir.resolve()
     _prepare_output_dir(output_dir)
@@ -462,20 +467,30 @@ def build_cohort(
         entry = test_entries[test_position]
         source_path = ""
         piece_id = Path(entry).stem
-        try:
-            source = resolve_npz(data_dir, entry)
-            source_path = str(source)
-            inspection = inspect_candidate(source)
-        except Exception as exc:
+        if piece_id in excluded:
             inspection = CandidateInspection(
                 False,
-                [f"source_error:{type(exc).__name__}"],
+                [EXPLICIT_EXCLUSION_REASON],
                 None,
                 None,
                 {},
-                str(exc),
             )
             source = Path(entry)
+        else:
+            try:
+                source = resolve_npz(data_dir, entry)
+                source_path = str(source)
+                inspection = inspect_candidate(source)
+            except Exception as exc:
+                inspection = CandidateInspection(
+                    False,
+                    [f"source_error:{type(exc).__name__}"],
+                    None,
+                    None,
+                    {},
+                    str(exc),
+                )
+                source = Path(entry)
         selected_order = ""
         if inspection.eligible:
             selected_order = len(selected) + 1
@@ -504,7 +519,12 @@ def build_cohort(
         )
 
     actual_ids = [item[0] for item in selected]
-    required_prefix = list(expected_first_ids[: min(len(expected_first_ids), count)])
+    compatible_expected_ids = [
+        piece_id for piece_id in expected_first_ids if piece_id not in excluded
+    ]
+    required_prefix = compatible_expected_ids[
+        : min(len(compatible_expected_ids), count)
+    ]
     if required_prefix and actual_ids[: len(required_prefix)] != required_prefix:
         raise ValueError(
             "selection compatibility mismatch: expected prefix "
@@ -611,6 +631,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--count", type=int, default=DEFAULT_COUNT)
     parser.add_argument("--selection-seed", type=int, default=DEFAULT_SELECTION_SEED)
+    parser.add_argument("--exclude-piece-id", action="append", default=[])
     return parser.parse_args()
 
 
@@ -621,6 +642,7 @@ def main() -> None:
         output_dir=args.output_dir,
         count=args.count,
         selection_seed=args.selection_seed,
+        exclude_piece_ids=args.exclude_piece_id,
     )
     print(
         json.dumps(
