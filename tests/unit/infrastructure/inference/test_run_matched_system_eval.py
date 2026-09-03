@@ -136,6 +136,18 @@ def test_default_seed_contract_is_three_trials(matched_runner) -> None:
     )
 
     assert args.seeds == "0,1,2"
+    assert args.prompt_selection_mode == "rule_s"
+    assert args.prompt_batch_candidates == 5
+
+
+@pytest.mark.parametrize("mode", ["rule_s", "rule_s_v3"])
+def test_ranked_prompt_modes_require_at_least_two_candidates(
+    matched_runner, mode: str
+) -> None:
+    with pytest.raises(ValueError, match="must be at least 2"):
+        matched_runner.effective_prompt_candidate_count(mode, 1)
+
+    assert matched_runner.effective_prompt_candidate_count(mode, 3) == 3
 
 
 def test_server_environments_freeze_mode_specific_contracts(
@@ -189,6 +201,62 @@ def test_server_environments_freeze_mode_specific_contracts(
     assert prompt_continuation[
         "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS"
     ] == "0"
+
+
+def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    prompt = tmp_path / "prompt.safetensors"
+    continuation = tmp_path / "continuation.safetensors"
+    prompt.write_bytes(b"p")
+    continuation.write_bytes(b"c")
+    code = {"git_commit": "b" * 40}
+    prompt_identity = _identity(prompt)
+    continuation_identity = _identity(continuation)
+
+    env = script.build_server_environment(
+        "streammuse_v2_prompt_continuation",
+        port=18002,
+        gpu="2",
+        server_dir=tmp_path / "prompt_continuation",
+        code=code,
+        prompt_checkpoint=prompt_identity,
+        continuation_checkpoint=continuation_identity,
+        prompt_selection_mode="single",
+    )
+
+    assert env["LEKAI_PROMPT_SELECTION_MODE"] == "single"
+    assert env["LEKAI_PROMPT_BATCH_CANDIDATES"] == "1"
+
+    runtime = {
+        "has_real_model": True,
+        "fallback_reason": None,
+        "checkpoint_sha256": continuation_identity["sha256"],
+        "code_identity": code["git_commit"],
+        "resolved_device": "cuda:0",
+        "effective_bpm": script.BPM,
+        "ticks_per_beat": script.TICKS_PER_BEAT,
+        "prompt_context_beats": script.PROMPT_CONTEXT_BEATS,
+        "history_retention_ticks": script.HISTORY_MAX_TICKS,
+        "time_signature_index": script.CHECKPOINT_TIME_SIGNATURE_INDEX,
+        "prompt_has_real_model": True,
+        "prompt_fallback_reason": None,
+        "prompt_checkpoint_path": prompt_identity["path"],
+        "prompt_selection_mode": "single",
+        "prompt_batch_candidate_count": 1,
+        **script.SAMPLING,
+    }
+    errors = script.runtime_contract_errors(
+        "streammuse_v2_prompt_continuation",
+        runtime,
+        code=code,
+        prompt_checkpoint=prompt_identity,
+        continuation_checkpoint=continuation_identity,
+        prompt_selection_mode="single",
+    )
+
+    assert errors == []
 
 
 def test_reset_trial_uses_mode_specific_atomic_endpoint(
@@ -451,6 +519,11 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
         "continuation_time_signature_index": 0,
         "prompt_time_signature_index": 0,
     }
+    assert result["evaluation_contract"]["streammuse_v2_prompt"] == {
+        "selection_mode": "rule_s",
+        "candidate_count": 5,
+        "prompt_length_ticks": 32,
+    }
     assert result["summary"] == {"dry_run": 4}
     assert len(result["trials"]) == 4
     assert {row["piece_id"] for row in result["trials"]} == {"first"}
@@ -470,3 +543,49 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     assert len(eval_rows) == 4
     assert {row["run_status"] for row in eval_rows} == {"missing"}
     assert all(row["failure_reason"] == "dry_run_not_executed" for row in eval_rows)
+
+
+def test_single_prompt_selection_manifest_records_effective_n1(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    prompt = tmp_path / "prompt.safetensors"
+    continuation = tmp_path / "continuation.safetensors"
+    midi = tmp_path / "piece.mid"
+    prompt.write_bytes(b"prompt")
+    continuation.write_bytes(b"continuation")
+    midi.write_bytes(b"MThd-piece")
+    cohort = tmp_path / "cohort.json"
+    cohort.write_text(
+        json.dumps(
+            {"pieces": [{"piece_id": "piece", "midi_path": "piece.mid"}]}
+        ),
+        encoding="utf-8",
+    )
+    args = script.parse_args(
+        [
+            "--cohort-manifest",
+            str(cohort),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--prompt-checkpoint",
+            str(prompt),
+            "--continuation-checkpoint",
+            str(continuation),
+            "--systems",
+            "streammuse_v2_prompt_continuation",
+            "--seeds",
+            "0",
+            "--prompt-selection-mode",
+            "single",
+            "--dry-run",
+        ]
+    )
+
+    result = script.run_evaluation(args)
+
+    assert result["evaluation_contract"]["streammuse_v2_prompt"] == {
+        "selection_mode": "single",
+        "candidate_count": 1,
+        "prompt_length_ticks": 32,
+    }

@@ -49,6 +49,7 @@ SAMPLING = {
     "repetition_penalty": 1.0,
 }
 PROMPT_CANDIDATES = 5
+PROMPT_SELECTION_MODES = ("single", "rule_s", "rule_s_v3")
 EVAL_MANIFEST_FIELDS = (
     "piece_id",
     "seed",
@@ -96,6 +97,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--python-bin", default=sys.executable)
     parser.add_argument(
+        "--prompt-selection-mode",
+        choices=PROMPT_SELECTION_MODES,
+        default="rule_s",
+    )
+    parser.add_argument(
+        "--prompt-batch-candidates", type=int, default=PROMPT_CANDIDATES
+    )
+    parser.add_argument(
         "--smoke-limit",
         type=int,
         default=0,
@@ -105,6 +114,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--trial-timeout-s", type=float, default=900.0)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
+
+
+def effective_prompt_candidate_count(selection_mode: str, requested: int) -> int:
+    if selection_mode not in PROMPT_SELECTION_MODES:
+        raise ValueError(f"unsupported prompt selection mode: {selection_mode}")
+    if selection_mode == "single":
+        return 1
+    if requested < 2:
+        raise ValueError(
+            f"--prompt-batch-candidates must be at least 2 for {selection_mode}"
+        )
+    return int(requested)
 
 
 def file_sha256(path: Path) -> str:
@@ -377,6 +398,8 @@ def build_server_environment(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, str]:
     if system_id not in SYSTEM_IDS:
         raise ValueError(f"unknown system: {system_id}")
@@ -415,6 +438,9 @@ def build_server_environment(
             }
         )
     else:
+        effective_candidates = effective_prompt_candidate_count(
+            prompt_selection_mode, prompt_batch_candidates
+        )
         env.update(
             {
                 "LEKAI_PROMPT_CHECKPOINT_PATH": str(prompt_checkpoint["path"]),
@@ -428,8 +454,8 @@ def build_server_environment(
                 "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY": "0",
                 "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS": "0",
                 "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
-                "LEKAI_PROMPT_SELECTION_MODE": "rule_s",
-                "LEKAI_PROMPT_BATCH_CANDIDATES": str(PROMPT_CANDIDATES),
+                "LEKAI_PROMPT_SELECTION_MODE": prompt_selection_mode,
+                "LEKAI_PROMPT_BATCH_CANDIDATES": str(effective_candidates),
                 "LEKAI_PROMPT_SEED": "0",
                 "LEKAI_PROMPT_BPM": str(BPM),
                 "LEKAI_PROMPT_DEVICE": "cuda",
@@ -496,6 +522,8 @@ def runtime_contract_errors(
     continuation_checkpoint: Mapping[str, Any],
     expected_seed: int | None = None,
     reset_ack: Mapping[str, Any] | None = None,
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> list[str]:
     errors: list[str] = []
     if runtime.get("has_real_model") is not True:
@@ -526,6 +554,9 @@ def runtime_contract_errors(
         elif actual != expected:
             errors.append(f"runtime {key}={actual!r}, expected {expected!r}")
     if system_id == "streammuse_v2_prompt_continuation":
+        effective_candidates = effective_prompt_candidate_count(
+            prompt_selection_mode, prompt_batch_candidates
+        )
         if runtime.get("prompt_has_real_model") is not True:
             errors.append("prompt model is not real")
         if runtime.get("prompt_fallback_reason") not in (None, ""):
@@ -534,10 +565,18 @@ def runtime_contract_errors(
             str(prompt_checkpoint["path"])
         ).resolve():
             errors.append("prompt checkpoint path mismatch")
-        if runtime.get("prompt_selection_mode") != "rule_s":
-            errors.append("prompt selection mode is not rule_s")
-        if runtime.get("prompt_batch_candidate_count") != PROMPT_CANDIDATES:
-            errors.append("prompt candidate count is not 5")
+        if runtime.get("prompt_selection_mode") != prompt_selection_mode:
+            errors.append(
+                "prompt selection mode "
+                f"is {runtime.get('prompt_selection_mode')!r}, "
+                f"expected {prompt_selection_mode!r}"
+            )
+        if runtime.get("prompt_batch_candidate_count") != effective_candidates:
+            errors.append(
+                "prompt candidate count "
+                f"is {runtime.get('prompt_batch_candidate_count')!r}, "
+                f"expected {effective_candidates}"
+            )
     if expected_seed is not None:
         if runtime.get("sample_seed") != expected_seed:
             errors.append(
@@ -561,6 +600,8 @@ def wait_for_server(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     last_error = "server not contacted"
@@ -582,6 +623,8 @@ def wait_for_server(
                     code=code,
                     prompt_checkpoint=prompt_checkpoint,
                     continuation_checkpoint=continuation_checkpoint,
+                    prompt_selection_mode=prompt_selection_mode,
+                    prompt_batch_candidates=prompt_batch_candidates,
                 )
                 if errors:
                     raise RuntimeError("; ".join(errors))
@@ -604,6 +647,8 @@ def start_server(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> ServerHandle:
     server_dir = output_root / "servers" / system_id
     server_dir.mkdir(parents=True, exist_ok=True)
@@ -617,6 +662,8 @@ def start_server(
         code=code,
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
+        prompt_selection_mode=prompt_selection_mode,
+        prompt_batch_candidates=prompt_batch_candidates,
     )
     command = [python_bin, "-m", "streammuse.infrastructure.inference.server_lekai"]
     log_handle = (server_dir / "server.log").open("w", encoding="utf-8")
@@ -643,6 +690,8 @@ def start_server(
             code=code,
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
         )
     except Exception:
         stop_server(handle)
@@ -967,6 +1016,8 @@ def run_trial(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, Any]:
     trial_dir.mkdir(parents=True, exist_ok=False)
     record = _trial_record(
@@ -994,6 +1045,8 @@ def run_trial(
             continuation_checkpoint=continuation_checkpoint,
             expected_seed=seed,
             reset_ack=reset_ack,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
         )
         if errors:
             raise RuntimeError("pre-trial runtime rejected: " + "; ".join(errors))
@@ -1043,6 +1096,8 @@ def run_trial(
             continuation_checkpoint=continuation_checkpoint,
             expected_seed=seed,
             reset_ack=reset_ack,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
         )
         if errors:
             raise RuntimeError("post-trial runtime rejected: " + "; ".join(errors))
@@ -1176,6 +1231,9 @@ def _validate_matched_hashes(trials: Sequence[Mapping[str, Any]]) -> None:
 
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
+    prompt_candidate_count = effective_prompt_candidate_count(
+        args.prompt_selection_mode, args.prompt_batch_candidates
+    )
     pieces = load_cohort_manifest(args.cohort_manifest, args.smoke_limit)
     seeds = _parse_unique_ints(args.seeds, "--seeds")
     systems = _parse_systems(args.systems)
@@ -1242,8 +1300,8 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 "prompt_time_signature_index": CHECKPOINT_TIME_SIGNATURE_INDEX,
             },
             "streammuse_v2_prompt": {
-                "selection_mode": "rule_s",
-                "candidate_count": PROMPT_CANDIDATES,
+                "selection_mode": args.prompt_selection_mode,
+                "candidate_count": prompt_candidate_count,
                 "prompt_length_ticks": PROMPT_LENGTH_TICKS,
             },
             "sampling": dict(SAMPLING),
@@ -1295,6 +1353,8 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 code=code,
                 prompt_checkpoint=prompt_checkpoint,
                 continuation_checkpoint=continuation_checkpoint,
+                prompt_selection_mode=args.prompt_selection_mode,
+                prompt_batch_candidates=prompt_candidate_count,
             )
             for piece in pieces:
                 for seed in seeds:
@@ -1315,6 +1375,8 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         code=code,
                         prompt_checkpoint=prompt_checkpoint,
                         continuation_checkpoint=continuation_checkpoint,
+                        prompt_selection_mode=args.prompt_selection_mode,
+                        prompt_batch_candidates=prompt_candidate_count,
                     )
                     _replace_trial(manifest, record)
                     persist_run_manifests(output_root, manifest)
