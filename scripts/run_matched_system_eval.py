@@ -49,6 +49,8 @@ SAMPLING = {
     "repetition_penalty": 1.0,
 }
 PROMPT_CANDIDATES = 5
+V2_PROMPT_SELECTION_MODES = ("single", "batch_first", "rule_s")
+DEFAULT_V2_PROMPT_SELECTION_MODE = "rule_s"
 EVAL_MANIFEST_FIELDS = (
     "piece_id",
     "seed",
@@ -103,6 +105,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--server-start-timeout-s", type=float, default=600.0)
     parser.add_argument("--trial-timeout-s", type=float, default=900.0)
+    parser.add_argument(
+        "--v2-prompt-selection-mode",
+        choices=V2_PROMPT_SELECTION_MODES,
+        default=DEFAULT_V2_PROMPT_SELECTION_MODE,
+    )
+    parser.add_argument(
+        "--v2-prompt-candidates",
+        type=int,
+        default=PROMPT_CANDIDATES,
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -204,6 +216,21 @@ def _parse_systems(raw: str) -> list[str]:
     if unknown:
         raise ValueError(f"unknown system IDs: {', '.join(unknown)}")
     return values
+
+
+def _validate_v2_prompt_selection(mode: str, candidates: int) -> None:
+    if mode not in V2_PROMPT_SELECTION_MODES:
+        raise ValueError(
+            "--v2-prompt-selection-mode must be one of: "
+            + ", ".join(V2_PROMPT_SELECTION_MODES)
+        )
+    if isinstance(candidates, bool) or not isinstance(candidates, int):
+        raise ValueError("--v2-prompt-candidates must be an integer")
+    if mode == "single":
+        if candidates != 1:
+            raise ValueError("single prompt selection requires exactly 1 candidate")
+    elif candidates < 2:
+        raise ValueError(f"{mode} prompt selection requires at least 2 candidates")
 
 
 def _read_manifest_rows(path: Path) -> tuple[list[Mapping[str, Any]], str]:
@@ -377,6 +404,8 @@ def build_server_environment(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    v2_prompt_selection_mode: str = DEFAULT_V2_PROMPT_SELECTION_MODE,
+    v2_prompt_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, str]:
     if system_id not in SYSTEM_IDS:
         raise ValueError(f"unknown system: {system_id}")
@@ -415,6 +444,9 @@ def build_server_environment(
             }
         )
     else:
+        _validate_v2_prompt_selection(
+            v2_prompt_selection_mode, v2_prompt_candidates
+        )
         env.update(
             {
                 "LEKAI_PROMPT_CHECKPOINT_PATH": str(prompt_checkpoint["path"]),
@@ -428,8 +460,8 @@ def build_server_environment(
                 "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY": "0",
                 "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS": "0",
                 "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
-                "LEKAI_PROMPT_SELECTION_MODE": "rule_s",
-                "LEKAI_PROMPT_BATCH_CANDIDATES": str(PROMPT_CANDIDATES),
+                "LEKAI_PROMPT_SELECTION_MODE": v2_prompt_selection_mode,
+                "LEKAI_PROMPT_BATCH_CANDIDATES": str(v2_prompt_candidates),
                 "LEKAI_PROMPT_SEED": "0",
                 "LEKAI_PROMPT_BPM": str(BPM),
                 "LEKAI_PROMPT_DEVICE": "cuda",
@@ -496,6 +528,8 @@ def runtime_contract_errors(
     continuation_checkpoint: Mapping[str, Any],
     expected_seed: int | None = None,
     reset_ack: Mapping[str, Any] | None = None,
+    expected_v2_prompt_selection_mode: str = DEFAULT_V2_PROMPT_SELECTION_MODE,
+    expected_v2_prompt_candidates: int = PROMPT_CANDIDATES,
 ) -> list[str]:
     errors: list[str] = []
     if runtime.get("has_real_model") is not True:
@@ -534,10 +568,24 @@ def runtime_contract_errors(
             str(prompt_checkpoint["path"])
         ).resolve():
             errors.append("prompt checkpoint path mismatch")
-        if runtime.get("prompt_selection_mode") != "rule_s":
-            errors.append("prompt selection mode is not rule_s")
-        if runtime.get("prompt_batch_candidate_count") != PROMPT_CANDIDATES:
-            errors.append("prompt candidate count is not 5")
+        if (
+            runtime.get("prompt_selection_mode")
+            != expected_v2_prompt_selection_mode
+        ):
+            errors.append(
+                "prompt selection mode "
+                f"{runtime.get('prompt_selection_mode')!r}, expected "
+                f"{expected_v2_prompt_selection_mode!r}"
+            )
+        if (
+            runtime.get("prompt_batch_candidate_count")
+            != expected_v2_prompt_candidates
+        ):
+            errors.append(
+                "prompt candidate count "
+                f"{runtime.get('prompt_batch_candidate_count')!r}, expected "
+                f"{expected_v2_prompt_candidates!r}"
+            )
     if expected_seed is not None:
         if runtime.get("sample_seed") != expected_seed:
             errors.append(
@@ -554,6 +602,15 @@ def runtime_contract_errors(
     return errors
 
 
+def record_v2_prompt_runtime_acceptance(
+    manifest: dict[str, Any], runtime: Mapping[str, Any]
+) -> None:
+    manifest["evaluation_contract"]["streammuse_v2_prompt"]["accepted"] = {
+        "selection_mode": runtime.get("prompt_selection_mode"),
+        "candidate_count": runtime.get("prompt_batch_candidate_count"),
+    }
+
+
 def wait_for_server(
     handle: ServerHandle,
     *,
@@ -561,6 +618,8 @@ def wait_for_server(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    v2_prompt_selection_mode: str = DEFAULT_V2_PROMPT_SELECTION_MODE,
+    v2_prompt_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     last_error = "server not contacted"
@@ -582,6 +641,10 @@ def wait_for_server(
                     code=code,
                     prompt_checkpoint=prompt_checkpoint,
                     continuation_checkpoint=continuation_checkpoint,
+                    expected_v2_prompt_selection_mode=(
+                        v2_prompt_selection_mode
+                    ),
+                    expected_v2_prompt_candidates=v2_prompt_candidates,
                 )
                 if errors:
                     raise RuntimeError("; ".join(errors))
@@ -604,6 +667,8 @@ def start_server(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    v2_prompt_selection_mode: str = DEFAULT_V2_PROMPT_SELECTION_MODE,
+    v2_prompt_candidates: int = PROMPT_CANDIDATES,
 ) -> ServerHandle:
     server_dir = output_root / "servers" / system_id
     server_dir.mkdir(parents=True, exist_ok=True)
@@ -617,6 +682,8 @@ def start_server(
         code=code,
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
+        v2_prompt_selection_mode=v2_prompt_selection_mode,
+        v2_prompt_candidates=v2_prompt_candidates,
     )
     command = [python_bin, "-m", "streammuse.infrastructure.inference.server_lekai"]
     log_handle = (server_dir / "server.log").open("w", encoding="utf-8")
@@ -643,6 +710,8 @@ def start_server(
             code=code,
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
+            v2_prompt_selection_mode=v2_prompt_selection_mode,
+            v2_prompt_candidates=v2_prompt_candidates,
         )
     except Exception:
         stop_server(handle)
@@ -967,6 +1036,8 @@ def run_trial(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    v2_prompt_selection_mode: str = DEFAULT_V2_PROMPT_SELECTION_MODE,
+    v2_prompt_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, Any]:
     trial_dir.mkdir(parents=True, exist_ok=False)
     record = _trial_record(
@@ -994,6 +1065,8 @@ def run_trial(
             continuation_checkpoint=continuation_checkpoint,
             expected_seed=seed,
             reset_ack=reset_ack,
+            expected_v2_prompt_selection_mode=v2_prompt_selection_mode,
+            expected_v2_prompt_candidates=v2_prompt_candidates,
         )
         if errors:
             raise RuntimeError("pre-trial runtime rejected: " + "; ".join(errors))
@@ -1043,6 +1116,8 @@ def run_trial(
             continuation_checkpoint=continuation_checkpoint,
             expected_seed=seed,
             reset_ack=reset_ack,
+            expected_v2_prompt_selection_mode=v2_prompt_selection_mode,
+            expected_v2_prompt_candidates=v2_prompt_candidates,
         )
         if errors:
             raise RuntimeError("post-trial runtime rejected: " + "; ".join(errors))
@@ -1179,6 +1254,9 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
     pieces = load_cohort_manifest(args.cohort_manifest, args.smoke_limit)
     seeds = _parse_unique_ints(args.seeds, "--seeds")
     systems = _parse_systems(args.systems)
+    _validate_v2_prompt_selection(
+        args.v2_prompt_selection_mode, args.v2_prompt_candidates
+    )
     if args.server_start_timeout_s <= 0 or args.trial_timeout_s <= 0:
         raise ValueError("timeouts must be positive")
     output_root = args.output_root.expanduser().resolve()
@@ -1242,8 +1320,16 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 "prompt_time_signature_index": CHECKPOINT_TIME_SIGNATURE_INDEX,
             },
             "streammuse_v2_prompt": {
-                "selection_mode": "rule_s",
-                "candidate_count": PROMPT_CANDIDATES,
+                "selection_mode": args.v2_prompt_selection_mode,
+                "candidate_count": args.v2_prompt_candidates,
+                "requested": {
+                    "selection_mode": args.v2_prompt_selection_mode,
+                    "candidate_count": args.v2_prompt_candidates,
+                },
+                "accepted": {
+                    "selection_mode": None,
+                    "candidate_count": None,
+                },
                 "prompt_length_ticks": PROMPT_LENGTH_TICKS,
             },
             "sampling": dict(SAMPLING),
@@ -1295,7 +1381,14 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 code=code,
                 prompt_checkpoint=prompt_checkpoint,
                 continuation_checkpoint=continuation_checkpoint,
+                v2_prompt_selection_mode=args.v2_prompt_selection_mode,
+                v2_prompt_candidates=args.v2_prompt_candidates,
             )
+            if system_id == "streammuse_v2_prompt_continuation":
+                record_v2_prompt_runtime_acceptance(
+                    manifest, handle.startup_runtime
+                )
+                persist_run_manifests(output_root, manifest)
             for piece in pieces:
                 for seed in seeds:
                     trial_dir = (
@@ -1315,6 +1408,8 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         code=code,
                         prompt_checkpoint=prompt_checkpoint,
                         continuation_checkpoint=continuation_checkpoint,
+                        v2_prompt_selection_mode=args.v2_prompt_selection_mode,
+                        v2_prompt_candidates=args.v2_prompt_candidates,
                     )
                     _replace_trial(manifest, record)
                     persist_run_manifests(output_root, manifest)

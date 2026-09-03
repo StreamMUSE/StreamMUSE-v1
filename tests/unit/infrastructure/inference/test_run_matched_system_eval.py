@@ -136,6 +136,8 @@ def test_default_seed_contract_is_three_trials(matched_runner) -> None:
     )
 
     assert args.seeds == "0,1,2"
+    assert args.v2_prompt_selection_mode == "rule_s"
+    assert args.v2_prompt_candidates == 5
 
 
 def test_server_environments_freeze_mode_specific_contracts(
@@ -166,6 +168,17 @@ def test_server_environments_freeze_mode_specific_contracts(
         prompt_checkpoint=_identity(prompt),
         continuation_checkpoint=_identity(continuation),
     )
+    single = script.build_server_environment(
+        "streammuse_v2_prompt_continuation",
+        port=18003,
+        gpu="2",
+        server_dir=tmp_path / "single",
+        code=code,
+        prompt_checkpoint=_identity(prompt),
+        continuation_checkpoint=_identity(continuation),
+        v2_prompt_selection_mode="single",
+        v2_prompt_candidates=1,
+    )
 
     assert standard["LEKAI_CHECKPOINT_PATH"] == str(continuation.resolve())
     assert standard["LEKAI_REQUIRE_SESSION"] == "1"
@@ -189,6 +202,86 @@ def test_server_environments_freeze_mode_specific_contracts(
     assert prompt_continuation[
         "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS"
     ] == "0"
+    assert single["LEKAI_PROMPT_SELECTION_MODE"] == "single"
+    assert single["LEKAI_PROMPT_BATCH_CANDIDATES"] == "1"
+
+
+def test_single_n1_runtime_contract_and_manifest_acceptance(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    prompt = tmp_path / "prompt.safetensors"
+    continuation = tmp_path / "continuation.safetensors"
+    prompt.write_bytes(b"p")
+    continuation.write_bytes(b"c")
+    code = {"git_commit": "b" * 40}
+    prompt_identity = _identity(prompt)
+    continuation_identity = _identity(continuation)
+    runtime = {
+        "has_real_model": True,
+        "fallback_reason": None,
+        "checkpoint_sha256": continuation_identity["sha256"],
+        "code_identity": code["git_commit"],
+        "resolved_device": "cuda:0",
+        "effective_bpm": script.BPM,
+        "ticks_per_beat": script.TICKS_PER_BEAT,
+        "prompt_context_beats": script.PROMPT_CONTEXT_BEATS,
+        "history_retention_ticks": script.HISTORY_MAX_TICKS,
+        "time_signature_index": script.CHECKPOINT_TIME_SIGNATURE_INDEX,
+        **script.SAMPLING,
+        "prompt_has_real_model": True,
+        "prompt_fallback_reason": None,
+        "prompt_checkpoint_path": prompt_identity["path"],
+        "prompt_selection_mode": "single",
+        "prompt_batch_candidate_count": 1,
+    }
+
+    assert script.runtime_contract_errors(
+        "streammuse_v2_prompt_continuation",
+        runtime,
+        code=code,
+        prompt_checkpoint=prompt_identity,
+        continuation_checkpoint=continuation_identity,
+        expected_v2_prompt_selection_mode="single",
+        expected_v2_prompt_candidates=1,
+    ) == []
+
+    wrong_runtime = dict(runtime, prompt_selection_mode="rule_s")
+    errors = script.runtime_contract_errors(
+        "streammuse_v2_prompt_continuation",
+        wrong_runtime,
+        code=code,
+        prompt_checkpoint=prompt_identity,
+        continuation_checkpoint=continuation_identity,
+        expected_v2_prompt_selection_mode="single",
+        expected_v2_prompt_candidates=1,
+    )
+    assert any("expected 'single'" in error for error in errors)
+
+    manifest = {
+        "evaluation_contract": {
+            "streammuse_v2_prompt": {
+                "requested": {
+                    "selection_mode": "single",
+                    "candidate_count": 1,
+                },
+                "accepted": {
+                    "selection_mode": None,
+                    "candidate_count": None,
+                },
+            }
+        }
+    }
+    script.record_v2_prompt_runtime_acceptance(manifest, runtime)
+    assert manifest["evaluation_contract"]["streammuse_v2_prompt"] == {
+        "requested": {"selection_mode": "single", "candidate_count": 1},
+        "accepted": {"selection_mode": "single", "candidate_count": 1},
+    }
+
+    with pytest.raises(ValueError, match="exactly 1 candidate"):
+        script._validate_v2_prompt_selection("single", 5)
+    with pytest.raises(ValueError, match="at least 2 candidates"):
+        script._validate_v2_prompt_selection("rule_s", 1)
 
 
 def test_reset_trial_uses_mode_specific_atomic_endpoint(
@@ -451,6 +544,13 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
         "continuation_time_signature_index": 0,
         "prompt_time_signature_index": 0,
     }
+    assert result["evaluation_contract"]["streammuse_v2_prompt"] == {
+        "selection_mode": "rule_s",
+        "candidate_count": 5,
+        "requested": {"selection_mode": "rule_s", "candidate_count": 5},
+        "accepted": {"selection_mode": None, "candidate_count": None},
+        "prompt_length_ticks": 32,
+    }
     assert result["summary"] == {"dry_run": 4}
     assert len(result["trials"]) == 4
     assert {row["piece_id"] for row in result["trials"]} == {"first"}
@@ -470,3 +570,61 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     assert len(eval_rows) == 4
     assert {row["run_status"] for row in eval_rows} == {"missing"}
     assert all(row["failure_reason"] == "dry_run_not_executed" for row in eval_rows)
+
+
+def test_dry_run_records_single_n1_prompt_request(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    prompt = tmp_path / "prompt.safetensors"
+    continuation = tmp_path / "continuation.safetensors"
+    midi = tmp_path / "piece.mid"
+    prompt.write_bytes(b"prompt")
+    continuation.write_bytes(b"continuation")
+    midi.write_bytes(b"MThd-piece")
+    cohort = tmp_path / "cohort.json"
+    cohort.write_text(
+        json.dumps(
+            {"pieces": [{"piece_id": "piece", "midi_path": "piece.mid"}]}
+        ),
+        encoding="utf-8",
+    )
+    args = script.parse_args(
+        [
+            "--cohort-manifest",
+            str(cohort),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--prompt-checkpoint",
+            str(prompt),
+            "--continuation-checkpoint",
+            str(continuation),
+            "--systems",
+            "streammuse_v2_prompt_continuation",
+            "--seeds",
+            "0",
+            "--v2-prompt-selection-mode",
+            "single",
+            "--v2-prompt-candidates",
+            "1",
+            "--dry-run",
+        ]
+    )
+
+    result = script.run_evaluation(args)
+
+    contract = result["evaluation_contract"]["streammuse_v2_prompt"]
+    assert contract["selection_mode"] == "single"
+    assert contract["candidate_count"] == 1
+    assert contract["requested"] == {
+        "selection_mode": "single",
+        "candidate_count": 1,
+    }
+    assert contract["accepted"] == {
+        "selection_mode": None,
+        "candidate_count": None,
+    }
+    persisted = json.loads(
+        (tmp_path / "output" / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert persisted["evaluation_contract"]["streammuse_v2_prompt"] == contract
