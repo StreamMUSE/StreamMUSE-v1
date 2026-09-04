@@ -27,6 +27,7 @@ from streammuse.infrastructure.output import (
     MetronomeOutputSink,
     MidiFileOutputConfig,
     MidiFileOutputSink,
+    SessionLoggerOutputSink,
     WebSocketOutputSink,
 )
 
@@ -51,7 +52,10 @@ class RuntimeSessionBuilder:
 
     def build_cli(self) -> RuntimeSession:
         session_manager = None
-        if self.config.output.type != "midi_file":
+        if (
+            self.config.output.type != "midi_file"
+            or self.config.input_quantization_trace_enabled
+        ):
             session_manager = self._create_session_manager(
                 save_config=self.config.output.session_artifact_tier == "debug"
             )
@@ -113,6 +117,9 @@ class RuntimeSessionBuilder:
             "metronome_channel": self.config.output.metronome_channel,
             "count_in_beats": self.config.count_in_beats,
             "input_snap_forward_fraction": self._input_snap_forward_fraction(),
+            "input_quantization_trace_enabled": (
+                self.config.input_quantization_trace_enabled
+            ),
             "continuation_mode": self._continuation_mode(),
             "inference_type": self.config.inference.type,
             "prompt_length_ticks": self._prompt_length_ticks(default=None),
@@ -136,6 +143,10 @@ class RuntimeSessionBuilder:
         emit_output_config: bool = True,
         write_summary_on_cleanup: bool = True,
     ) -> RuntimeSession:
+        output_sink = self._attach_input_quantization_trace_sink(
+            output_sink=output_sink,
+            session_manager=session_manager,
+        )
         tempo = Tempo(
             bpm=self.config.tempo.bpm,
             ticks_per_beat=self.config.tempo.ticks_per_beat,
@@ -163,6 +174,9 @@ class RuntimeSessionBuilder:
                 generation_interval_ticks=self.config.inference.generation_interval_ticks,
                 count_in_beats=self.config.count_in_beats,
                 input_snap_forward_fraction=self._input_snap_forward_fraction(),
+                input_quantization_trace_enabled=(
+                    self.config.input_quantization_trace_enabled
+                ),
             )
         else:
             inference_engine = InferenceEngineFactory.create(self.config)
@@ -184,6 +198,9 @@ class RuntimeSessionBuilder:
                 generation_length_frames=self.config.inference.generation_length_frames,
                 count_in_beats=self.config.count_in_beats,
                 input_snap_forward_fraction=self._input_snap_forward_fraction(),
+                input_quantization_trace_enabled=(
+                    self.config.input_quantization_trace_enabled
+                ),
                 tick_observer=tick_observer,
             )
 
@@ -211,6 +228,39 @@ class RuntimeSessionBuilder:
             self.config.input.type,
             float(getattr(self.config, "input_snap_forward_fraction", 0.0)),
         )
+
+    def _attach_input_quantization_trace_sink(
+        self,
+        *,
+        output_sink: Any,
+        session_manager: SessionManager | None,
+    ) -> Any:
+        if not self.config.input_quantization_trace_enabled:
+            return output_sink
+        if session_manager is None:
+            raise ValueError(
+                "input quantization tracing requires a session directory"
+            )
+        if self._contains_session_logger(output_sink):
+            return output_sink
+
+        trace_sink = SessionLoggerOutputSink(
+            session_dir=session_manager.get_session_dir(),
+            include_midi=False,
+            include_json=False,
+            artifact_tier=self.config.output.session_artifact_tier,
+        )
+        if isinstance(output_sink, CompositeOutputSink):
+            return CompositeOutputSink([*output_sink.sinks, trace_sink])
+        return CompositeOutputSink([output_sink, trace_sink])
+
+    @classmethod
+    def _contains_session_logger(cls, sink: Any) -> bool:
+        if isinstance(sink, SessionLoggerOutputSink):
+            return True
+        if isinstance(sink, CompositeOutputSink):
+            return any(cls._contains_session_logger(item) for item in sink.sinks)
+        return False
 
     def _prompt_continuation_service_cls(self) -> Any:
         try:

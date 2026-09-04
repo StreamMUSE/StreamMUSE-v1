@@ -226,6 +226,51 @@ def test_input_worker_snaps_late_tick_phase_to_next_tick():
     assert stamped.tick == 1
 
 
+def test_input_worker_uses_one_service_clock_receipt_for_stamp_and_trace():
+    class _TraceOutput(NoopOutput):
+        def __init__(self):
+            self.rows = []
+
+        def log_input_quantization(self, row):
+            self.rows.append(dict(row))
+
+    now_calls = []
+
+    def now():
+        now_calls.append(None)
+        return 100.150
+
+    output = _TraceOutput()
+    svc = RealTimeMusicService(
+        input_source=_OneEventInput(),
+        inference_engine=NoopInference(),
+        output_sink=output,
+        tempo=Tempo(bpm=60.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        input_snap_forward_fraction=0.4,
+        input_quantization_trace_enabled=True,
+        now=now,
+        sleep=lambda _: None,
+    )
+    svc._runtime = SimpleNamespace(
+        session_start_time=100.0,
+        timeline_start_time=100.0,
+    )
+    svc._running = True
+    svc._sleep_until = lambda _target: None
+
+    svc._input_worker()
+
+    stamped = svc._event_q.get_nowait()
+    row = output.rows[0]
+    assert len(now_calls) == 1
+    assert stamped.tick == row["quantized_tick"] == 1
+    assert row["clock_domain"] == "service_now"
+    assert row["application_received_time_s"] == pytest.approx(100.150)
+    assert row["raw_tick"] == pytest.approx(0.6)
+    assert row["signed_error_ms"] == pytest.approx(100.0)
+
+
 # --- tick=0 trigger ---
 
 def test_tick0_sends_full_melody_history():

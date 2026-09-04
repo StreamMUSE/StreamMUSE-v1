@@ -11,7 +11,11 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
-from streammuse.application.services.input_timing import stamp_user_input_event
+from streammuse.application.services.input_timing import (
+    build_input_quantization_trace_row,
+    diagnose_input_quantization,
+    stamp_user_input_event_at_tick,
+)
 from streammuse.domain.interfaces import InputSource, OutputSink
 from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import MusicalTime, PlaybackScheduler, Tempo
@@ -89,6 +93,7 @@ class PromptContinuationRealtimeService:
         generation_interval_ticks: int = 4,
         count_in_beats: int = 0,
         input_snap_forward_fraction: float = 0.0,
+        input_quantization_trace_enabled: bool = False,
         protocol_poll_interval_s: float = 0.05,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -114,6 +119,9 @@ class PromptContinuationRealtimeService:
         self._count_in_beats = int(count_in_beats)
         self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
         self._input_snap_forward_fraction = float(input_snap_forward_fraction)
+        self._input_quantization_trace_enabled = bool(
+            input_quantization_trace_enabled
+        )
         self._protocol_poll_interval_s = float(protocol_poll_interval_s)
         self._now = now
         self._sleep = sleep
@@ -177,6 +185,16 @@ class PromptContinuationRealtimeService:
         self._system_trace_logger = (
             system_trace_logger if callable(system_trace_logger) else None
         )
+        input_quantization_logger = getattr(
+            output_sink, "log_input_quantization", None
+        )
+        self._input_quantization_logger = (
+            input_quantization_logger
+            if self._input_quantization_trace_enabled
+            and callable(input_quantization_logger)
+            else None
+        )
+        self._input_quantization_sequence = 0
 
     def _trace(self, kind: str, **payload: Any) -> None:
         if not self._trace_path:
@@ -255,14 +273,35 @@ class PromptContinuationRealtimeService:
         for ev in self._input.read_events():
             if not self._running:
                 break
-            elapsed = self._now() - start
-            stamped = stamp_user_input_event(
-                ev,
-                elapsed_seconds=elapsed,
+            received_time_s = self._now()
+            result = diagnose_input_quantization(
+                max(0.0, received_time_s - start),
                 tempo=self._tempo,
                 snap_forward_fraction=self._input_snap_forward_fraction,
             )
+            stamped = stamp_user_input_event_at_tick(
+                ev,
+                tick=result.quantized_tick,
+            )
             self._event_q.put(stamped)
+            if self._input_quantization_logger is not None:
+                self._input_quantization_sequence += 1
+                try:
+                    self._input_quantization_logger(
+                        build_input_quantization_trace_row(
+                            service="prompt_continuation",
+                            event_sequence=self._input_quantization_sequence,
+                            event=ev,
+                            result=result,
+                            received_time_s=received_time_s,
+                            timeline_start_time_s=start,
+                            clock_domain="service_now",
+                            tempo=self._tempo,
+                        )
+                    )
+                except Exception:
+                    # Optional diagnostics must never interrupt realtime input.
+                    pass
 
     def _protocol_worker(self) -> None:
         assert self._runtime is not None
@@ -1328,12 +1367,12 @@ class PromptContinuationRealtimeService:
             return
         self._running = True
         session_start_time = self._now()
+        count_in_seconds = self._tempo.tick_to_seconds(self._count_in_ticks)
         self._runtime = PromptContinuationRuntime(
             session_start_time=session_start_time,
-            timeline_start_time=(
-                session_start_time + self._tempo.tick_to_seconds(self._count_in_ticks)
-            ),
+            timeline_start_time=session_start_time + count_in_seconds,
         )
+        self._input_quantization_sequence = 0
         self._output.output_status("running", "prompt-continuation")
 
         self._input_thread = threading.Thread(target=self._input_worker, daemon=True)

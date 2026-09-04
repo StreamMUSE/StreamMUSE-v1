@@ -13,7 +13,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, List, Optional, Protocol
 
-from streammuse.application.services.input_timing import stamp_user_input_event
+from streammuse.application.services.input_timing import (
+    build_input_quantization_trace_row,
+    diagnose_input_quantization,
+    stamp_user_input_event_at_tick,
+)
 from streammuse.domain.interfaces import InferenceEngine, InputSource, OutputSink
 from streammuse.domain.interfaces.timing_info import TimingInfo
 from streammuse.domain.musical import EventType, MusicalEvent
@@ -126,6 +130,7 @@ class RealTimeMusicService:
         generation_length_frames: int = 20,
         count_in_beats: int = 0,
         input_snap_forward_fraction: float = 0.0,
+        input_quantization_trace_enabled: bool = False,
         tick_observer: TickObserver | None = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -148,6 +153,9 @@ class RealTimeMusicService:
         self._count_in_beats = int(count_in_beats)
         self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
         self._input_snap_forward_fraction = float(input_snap_forward_fraction)
+        self._input_quantization_trace_enabled = bool(
+            input_quantization_trace_enabled
+        )
         self._tick_observer = tick_observer
         self._tick_observer_closed = False
         self._now = now
@@ -193,6 +201,16 @@ class RealTimeMusicService:
         self._system_trace_logger = (
             system_trace_logger if callable(system_trace_logger) else None
         )
+        input_quantization_logger = getattr(
+            output_sink, "log_input_quantization", None
+        )
+        self._input_quantization_logger = (
+            input_quantization_logger
+            if self._input_quantization_trace_enabled
+            and callable(input_quantization_logger)
+            else None
+        )
+        self._input_quantization_sequence = 0
 
         self._lifecycle_session_id = f"rt-{uuid.uuid4().hex}"
         self._request_counter = 0
@@ -1418,17 +1436,38 @@ class RealTimeMusicService:
         for ev in self._input.read_events():
             if not self._running or self._stop_requested.is_set():
                 break
-            elapsed = max(0.0, self._now() - start)
-            stamped = stamp_user_input_event(
-                ev,
-                elapsed_seconds=elapsed,
+            received_time_s = self._now()
+            result = diagnose_input_quantization(
+                max(0.0, received_time_s - start),
                 tempo=self._tempo,
                 snap_forward_fraction=self._input_snap_forward_fraction,
+            )
+            stamped = stamp_user_input_event_at_tick(
+                ev,
+                tick=result.quantized_tick,
             )
             self._event_q.put(stamped)
             # Add to melody history (only note_on/note_off events)
             with self._melody_history_lock:
                 self._melody_history.append(stamped)
+            if self._input_quantization_logger is not None:
+                self._input_quantization_sequence += 1
+                try:
+                    self._input_quantization_logger(
+                        build_input_quantization_trace_row(
+                            service="standard",
+                            event_sequence=self._input_quantization_sequence,
+                            event=ev,
+                            result=result,
+                            received_time_s=received_time_s,
+                            timeline_start_time_s=start,
+                            clock_domain="service_now",
+                            tempo=self._tempo,
+                        )
+                    )
+                except Exception:
+                    # Optional diagnostics must never interrupt realtime input.
+                    pass
 
     # Fraction of a tick to sleep after time-sync before draining the input queue,
     # giving user events generated near the tick boundary time to arrive.
@@ -2044,11 +2083,13 @@ class RealTimeMusicService:
             self._state = RealTimeServiceState.ACCEPTING_REQUESTS
             self._running = True
         session_start_time = self._now()
-        timeline_start_time = session_start_time + self._tempo.tick_to_seconds(self._count_in_ticks)
+        count_in_seconds = self._tempo.tick_to_seconds(self._count_in_ticks)
+        timeline_start_time = session_start_time + count_in_seconds
         self._runtime = RealTimeServiceRuntime(
             session_start_time=session_start_time,
             timeline_start_time=timeline_start_time,
         )
+        self._input_quantization_sequence = 0
         self._output.output_status("running", "")
         self._log_lifecycle(
             "session_started",

@@ -33,6 +33,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "metronome_channel": 9,
         "inference_log_detail": "summary",
         "session_artifact_tier": "debug",
+        "log_input_quantization": False,
         "inference_type": "http",
         "server_url": "http://localhost:8000/generate_accompaniment",
         "model_name": "stanley",
@@ -94,6 +95,7 @@ def test_parse_args_defaults() -> None:
     assert config.count_in_beats == 0
     assert config.continuation_mode == "standard"
     assert config.input_snap_forward_fraction == 0.4
+    assert config.input_quantization_trace_enabled is False
 
 
 def test_parse_args_exposes_rt_horizon_and_drain_contract(monkeypatch) -> None:
@@ -128,6 +130,20 @@ def test_parse_args_exposes_rt_horizon_and_drain_contract(monkeypatch) -> None:
     assert args.tail_beats == 24
     assert args.drain_timeout_s == 15.0
     assert args.model_condition_bpm == 120
+
+
+def test_parse_args_enables_input_quantization_trace(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["streammuse-cli", "--log-input-quantization"],
+    )
+
+    args = parse_args()
+    config = args_to_config(args)
+
+    assert args.log_input_quantization is True
+    assert config.input_quantization_trace_enabled is True
 
 
 @pytest.mark.parametrize(

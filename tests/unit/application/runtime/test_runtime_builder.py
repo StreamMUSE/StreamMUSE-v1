@@ -10,8 +10,10 @@ from streammuse.application.config import (
     TempoConfig,
 )
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
+from streammuse.infrastructure.output.composite import CompositeOutputSink
 from streammuse.infrastructure.output.metronome import MetronomeOutputSink
 from streammuse.infrastructure.output.midi_file import MidiFileOutputSink
+from streammuse.infrastructure.output.session_logger import SessionLoggerOutputSink
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 
 
@@ -134,6 +136,63 @@ def test_builder_creates_unique_web_session_directory_on_fast_restart(
     assert first.session_dir != second.session_dir
     assert first.session_dir.exists()
     assert second.session_dir.exists()
+
+
+@patch("streammuse.application.runtime.builder.RealTimeMusicService")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
+def test_builder_adds_trace_only_session_logger_to_web_when_enabled(
+    inference_factory,
+    input_factory,
+    service_cls,
+    tmp_path,
+) -> None:
+    config = ApplicationConfig(input_quantization_trace_enabled=True)
+    input_factory.create.return_value = MagicMock()
+    inference_factory.create.return_value = MagicMock()
+    service_cls.return_value = MagicMock(running=False)
+
+    session = RuntimeSessionBuilder(config=config, log_dir=str(tmp_path)).build_web()
+
+    assert isinstance(session.output_sink, CompositeOutputSink)
+    session_sinks = [
+        sink
+        for sink in session.output_sink.sinks
+        if isinstance(sink, SessionLoggerOutputSink)
+    ]
+    midi_sinks = [
+        sink
+        for sink in session.output_sink.sinks
+        if isinstance(sink, MidiFileOutputSink)
+    ]
+    assert len(session_sinks) == 1
+    assert len(midi_sinks) == 1
+    assert session_sinks[0].midi_sink is None
+    assert session_sinks[0].json_sink is None
+    assert service_cls.call_args.kwargs["input_quantization_trace_enabled"] is True
+
+
+@patch("streammuse.application.runtime.builder.RealTimeMusicService")
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+@patch("streammuse.application.runtime.builder.InferenceEngineFactory")
+def test_builder_reuses_cli_session_logger_for_quantization_trace(
+    inference_factory,
+    input_factory,
+    service_cls,
+    tmp_path,
+) -> None:
+    config = ApplicationConfig(
+        output=OutputConfig(type="session"),
+        input_quantization_trace_enabled=True,
+    )
+    input_factory.create.return_value = MagicMock()
+    inference_factory.create.return_value = MagicMock()
+    service_cls.return_value = MagicMock(running=False)
+
+    session = RuntimeSessionBuilder(config=config, log_dir=str(tmp_path)).build_cli()
+
+    assert isinstance(session.output_sink, SessionLoggerOutputSink)
+    assert service_cls.call_args.kwargs["input_quantization_trace_enabled"] is True
 
 
 @patch("streammuse.application.runtime.builder.RealTimeMusicService")

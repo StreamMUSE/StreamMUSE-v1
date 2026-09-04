@@ -165,6 +165,60 @@ def test_prompt_input_fraction_point_four_snaps_490ms_to_step_four() -> None:
     assert _stamp_single_input_event(input_snap_forward_fraction=0.4).tick == 4
 
 
+def test_prompt_input_worker_uses_one_service_clock_receipt_for_stamp_and_trace():
+    class _OneEventInput:
+        def read_events(self):
+            return iter([_note(60, 99)])
+
+        def close(self):
+            return None
+
+    class _TraceOutput(_RecordingOutput):
+        def __init__(self):
+            super().__init__()
+            self.rows = []
+
+        def log_input_quantization(self, row):
+            self.rows.append(dict(row))
+
+    now_calls = []
+
+    def now():
+        now_calls.append(None)
+        return 100.490
+
+    output = _TraceOutput()
+    service = PromptContinuationRealtimeService(
+        input_source=_OneEventInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        input_snap_forward_fraction=0.4,
+        input_quantization_trace_enabled=True,
+        now=now,
+        sleep=lambda _: None,
+    )
+    service._runtime = SimpleNamespace(
+        session_start_time=100.0,
+        timeline_start_time=100.0,
+    )
+    service._running = True
+    service._sleep_until = lambda _target: None
+
+    service._input_worker()
+
+    stamped = service._event_q.get_nowait()
+    row = output.rows[0]
+    assert len(now_calls) == 1
+    assert stamped.tick == row["quantized_tick"] == 4
+    assert row["service"] == "prompt_continuation"
+    assert row["clock_domain"] == "service_now"
+    assert row["application_received_time_s"] == pytest.approx(100.490)
+    assert row["raw_tick"] == pytest.approx(3.92)
+    assert row["signed_error_ms"] == pytest.approx(10.0)
+
+
 def test_prompt_continuation_rejects_non_four_steps_per_beat() -> None:
     with pytest.raises(
         ValueError,

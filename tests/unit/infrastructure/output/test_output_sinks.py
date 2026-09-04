@@ -649,6 +649,32 @@ def test_composite_output_sink_fans_out_system_trace_and_skips_plain_sinks(tmp_p
     assert row == {"decision": "missing", "tick": 2}
 
 
+def test_composite_writes_input_quantization_trace_once(tmp_path):
+    session_sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+    composite = CompositeOutputSink([session_sink])
+
+    row = {
+        "record_type": "input_quantization",
+        "bpm": 120.0,
+        "quantized_tick": 4,
+        "signed_error_ms": -25.0,
+    }
+    composite.log_input_quantization(row)
+
+    trace_path = tmp_path / "input_quantization_trace.jsonl"
+    assert not trace_path.exists()
+    row["signed_error_ms"] = 999.0
+    composite.close()
+
+    rows = trace_path.read_text().splitlines()
+    assert len(rows) == 1
+    assert json.loads(rows[0])["signed_error_ms"] == -25.0
+
+
 def test_composite_output_sink_fans_out_lifecycle_and_validity(tmp_path):
     session_sink = SessionLoggerOutputSink(
         session_dir=tmp_path,

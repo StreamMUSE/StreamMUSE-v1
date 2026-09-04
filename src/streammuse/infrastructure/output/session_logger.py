@@ -43,11 +43,15 @@ class SessionLoggerOutputSink:
         )
         self._schedule_trace_path = self.session_dir / "model_schedule_trace.jsonl"
         self._system_trace_path = self.session_dir / "system_trace.jsonl"
+        self._input_quantization_trace_path = (
+            self.session_dir / "input_quantization_trace.jsonl"
+        )
         self._theoretical_midi_path = self.session_dir / "theoretical_model.mid"
         self._theoretical_summary_path = self.session_dir / "theoretical_model_summary.json"
         self._lifecycle_path = self.session_dir / "request_lifecycle.jsonl"
         self._validity_path = self.session_dir / "validity.json"
         self._artifact_lock = threading.Lock()
+        self._input_quantization_rows: list[Dict[str, Any]] = []
 
         self.midi_sink: Optional[MidiFileOutputSink] = None
         self.json_sink: Optional[JsonLoggerOutputSink] = None
@@ -153,6 +157,20 @@ class SessionLoggerOutputSink:
         with self._artifact_lock:
             with self._system_trace_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(dict(row), sort_keys=True) + "\n")
+
+    def log_input_quantization(self, row: Dict[str, Any]) -> None:
+        with self._artifact_lock:
+            self._input_quantization_rows.append(dict(row))
+
+    def _flush_input_quantization_trace(self) -> None:
+        with self._artifact_lock:
+            if not self._input_quantization_rows:
+                return
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+            with self._input_quantization_trace_path.open("w", encoding="utf-8") as f:
+                for row in self._input_quantization_rows:
+                    f.write(json.dumps(row, sort_keys=True) + "\n")
+            self._input_quantization_rows.clear()
 
     def log_request_lifecycle(self, row: Dict[str, Any]) -> None:
         if self.json_sink:
@@ -303,11 +321,16 @@ class SessionLoggerOutputSink:
 
         first_error: Exception | None = None
         try:
+            self._flush_input_quantization_trace()
+        except Exception as exc:
+            first_error = exc
+        try:
             if self.midi_sink:
                 self.midi_sink.close()
             self._write_theoretical_model_midi()
         except Exception as exc:
-            first_error = exc
+            if first_error is None:
+                first_error = exc
         try:
             if self.json_sink:
                 self.json_sink.close()

@@ -107,6 +107,11 @@ def parse_args() -> argparse.Namespace:
         help="Session artifact tier: normal keeps core MIDI/trace files; debug keeps full JSON/log diagnostics",
     )
     parser.add_argument("--enable-performance-tracking", action="store_true", help="Enable detailed performance metrics calculation")
+    parser.add_argument(
+        "--log-input-quantization",
+        action="store_true",
+        help="Write input_quantization_trace.jsonl in the session directory",
+    )
 
     # Inference configuration
     parser.add_argument(
@@ -329,6 +334,9 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         count_in_beats=max(0, int(getattr(args, "count_in_beats", 0) or 0)),
         input_snap_forward_fraction=clamp_snap_forward_fraction(
             float(getattr(args, "input_snap_forward_fraction", 0.4))
+        ),
+        input_quantization_trace_enabled=bool(
+            getattr(args, "log_input_quantization", False)
         ),
     )
 

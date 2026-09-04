@@ -92,3 +92,4 @@ class ApplicationConfig:
     continuation_mode: ContinuationMode = "standard"
     count_in_beats: int = 0
     input_snap_forward_fraction: float = 0.4
+    input_quantization_trace_enabled: bool = False
