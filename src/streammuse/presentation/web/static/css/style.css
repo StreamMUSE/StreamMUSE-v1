@@ -103,6 +103,45 @@ main {
     margin-bottom: 15px;
 }
 
+.session-bpm-control {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0 12px;
+}
+
+.bpm-input-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #666;
+    font-size: 0.8rem;
+}
+
+.bpm-input-group input {
+    width: 76px;
+    padding: 6px 7px;
+    border: 1px solid #d8d8d8;
+    border-radius: 6px;
+    background: #fff;
+    color: #333;
+    font-family: 'Monaco', 'Consolas', monospace;
+    font-size: 0.85rem;
+    text-align: right;
+}
+
+.bpm-input-group input:focus {
+    border-color: #E91E63;
+    outline: 2px solid rgba(233, 30, 99, 0.12);
+}
+
+.bpm-input-group input:disabled {
+    background: #f3f3f3;
+    color: #888;
+    cursor: not-allowed;
+}
+
 .btn {
     padding: 8px 16px;
     border: none;

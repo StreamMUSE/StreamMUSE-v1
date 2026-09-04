@@ -7,12 +7,14 @@ import signal
 import sys
 import threading
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import AsyncIterator, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from streammuse.application.config import ApplicationConfig
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
@@ -21,6 +23,18 @@ from streammuse.presentation.cli.config_parser import args_to_config, parse_args
 
 
 STATIC_DIR = Path(__file__).parent / "static"
+MIN_SESSION_BPM = 30
+MAX_SESSION_BPM = 300
+
+
+class StartSessionRequest(BaseModel):
+    """Optional settings applied to one newly-created Web session."""
+
+    bpm: int | None = Field(
+        default=None,
+        ge=MIN_SESSION_BPM,
+        le=MAX_SESSION_BPM,
+    )
 
 # ---------------------------------------------------------------------------
 # Module-level state. Set once at boot, read by request handlers.
@@ -98,14 +112,39 @@ def _runtime_status() -> dict[str, object]:
         state = _lifecycle_state
         if state == "running" and not running:
             state = "idle"
+        configured_bpm = (
+            int(round(float(_config.tempo.bpm)))
+            if _config is not None
+            else None
+        )
+        active_bpm = (
+            int(_runtime.config.tempo.bpm)
+            if running and _runtime is not None
+            else None
+        )
         return {
             "is_running": bool(running),
             "state": state,
             "session_dir": _last_session_dir,
+            "configured_bpm": configured_bpm,
+            "active_bpm": active_bpm,
         }
 
 
-def _start_service() -> tuple[RuntimeSession, bool]:
+def _derive_session_config(*, bpm: int | None) -> ApplicationConfig:
+    """Create an immutable per-session config from the server's base config."""
+    if _config is None:
+        raise RuntimeError("server not initialized")
+    session_bpm = (
+        int(round(float(_config.tempo.bpm)))
+        if bpm is None
+        else int(bpm)
+    )
+    session_tempo = replace(_config.tempo, bpm=session_bpm)
+    return replace(_config, tempo=session_tempo)
+
+
+def _start_service(*, bpm: int | None = None) -> tuple[RuntimeSession, bool]:
     """Build and start one fresh runtime; return (runtime, newly_started)."""
     global _runtime, _service, _composite_sink, _ws_sink
     global _last_session_dir, _lifecycle_state
@@ -121,7 +160,11 @@ def _start_service() -> tuple[RuntimeSession, bool]:
         _lifecycle_state = "starting"
         runtime: RuntimeSession | None = None
         try:
-            runtime = RuntimeSessionBuilder(config=_config, log_dir=_log_dir).build_web()
+            session_config = _derive_session_config(bpm=bpm)
+            runtime = RuntimeSessionBuilder(
+                config=session_config,
+                log_dir=_log_dir,
+            ).build_web()
             ws_sink = runtime.websocket_sink
             if not isinstance(ws_sink, WebSocketOutputSink):
                 raise RuntimeError("web runtime did not provide a WebSocketOutputSink")
@@ -220,21 +263,23 @@ def create_app() -> FastAPI:
         return JSONResponse(_runtime_status())
 
     @app.post("/api/start")
-    async def api_start() -> JSONResponse:
+    async def api_start(request: StartSessionRequest | None = None) -> JSONResponse:
         try:
-            runtime, newly_started = await asyncio.to_thread(_start_service)
+            _, newly_started = await asyncio.to_thread(
+                _start_service,
+                bpm=request.bpm if request is not None else None,
+            )
         except Exception as exc:
             return JSONResponse(
                 {"success": False, "message": str(exc)},
                 status_code=500,
             )
+        status = _runtime_status()
         return JSONResponse(
             {
                 "success": True,
                 "message": "started" if newly_started else "already running",
-                "is_running": True,
-                "state": "running",
-                "session_dir": str(runtime.session_dir),
+                **status,
             }
         )
 

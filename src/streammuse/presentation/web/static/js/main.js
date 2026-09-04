@@ -4,13 +4,50 @@
  * Connects to /ws, routes inbound JSON envelopes to PianoVisualizer / Stats,
  * and writes session metadata into the Session panel.
  *
- * Runtime parameters remain owned by the CLI invocation.
+ * Session BPM defaults to the CLI value and may be overridden while idle.
  */
 
 (function() {
     let ws = null;
     let reconnectAttempts = 0;
+    let bpmInitialized = false;
     const MAX_RECONNECT_ATTEMPTS = 10;
+
+    function statusBpm(status) {
+        if (status && status.active_bpm !== null && status.active_bpm !== undefined) {
+            return Number(status.active_bpm);
+        }
+        if (status && status.configured_bpm !== null && status.configured_bpm !== undefined) {
+            return Number(status.configured_bpm);
+        }
+        return null;
+    }
+
+    function selectedBpm() {
+        const bpmInput = document.getElementById('session-bpm');
+        if (!bpmInput) return null;
+        const bpm = Number(bpmInput.value);
+        return Number.isInteger(bpm) ? bpm : null;
+    }
+
+    function setTempoDisplay(bpm) {
+        const tempo = document.getElementById('info-tempo');
+        if (tempo && Number.isInteger(bpm)) {
+            tempo.textContent = `${bpm} BPM`;
+        }
+    }
+
+    function syncBpmDisplay(status, running) {
+        const bpmInput = document.getElementById('session-bpm');
+        const bpm = statusBpm(status);
+        if (bpmInput && Number.isInteger(bpm) && (running || !bpmInitialized)) {
+            bpmInput.value = String(bpm);
+            bpmInitialized = true;
+        }
+
+        const displayBpm = !running && bpmInitialized ? selectedBpm() : bpm;
+        setTempoDisplay(displayBpm);
+    }
 
     function updateServiceState(status) {
         const running = Boolean(status && status.is_running);
@@ -18,11 +55,14 @@
         const stateEl = document.getElementById('service-state');
         const startBtn = document.getElementById('btn-start');
         const stopBtn = document.getElementById('btn-stop');
+        const bpmInput = document.getElementById('session-bpm');
         if (stateEl) {
             stateEl.textContent = state.charAt(0).toUpperCase() + state.slice(1);
         }
         if (startBtn) startBtn.disabled = running || state === 'starting';
         if (stopBtn) stopBtn.disabled = !running && state !== 'starting';
+        if (bpmInput) bpmInput.disabled = state !== 'idle' || running;
+        syncBpmDisplay(status, running);
     }
 
     async function refreshServiceStatus() {
@@ -35,9 +75,23 @@
     }
 
     async function startService() {
+        const bpmInput = document.getElementById('session-bpm');
+        if (!bpmInput || !bpmInput.checkValidity()) {
+            if (bpmInput) bpmInput.reportValidity();
+            return;
+        }
+        const bpm = Number(bpmInput.value);
+        if (!Number.isInteger(bpm)) {
+            bpmInput.reportValidity();
+            return;
+        }
         updateServiceState({is_running: false, state: 'starting'});
         try {
-            const response = await fetch('/api/start', {method: 'POST'});
+            const response = await fetch('/api/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bpm}),
+            });
             const result = await response.json();
             if (!response.ok || !result.success) {
                 throw new Error(result.message || 'start failed');
@@ -191,8 +245,12 @@
     document.addEventListener('DOMContentLoaded', () => {
         const startBtn = document.getElementById('btn-start');
         const stopBtn = document.getElementById('btn-stop');
+        const bpmInput = document.getElementById('session-bpm');
         if (startBtn) startBtn.addEventListener('click', startService);
         if (stopBtn) stopBtn.addEventListener('click', stopService);
+        if (bpmInput) bpmInput.addEventListener('input', () => {
+            setTempoDisplay(selectedBpm());
+        });
         refreshServiceStatus();
         connectWebSocket();
     });
