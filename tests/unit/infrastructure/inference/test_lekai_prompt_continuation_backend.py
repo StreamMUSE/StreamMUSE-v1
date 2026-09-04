@@ -33,12 +33,15 @@ class _FakePromptEngine:
             "is_warmed_up": True,
         }
 
-    def generate_prompt_accompaniment(self, melody_events, prompt_start_tick, prompt_length_ticks):
+    def generate_prompt_accompaniment(
+        self, melody_events, prompt_start_tick, prompt_length_ticks, bpm=None
+    ):
         self.calls.append(
             {
                 "melody_events": melody_events,
                 "prompt_start_tick": prompt_start_tick,
                 "prompt_length_ticks": prompt_length_ticks,
+                "bpm": bpm,
             }
         )
         return [_note_on(48, 0)]
@@ -46,6 +49,9 @@ class _FakePromptEngine:
     def reset_session(self, seed):
         self.reset_calls.append(int(seed))
         return int(seed)
+
+    def last_effective_bpm(self):
+        return self.calls[-1]["bpm"] if self.calls else None
 
 
 class _FakeContinuationEngine:
@@ -72,6 +78,9 @@ class _FakeContinuationEngine:
             "use_cache": True,
             "runtime_model_name": "lekai",
             "runtime_inference_mode": "sliding_window",
+            "last_generation_bpm": (
+                self.generate_calls[-1]["bpm"] if self.generate_calls else None
+            ),
         }
 
     def generate(self, **kwargs):
@@ -126,11 +135,77 @@ def test_prompt_continuation_backend_runtime_info_uses_model_name():
     assert info["mode"] == "rule_stub"
 
 
+def test_continuation_engine_forwards_session_bpm_to_generic_backend():
+    class _Backend:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return [], {"response_output_time": 1.0}
+
+        def runtime_info(self):
+            return {"effective_bpm": 96}
+
+    generic_backend = _Backend()
+    engine = LekaiContinuationEngine(backend=generic_backend)
+
+    engine.generate(
+        melody_events=[],
+        generation_start_tick=32,
+        generation_length_frames=4,
+        generation_interval_ticks=4,
+        prompt_length_ticks=32,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=96,
+    )
+
+    assert generic_backend.calls[0]["bpm"] == 96
+    assert engine.runtime_info()["last_generation_bpm"] == 96
+
+
 def test_prompt_continuation_backend_delegates_runtime_to_engine():
     engine = LekaiPromptContinuationEngine()
     backend = LekaiPromptContinuationBackend(engine=engine)
 
     assert backend.runtime_info()["runtime_model_name"] == "lekai_prompt_continuation"
+
+
+def test_prompt_start_omitted_bpm_resolves_legacy_env_once_for_both_stages(
+    monkeypatch,
+):
+    monkeypatch.setenv("LEKAI_DEFAULT_BPM", "72")
+    monkeypatch.setenv("LEKAI_PROMPT_BPM", "84")
+    prompt_engine = _FakePromptEngine()
+    continuation_engine = _FakeContinuationEngine()
+    backend = LekaiPromptContinuationBackend(
+        engine=LekaiPromptContinuationEngine(
+            prompt_engine=prompt_engine,
+            continuation_engine=continuation_engine,
+        )
+    )
+
+    status = backend.start_prompt_catchup(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        observed_until_tick=32,
+    )
+    assert status["effective_bpm"] == 84
+    ready = backend.wait_for_scheduler(timeout=2.0)
+
+    assert ready["effective_bpm"] == 84
+    assert prompt_engine.calls[0]["bpm"] == 84
+    assert {call["bpm"] for call in continuation_engine.generate_calls} == {84}
+    runtime_info = backend.runtime_info()
+    assert runtime_info["session_effective_bpm"] == 84
+    assert runtime_info["prompt_effective_bpm"] == 84
+    assert runtime_info["continuation_effective_bpm"] == 84
 
 
 def test_prompt_continuation_engine_calls_prompt_hook_when_prompt_window_exists():

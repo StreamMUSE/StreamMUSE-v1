@@ -15,12 +15,15 @@ class _ExtensionPromptEngine:
         self.calls = []
         self._generated_acc_beats = int(generated_acc_beats)
 
-    def generate_prompt_accompaniment(self, melody_events, prompt_start_tick, prompt_length_ticks):
+    def generate_prompt_accompaniment(
+        self, melody_events, prompt_start_tick, prompt_length_ticks, bpm=None
+    ):
         self.calls.append(
             {
                 "melody_events": melody_events,
                 "prompt_start_tick": prompt_start_tick,
                 "prompt_length_ticks": prompt_length_ticks,
+                "bpm": bpm,
             }
         )
         return [_note_on(48, 0), _note_on(50, 32)]
@@ -66,6 +69,7 @@ def test_prompt_extension_scheduler_starts_continuation_after_prompt_generated_e
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=88,
         observed_until_tick=44,
     )
     ready_status = scheduler.wait(timeout=2.0)
@@ -74,12 +78,15 @@ def test_prompt_extension_scheduler_starts_continuation_after_prompt_generated_e
     assert ready_status["prompt_extension_ticks"] == 4
     assert ready_status["accompaniment_history_beats"] == 12
     assert prompt_engine.calls[0]["prompt_length_ticks"] == 36
+    assert prompt_engine.calls[0]["bpm"] == 88
     assert continuation_engine.inject_calls[0]["injection_length_ticks"] == 36
     assert [call["generation_start_tick"] for call in continuation_engine.generate_calls] == [
         36,
         40,
         44,
     ]
+    assert {call["bpm"] for call in continuation_engine.generate_calls} == {88}
+    assert ready_status["effective_bpm"] == 88
 
 
 def test_prompt_extension_scheduler_falls_back_to_prompt_boundary_when_prompt_has_no_extension():
@@ -98,6 +105,7 @@ def test_prompt_extension_scheduler_falls_back_to_prompt_boundary_when_prompt_ha
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=120,
         observed_until_tick=44,
     )
     scheduler.wait(timeout=2.0)

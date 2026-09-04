@@ -44,6 +44,27 @@ TIMESTEPS_PER_BEAT = 4
 DEFAULT_BEATS_PER_BAR = 4
 
 
+def resolve_prompt_bpm(bpm: Optional[int] = None) -> int:
+    """Resolve one prompt-session BPM without mutating process configuration."""
+
+    if bpm is not None:
+        effective = int(bpm)
+        if effective <= 0:
+            raise ValueError("bpm must be > 0")
+        return effective
+
+    default_raw = os.environ.get("LEKAI_DEFAULT_BPM")
+    try:
+        default_bpm = int(default_raw) if default_raw and default_raw.strip() else 120
+    except ValueError:
+        default_bpm = 120
+    prompt_raw = os.environ.get("LEKAI_PROMPT_BPM")
+    try:
+        return int(prompt_raw) if prompt_raw and prompt_raw.strip() else default_bpm
+    except ValueError:
+        return default_bpm
+
+
 class LekaiPromptEngine:
     """Load and run the prompt model that generates initial accompaniment."""
 
@@ -336,6 +357,7 @@ class LekaiPromptEngine:
         melody_events: list[EventPayload],
         prompt_start_tick: int,
         prompt_length_ticks: int,
+        bpm: Optional[int] = None,
     ) -> tuple[torch.Tensor, int, int]:
         time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
         beats_per_bar = self._measure_beats_from_time_signature_idx(time_signature_idx)
@@ -345,7 +367,7 @@ class LekaiPromptEngine:
 
         metadata = {
             "time_signature_idx": time_signature_idx,
-            "bpm": self._env_int("LEKAI_PROMPT_BPM", self._env_int("LEKAI_DEFAULT_BPM", 120)),
+            "bpm": resolve_prompt_bpm(bpm),
             "num_measures": num_bars,
         }
         prompt_end_tick = int(prompt_start_tick) + window_ticks
@@ -427,6 +449,10 @@ class LekaiPromptEngine:
         """Return the number of accompaniment beats produced by the last prompt call."""
 
         return int(self._last_generated_acc_beats)
+
+    def last_effective_bpm(self) -> Optional[int]:
+        value = self._last_generation_metadata.get("bpm")
+        return int(value) if value is not None else None
 
     def last_generation_log(self) -> dict[str, Any]:
         """Return token-level diagnostics for the latest prompt generation."""
@@ -696,6 +722,7 @@ class LekaiPromptEngine:
         melody_events: list[EventPayload],
         prompt_start_tick: int,
         prompt_length_ticks: int,
+        bpm: Optional[int] = None,
     ) -> list[EventPayload]:
         """Generate prompt accompaniment for the initial prompt window."""
 
@@ -715,6 +742,7 @@ class LekaiPromptEngine:
             melody_events=copied_melody,
             prompt_start_tick=prompt_start_tick,
             prompt_length_ticks=condition_length_ticks,
+            bpm=bpm,
         )
         prompt_token_ids = [int(token) for token in prompt_tokens.detach().cpu().flatten().tolist()]
         self._last_prompt_token_ids = prompt_token_ids

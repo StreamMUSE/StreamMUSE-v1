@@ -64,11 +64,16 @@ class LekaiPromptExtensionContinuationScheduler(LekaiPromptContinuationScheduler
                 prompt_melody_input = copy_events(self._prompt_melody_input)
                 prompt_length_ticks = int(self._prompt_length_ticks)
                 prompt_generation_length_ticks = prompt_length_ticks + int(self._prompt_extension_ticks)
+                effective_bpm = self._effective_bpm
+
+            if effective_bpm is None:
+                raise RuntimeError("prompt-continuation session BPM is not initialized")
 
             prompt_accompaniment = self._prompt_engine.generate_prompt_accompaniment(
                 melody_events=prompt_melody_input,
                 prompt_start_tick=0,
                 prompt_length_ticks=prompt_generation_length_ticks,
+                bpm=effective_bpm,
             )
             generated_acc_beats = (
                 self._prompt_engine.last_generated_acc_beats()

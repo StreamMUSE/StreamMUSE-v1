@@ -176,6 +176,7 @@ class PromptContinuationStartRequest(BaseModel):
     inference_mode: str = "sliding_window"
     model_name: str = "lekai_prompt_continuation"
     checkpoint_path: Optional[str] = None
+    bpm: Optional[int] = Field(default=None, gt=0)
 
 
 class PromptContinuationAppendMelodyRequest(BaseModel):
@@ -192,6 +193,7 @@ class PromptContinuationStatusResponse(BaseModel):
     accompaniment_event_count: int
     prompt_length_ticks: int
     generation_interval_ticks: int
+    effective_bpm: Optional[int] = None
     continuation_calls: int
     last_continuation_event_count: int = 0
     last_continuation_note_on_count: int = 0
@@ -315,6 +317,11 @@ def _scheduler_status_response(
         accompaniment_event_count=int(status["accompaniment_event_count"]),
         prompt_length_ticks=int(status["prompt_length_ticks"]),
         generation_interval_ticks=int(status["generation_interval_ticks"]),
+        effective_bpm=(
+            int(status["effective_bpm"])
+            if status.get("effective_bpm") is not None
+            else None
+        ),
         continuation_calls=int(status["continuation_calls"]),
         last_continuation_event_count=int(
             status.get("last_continuation_event_count", 0) or 0
@@ -427,6 +434,7 @@ async def prompt_continuation_start(
             inference_mode=request.inference_mode,
             model_name=request.model_name,
             checkpoint_path=request.checkpoint_path,
+            bpm=request.bpm,
             observed_until_tick=(
                 int(request.observed_until_tick)
                 if request.observed_until_tick is not None

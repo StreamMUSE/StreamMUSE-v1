@@ -307,6 +307,7 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     tmp_path,
 ) -> None:
     config = ApplicationConfig(
+        tempo=TempoConfig(bpm=90.6),
         continuation_mode="prompt_continuation",
         count_in_beats=4,
         input_snap_forward_fraction=0.25,
@@ -342,6 +343,40 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     assert service_cls.call_args.kwargs["generation_interval_ticks"] == 4
     assert service_cls.call_args.kwargs["count_in_beats"] == 4
     assert service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.25
+    assert service_cls.call_args.kwargs["model_condition_bpm"] == 91
+    assert session.session_config["effective_model_bpm"] == 91
+
+
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+def test_prompt_runtime_uses_explicit_model_condition_bpm_override(
+    input_factory,
+    tmp_path,
+) -> None:
+    config = ApplicationConfig(
+        tempo=TempoConfig(bpm=80.0),
+        continuation_mode="prompt_continuation",
+        inference=InferenceConfig(model_condition_bpm=137),
+    )
+    service_cls = MagicMock(return_value=MagicMock(running=False))
+    input_factory.create.return_value = MagicMock()
+    builder = RuntimeSessionBuilder(
+        config=config,
+        log_dir=str(tmp_path),
+        prompt_client_override=MagicMock(),
+        output_sink_override=MagicMock(),
+    )
+
+    with patch.object(
+        builder,
+        "_prompt_continuation_service_cls",
+        return_value=service_cls,
+    ):
+        session = builder.build_cli()
+
+    assert service_cls.call_args.kwargs["model_condition_bpm"] == 137
+    assert session.session_config["tempo_bpm"] == 80.0
+    assert session.session_config["model_condition_bpm"] == 137
+    assert session.session_config["effective_model_bpm"] == 137
 
 
 @patch("streammuse.application.runtime.builder.RealTimeMusicService")

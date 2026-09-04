@@ -66,6 +66,7 @@ class PromptContinuationHttpClient:
         prompt_length_ticks: int,
         generation_interval_ticks: int,
         observed_until_tick: int,
+        bpm: Optional[int] = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "melody_notes": [event_to_dict(event) for event in melody_events],
@@ -77,6 +78,10 @@ class PromptContinuationHttpClient:
         }
         if self._config.checkpoint_path:
             payload["checkpoint_path"] = self._config.checkpoint_path
+        if bpm is not None:
+            if int(bpm) <= 0:
+                raise ValueError("bpm must be > 0")
+            payload["bpm"] = int(bpm)
         return self._request_json("POST", "/prompt_continuation/start", payload=payload)
 
     def append_melody(

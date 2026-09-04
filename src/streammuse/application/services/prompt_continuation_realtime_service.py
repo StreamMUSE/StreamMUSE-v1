@@ -36,6 +36,7 @@ class PromptContinuationClient(Protocol):
         prompt_length_ticks: int,
         generation_interval_ticks: int,
         observed_until_tick: int,
+        bpm: int,
     ) -> dict[str, Any]: ...
 
     def append_melody(
@@ -94,6 +95,7 @@ class PromptContinuationRealtimeService:
         count_in_beats: int = 0,
         input_snap_forward_fraction: float = 0.0,
         input_quantization_trace_enabled: bool = False,
+        model_condition_bpm: int | None = None,
         protocol_poll_interval_s: float = 0.05,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -122,6 +124,13 @@ class PromptContinuationRealtimeService:
         self._input_quantization_trace_enabled = bool(
             input_quantization_trace_enabled
         )
+        self._model_condition_bpm = (
+            int(model_condition_bpm)
+            if model_condition_bpm is not None
+            else int(round(float(tempo.bpm)))
+        )
+        if self._model_condition_bpm <= 0:
+            raise ValueError("model_condition_bpm must be > 0")
         self._protocol_poll_interval_s = float(protocol_poll_interval_s)
         self._now = now
         self._sleep = sleep
@@ -234,6 +243,10 @@ class PromptContinuationRealtimeService:
     def running(self) -> bool:
         return self._running
 
+    @property
+    def effective_model_bpm(self) -> int:
+        return self._model_condition_bpm
+
     def _sleep_until(self, target_time: float) -> None:
         delay = target_time - self._now()
         if delay > 0:
@@ -328,12 +341,14 @@ class PromptContinuationRealtimeService:
                             melody_event_count=len(action.melody_events),
                             prompt_length_ticks=self._prompt_length_ticks,
                             generation_interval_ticks=self._generation_interval_ticks,
+                            effective_bpm=self._model_condition_bpm,
                         )
                         self._client.start(
                             melody_events=action.melody_events,
                             prompt_length_ticks=self._prompt_length_ticks,
                             generation_interval_ticks=self._generation_interval_ticks,
                             observed_until_tick=action.observed_until_tick,
+                            bpm=self._model_condition_bpm,
                         )
                         self._protocol_started = True
                         self._output.output_status("prompt_running", "Prompt-continuation start sent")

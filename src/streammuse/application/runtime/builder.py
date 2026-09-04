@@ -105,6 +105,8 @@ class RuntimeSessionBuilder:
     def _session_config(self) -> dict[str, Any]:
         return {
             "tempo_bpm": self.config.tempo.bpm,
+            "model_condition_bpm": self.config.inference.model_condition_bpm,
+            "effective_model_bpm": self._effective_model_bpm(),
             "ticks_per_beat": self.config.tempo.ticks_per_beat,
             "beats_per_bar": self.config.tempo.beats_per_bar,
             "input_type": self.config.input.type,
@@ -177,6 +179,7 @@ class RuntimeSessionBuilder:
                 input_quantization_trace_enabled=(
                     self.config.input_quantization_trace_enabled
                 ),
+                model_condition_bpm=self._effective_model_bpm(),
             )
         else:
             inference_engine = InferenceEngineFactory.create(self.config)
@@ -228,6 +231,17 @@ class RuntimeSessionBuilder:
             self.config.input.type,
             float(getattr(self.config, "input_snap_forward_fraction", 0.0)),
         )
+
+    def _effective_model_bpm(self) -> int:
+        configured = self.config.inference.model_condition_bpm
+        effective = (
+            int(configured)
+            if configured is not None
+            else int(round(float(self.config.tempo.bpm)))
+        )
+        if effective <= 0:
+            raise ValueError("effective model BPM must be > 0")
+        return effective
 
     def _attach_input_quantization_trace_sink(
         self,

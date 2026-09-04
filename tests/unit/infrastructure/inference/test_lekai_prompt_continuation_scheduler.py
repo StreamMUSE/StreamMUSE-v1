@@ -29,12 +29,15 @@ class _BlockingPromptEngine:
         self.release = threading.Event()
         self.calls = []
 
-    def generate_prompt_accompaniment(self, melody_events, prompt_start_tick, prompt_length_ticks):
+    def generate_prompt_accompaniment(
+        self, melody_events, prompt_start_tick, prompt_length_ticks, bpm=None
+    ):
         self.calls.append(
             {
                 "melody_events": melody_events,
                 "prompt_start_tick": prompt_start_tick,
                 "prompt_length_ticks": prompt_length_ticks,
+                "bpm": bpm,
             }
         )
         self.started.set()
@@ -46,12 +49,15 @@ class _ImmediatePromptEngine:
     def __init__(self):
         self.calls = []
 
-    def generate_prompt_accompaniment(self, melody_events, prompt_start_tick, prompt_length_ticks):
+    def generate_prompt_accompaniment(
+        self, melody_events, prompt_start_tick, prompt_length_ticks, bpm=None
+    ):
         self.calls.append(
             {
                 "melody_events": melody_events,
                 "prompt_start_tick": prompt_start_tick,
                 "prompt_length_ticks": prompt_length_ticks,
+                "bpm": bpm,
             }
         )
         return [_note_on(48, 0)]
@@ -93,6 +99,7 @@ def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=96,
         observed_until_tick=32,
     )
 
@@ -129,6 +136,9 @@ def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
         [],
         [],
     ]
+    assert prompt_engine.calls[0]["bpm"] == 96
+    assert {call["bpm"] for call in continuation_engine.generate_calls} == {96}
+    assert ready_status["effective_bpm"] == 96
     assert continuation_engine.inject_calls[0]["melody_events"] == [
         _note_on(60, 0),
         _note_on(62, 44),
@@ -151,6 +161,7 @@ def test_scheduler_restarts_catchup_when_append_arrives_after_prompt_ready():
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=120,
         observed_until_tick=32,
     )
     initial_ready = scheduler.wait(timeout=2.0)
@@ -230,6 +241,7 @@ def test_scheduler_uses_midi_converted_ticks_for_prompt_and_append_boundaries(tm
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=120,
         observed_until_tick=32,
     )
     assert prompt_engine.started.wait(timeout=2.0)
@@ -265,6 +277,7 @@ def test_scheduler_clear_invalidates_running_work():
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=120,
         observed_until_tick=32,
     )
     assert prompt_engine.started.wait(timeout=2.0)
@@ -291,6 +304,7 @@ def test_scheduler_drain_and_clear_waits_for_running_worker():
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=120,
         observed_until_tick=32,
     )
     assert prompt_engine.started.wait(timeout=2.0)

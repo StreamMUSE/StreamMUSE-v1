@@ -24,12 +24,15 @@ class LekaiContinuationEngine:
         # be replaced by a continuation-specific adapter without changing the
         # request-facing backend.
         self._backend = backend or LekaiHttpBackend(checkpoint_path=checkpoint_path)
+        self._last_generation_bpm: Optional[int] = None
 
     def configure(self, config: BackendRuntimeConfig) -> None:
         self._backend.configure(config)
 
-    def runtime_info(self) -> dict[str, str | float | bool | None]:
-        return self._backend.runtime_info()
+    def runtime_info(self) -> dict[str, str | float | bool | int | None]:
+        info = dict(self._backend.runtime_info())
+        info["last_generation_bpm"] = self._last_generation_bpm
+        return info
 
     def generate(
         self,
@@ -41,8 +44,9 @@ class LekaiContinuationEngine:
         inference_mode: str,
         model_name: str,
         checkpoint_path: Optional[str],
+        bpm: Optional[int] = None,
     ) -> tuple[list[EventPayload], TimingPayload]:
-        return self._backend.generate(
+        result = self._backend.generate(
             melody_events=melody_events,
             generation_start_tick=generation_start_tick,
             generation_length_frames=generation_length_frames,
@@ -51,7 +55,16 @@ class LekaiContinuationEngine:
             inference_mode=inference_mode,
             model_name=model_name,
             checkpoint_path=checkpoint_path,
+            bpm=bpm,
         )
+        if bpm is not None:
+            self._last_generation_bpm = int(bpm)
+        else:
+            runtime_bpm = self._backend.runtime_info().get("effective_bpm")
+            self._last_generation_bpm = (
+                int(runtime_bpm) if runtime_bpm is not None else None
+            )
+        return result
 
     def inject_history(
         self,
@@ -66,10 +79,14 @@ class LekaiContinuationEngine:
         )
 
     def clear_history(self) -> dict[str, Any]:
-        return self._backend.clear_history()
+        result = self._backend.clear_history()
+        self._last_generation_bpm = None
+        return result
 
     def reset_session(self, seed: int) -> dict[str, Any]:
-        return self._backend.reset_session(seed=int(seed))
+        result = self._backend.reset_session(seed=int(seed))
+        self._last_generation_bpm = None
+        return result
 
     def injection_status(self) -> dict[str, bool | int | str]:
         return self._backend.injection_status()

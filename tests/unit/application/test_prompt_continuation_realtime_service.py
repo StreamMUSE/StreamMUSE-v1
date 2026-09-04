@@ -62,6 +62,7 @@ class _FakePromptClient:
         self.status_calls = 0
         self.playable_calls = 0
         self.playable_responses = [[]]
+        self.start_requests = []
 
     def clear_history(self):
         self.clear_history_calls += 1
@@ -69,6 +70,7 @@ class _FakePromptClient:
 
     def start(self, **kwargs):
         self.start_calls += 1
+        self.start_requests.append(dict(kwargs))
         return {"phase": "prompt_running", **kwargs}
 
     def append_melody(self, **kwargs):
@@ -107,7 +109,9 @@ def _event_signature(events):
     return [(event.pitch, event.event_type) for event in events]
 
 
-def _make_service() -> PromptContinuationRealtimeService:
+def _make_service(
+    *, model_condition_bpm: int | None = None
+) -> PromptContinuationRealtimeService:
     client = _FakePromptClient()
     service = PromptContinuationRealtimeService(
         input_source=_NoopInput(),
@@ -117,6 +121,7 @@ def _make_service() -> PromptContinuationRealtimeService:
         scheduler=PlaybackScheduler(),
         prompt_length_ticks=32,
         generation_interval_ticks=4,
+        model_condition_bpm=model_condition_bpm,
         now=lambda: 0.0,
         sleep=lambda _: None,
     )
@@ -129,6 +134,27 @@ def test_prompt_continuation_default_now_is_time_time() -> None:
         inspect.signature(PromptContinuationRealtimeService).parameters["now"].default
         is time.time
     )
+
+
+def test_prompt_service_resolves_and_exposes_model_condition_bpm() -> None:
+    fallback = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=80.6, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+    )
+    overridden = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=80.6, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        model_condition_bpm=137,
+    )
+
+    assert fallback.effective_model_bpm == 81
+    assert overridden.effective_model_bpm == 137
 
 
 def _stamp_single_input_event(*, input_snap_forward_fraction: float) -> MusicalEvent:
@@ -1277,7 +1303,7 @@ def test_prompt_continuation_recover_late_bound_switch_defaults_to_generation_in
 
 
 def test_protocol_worker_does_not_fetch_playable_before_first_append():
-    service = _make_service()
+    service = _make_service(model_condition_bpm=137)
     client = service._client
     service._running = True
     action_cls = __import__(
@@ -1293,6 +1319,7 @@ def test_protocol_worker_does_not_fetch_playable_before_first_append():
     worker.join(timeout=1.0)
 
     assert not worker.is_alive()
+    assert client.start_requests[0]["bpm"] == 137
     assert client.status_calls == 0
     assert client.playable_calls == 0
 

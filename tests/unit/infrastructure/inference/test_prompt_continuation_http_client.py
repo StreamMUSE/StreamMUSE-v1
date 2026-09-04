@@ -81,6 +81,7 @@ def test_prompt_continuation_http_client_start_append_status_playable(monkeypatc
         prompt_length_ticks=32,
         generation_interval_ticks=4,
         observed_until_tick=32,
+        bpm=96,
     )["phase"] == "prompt_running"
     assert client.append_melody(melody_events=[_event(36)], observed_until_tick=36)["phase"] == "catchup_running"
     assert client.status()["is_playback_ready"] is True
@@ -93,6 +94,7 @@ def test_prompt_continuation_http_client_start_append_status_playable(monkeypatc
     start_payload = calls[1][2]
     assert start_payload["model_name"] == "lekai_prompt_continuation"
     assert start_payload["checkpoint_path"] == "/tmp/ckpt.pt"
+    assert start_payload["bpm"] == 96
     assert start_payload["melody_notes"][0]["tick"] == 0
     assert calls[1][3] == 7.0
 
@@ -120,3 +122,18 @@ def test_prompt_continuation_http_client_strict_representation_loop_rejects_mism
 
     with pytest.raises(RuntimeError, match="representation mismatch"):
         client.playable()
+
+
+def test_prompt_continuation_http_client_rejects_non_positive_bpm():
+    client = PromptContinuationHttpClient(
+        PromptContinuationHttpClientConfig(base_url="http://x:8000")
+    )
+
+    with pytest.raises(ValueError, match="bpm must be > 0"):
+        client.start(
+            melody_events=[],
+            prompt_length_ticks=32,
+            generation_interval_ticks=4,
+            observed_until_tick=32,
+            bpm=0,
+        )

@@ -64,6 +64,7 @@ class LekaiPromptContinuationScheduler:
         self._inference_mode = "sliding_window"
         self._model_name = "lekai_prompt_continuation"
         self._checkpoint_path: Optional[str] = None
+        self._effective_bpm: Optional[int] = None
         self._continuation_calls = 0
         self._last_continuation_event_count = 0
         self._last_continuation_note_on_count = 0
@@ -98,6 +99,7 @@ class LekaiPromptContinuationScheduler:
         inference_mode: str,
         model_name: str,
         checkpoint_path: Optional[str],
+        bpm: int,
         observed_until_tick: Optional[int] = None,
     ) -> dict[str, int | bool | str | None]:
         """Start prompt generation in the background.
@@ -110,6 +112,8 @@ class LekaiPromptContinuationScheduler:
             raise ValueError("prompt_length_ticks must be > 0")
         if int(generation_interval_ticks) <= 0:
             raise ValueError("generation_interval_ticks must be > 0")
+        if int(bpm) <= 0:
+            raise ValueError("bpm must be > 0")
 
         with self._lock:
             if self._future is not None and not self._future.done():
@@ -128,6 +132,7 @@ class LekaiPromptContinuationScheduler:
             self._inference_mode = str(inference_mode)
             self._model_name = str(model_name)
             self._checkpoint_path = checkpoint_path
+            self._effective_bpm = int(bpm)
             self._continuation_calls = 0
             self._last_continuation_event_count = 0
             self._last_continuation_note_on_count = 0
@@ -199,6 +204,7 @@ class LekaiPromptContinuationScheduler:
             self._last_continuation_min_tick = None
             self._last_continuation_max_tick = None
             self._empty_continuation_output_streak = 0
+            self._effective_bpm = None
             return self.status()
 
     def drain_and_clear(self) -> dict[str, int | bool | str | None]:
@@ -229,6 +235,7 @@ class LekaiPromptContinuationScheduler:
             self._last_continuation_min_tick = None
             self._last_continuation_max_tick = None
             self._empty_continuation_output_streak = 0
+            self._effective_bpm = None
             return self.status()
 
     def shutdown(self) -> None:
@@ -247,6 +254,7 @@ class LekaiPromptContinuationScheduler:
                 "accompaniment_event_count": len(self._accompaniment_history),
                 "prompt_length_ticks": int(self._prompt_length_ticks),
                 "generation_interval_ticks": int(self._generation_interval_ticks),
+                "effective_bpm": self._effective_bpm,
                 "continuation_calls": int(self._continuation_calls),
                 "last_continuation_event_count": int(self._last_continuation_event_count),
                 "last_continuation_note_on_count": int(self._last_continuation_note_on_count),
@@ -282,11 +290,16 @@ class LekaiPromptContinuationScheduler:
                     return
                 prompt_melody_input = copy_events(self._prompt_melody_input)
                 prompt_length_ticks = int(self._prompt_length_ticks)
+                effective_bpm = self._effective_bpm
+
+            if effective_bpm is None:
+                raise RuntimeError("prompt-continuation session BPM is not initialized")
 
             prompt_accompaniment = self._prompt_engine.generate_prompt_accompaniment(
                 melody_events=prompt_melody_input,
                 prompt_start_tick=0,
                 prompt_length_ticks=prompt_length_ticks,
+                bpm=effective_bpm,
             )
             generated_acc_beats = (
                 self._prompt_engine.last_generated_acc_beats()
@@ -345,6 +358,10 @@ class LekaiPromptContinuationScheduler:
                 inference_mode = str(self._inference_mode)
                 model_name = str(self._model_name)
                 checkpoint_path = self._checkpoint_path
+                effective_bpm = self._effective_bpm
+
+            if effective_bpm is None:
+                raise RuntimeError("prompt-continuation session BPM is not initialized")
 
             accompaniment, _timings = self._continuation_engine.generate(
                 melody_events=melody_increment,
@@ -355,6 +372,7 @@ class LekaiPromptContinuationScheduler:
                 inference_mode=inference_mode,
                 model_name=model_name,
                 checkpoint_path=checkpoint_path,
+                bpm=effective_bpm,
             )
 
             with self._lock:

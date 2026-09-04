@@ -89,6 +89,7 @@ class LekaiPromptContinuationBackend:
         inference_mode: str,
         model_name: str,
         checkpoint_path: Optional[str],
+        bpm: Optional[int] = None,
         observed_until_tick: Optional[int] = None,
     ) -> dict[str, int | bool | str | None]:
         return self._engine.start_prompt_catchup(
@@ -98,6 +99,7 @@ class LekaiPromptContinuationBackend:
             inference_mode=inference_mode,
             model_name=model_name,
             checkpoint_path=checkpoint_path,
+            bpm=bpm,
             observed_until_tick=observed_until_tick,
         )
 

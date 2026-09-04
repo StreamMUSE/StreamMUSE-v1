@@ -25,6 +25,28 @@ def _base_generate_payload() -> dict:
     }
 
 
+def _prompt_status(*, effective_bpm=None) -> dict:
+    return {
+        "phase": "prompt_running",
+        "is_running": True,
+        "is_failed": False,
+        "error": None,
+        "melody_event_count": 1,
+        "accompaniment_event_count": 0,
+        "prompt_length_ticks": 32,
+        "generation_interval_ticks": 4,
+        "effective_bpm": effective_bpm,
+        "continuation_calls": 0,
+        "melody_history_beats": 8,
+        "accompaniment_history_beats": 0,
+        "playable_lookahead_beats": 0,
+        "target_playable_accompaniment_beats": 9,
+        "beats_needed_for_playback": 9,
+        "is_history_aligned": False,
+        "is_playback_ready": False,
+    }
+
+
 def test_generate_accompaniment_success():
     resp = client.post("/generate_accompaniment", json=_base_generate_payload())
     assert resp.status_code == 200
@@ -148,6 +170,54 @@ def test_prompt_continuation_start_rejects_wrong_model_name():
 
     assert response.status_code == 422
     assert "lekai_prompt_continuation" in response.text
+
+
+@pytest.mark.parametrize(("request_bpm", "expected_bpm"), [(96, 96), (None, None)])
+def test_prompt_continuation_start_forwards_optional_bpm(
+    monkeypatch,
+    request_bpm,
+    expected_bpm,
+):
+    calls = []
+
+    class _Backend:
+        def start_prompt_catchup(self, **kwargs):
+            calls.append(dict(kwargs))
+            return _prompt_status(effective_bpm=kwargs["bpm"])
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _Backend())
+    payload = {
+        "melody_notes": [{"type": "note_on", "pitch": 60, "tick": 0}],
+        "prompt_length_ticks": 32,
+        "generation_interval_ticks": 4,
+    }
+    if request_bpm is not None:
+        payload["bpm"] = request_bpm
+
+    response = client.post("/prompt_continuation/start", json=payload)
+
+    assert response.status_code == 200
+    assert calls[0]["bpm"] == expected_bpm
+    assert response.json()["effective_bpm"] == expected_bpm
+
+
+def test_prompt_continuation_start_rejects_non_positive_bpm(monkeypatch):
+    class _Backend:
+        def start_prompt_catchup(self, **kwargs):
+            raise AssertionError("invalid request must not reach backend")
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _Backend())
+    response = client.post(
+        "/prompt_continuation/start",
+        json={
+            "melody_notes": [],
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "bpm": 0,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_inject_clear_and_status():

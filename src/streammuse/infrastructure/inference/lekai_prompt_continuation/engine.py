@@ -24,6 +24,7 @@ from streammuse.infrastructure.inference.lekai_prompt_continuation.continuation_
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_engine import (
     LekaiPromptEngine,
+    resolve_prompt_bpm,
 )
 from streammuse.infrastructure.inference.lekai_prompt_continuation.scheduler import (
     LekaiPromptContinuationScheduler,
@@ -102,6 +103,7 @@ class LekaiPromptContinuationEngine:
 
     def runtime_info(self) -> dict[str, str | float | bool | int | None]:
         info = dict(self._continuation_engine.runtime_info())
+        info["continuation_effective_bpm"] = info.get("last_generation_bpm")
         info["runtime_model_name"] = self.MODEL_NAME
         prompt_info = self._prompt_engine.runtime_info()
         info["prompt_mode"] = str(prompt_info["mode"])
@@ -128,8 +130,14 @@ class LekaiPromptContinuationEngine:
         info["prompt_batch_candidate_count"] = int(
             prompt_info.get("batch_candidate_count", 1)
         )
+        info["prompt_effective_bpm"] = (
+            self._prompt_engine.last_effective_bpm()
+            if hasattr(self._prompt_engine, "last_effective_bpm")
+            else None
+        )
         info.update(self._prefixed_catchup_snapshot())
         scheduler_status = self.scheduler_status()
+        info["session_effective_bpm"] = scheduler_status.get("effective_bpm")
         info["scheduler_phase"] = str(scheduler_status["phase"])
         info["scheduler_is_running"] = bool(scheduler_status["is_running"])
         info["scheduler_is_failed"] = bool(scheduler_status["is_failed"])
@@ -172,8 +180,10 @@ class LekaiPromptContinuationEngine:
         inference_mode: str,
         model_name: str,
         checkpoint_path: Optional[str],
+        bpm: Optional[int] = None,
         observed_until_tick: Optional[int] = None,
     ) -> dict[str, int | bool | str | None]:
+        effective_bpm = resolve_prompt_bpm(bpm)
         with self._session_gate:
             return self._scheduler.start(
                 melody_events=melody_events,
@@ -182,6 +192,7 @@ class LekaiPromptContinuationEngine:
                 inference_mode=inference_mode,
                 model_name=model_name,
                 checkpoint_path=checkpoint_path,
+                bpm=effective_bpm,
                 observed_until_tick=observed_until_tick,
             )
 

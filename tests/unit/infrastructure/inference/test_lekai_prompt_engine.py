@@ -40,6 +40,36 @@ def test_prompt_engine_defaults_to_common_time_bars(monkeypatch):
     assert _count_markers(tokens, vocab.beat_marker) == 8
 
 
+def test_prompt_engine_explicit_session_bpm_overrides_environment(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_BPM", "80")
+    monkeypatch.setenv("LEKAI_DEFAULT_BPM", "70")
+    engine = LekaiPromptEngine()
+
+    tokens, effective_bpm, _window_ticks = engine._build_melody_prompt_tokens(
+        melody_events=[],
+        prompt_start_tick=0,
+        prompt_length_ticks=32,
+        bpm=220,
+    )
+
+    assert effective_bpm == 220
+    assert tokens.tolist()[2] == engine._tokenizer.encode_bpm(220)
+
+
+def test_prompt_engine_omitted_session_bpm_preserves_environment_fallback(monkeypatch):
+    monkeypatch.setenv("LEKAI_DEFAULT_BPM", "70")
+    monkeypatch.setenv("LEKAI_PROMPT_BPM", "80")
+    engine = LekaiPromptEngine()
+
+    _tokens, effective_bpm, _window_ticks = engine._build_melody_prompt_tokens(
+        melody_events=[],
+        prompt_start_tick=0,
+        prompt_length_ticks=32,
+    )
+
+    assert effective_bpm == 80
+
+
 def test_prompt_engine_condition_length_defaults_to_prompt_beats(monkeypatch):
     monkeypatch.setenv("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", "2")
     engine = LekaiPromptEngine()

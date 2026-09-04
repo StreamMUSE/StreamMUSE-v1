@@ -33,7 +33,9 @@ class _PromptEngine:
     def __init__(self):
         self.calls = []
 
-    def generate_prompt_accompaniment(self, melody_events, prompt_start_tick, prompt_length_ticks):
+    def generate_prompt_accompaniment(
+        self, melody_events, prompt_start_tick, prompt_length_ticks, bpm=None
+    ):
         self.calls.append(
             {
                 "melody_events": melody_events,
@@ -105,6 +107,7 @@ def test_prompt_continuation_scheduler_starts_from_real_rt_midi_sample():
         inference_mode="sliding_window",
         model_name="lekai_prompt_continuation",
         checkpoint_path=None,
+        bpm=120,
         observed_until_tick=32,
     )
     scheduler.append_melody(append_events, observed_until_tick=44)
