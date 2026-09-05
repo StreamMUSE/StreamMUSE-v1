@@ -675,6 +675,421 @@ def test_composite_writes_input_quantization_trace_once(tmp_path):
     assert json.loads(rows[0])["signed_error_ms"] == -25.0
 
 
+def test_session_logger_writes_prompt_replay_artifacts_and_melody_only_midi(
+    tmp_path,
+):
+    session_sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+        bpm=120.0,
+        ticks_per_beat=4,
+        beats_per_bar=4,
+    )
+    composite = CompositeOutputSink([session_sink])
+    start_row = {
+        "schema_version": 1,
+        "sequence": 1,
+        "operation": "start",
+        "request": {
+            "melody_events": [
+                {
+                    "type": "note_on",
+                    "pitch": 60,
+                    "tick": 0,
+                    "velocity": 100,
+                    "channel": 0,
+                    "program": 0,
+                },
+                {
+                    "type": "note_off",
+                    "pitch": 60,
+                    "tick": 4,
+                    "velocity": 0,
+                    "channel": 0,
+                    "program": 0,
+                },
+            ],
+            "observed_until_tick": 32,
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "bpm": 120,
+        },
+        "protocol_context": {
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "bpm": 120,
+        },
+        "acknowledgement": {"accepted": True},
+    }
+    append_row = {
+        "schema_version": 1,
+        "sequence": 2,
+        "operation": "append",
+        "request": {
+            "melody_events": [
+                {
+                    "type": "note_on",
+                    "pitch": 64,
+                    "tick": 8,
+                    "velocity": 90,
+                    "channel": 0,
+                    "program": 0,
+                },
+                {
+                    "type": "note_off",
+                    "pitch": 64,
+                    "tick": 12,
+                    "velocity": 0,
+                    "channel": 0,
+                    "program": 0,
+                },
+            ],
+            "observed_until_tick": 36,
+        },
+        "protocol_context": {
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "bpm": 120,
+        },
+        "acknowledgement": {"accepted": True},
+    }
+    composite.log_prompt_continuation_replay_request(start_row)
+    composite.log_prompt_continuation_replay_request(append_row)
+    composite.log_input_quantization(
+        {"record_type": "input_quantization", "quantized_tick": 0}
+    )
+    model_snapshot = {
+        "runtime_info": {
+            "seed_provenance_complete": True,
+            "trace_capture_complete": True,
+        },
+        "prompt_generation_log": {
+            "prompt_tokens": [1],
+            "generated_tokens": [1, 2],
+        },
+        "continuation_generations": [{"request_id": "request-1"}],
+    }
+
+    composite.finalize_prompt_continuation_replay_audit(
+        model_trace=model_snapshot,
+        capture_status="captured",
+    )
+    composite.close()
+
+    request_path = tmp_path / "prompt_continuation_replay_requests.jsonl"
+    request_lines = request_path.read_text(encoding="utf-8").splitlines()
+    assert request_lines == [
+        json.dumps(start_row, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
+        json.dumps(append_row, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
+    ]
+
+    melody_payload = json.loads(
+        (tmp_path / "prompt_continuation_replay_melody.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert melody_payload["event_count"] == 4
+    assert [event["pitch"] for event in melody_payload["events"]] == [
+        60,
+        60,
+        64,
+        64,
+    ]
+
+    replay_midi = pretty_midi.PrettyMIDI(
+        str(tmp_path / "prompt_continuation_replay_melody.mid")
+    )
+    notes = [
+        note
+        for instrument in replay_midi.instruments
+        if instrument.name == "Replay Melody"
+        for note in instrument.notes
+    ]
+    assert [(note.pitch, note.start, note.end) for note in notes] == pytest.approx(
+        [(60, 0.0, 0.5), (64, 1.0, 1.5)],
+        abs=1e-3,
+    )
+    assert all(
+        not instrument.notes
+        for instrument in replay_midi.instruments
+        if instrument.name == "Unused Accompaniment"
+    )
+
+    model_trace = json.loads(
+        (tmp_path / "prompt_continuation_model_trace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert model_trace == model_snapshot
+    manifest = json.loads(
+        (tmp_path / "replay_audit_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "ready_for_replay"
+    assert manifest["comparable"] is True
+    assert manifest["trace_capture_complete"] is True
+    assert manifest["model_evidence_complete"] is True
+    assert manifest["seed_provenance_complete"] is True
+    assert manifest["request_count"] == 2
+    assert manifest["successful_protocol_requests"] == 2
+    assert manifest["failed_protocol_requests"] == 0
+    assert manifest["melody_event_count"] == 4
+    assert manifest["missing_requirements"] == []
+    assert set(manifest["artifacts"]) == {
+        "request_trace",
+        "model_trace",
+        "replay_melody_json",
+        "replay_melody_midi",
+        "input_quantization_trace",
+    }
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_replay_manifest_is_incomplete_without_complete_seed_provenance(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+    sink.log_prompt_continuation_replay_request(
+        {
+            "schema_version": 1,
+            "sequence": 1,
+            "operation": "start",
+            "request": {"melody_events": [], "observed_until_tick": 32},
+            "acknowledgement": {"accepted": True},
+        }
+    )
+
+    sink.finalize_prompt_continuation_replay_audit(
+        model_trace={
+            "runtime_info": {
+                "seed_provenance_complete": False,
+                "trace_capture_complete": True,
+            },
+            "prompt_generation_log": {
+                "prompt_tokens": [1],
+                "generated_tokens": [1, 2],
+            },
+            "continuation_generations": [{"request_id": "request-1"}],
+        },
+        capture_status="captured",
+    )
+
+    manifest = json.loads(
+        (tmp_path / "replay_audit_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "incomplete"
+    assert manifest["comparable"] is False
+    assert manifest["seed_provenance_complete"] is False
+    assert manifest["missing_requirements"] == ["complete_seed_provenance"]
+
+
+def test_replay_manifest_is_incomplete_without_complete_model_trace(tmp_path):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+    sink.log_prompt_continuation_replay_request(
+        {
+            "schema_version": 1,
+            "sequence": 1,
+            "operation": "start",
+            "request": {"melody_events": [], "observed_until_tick": 32},
+            "acknowledgement": {"accepted": True},
+        }
+    )
+
+    sink.finalize_prompt_continuation_replay_audit(
+        model_trace={
+            "runtime_info": {
+                "seed_provenance_complete": True,
+                "trace_capture_complete": False,
+            },
+            "prompt_generation_log": {
+                "prompt_tokens": [1],
+                "generated_tokens": [1, 2],
+            },
+            "continuation_generations": [{"request_id": "request-1"}],
+        },
+        capture_status="captured",
+    )
+
+    manifest = json.loads(
+        (tmp_path / "replay_audit_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "incomplete"
+    assert manifest["comparable"] is False
+    assert manifest["trace_capture_complete"] is False
+    assert manifest["missing_requirements"] == ["complete_model_trace"]
+
+
+def test_replay_manifest_is_incomplete_without_prompt_continuation_evidence(
+    tmp_path,
+):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+    sink.log_prompt_continuation_replay_request(
+        {
+            "schema_version": 1,
+            "sequence": 1,
+            "operation": "start",
+            "request": {"melody_events": [], "observed_until_tick": 32},
+            "acknowledgement": {"accepted": True},
+        }
+    )
+
+    sink.finalize_prompt_continuation_replay_audit(
+        model_trace={
+            "runtime_info": {
+                "seed_provenance_complete": True,
+                "trace_capture_complete": True,
+            },
+            "prompt_generation_log": {
+                "prompt_tokens": [1],
+                "generated_tokens": [],
+            },
+            "continuation_generations": [{"request_id": "request-1"}],
+        },
+        capture_status="captured",
+    )
+
+    manifest = json.loads(
+        (tmp_path / "replay_audit_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "incomplete"
+    assert manifest["comparable"] is False
+    assert manifest["model_evidence_complete"] is False
+    assert manifest["missing_requirements"] == [
+        "prompt_continuation_model_evidence"
+    ]
+
+
+def test_failed_replay_requests_are_audited_but_excluded_from_replay_melody(
+    tmp_path,
+):
+    sink = SessionLoggerOutputSink(
+        session_dir=tmp_path,
+        include_midi=False,
+        include_json=False,
+    )
+    successful_row = {
+        "schema_version": 1,
+        "sequence": 1,
+        "operation": "start",
+        "request": {
+            "melody_events": [
+                {
+                    "type": "note_on",
+                    "pitch": 60,
+                    "tick": 0,
+                    "velocity": 100,
+                    "channel": 0,
+                    "program": 0,
+                }
+            ],
+            "observed_until_tick": 32,
+        },
+        "acknowledgement": {"accepted": True},
+    }
+    failed_row = {
+        "schema_version": 1,
+        "sequence": 2,
+        "operation": "append",
+        "request": {
+            "melody_events": [
+                {
+                    "type": "note_on",
+                    "pitch": 72,
+                    "tick": 34,
+                    "velocity": 90,
+                    "channel": 0,
+                    "program": 0,
+                }
+            ],
+            "observed_until_tick": 36,
+        },
+        "acknowledgement": None,
+        "error": {"type": "RuntimeError", "message": "request failed"},
+    }
+    non_dict_ack_row = {
+        "schema_version": 1,
+        "sequence": 3,
+        "operation": "append",
+        "request": {
+            "melody_events": [
+                {
+                    "type": "note_on",
+                    "pitch": 74,
+                    "tick": 38,
+                    "velocity": 90,
+                    "channel": 0,
+                    "program": 0,
+                }
+            ],
+            "observed_until_tick": 40,
+        },
+        "acknowledgement": "accepted",
+    }
+    sink.log_prompt_continuation_replay_request(successful_row)
+    sink.log_prompt_continuation_replay_request(failed_row)
+    sink.log_prompt_continuation_replay_request(non_dict_ack_row)
+
+    sink.finalize_prompt_continuation_replay_audit(
+        model_trace={
+            "runtime_info": {
+                "seed_provenance_complete": True,
+                "trace_capture_complete": True,
+            },
+            "prompt_generation_log": {
+                "prompt_tokens": [1],
+                "generated_tokens": [1, 2],
+            },
+            "continuation_generations": [{"request_id": "request-1"}],
+        },
+        capture_status="captured",
+    )
+
+    request_rows = [
+        json.loads(line)
+        for line in (
+            tmp_path / "prompt_continuation_replay_requests.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    assert request_rows == [successful_row, failed_row, non_dict_ack_row]
+    melody_payload = json.loads(
+        (tmp_path / "prompt_continuation_replay_melody.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert melody_payload["events"] == successful_row["request"]["melody_events"]
+
+    replay_midi = pretty_midi.PrettyMIDI(
+        str(tmp_path / "prompt_continuation_replay_melody.mid")
+    )
+    replay_pitches = [
+        note.pitch
+        for instrument in replay_midi.instruments
+        if instrument.name == "Replay Melody"
+        for note in instrument.notes
+    ]
+    assert replay_pitches == [60]
+
+    manifest = json.loads(
+        (tmp_path / "replay_audit_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["request_count"] == 3
+    assert manifest["successful_protocol_requests"] == 1
+    assert manifest["failed_protocol_requests"] == 2
+    assert manifest["status"] == "incomplete"
+    assert manifest["comparable"] is False
+    assert manifest["missing_requirements"] == ["failed_protocol_requests"]
+
+
 def test_composite_output_sink_fans_out_lifecycle_and_validity(tmp_path):
     session_sink = SessionLoggerOutputSink(
         session_dir=tmp_path,

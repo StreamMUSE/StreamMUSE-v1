@@ -204,6 +204,76 @@ class PromptContinuationRealtimeService:
             else None
         )
         self._input_quantization_sequence = 0
+        replay_request_logger = getattr(
+            output_sink, "log_prompt_continuation_replay_request", None
+        )
+        self._replay_request_logger = (
+            replay_request_logger if callable(replay_request_logger) else None
+        )
+        self._replay_request_sequence = 0
+
+    @staticmethod
+    def _serialize_replay_event(event: MusicalEvent) -> dict[str, Any]:
+        """Serialize exactly the event fields sent by the HTTP client."""
+        payload: dict[str, Any] = {
+            "type": event.event_type.value,
+            "pitch": int(event.pitch),
+            "tick": int(event.tick),
+            "velocity": int(event.velocity),
+            "channel": int(event.channel),
+            "program": int(event.program),
+        }
+        if event.is_placeholder:
+            payload["is_placeholder"] = True
+        return payload
+
+    def _log_replay_request(
+        self,
+        *,
+        action: _ControlAction,
+        acknowledgement: dict[str, Any] | None,
+        error: Exception | None = None,
+    ) -> None:
+        if self._replay_request_logger is None:
+            return
+        self._replay_request_sequence += 1
+        request: dict[str, Any] = {
+            "melody_events": [
+                self._serialize_replay_event(event)
+                for event in action.melody_events
+            ],
+            "observed_until_tick": int(action.observed_until_tick),
+        }
+        if action.kind == "start":
+            request.update(
+                {
+                    "prompt_length_ticks": self._prompt_length_ticks,
+                    "generation_interval_ticks": self._generation_interval_ticks,
+                    "bpm": self._model_condition_bpm,
+                }
+            )
+        row: dict[str, Any] = {
+            "schema_version": 1,
+            "sequence": self._replay_request_sequence,
+            "operation": action.kind,
+            "request": request,
+            "protocol_context": {
+                "prompt_length_ticks": self._prompt_length_ticks,
+                "generation_interval_ticks": self._generation_interval_ticks,
+                "bpm": self._model_condition_bpm,
+            },
+            "acknowledgement": acknowledgement,
+        }
+        if error is not None:
+            row["error"] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+        try:
+            self._replay_request_logger(row)
+        except Exception:
+            # Audit logging must never change the realtime protocol.
+            return
 
     def _trace(self, kind: str, **payload: Any) -> None:
         if not self._trace_path:
@@ -343,12 +413,24 @@ class PromptContinuationRealtimeService:
                             generation_interval_ticks=self._generation_interval_ticks,
                             effective_bpm=self._model_condition_bpm,
                         )
-                        self._client.start(
-                            melody_events=action.melody_events,
-                            prompt_length_ticks=self._prompt_length_ticks,
-                            generation_interval_ticks=self._generation_interval_ticks,
-                            observed_until_tick=action.observed_until_tick,
-                            bpm=self._model_condition_bpm,
+                        try:
+                            acknowledgement = self._client.start(
+                                melody_events=action.melody_events,
+                                prompt_length_ticks=self._prompt_length_ticks,
+                                generation_interval_ticks=self._generation_interval_ticks,
+                                observed_until_tick=action.observed_until_tick,
+                                bpm=self._model_condition_bpm,
+                            )
+                        except Exception as exc:
+                            self._log_replay_request(
+                                action=action,
+                                acknowledgement=None,
+                                error=exc,
+                            )
+                            raise
+                        self._log_replay_request(
+                            action=action,
+                            acknowledgement=acknowledgement,
                         )
                         self._protocol_started = True
                         self._output.output_status("prompt_running", "Prompt-continuation start sent")
@@ -358,9 +440,21 @@ class PromptContinuationRealtimeService:
                             observed_until_tick=action.observed_until_tick,
                             melody_event_count=len(action.melody_events),
                         )
-                        self._client.append_melody(
-                            melody_events=action.melody_events,
-                            observed_until_tick=action.observed_until_tick,
+                        try:
+                            acknowledgement = self._client.append_melody(
+                                melody_events=action.melody_events,
+                                observed_until_tick=action.observed_until_tick,
+                            )
+                        except Exception as exc:
+                            self._log_replay_request(
+                                action=action,
+                                acknowledgement=None,
+                                error=exc,
+                            )
+                            raise
+                        self._log_replay_request(
+                            action=action,
+                            acknowledgement=acknowledgement,
                         )
                         if int(action.observed_until_tick) > self._prompt_length_ticks:
                             self._append_sent_after_prompt = True

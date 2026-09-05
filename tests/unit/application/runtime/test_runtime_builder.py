@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 from streammuse.application.config import (
@@ -10,6 +11,7 @@ from streammuse.application.config import (
     TempoConfig,
 )
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
+from streammuse.domain.logging import SessionManager
 from streammuse.infrastructure.output.composite import CompositeOutputSink
 from streammuse.infrastructure.output.metronome import MetronomeOutputSink
 from streammuse.infrastructure.output.midi_file import MidiFileOutputSink
@@ -424,3 +426,181 @@ def test_runtime_session_cleanup_is_idempotent_and_closes_output_after_clear_err
 
     engine.clear_history.assert_called_once_with()
     output.close.assert_called_once_with()
+
+
+def test_runtime_session_captures_replay_audit_before_history_clear(tmp_path) -> None:
+    calls = []
+    model_snapshot = {
+        "runtime_info": {
+            "seed_provenance_complete": True,
+            "trace_capture_complete": True,
+        },
+        "prompt_generation_log": {
+            "prompt_tokens": [1],
+            "generated_tokens": [1, 2],
+        },
+        "continuation_generations": [{"request_id": "request-1"}],
+    }
+
+    class _PromptClient:
+        def replay_audit(self):
+            calls.append("replay_audit")
+            return model_snapshot
+
+        def clear_history(self):
+            calls.append("clear_history")
+            return {"success": True}
+
+    class _OrderedSessionLogger(SessionLoggerOutputSink):
+        def finalize_prompt_continuation_replay_audit(self, **kwargs):
+            calls.append("write_audit")
+            return super().finalize_prompt_continuation_replay_audit(**kwargs)
+
+    manager = SessionManager(str(tmp_path), session_id="replay")
+    session_dir = manager.create_session_directory()
+    output = _OrderedSessionLogger(
+        session_dir=session_dir,
+        include_midi=False,
+        include_json=False,
+    )
+    output.log_prompt_continuation_replay_request(
+        {
+            "schema_version": 1,
+            "sequence": 1,
+            "operation": "start",
+            "request": {
+                "melody_events": [
+                    {
+                        "type": "note_on",
+                        "pitch": 60,
+                        "tick": 0,
+                        "velocity": 100,
+                        "channel": 0,
+                        "program": 0,
+                    }
+                ],
+                "observed_until_tick": 32,
+            },
+            "acknowledgement": {"accepted": True},
+        }
+    )
+    session = RuntimeSession(
+        config=ApplicationConfig(continuation_mode="prompt_continuation"),
+        session_manager=manager,
+        output_sink=output,
+        service=MagicMock(running=False),
+        session_config={},
+        prompt_client=_PromptClient(),
+        emit_output_config=False,
+    )
+
+    session.cleanup()
+    session.cleanup()
+
+    assert calls == ["replay_audit", "write_audit", "clear_history"]
+    model_trace = json.loads(
+        (session_dir / "prompt_continuation_model_trace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert model_trace == model_snapshot
+    manifest = json.loads(
+        (session_dir / "replay_audit_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["comparable"] is True
+    assert (session_dir / "prompt_continuation_replay_melody.json").exists()
+    assert (session_dir / "prompt_continuation_replay_melody.mid").exists()
+
+
+def test_runtime_session_skips_replay_endpoint_without_audit_capable_sink() -> None:
+    class _PromptClient:
+        def __init__(self) -> None:
+            self.replay_audit_calls = 0
+            self.clear_history_calls = 0
+
+        def replay_audit(self):
+            self.replay_audit_calls += 1
+            return {"runtime_info": {"seed_provenance_complete": True}}
+
+        def clear_history(self):
+            self.clear_history_calls += 1
+            return {"success": True}
+
+    class _PlainOutput:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    client = _PromptClient()
+    output = _PlainOutput()
+    session = RuntimeSession(
+        config=ApplicationConfig(continuation_mode="prompt_continuation"),
+        session_manager=None,
+        output_sink=output,
+        service=MagicMock(running=False),
+        session_config={},
+        prompt_client=client,
+        emit_output_config=False,
+    )
+
+    session.cleanup()
+
+    assert client.replay_audit_calls == 0
+    assert client.clear_history_calls == 1
+    assert output.close_calls == 1
+    assert session.metadata == {}
+
+
+def test_runtime_session_missing_replay_endpoint_warns_without_blocking_cleanup(
+    tmp_path,
+) -> None:
+    class _LegacyPromptClient:
+        def __init__(self) -> None:
+            self.clear_calls = 0
+
+        def clear_history(self):
+            self.clear_calls += 1
+            return {"success": True}
+
+    manager = SessionManager(str(tmp_path), session_id="legacy")
+    session_dir = manager.create_session_directory()
+    output = SessionLoggerOutputSink(
+        session_dir=session_dir,
+        include_midi=False,
+        include_json=False,
+    )
+    client = _LegacyPromptClient()
+    session = RuntimeSession(
+        config=ApplicationConfig(continuation_mode="prompt_continuation"),
+        session_manager=manager,
+        output_sink=output,
+        service=MagicMock(running=False),
+        session_config={},
+        prompt_client=client,
+        emit_output_config=False,
+    )
+
+    session.cleanup()
+
+    assert client.clear_calls == 1
+    assert session.metadata["cleanup_warnings"] == [
+        {
+            "operation": "prompt_continuation_replay_audit",
+            "error": "prompt client does not provide replay_audit()",
+        }
+    ]
+    manifest = json.loads(
+        (session_dir / "replay_audit_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "incomplete"
+    assert manifest["comparable"] is False
+    assert manifest["model_trace_capture_status"] == "unsupported"
+    assert manifest["missing_requirements"] == [
+        "captured_model_trace",
+        "protocol_requests",
+        "complete_model_trace",
+        "prompt_continuation_model_evidence",
+        "complete_seed_provenance",
+    ]

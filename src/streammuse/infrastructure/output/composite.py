@@ -88,6 +88,32 @@ class CompositeOutputSink:
             if hasattr(s, "log_input_quantization"):
                 s.log_input_quantization(row)
 
+    def log_prompt_continuation_replay_request(
+        self, row: Dict[str, Any]
+    ) -> None:
+        for s in self.sinks:
+            logger = getattr(s, "log_prompt_continuation_replay_request", None)
+            if callable(logger):
+                logger(row)
+
+    def finalize_prompt_continuation_replay_audit(
+        self,
+        *,
+        model_trace: Any,
+        capture_status: str,
+        capture_error: str | None = None,
+    ) -> None:
+        for s in self.sinks:
+            finalizer = getattr(
+                s, "finalize_prompt_continuation_replay_audit", None
+            )
+            if callable(finalizer):
+                finalizer(
+                    model_trace=model_trace,
+                    capture_status=capture_status,
+                    capture_error=capture_error,
+                )
+
     def log_request_lifecycle(self, row: Dict[str, Any]) -> None:
         for s in self.sinks:
             if hasattr(s, "log_request_lifecycle"):

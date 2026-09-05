@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from streammuse.domain.musical import EventType, MusicalEvent
+from streammuse.infrastructure.inference.serialization import event_from_dict
 from streammuse.infrastructure.output.json_logger import JsonLoggerOutputSink
 from streammuse.infrastructure.output.midi_file import MidiFileOutputConfig, MidiFileOutputSink
 
@@ -46,12 +47,29 @@ class SessionLoggerOutputSink:
         self._input_quantization_trace_path = (
             self.session_dir / "input_quantization_trace.jsonl"
         )
+        self._replay_request_path = (
+            self.session_dir / "prompt_continuation_replay_requests.jsonl"
+        )
+        self._replay_model_trace_path = (
+            self.session_dir / "prompt_continuation_model_trace.json"
+        )
+        self._replay_manifest_path = self.session_dir / "replay_audit_manifest.json"
+        self._replay_melody_json_path = (
+            self.session_dir / "prompt_continuation_replay_melody.json"
+        )
+        self._replay_melody_midi_path = (
+            self.session_dir / "prompt_continuation_replay_melody.mid"
+        )
         self._theoretical_midi_path = self.session_dir / "theoretical_model.mid"
         self._theoretical_summary_path = self.session_dir / "theoretical_model_summary.json"
         self._lifecycle_path = self.session_dir / "request_lifecycle.jsonl"
         self._validity_path = self.session_dir / "validity.json"
         self._artifact_lock = threading.Lock()
         self._input_quantization_rows: list[Dict[str, Any]] = []
+        self._prompt_continuation_replay_request_count = 0
+        self._prompt_continuation_replay_successful_request_count = 0
+        self._prompt_continuation_replay_failed_request_count = 0
+        self._prompt_continuation_replay_melody_events: list[Dict[str, Any]] = []
 
         self.midi_sink: Optional[MidiFileOutputSink] = None
         self.json_sink: Optional[JsonLoggerOutputSink] = None
@@ -161,6 +179,248 @@ class SessionLoggerOutputSink:
     def log_input_quantization(self, row: Dict[str, Any]) -> None:
         with self._artifact_lock:
             self._input_quantization_rows.append(dict(row))
+
+    @staticmethod
+    def _deterministic_json(payload: Any, *, indent: int | None = None) -> str:
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            indent=indent,
+            separators=(",", ":") if indent is None else None,
+            sort_keys=True,
+        )
+
+    @classmethod
+    def _json_copy(cls, payload: Any) -> Any:
+        return json.loads(cls._deterministic_json(payload))
+
+    @classmethod
+    def _write_json_atomic_unlocked(cls, path: Path, payload: Any) -> None:
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        tmp_path.write_text(
+            cls._deterministic_json(payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        tmp_path.replace(path)
+
+    @staticmethod
+    def _artifact_summary(path: Path) -> Dict[str, Any]:
+        if not path.exists():
+            return {"path": path.name, "status": "missing"}
+        return {
+            "path": path.name,
+            "status": "present",
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    @staticmethod
+    def _seed_provenance_complete(model_trace: Any) -> bool:
+        if not isinstance(model_trace, dict):
+            return False
+        runtime_info = model_trace.get("runtime_info")
+        if isinstance(runtime_info, dict):
+            return runtime_info.get("seed_provenance_complete") is True
+        return model_trace.get("seed_provenance_complete") is True
+
+    @staticmethod
+    def _trace_capture_complete(model_trace: Any) -> bool:
+        if not isinstance(model_trace, dict):
+            return False
+        runtime_info = model_trace.get("runtime_info")
+        if isinstance(runtime_info, dict):
+            return runtime_info.get("trace_capture_complete") is True
+        return model_trace.get("trace_capture_complete") is True
+
+    @staticmethod
+    def _model_evidence_complete(model_trace: Any) -> bool:
+        if not isinstance(model_trace, dict):
+            return False
+        prompt = model_trace.get("prompt_generation_log")
+        continuation = model_trace.get("continuation_generations")
+        if not isinstance(prompt, dict):
+            return False
+        prompt_tokens = prompt.get("prompt_tokens")
+        generated_tokens = prompt.get("generated_tokens")
+        return (
+            isinstance(prompt_tokens, list)
+            and bool(prompt_tokens)
+            and isinstance(generated_tokens, list)
+            and bool(generated_tokens)
+            and isinstance(continuation, list)
+            and bool(continuation)
+        )
+
+    def log_prompt_continuation_replay_request(
+        self, row: Dict[str, Any]
+    ) -> None:
+        frozen_row = self._json_copy(dict(row))
+        request = frozen_row.get("request", {})
+        melody_events = (
+            request.get("melody_events", []) if isinstance(request, dict) else []
+        )
+        if not isinstance(melody_events, list):
+            raise ValueError("replay request melody_events must be a list")
+        if not all(isinstance(event, dict) for event in melody_events):
+            raise ValueError("replay request melody_events must contain objects")
+
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self._artifact_lock:
+            mode = (
+                "w"
+                if self._prompt_continuation_replay_request_count == 0
+                else "a"
+            )
+            with self._replay_request_path.open(mode, encoding="utf-8") as f:
+                f.write(self._deterministic_json(frozen_row) + "\n")
+            self._prompt_continuation_replay_request_count += 1
+            request_failed = (
+                "error" in frozen_row
+                or not isinstance(frozen_row.get("acknowledgement"), dict)
+            )
+            if request_failed:
+                self._prompt_continuation_replay_failed_request_count += 1
+            else:
+                self._prompt_continuation_replay_successful_request_count += 1
+                self._prompt_continuation_replay_melody_events.extend(
+                    self._json_copy(melody_events)
+                )
+
+    def _write_replay_melody_unlocked(self) -> None:
+        melody_payload = {
+            "schema_version": 1,
+            "source": self._replay_request_path.name,
+            "tempo": {
+                "bpm": self._bpm,
+                "ticks_per_beat": self._ticks_per_beat,
+                "beats_per_bar": self._beats_per_bar,
+            },
+            "event_count": len(self._prompt_continuation_replay_melody_events),
+            "events": self._prompt_continuation_replay_melody_events,
+        }
+        self._write_json_atomic_unlocked(
+            self._replay_melody_json_path,
+            melody_payload,
+        )
+
+        midi_sink = MidiFileOutputSink(
+            MidiFileOutputConfig(
+                bpm=self._bpm,
+                ticks_per_beat=self._ticks_per_beat,
+                beats_per_bar=self._beats_per_bar,
+                output_path=str(self._replay_melody_midi_path),
+                user_track_name="Replay Melody",
+                model_track_name="Unused Accompaniment",
+                close_active_notes_on_finalize=(
+                    self._close_active_notes_on_finalize
+                ),
+                record_metronome=False,
+            )
+        )
+        for event_payload in self._prompt_continuation_replay_melody_events:
+            midi_sink.output_event(event_from_dict(event_payload), source="user")
+        midi_sink.close()
+
+    def finalize_prompt_continuation_replay_audit(
+        self,
+        *,
+        model_trace: Any,
+        capture_status: str,
+        capture_error: str | None = None,
+    ) -> Dict[str, Any]:
+        """Persist the self-contained artifacts needed by a later replay."""
+        if capture_status not in {"captured", "unsupported", "error"}:
+            raise ValueError(f"unsupported replay audit capture status: {capture_status}")
+
+        self._flush_input_quantization_trace()
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self._artifact_lock:
+            if self._prompt_continuation_replay_request_count == 0:
+                self._replay_request_path.write_text("", encoding="utf-8")
+            self._write_replay_melody_unlocked()
+            if capture_status == "captured":
+                model_trace_document = self._json_copy(model_trace)
+            else:
+                model_trace_document = {
+                    "schema_version": 1,
+                    "capture_status": capture_status,
+                    "error": capture_error,
+                }
+            self._write_json_atomic_unlocked(
+                self._replay_model_trace_path,
+                model_trace_document,
+            )
+
+            artifacts = {
+                "request_trace": self._artifact_summary(self._replay_request_path),
+                "model_trace": self._artifact_summary(self._replay_model_trace_path),
+                "replay_melody_json": self._artifact_summary(
+                    self._replay_melody_json_path
+                ),
+                "replay_melody_midi": self._artifact_summary(
+                    self._replay_melody_midi_path
+                ),
+            }
+            if self._input_quantization_trace_path.exists():
+                artifacts["input_quantization_trace"] = self._artifact_summary(
+                    self._input_quantization_trace_path
+                )
+
+            seed_provenance_complete = self._seed_provenance_complete(model_trace)
+            trace_capture_complete = self._trace_capture_complete(model_trace)
+            model_evidence_complete = self._model_evidence_complete(model_trace)
+            comparable = (
+                capture_status == "captured"
+                and self._prompt_continuation_replay_request_count > 0
+                and self._prompt_continuation_replay_failed_request_count == 0
+                and trace_capture_complete
+                and seed_provenance_complete
+                and model_evidence_complete
+            )
+            missing_requirements: list[str] = []
+            if capture_status != "captured":
+                missing_requirements.append("captured_model_trace")
+            if self._prompt_continuation_replay_request_count <= 0:
+                missing_requirements.append("protocol_requests")
+            if self._prompt_continuation_replay_failed_request_count > 0:
+                missing_requirements.append("failed_protocol_requests")
+            if not trace_capture_complete:
+                missing_requirements.append("complete_model_trace")
+            if not model_evidence_complete:
+                missing_requirements.append("prompt_continuation_model_evidence")
+            if not seed_provenance_complete:
+                missing_requirements.append("complete_seed_provenance")
+            manifest: Dict[str, Any] = {
+                "schema_version": 1,
+                "audit": "human_live_to_realtime_midi_file_exact_match",
+                "status": "ready_for_replay" if comparable else "incomplete",
+                "comparable": comparable,
+                "comparison_status": "not_run",
+                "model_trace_capture_status": capture_status,
+                "trace_capture_complete": trace_capture_complete,
+                "model_evidence_complete": model_evidence_complete,
+                "seed_provenance_complete": seed_provenance_complete,
+                "missing_requirements": missing_requirements,
+                "request_count": self._prompt_continuation_replay_request_count,
+                "successful_protocol_requests": (
+                    self._prompt_continuation_replay_successful_request_count
+                ),
+                "failed_protocol_requests": (
+                    self._prompt_continuation_replay_failed_request_count
+                ),
+                "melody_event_count": len(
+                    self._prompt_continuation_replay_melody_events
+                ),
+                "tempo": {
+                    "bpm": self._bpm,
+                    "ticks_per_beat": self._ticks_per_beat,
+                    "beats_per_bar": self._beats_per_bar,
+                },
+                "artifacts": artifacts,
+            }
+            if capture_error is not None:
+                manifest["capture_error"] = str(capture_error)
+            self._write_json_atomic_unlocked(self._replay_manifest_path, manifest)
+            return self._json_copy(manifest)
 
     def _flush_input_quantization_trace(self) -> None:
         with self._artifact_lock:

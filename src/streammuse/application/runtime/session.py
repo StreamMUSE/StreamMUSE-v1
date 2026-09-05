@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,11 @@ class RuntimeSession:
     emit_output_config: bool = True
     write_summary_on_cleanup: bool = True
     _cleaned_up: bool = field(default=False, init=False, repr=False)
+    _cleanup_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
 
     @property
     def session_dir(self) -> Path:
@@ -80,18 +86,26 @@ class RuntimeSession:
         self.service.stop()
 
     def cleanup(self) -> None:
-        if self._cleaned_up:
-            return
-        self._cleaned_up = True
+        with self._cleanup_lock:
+            if self._cleaned_up:
+                return
+            self._cleaned_up = True
+            self._cleanup_once()
+
+    def _cleanup_once(self) -> None:
         history_payload: object = {}
-        try:
-            if self.prompt_client is not None:
+        if self.prompt_client is not None:
+            self._capture_prompt_continuation_replay_audit(self.prompt_client)
+            try:
                 self._save_prompt_continuation_history_logs(self.prompt_client)
                 history_payload = self.prompt_client.clear_history()
-            elif self.inference_engine is not None:
+            except Exception as exc:
+                self._record_cleanup_warning("clear_history", exc)
+        elif self.inference_engine is not None:
+            try:
                 history_payload = self.inference_engine.clear_history()
-        except Exception as exc:
-            self._record_cleanup_warning("clear_history", exc)
+            except Exception as exc:
+                self._record_cleanup_warning("clear_history", exc)
         if self._debug_artifacts_enabled():
             try:
                 self._save_standard_history_logs(history_payload)
@@ -111,6 +125,50 @@ class RuntimeSession:
                 )
             except Exception as exc:
                 self._record_cleanup_warning("session_summary", exc)
+
+    def _capture_prompt_continuation_replay_audit(self, client: Any) -> None:
+        finalizer = getattr(
+            self.output_sink,
+            "finalize_prompt_continuation_replay_audit",
+            None,
+        )
+        if not callable(finalizer):
+            return
+
+        replay_audit = getattr(client, "replay_audit", None)
+        model_trace: Any = None
+        capture_status = "unsupported"
+        capture_error: str | None = None
+        if callable(replay_audit):
+            try:
+                model_trace = replay_audit()
+                capture_status = "captured"
+            except Exception as exc:
+                capture_status = "error"
+                capture_error = str(exc)
+                self._record_cleanup_warning(
+                    "prompt_continuation_replay_audit",
+                    exc,
+                )
+        else:
+            exc = RuntimeError("prompt client does not provide replay_audit()")
+            capture_error = str(exc)
+            self._record_cleanup_warning(
+                "prompt_continuation_replay_audit",
+                exc,
+            )
+
+        try:
+            finalizer(
+                model_trace=model_trace,
+                capture_status=capture_status,
+                capture_error=capture_error,
+            )
+        except Exception as exc:
+            self._record_cleanup_warning(
+                "prompt_continuation_replay_artifacts",
+                exc,
+            )
 
     def _record_cleanup_warning(self, operation: str, exc: Exception) -> None:
         warnings = self.metadata.setdefault("cleanup_warnings", [])

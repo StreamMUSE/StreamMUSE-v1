@@ -1348,6 +1348,123 @@ def test_protocol_worker_fetches_playable_after_rest_append():
     assert client.playable_calls == 1
 
 
+def test_protocol_worker_records_ordered_replay_requests_with_acknowledgements():
+    class _ReplayAuditOutput(_RecordingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.replay_requests = []
+
+        def log_prompt_continuation_replay_request(self, row):
+            self.replay_requests.append(dict(row))
+
+    class _JsonPromptClient(_FakePromptClient):
+        def start(self, **kwargs):
+            self.start_calls += 1
+            self.start_requests.append(dict(kwargs))
+            return {"accepted": True, "phase": "prompt_running"}
+
+        def append_melody(self, **kwargs):
+            self.append_calls += 1
+            return {"accepted": True, "phase": "catchup_running"}
+
+    output = _ReplayAuditOutput()
+    client = _JsonPromptClient()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=client,
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        model_condition_bpm=137,
+        protocol_poll_interval_s=0.01,
+    )
+    service._runtime = SimpleNamespace(
+        session_start_time=0.0,
+        timeline_start_time=0.0,
+    )
+    service._running = True
+    service._control_q.put(
+        _ControlAction(
+            kind="start",
+            melody_events=[_note(60, 0), _note_off(60, 4)],
+            observed_until_tick=32,
+        )
+    )
+    service._control_q.put(
+        _ControlAction(
+            kind="append",
+            melody_events=[_note(64, 34)],
+            observed_until_tick=36,
+        )
+    )
+
+    worker = threading.Thread(target=service._protocol_worker)
+    worker.start()
+    deadline = time.monotonic() + 1.0
+    while len(output.replay_requests) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    service._running = False
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert [row["sequence"] for row in output.replay_requests] == [1, 2]
+    assert [row["operation"] for row in output.replay_requests] == [
+        "start",
+        "append",
+    ]
+    start_row, append_row = output.replay_requests
+    assert start_row["request"] == {
+        "melody_events": [
+            {
+                "type": "note_on",
+                "pitch": 60,
+                "tick": 0,
+                "velocity": 100,
+                "channel": 0,
+                "program": 0,
+            },
+            {
+                "type": "note_off",
+                "pitch": 60,
+                "tick": 4,
+                "velocity": 0,
+                "channel": 0,
+                "program": 0,
+            },
+        ],
+        "observed_until_tick": 32,
+        "prompt_length_ticks": 32,
+        "generation_interval_ticks": 4,
+        "bpm": 137,
+    }
+    assert append_row["request"] == {
+        "melody_events": [
+            {
+                "type": "note_on",
+                "pitch": 64,
+                "tick": 34,
+                "velocity": 100,
+                "channel": 0,
+                "program": 0,
+            }
+        ],
+        "observed_until_tick": 36,
+    }
+    assert append_row["protocol_context"] == {
+        "prompt_length_ticks": 32,
+        "generation_interval_ticks": 4,
+        "bpm": 137,
+    }
+    assert start_row["acknowledgement"] == {
+        "accepted": True,
+        "phase": "prompt_running",
+    }
+    assert append_row["acknowledgement"] == {
+        "accepted": True,
+        "phase": "catchup_running",
+    }
+
+
 def test_protocol_worker_playable_fetch_without_system_logger_skips_trace_clock_read(
     monkeypatch,
 ):
