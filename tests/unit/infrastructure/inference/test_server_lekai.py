@@ -164,6 +164,86 @@ def test_prompt_continuation_replay_audit_endpoint_is_read_only(monkeypatch):
     assert audit_backend.calls == 1
 
 
+def test_prompt_continuation_session_initialize_generates_fresh_server_seeds(
+    monkeypatch,
+):
+    generated = iter((101, 202))
+    calls = []
+
+    class _SessionBackend:
+        def reset_session(self, *, prompt_seed, continuation_seed):
+            calls.append((prompt_seed, continuation_seed))
+            return {
+                "success": True,
+                "prompt_seed": prompt_seed,
+                "continuation_effective_seed": continuation_seed,
+                "session_id": "pc-session",
+                "session_epoch": 3,
+                "pending_boundary_generations": 0,
+                "scheduler_phase": "idle",
+                "scheduler_is_running": False,
+            }
+
+    monkeypatch.delenv("LEKAI_ENABLE_DEBUG_RESET", raising=False)
+    monkeypatch.setattr(server_lekai, "_new_session_seed", lambda: next(generated))
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _SessionBackend())
+
+    response = TestClient(app).post(
+        "/prompt_continuation/session/initialize",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert calls == [(101, 202)]
+    assert response.json() == {
+        "success": True,
+        "prompt_requested_seed": 101,
+        "prompt_effective_seed": 101,
+        "continuation_requested_seed": 202,
+        "continuation_effective_seed": 202,
+        "prompt_seed_source": "system",
+        "continuation_seed_source": "system",
+        "session_id": "pc-session",
+        "session_epoch": 3,
+        "pending_boundary_generations": 0,
+        "scheduler_phase": "idle",
+        "scheduler_is_running": False,
+    }
+
+
+def test_prompt_continuation_session_initialize_accepts_saved_replay_seeds(
+    monkeypatch,
+):
+    class _SessionBackend:
+        def reset_session(self, *, prompt_seed, continuation_seed):
+            return {
+                "success": True,
+                "prompt_seed": prompt_seed,
+                "continuation_effective_seed": continuation_seed,
+                "session_id": "replay-session",
+                "session_epoch": 4,
+                "pending_boundary_generations": 0,
+                "scheduler_phase": "idle",
+                "scheduler_is_running": False,
+            }
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _SessionBackend())
+
+    response = TestClient(app).post(
+        "/prompt_continuation/session/initialize",
+        json={"prompt_seed": 17, "continuation_seed": 23},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["prompt_requested_seed"] == 17
+    assert payload["prompt_effective_seed"] == 17
+    assert payload["continuation_requested_seed"] == 23
+    assert payload["continuation_effective_seed"] == 23
+    assert payload["prompt_seed_source"] == "requested"
+    assert payload["continuation_seed_source"] == "requested"
+
+
 def test_prompt_continuation_poll_endpoints_contract():
     client.post("/clear_history")
 

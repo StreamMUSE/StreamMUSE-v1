@@ -34,6 +34,35 @@ def test_normalize_prompt_continuation_base_url_accepts_known_endpoints():
     assert normalize_prompt_continuation_base_url("http://x:8000/generate_accompaniment") == "http://x:8000"
     assert normalize_prompt_continuation_base_url("http://x:8000/prompt_continuation/playable") == "http://x:8000"
     assert normalize_prompt_continuation_base_url("http://x:8000/prompt_continuation/replay_audit") == "http://x:8000"
+    assert normalize_prompt_continuation_base_url("http://x:8000/prompt_continuation/session/initialize") == "http://x:8000"
+
+
+def test_prompt_continuation_http_client_initializes_generated_or_replay_session(
+    monkeypatch,
+):
+    calls = []
+
+    def fake_post(url, json=None, timeout=None):
+        calls.append((url, json, timeout))
+        return _FakeResponse({"success": True, "session_id": "session-1"})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    client = PromptContinuationHttpClient(
+        PromptContinuationHttpClientConfig(base_url="http://x:8000", timeout_s=7.0)
+    )
+
+    assert client.initialize_session()["success"] is True
+    assert client.initialize_session(prompt_seed=17, continuation_seed=23)[
+        "session_id"
+    ] == "session-1"
+    assert calls == [
+        ("http://x:8000/prompt_continuation/session/initialize", {}, 7.0),
+        (
+            "http://x:8000/prompt_continuation/session/initialize",
+            {"prompt_seed": 17, "continuation_seed": 23},
+            7.0,
+        ),
+    ]
 
 
 def test_prompt_continuation_http_client_start_append_status_playable(monkeypatch):

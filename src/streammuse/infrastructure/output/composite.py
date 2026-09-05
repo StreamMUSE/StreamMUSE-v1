@@ -96,6 +96,22 @@ class CompositeOutputSink:
             if callable(logger):
                 logger(row)
 
+    def record_prompt_continuation_session_seed(
+        self, provenance: Dict[str, Any]
+    ) -> None:
+        recorded = False
+        for s in self.sinks:
+            recorder = getattr(
+                s,
+                "record_prompt_continuation_session_seed",
+                None,
+            )
+            if callable(recorder):
+                recorder(provenance)
+                recorded = True
+        if not recorded:
+            raise RuntimeError("composite output has no replay seed recorder")
+
     def finalize_prompt_continuation_replay_audit(
         self,
         *,

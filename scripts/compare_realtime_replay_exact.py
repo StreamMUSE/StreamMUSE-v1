@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 REQUEST_TRACE_NAME = "prompt_continuation_replay_requests.jsonl"
 MODEL_TRACE_NAME = "prompt_continuation_model_trace.json"
+SESSION_SEED_NAME = "prompt_continuation_session_seed.json"
 MANIFEST_NAME = "replay_audit_manifest.json"
 
 PROMPT_FIELDS = ("prompt_tokens", "generated_tokens", "new_tokens")
@@ -393,11 +394,13 @@ def _seed_provenance(trace: Mapping[str, Any]) -> dict[str, Any]:
         "prompt_seed": prompt_seed,
         "continuation_seed": continuation_seed,
         "active_session_present": isinstance(session_id, str) and bool(session_id),
+        "active_session_id": session_id,
         "active_session_epoch_valid": (
             isinstance(session_epoch, int)
             and not isinstance(session_epoch, bool)
             and session_epoch > 0
         ),
+        "active_session_epoch": session_epoch,
     }
 
 
@@ -479,6 +482,12 @@ def _load_session(session_dir: Path) -> dict[str, Any]:
         _read_json(session_dir / MODEL_TRACE_NAME),
         str(session_dir / MODEL_TRACE_NAME),
     )
+    session_seed_document = _require_mapping(
+        _read_json(session_dir / SESSION_SEED_NAME),
+        str(session_dir / SESSION_SEED_NAME),
+    )
+    if session_seed_document.get("success") is not True:
+        raise EvidenceError("session seed artifact is not a successful initialization")
     runtime_info = trace.get("runtime_info")
     if not isinstance(runtime_info, dict):
         raise EvidenceError("model trace lacks a runtime_info object")
@@ -505,14 +514,63 @@ def _load_session(session_dir: Path) -> dict[str, Any]:
         }
         for index, record in enumerate(continuation)
     ]
-    seed_provenance = _seed_provenance(trace)
-    if not seed_provenance["complete"]:
+    trace_seed_provenance = _seed_provenance(trace)
+    session_seed_provenance = _seed_provenance(session_seed_document)
+    for field in (
+        "prompt_requested_seed",
+        "prompt_effective_seed",
+        "continuation_requested_seed",
+        "continuation_effective_seed",
+        "session_epoch",
+    ):
+        value = session_seed_document.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise EvidenceError(
+                f"session seed artifact field {field} must be a non-negative integer"
+            )
+    for field in ("prompt_seed_source", "continuation_seed_source"):
+        if session_seed_document.get(field) not in {"system", "requested"}:
+            raise EvidenceError(
+                f"session seed artifact field {field} must be system or requested"
+            )
+    if not trace_seed_provenance["complete"]:
         raise EvidenceError(
             "model trace lacks complete seeded-session provenance; require an "
             "explicit true seed_provenance_complete/seeded_session_active flag, "
             "or non-null prompt and continuation seeds plus an active session "
             "id and positive epoch"
         )
+    if not session_seed_provenance["complete"]:
+        raise EvidenceError(
+            "session seed artifact lacks prompt/continuation effective seeds "
+            "and active server session provenance"
+        )
+    if _seed_identity(trace_seed_provenance) != _seed_identity(
+        session_seed_provenance
+    ):
+        raise EvidenceError("session seed artifact does not match model trace seeds")
+    if (
+        trace_seed_provenance["active_session_id"]
+        != session_seed_provenance["active_session_id"]
+        or trace_seed_provenance["active_session_epoch"]
+        != session_seed_provenance["active_session_epoch"]
+    ):
+        raise EvidenceError(
+            "session seed artifact does not match model trace session id/epoch"
+        )
+    session_seed_provenance.update(
+        {
+            field: session_seed_document[field]
+            for field in (
+                "prompt_requested_seed",
+                "prompt_effective_seed",
+                "continuation_requested_seed",
+                "continuation_effective_seed",
+                "prompt_seed_source",
+                "continuation_seed_source",
+            )
+        }
+    )
 
     return {
         "protocol_requests": [
@@ -523,7 +581,7 @@ def _load_session(session_dir: Path) -> dict[str, Any]:
         "prompt_output": _prompt_output_evidence(prompt),
         "continuation_input": continuation_input,
         "continuation_output": continuation_output,
-        "seed_provenance": seed_provenance,
+        "seed_provenance": session_seed_provenance,
         "trace_capture_complete": True,
         "manifest_present": (session_dir / MANIFEST_NAME).is_file(),
     }

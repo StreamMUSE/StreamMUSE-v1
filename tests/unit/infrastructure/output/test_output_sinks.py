@@ -14,6 +14,37 @@ from streammuse.infrastructure.output.session_logger import SessionLoggerOutputS
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 
 
+def _prompt_session_seed() -> dict:
+    return {
+        "schema_version": 1,
+        "runtime_session_id": "runtime-session",
+        "success": True,
+        "prompt_requested_seed": 17,
+        "prompt_effective_seed": 17,
+        "continuation_requested_seed": 23,
+        "continuation_effective_seed": 23,
+        "prompt_seed_source": "system",
+        "continuation_seed_source": "system",
+        "session_id": "server-session",
+        "session_epoch": 1,
+    }
+
+
+def _seeded_runtime_info(
+    *,
+    seed_provenance_complete: bool = True,
+    trace_capture_complete: bool = True,
+) -> dict:
+    return {
+        "seed_provenance_complete": seed_provenance_complete,
+        "trace_capture_complete": trace_capture_complete,
+        "prompt_sample_seed": 17,
+        "continuation_sample_seed": 23,
+        "session_id": "server-session",
+        "session_epoch": 1,
+    }
+
+
 def test_websocket_output_sink_queues_messages():
     sink = WebSocketOutputSink()
     sink.output_tick(1, bar=0, beat=0)
@@ -759,11 +790,9 @@ def test_session_logger_writes_prompt_replay_artifacts_and_melody_only_midi(
     composite.log_input_quantization(
         {"record_type": "input_quantization", "quantized_tick": 0}
     )
+    composite.record_prompt_continuation_session_seed(_prompt_session_seed())
     model_snapshot = {
-        "runtime_info": {
-            "seed_provenance_complete": True,
-            "trace_capture_complete": True,
-        },
+        "runtime_info": _seeded_runtime_info(),
         "prompt_generation_log": {
             "prompt_tokens": [1],
             "generated_tokens": [1, 2],
@@ -830,6 +859,9 @@ def test_session_logger_writes_prompt_replay_artifacts_and_melody_only_midi(
     assert manifest["trace_capture_complete"] is True
     assert manifest["model_evidence_complete"] is True
     assert manifest["seed_provenance_complete"] is True
+    assert manifest["session_seed_recorded"] is True
+    assert manifest["session_seed_matches_model_trace"] is True
+    assert manifest["session_seed"]["prompt_requested_seed"] == 17
     assert manifest["request_count"] == 2
     assert manifest["successful_protocol_requests"] == 2
     assert manifest["failed_protocol_requests"] == 0
@@ -838,6 +870,7 @@ def test_session_logger_writes_prompt_replay_artifacts_and_melody_only_midi(
     assert set(manifest["artifacts"]) == {
         "request_trace",
         "model_trace",
+        "session_seed",
         "replay_melody_json",
         "replay_melody_midi",
         "input_quantization_trace",
@@ -860,13 +893,13 @@ def test_replay_manifest_is_incomplete_without_complete_seed_provenance(tmp_path
             "acknowledgement": {"accepted": True},
         }
     )
+    sink.record_prompt_continuation_session_seed(_prompt_session_seed())
 
     sink.finalize_prompt_continuation_replay_audit(
         model_trace={
-            "runtime_info": {
-                "seed_provenance_complete": False,
-                "trace_capture_complete": True,
-            },
+            "runtime_info": _seeded_runtime_info(
+                seed_provenance_complete=False
+            ),
             "prompt_generation_log": {
                 "prompt_tokens": [1],
                 "generated_tokens": [1, 2],
@@ -900,13 +933,13 @@ def test_replay_manifest_is_incomplete_without_complete_model_trace(tmp_path):
             "acknowledgement": {"accepted": True},
         }
     )
+    sink.record_prompt_continuation_session_seed(_prompt_session_seed())
 
     sink.finalize_prompt_continuation_replay_audit(
         model_trace={
-            "runtime_info": {
-                "seed_provenance_complete": True,
-                "trace_capture_complete": False,
-            },
+            "runtime_info": _seeded_runtime_info(
+                trace_capture_complete=False
+            ),
             "prompt_generation_log": {
                 "prompt_tokens": [1],
                 "generated_tokens": [1, 2],
@@ -942,13 +975,11 @@ def test_replay_manifest_is_incomplete_without_prompt_continuation_evidence(
             "acknowledgement": {"accepted": True},
         }
     )
+    sink.record_prompt_continuation_session_seed(_prompt_session_seed())
 
     sink.finalize_prompt_continuation_replay_audit(
         model_trace={
-            "runtime_info": {
-                "seed_provenance_complete": True,
-                "trace_capture_complete": True,
-            },
+            "runtime_info": _seeded_runtime_info(),
             "prompt_generation_log": {
                 "prompt_tokens": [1],
                 "generated_tokens": [],
@@ -1038,13 +1069,11 @@ def test_failed_replay_requests_are_audited_but_excluded_from_replay_melody(
     sink.log_prompt_continuation_replay_request(successful_row)
     sink.log_prompt_continuation_replay_request(failed_row)
     sink.log_prompt_continuation_replay_request(non_dict_ack_row)
+    sink.record_prompt_continuation_session_seed(_prompt_session_seed())
 
     sink.finalize_prompt_continuation_replay_audit(
         model_trace={
-            "runtime_info": {
-                "seed_provenance_complete": True,
-                "trace_capture_complete": True,
-            },
+            "runtime_info": _seeded_runtime_info(),
             "prompt_generation_log": {
                 "prompt_tokens": [1],
                 "generated_tokens": [1, 2],

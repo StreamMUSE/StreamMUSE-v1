@@ -11,12 +11,20 @@ The claim is valid only when both runs contain complete audit evidence. A
 matching MIDI note count, similar audio, or matching digests from only part of
 the pipeline is not sufficient.
 
-## Required Reset
+## Session Seeds
 
-Before both ORIGINAL and REPLAY, explicitly call the Prompt+Continuation debug
-reset endpoint with identical `prompt_seed` and `continuation_seed` values.
-Advancing an existing server RNG is not reproducible, even if its initial seed
-is known.
+An ordinary Prompt+Continuation Web Start requires no seed input. Before the
+clock, MIDI input, or model protocol starts, the RuntimeSession calls the normal
+`/prompt_continuation/session/initialize` lifecycle endpoint. The server creates
+fresh system-random Prompt and Continuation seeds and returns their requested
+and effective values together with the server session ID and epoch.
+
+The ORIGINAL session stores those values in
+`prompt_continuation_session_seed.json`. A replay harness must read the two
+effective seeds and pass them as `prompt_seed` and `continuation_seed` to the
+same lifecycle endpoint before starting the realtime MIDI-file RuntimeSession.
+This endpoint is not debug-gated and does not require
+`LEKAI_ENABLE_DEBUG_RESET`.
 
 Both traces must report:
 
@@ -29,12 +37,15 @@ Both traces must report:
 - `prompt_continuation_replay_requests.jsonl`: ordered start/append requests
 - `prompt_continuation_model_trace.json`: Prompt tokens, selection evidence,
   continuation generation digests, runtime seeds, and capture completeness
+- `prompt_continuation_session_seed.json`: requested/effective Prompt and
+  Continuation seeds plus local and server session provenance
 - `replay_audit_manifest.json`: capture status and artifact inventory
 - `prompt_continuation_replay_melody.json`: captured quantized Melody events
 - `prompt_continuation_replay_melody.mid`: MIDI-file replay input
 
-The comparator requires the request and model trace files. The manifest is
-optional input to the comparator and does not replace missing model evidence.
+The comparator requires the request, model trace, and session seed files. It
+also verifies that the saved effective seeds and server session ID/epoch match
+the model trace. The manifest does not replace missing model evidence.
 
 ## Comparison
 

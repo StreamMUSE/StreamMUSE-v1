@@ -164,6 +164,27 @@ def _write_session(
     (root / "prompt_continuation_model_trace.json").write_text(
         json.dumps(trace), encoding="utf-8"
     )
+    runtime_info = trace.get("runtime_info", {})
+    (root / "prompt_continuation_session_seed.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "runtime_session_id": root.name,
+                "success": True,
+                "prompt_requested_seed": 17,
+                "prompt_effective_seed": 17,
+                "continuation_requested_seed": 23,
+                "continuation_effective_seed": 23,
+                "prompt_seed_source": "system",
+                "continuation_seed_source": "system",
+                "session_id": runtime_info.get(
+                    "session_id", f"session-{root.name}"
+                ),
+                "session_epoch": runtime_info.get("session_epoch", 1),
+            }
+        ),
+        encoding="utf-8",
+    )
     return root
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import uuid
 from typing import Any, List, Optional
 
@@ -91,6 +92,26 @@ class PromptContinuationResetSessionResponse(BaseModel):
     success: bool
     prompt_seed: int
     continuation_effective_seed: int
+    session_id: str
+    session_epoch: int
+    pending_boundary_generations: int
+    scheduler_phase: str
+    scheduler_is_running: bool
+
+
+class PromptContinuationSessionInitializeRequest(BaseModel):
+    prompt_seed: Optional[int] = Field(default=None, ge=0, lt=2**63)
+    continuation_seed: Optional[int] = Field(default=None, ge=0, lt=2**63)
+
+
+class PromptContinuationSessionInitializeResponse(BaseModel):
+    success: bool
+    prompt_requested_seed: int
+    prompt_effective_seed: int
+    continuation_requested_seed: int
+    continuation_effective_seed: int
+    prompt_seed_source: str
+    continuation_seed_source: str
     session_id: str
     session_epoch: int
     pending_boundary_generations: int
@@ -245,6 +266,10 @@ def _debug_reset_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _new_session_seed() -> int:
+    return secrets.randbits(63)
 
 
 def _validate_lekai_constraints(model_name: str, generation_length_frames: int) -> None:
@@ -502,6 +527,49 @@ async def prompt_continuation_prompt_generation_log() -> dict[str, Any]:
 async def prompt_continuation_replay_audit() -> PromptContinuationReplayAuditResponse:
     return PromptContinuationReplayAuditResponse(
         **prompt_continuation_backend.replay_audit()
+    )
+
+
+@app.post(
+    "/prompt_continuation/session/initialize",
+    response_model=PromptContinuationSessionInitializeResponse,
+)
+async def prompt_continuation_initialize_session(
+    request: PromptContinuationSessionInitializeRequest,
+) -> PromptContinuationSessionInitializeResponse:
+    prompt_seed_source = "requested" if request.prompt_seed is not None else "system"
+    continuation_seed_source = (
+        "requested" if request.continuation_seed is not None else "system"
+    )
+    requested_prompt_seed = (
+        int(request.prompt_seed)
+        if request.prompt_seed is not None
+        else _new_session_seed()
+    )
+    requested_continuation_seed = (
+        int(request.continuation_seed)
+        if request.continuation_seed is not None
+        else _new_session_seed()
+    )
+    result = prompt_continuation_backend.reset_session(
+        prompt_seed=requested_prompt_seed,
+        continuation_seed=requested_continuation_seed,
+    )
+    return PromptContinuationSessionInitializeResponse(
+        success=bool(result["success"]),
+        prompt_requested_seed=requested_prompt_seed,
+        prompt_effective_seed=int(result["prompt_seed"]),
+        continuation_requested_seed=requested_continuation_seed,
+        continuation_effective_seed=int(result["continuation_effective_seed"]),
+        prompt_seed_source=prompt_seed_source,
+        continuation_seed_source=continuation_seed_source,
+        session_id=str(result["session_id"]),
+        session_epoch=int(result["session_epoch"]),
+        pending_boundary_generations=int(
+            result.get("pending_boundary_generations", 0)
+        ),
+        scheduler_phase=str(result["scheduler_phase"]),
+        scheduler_is_running=bool(result["scheduler_is_running"]),
     )
 
 

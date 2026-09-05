@@ -218,6 +218,10 @@ class RuntimeSessionBuilder:
             websocket_sink=websocket_sink,
             emit_output_config=emit_output_config,
             write_summary_on_cleanup=write_summary_on_cleanup,
+            prompt_session_audit_enabled=(
+                prompt_client is not None
+                and self._contains_session_logger(output_sink)
+            ),
         )
 
     def _continuation_mode(self) -> str:
@@ -328,6 +332,21 @@ class RuntimeSessionBuilder:
             )
         )
         sinks: list[Any] = [ws_sink, auto_midi, ConsoleOutputSink(ConsoleOutputConfig())]
+        if self._continuation_mode() == "prompt_continuation":
+            sinks.append(
+                SessionLoggerOutputSink(
+                    session_dir=session_manager.get_session_dir(),
+                    include_midi=False,
+                    include_json=False,
+                    bpm=float(self.config.tempo.bpm),
+                    ticks_per_beat=int(self.config.tempo.ticks_per_beat),
+                    beats_per_bar=int(self.config.tempo.beats_per_bar),
+                    artifact_tier=self.config.output.session_artifact_tier,
+                    close_active_notes_on_finalize=bool(
+                        self.config.output.close_active_notes_on_finalize
+                    ),
+                )
+            )
         if self.config.output.midi_out_port:
             try:
                 audio_sink = AudioOutputSink(AudioOutputConfig(port_name=self.config.output.midi_out_port))

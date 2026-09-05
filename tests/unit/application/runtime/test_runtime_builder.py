@@ -287,6 +287,90 @@ def test_runtime_session_maps_prompt_run_stop_to_max_ticks() -> None:
     service.start.assert_called_once_with(max_ticks=64)
 
 
+def test_runtime_session_records_server_generated_seeds_before_service_start(
+    tmp_path,
+) -> None:
+    calls = []
+    response = {
+        "success": True,
+        "prompt_requested_seed": 17,
+        "prompt_effective_seed": 17,
+        "continuation_requested_seed": 23,
+        "continuation_effective_seed": 23,
+        "prompt_seed_source": "system",
+        "continuation_seed_source": "system",
+        "session_id": "server-session",
+        "session_epoch": 1,
+        "pending_boundary_generations": 0,
+        "scheduler_phase": "idle",
+        "scheduler_is_running": False,
+    }
+
+    class _PromptClient:
+        def initialize_session(self):
+            calls.append("initialize_session")
+            return dict(response)
+
+    class _AuditOutput:
+        def record_prompt_continuation_session_seed(self, provenance):
+            calls.append("record_seed")
+            assert provenance["runtime_session_id"] == "web-session"
+            assert provenance["prompt_effective_seed"] == 17
+
+        def output_config(self, _config):
+            calls.append("output_config")
+
+    class _Service:
+        running = False
+
+        def start(self, *, max_ticks=None):
+            calls.append(("service_start", max_ticks))
+
+    manager = SessionManager(str(tmp_path), session_id="web-session")
+    manager.create_session_directory()
+    session = RuntimeSession(
+        config=ApplicationConfig(continuation_mode="prompt_continuation"),
+        session_manager=manager,
+        output_sink=_AuditOutput(),
+        service=_Service(),
+        session_config={"mode": "prompt_continuation"},
+        prompt_client=_PromptClient(),
+        prompt_session_audit_enabled=True,
+    )
+
+    session.start(run_stop_tick=64)
+
+    assert calls == [
+        "initialize_session",
+        "record_seed",
+        "output_config",
+        ("service_start", 64),
+    ]
+    assert session.metadata["prompt_continuation_session_seed"][
+        "continuation_effective_seed"
+    ] == 23
+
+
+def test_runtime_session_without_audit_logger_does_not_initialize_prompt_session() -> None:
+    client = MagicMock()
+    service = MagicMock(running=False)
+    session = RuntimeSession(
+        config=ApplicationConfig(continuation_mode="prompt_continuation"),
+        session_manager=None,
+        output_sink=MagicMock(),
+        service=service,
+        session_config={},
+        prompt_client=client,
+        prompt_session_audit_enabled=False,
+        emit_output_config=False,
+    )
+
+    session.start(run_stop_tick=16)
+
+    client.initialize_session.assert_not_called()
+    service.start.assert_called_once_with(max_ticks=16)
+
+
 def test_runtime_session_stop_calls_idempotent_service_stop_after_natural_end() -> None:
     service = MagicMock(running=False)
     session = RuntimeSession(
@@ -347,6 +431,39 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     assert service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.25
     assert service_cls.call_args.kwargs["model_condition_bpm"] == 91
     assert session.session_config["effective_model_bpm"] == 91
+
+
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+def test_builder_web_prompt_runtime_always_has_replay_audit_logger(
+    input_factory,
+    tmp_path,
+) -> None:
+    config = ApplicationConfig(continuation_mode="prompt_continuation")
+    prompt_client = MagicMock()
+    service_cls = MagicMock(return_value=MagicMock(running=False))
+    input_factory.create.return_value = MagicMock()
+    builder = RuntimeSessionBuilder(
+        config=config,
+        log_dir=str(tmp_path),
+        prompt_client_override=prompt_client,
+    )
+
+    with patch.object(
+        builder,
+        "_prompt_continuation_service_cls",
+        return_value=service_cls,
+    ):
+        session = builder.build_web()
+
+    audit_sinks = [
+        sink
+        for sink in session.output_sink.sinks
+        if isinstance(sink, SessionLoggerOutputSink)
+    ]
+    assert len(audit_sinks) == 1
+    assert audit_sinks[0].midi_sink is None
+    assert audit_sinks[0].json_sink is None
+    assert session.prompt_session_audit_enabled is True
 
 
 @patch("streammuse.application.runtime.builder.InputSourceFactory")
@@ -434,6 +551,10 @@ def test_runtime_session_captures_replay_audit_before_history_clear(tmp_path) ->
         "runtime_info": {
             "seed_provenance_complete": True,
             "trace_capture_complete": True,
+            "prompt_sample_seed": 17,
+            "continuation_sample_seed": 23,
+            "session_id": "server-session",
+            "session_epoch": 1,
         },
         "prompt_generation_log": {
             "prompt_tokens": [1],
@@ -462,6 +583,21 @@ def test_runtime_session_captures_replay_audit_before_history_clear(tmp_path) ->
         session_dir=session_dir,
         include_midi=False,
         include_json=False,
+    )
+    output.record_prompt_continuation_session_seed(
+        {
+            "schema_version": 1,
+            "runtime_session_id": "replay",
+            "success": True,
+            "prompt_requested_seed": 17,
+            "prompt_effective_seed": 17,
+            "continuation_requested_seed": 23,
+            "continuation_effective_seed": 23,
+            "prompt_seed_source": "system",
+            "continuation_seed_source": "system",
+            "session_id": "server-session",
+            "session_epoch": 1,
+        }
     )
     output.log_prompt_continuation_replay_request(
         {

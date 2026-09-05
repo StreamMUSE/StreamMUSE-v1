@@ -59,6 +59,23 @@ class PromptContinuationHttpClient:
     def clear_history(self) -> dict[str, Any]:
         return self._request_json("POST", "/clear_history", payload={})
 
+    def initialize_session(
+        self,
+        *,
+        prompt_seed: int | None = None,
+        continuation_seed: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, int] = {}
+        if prompt_seed is not None:
+            payload["prompt_seed"] = int(prompt_seed)
+        if continuation_seed is not None:
+            payload["continuation_seed"] = int(continuation_seed)
+        return self._request_json(
+            "POST",
+            "/prompt_continuation/session/initialize",
+            payload=payload,
+        )
+
     def start(
         self,
         *,
@@ -192,6 +209,7 @@ def normalize_prompt_continuation_base_url(server_url: str) -> str:
         "/prompt_continuation/raw_history",
         "/prompt_continuation/prompt_history",
         "/prompt_continuation/replay_audit",
+        "/prompt_continuation/session/initialize",
     )
     path = parsed.path.rstrip("/")
     for suffix in known_suffixes:

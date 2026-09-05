@@ -53,6 +53,9 @@ class SessionLoggerOutputSink:
         self._replay_model_trace_path = (
             self.session_dir / "prompt_continuation_model_trace.json"
         )
+        self._replay_session_seed_path = (
+            self.session_dir / "prompt_continuation_session_seed.json"
+        )
         self._replay_manifest_path = self.session_dir / "replay_audit_manifest.json"
         self._replay_melody_json_path = (
             self.session_dir / "prompt_continuation_replay_melody.json"
@@ -70,6 +73,7 @@ class SessionLoggerOutputSink:
         self._prompt_continuation_replay_successful_request_count = 0
         self._prompt_continuation_replay_failed_request_count = 0
         self._prompt_continuation_replay_melody_events: list[Dict[str, Any]] = []
+        self._prompt_continuation_session_seed: Dict[str, Any] | None = None
 
         self.midi_sink: Optional[MidiFileOutputSink] = None
         self.json_sink: Optional[JsonLoggerOutputSink] = None
@@ -285,6 +289,59 @@ class SessionLoggerOutputSink:
                     self._json_copy(melody_events)
                 )
 
+    def record_prompt_continuation_session_seed(
+        self, provenance: Dict[str, Any]
+    ) -> None:
+        frozen = self._json_copy(dict(provenance))
+        required_integer_fields = (
+            "prompt_requested_seed",
+            "prompt_effective_seed",
+            "continuation_requested_seed",
+            "continuation_effective_seed",
+            "session_epoch",
+        )
+        for field in required_integer_fields:
+            value = frozen.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"session seed field {field} must be a non-negative integer")
+        if int(frozen["session_epoch"]) <= 0:
+            raise ValueError("session seed field session_epoch must be positive")
+        if not isinstance(frozen.get("session_id"), str) or not frozen["session_id"]:
+            raise ValueError("session seed field session_id must be a non-empty string")
+        for field in ("prompt_seed_source", "continuation_seed_source"):
+            if frozen.get(field) not in {"system", "requested"}:
+                raise ValueError(
+                    f"session seed field {field} must be system or requested"
+                )
+        if frozen.get("success") is not True:
+            raise ValueError("session seed initialization must be successful")
+
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self._artifact_lock:
+            if (
+                self._prompt_continuation_session_seed is not None
+                and self._prompt_continuation_session_seed != frozen
+            ):
+                raise RuntimeError("prompt-continuation session seed already recorded")
+            self._write_json_atomic_unlocked(self._replay_session_seed_path, frozen)
+            self._prompt_continuation_session_seed = frozen
+
+    def _session_seed_matches_model_trace(self, model_trace: Any) -> bool:
+        seed = self._prompt_continuation_session_seed
+        if seed is None or not isinstance(model_trace, dict):
+            return False
+        runtime_info = model_trace.get("runtime_info")
+        if not isinstance(runtime_info, dict):
+            return False
+        return (
+            seed.get("prompt_effective_seed")
+            == runtime_info.get("prompt_sample_seed")
+            and seed.get("continuation_effective_seed")
+            == runtime_info.get("continuation_sample_seed")
+            and seed.get("session_id") == runtime_info.get("session_id")
+            and seed.get("session_epoch") == runtime_info.get("session_epoch")
+        )
+
     def _write_replay_melody_unlocked(self) -> None:
         melody_payload = {
             "schema_version": 1,
@@ -353,6 +410,9 @@ class SessionLoggerOutputSink:
             artifacts = {
                 "request_trace": self._artifact_summary(self._replay_request_path),
                 "model_trace": self._artifact_summary(self._replay_model_trace_path),
+                "session_seed": self._artifact_summary(
+                    self._replay_session_seed_path
+                ),
                 "replay_melody_json": self._artifact_summary(
                     self._replay_melody_json_path
                 ),
@@ -365,7 +425,15 @@ class SessionLoggerOutputSink:
                     self._input_quantization_trace_path
                 )
 
-            seed_provenance_complete = self._seed_provenance_complete(model_trace)
+            session_seed_recorded = self._prompt_continuation_session_seed is not None
+            session_seed_matches_model_trace = self._session_seed_matches_model_trace(
+                model_trace
+            )
+            seed_provenance_complete = (
+                self._seed_provenance_complete(model_trace)
+                and session_seed_recorded
+                and session_seed_matches_model_trace
+            )
             trace_capture_complete = self._trace_capture_complete(model_trace)
             model_evidence_complete = self._model_evidence_complete(model_trace)
             comparable = (
@@ -399,6 +467,13 @@ class SessionLoggerOutputSink:
                 "trace_capture_complete": trace_capture_complete,
                 "model_evidence_complete": model_evidence_complete,
                 "seed_provenance_complete": seed_provenance_complete,
+                "session_seed_recorded": session_seed_recorded,
+                "session_seed_matches_model_trace": (
+                    session_seed_matches_model_trace
+                ),
+                "session_seed": self._json_copy(
+                    self._prompt_continuation_session_seed
+                ),
                 "missing_requirements": missing_requirements,
                 "request_count": self._prompt_continuation_replay_request_count,
                 "successful_protocol_requests": (
