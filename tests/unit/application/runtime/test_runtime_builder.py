@@ -450,6 +450,69 @@ def test_runtime_session_stop_calls_idempotent_service_stop_after_natural_end() 
     service.stop.assert_called_once_with()
 
 
+def test_builder_passes_session_generation_config_to_prompt_http_client() -> None:
+    inference = InferenceConfig(
+        server_generate_url="http://prompt.example",
+        timeout_s=12.5,
+        inference_mode="stateful",
+        checkpoint_path="model.safetensors",
+        prompt_selection_mode="rule_s_if_else",
+        prompt_batch_candidates=10,
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+    builder = RuntimeSessionBuilder(config=ApplicationConfig(inference=inference))
+
+    with (
+        patch(
+            "streammuse.infrastructure.inference.prompt_continuation_http_client."
+            "PromptContinuationHttpClientConfig"
+        ) as client_config_cls,
+        patch(
+            "streammuse.infrastructure.inference.prompt_continuation_http_client."
+            "PromptContinuationHttpClient"
+        ) as client_cls,
+    ):
+        client_config = client_config_cls.return_value
+        client = builder._create_prompt_client()
+
+    client_config_cls.assert_called_once_with(
+        base_url="http://prompt.example",
+        timeout_s=12.5,
+        model_name="lekai_prompt_continuation",
+        inference_mode="stateful",
+        checkpoint_path="model.safetensors",
+        prompt_selection_mode="rule_s_if_else",
+        prompt_batch_candidates=10,
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+    client_cls.assert_called_once_with(client_config)
+    assert client is client_cls.return_value
+    assert {
+        name: builder._session_config()[name]
+        for name in (
+            "prompt_selection_mode",
+            "prompt_batch_candidates",
+            "temperature",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+        )
+    } == {
+        "prompt_selection_mode": "rule_s_if_else",
+        "prompt_batch_candidates": 10,
+        "temperature": 1.1,
+        "top_p": 0.95,
+        "top_k": 50,
+        "repetition_penalty": 1.0,
+    }
+
+
 @patch("streammuse.application.runtime.builder.InputSourceFactory")
 def test_builder_creates_prompt_continuation_runtime_with_override(
     input_factory,

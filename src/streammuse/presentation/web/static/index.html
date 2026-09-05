@@ -42,6 +42,40 @@
                             <span>BPM</span>
                         </div>
                     </div>
+                    <fieldset id="session-generation-controls" class="session-generation-controls">
+                        <legend>Prompt select / shared sampling</legend>
+                        <label class="generation-field generation-field-wide" for="prompt-selection-mode">
+                            <span>Prompt select</span>
+                            <select id="prompt-selection-mode">
+                                <option value="">Backend default</option>
+                                <option value="single">single</option>
+                                <option value="batch_first">batch_first</option>
+                                <option value="rule_s">rule_s</option>
+                                <option value="rule_s_v3">rule_s_v3</option>
+                                <option value="rule_s_if_else">rule_s_if_else</option>
+                            </select>
+                        </label>
+                        <label class="generation-field" for="prompt-batch-candidates">
+                            <span>Candidates</span>
+                            <input id="prompt-batch-candidates" type="number" min="1" step="1" inputmode="numeric" placeholder="Default">
+                        </label>
+                        <label class="generation-field" for="generation-temperature">
+                            <span>Temperature</span>
+                            <input id="generation-temperature" type="number" min="0" step="any" inputmode="decimal" placeholder="Default">
+                        </label>
+                        <label class="generation-field" for="generation-top-p">
+                            <span>Top-p</span>
+                            <input id="generation-top-p" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default">
+                        </label>
+                        <label class="generation-field" for="generation-top-k">
+                            <span>Top-k</span>
+                            <input id="generation-top-k" type="number" min="0" step="1" inputmode="numeric" placeholder="Default">
+                        </label>
+                        <label class="generation-field generation-field-wide" for="generation-repetition-penalty">
+                            <span>Repetition penalty</span>
+                            <input id="generation-repetition-penalty" type="number" min="0" step="any" inputmode="decimal" placeholder="Default">
+                        </label>
+                    </fieldset>
                     <div class="button-group">
                         <button id="btn-start" class="btn btn-primary" type="button">Start</button>
                         <button id="btn-stop" class="btn btn-danger" type="button" disabled>Stop</button>

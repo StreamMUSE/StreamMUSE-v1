@@ -6,7 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
 
-from streammuse.application.config import ApplicationConfig, TempoConfig
+from streammuse.application.config import (
+    ApplicationConfig,
+    InferenceConfig,
+    TempoConfig,
+)
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
 from streammuse.presentation.web import server as webserver
 
@@ -53,16 +57,30 @@ def test_index_serves_html():
         assert 'max="300"' in resp.text
         assert 'step="1"' in resp.text
         assert 'inputmode="numeric"' in resp.text
+        assert 'id="session-generation-controls"' in resp.text
+        assert 'id="prompt-selection-mode"' in resp.text
+        assert 'value="rule_s_if_else"' in resp.text
+        assert 'id="prompt-batch-candidates"' in resp.text
+        assert 'id="generation-temperature"' in resp.text
+        assert 'id="generation-top-p"' in resp.text
+        assert 'id="generation-top-k"' in resp.text
+        assert 'id="generation-repetition-penalty"' in resp.text
+        assert '<option value="">Backend default</option>' in resp.text
+        assert resp.text.count('placeholder="Default"') == 5
+        assert resp.text.count('step="any"') == 3
 
 
-def test_web_javascript_posts_bpm_and_locks_control_outside_idle():
+def test_web_javascript_posts_session_config_and_locks_controls_outside_idle():
     app = webserver.create_app()
     with TestClient(app) as client:
         resp = client.get("/js/main.js")
 
     assert resp.status_code == 200
-    assert "body: JSON.stringify({bpm})" in resp.text
+    assert "body: JSON.stringify({bpm, ...generationConfig})" in resp.text
     assert "bpmInput.disabled = state !== 'idle' || running" in resp.text
+    assert "generationControls.disabled = state !== 'idle' || running" in resp.text
+    assert "if (raw === '') continue" in resp.text
+    assert "values.prompt_batch_candidates < 2" in resp.text
     assert "Number.isInteger(bpm)" in resp.text
     assert (
         "const displayBpm = !running && bpmInitialized ? selectedBpm() : bpm"
@@ -142,6 +160,18 @@ def test_web_boots_idle_without_building_runtime(builder_cls):
         "session_dir": None,
         "configured_bpm": 120,
         "active_bpm": None,
+        "configured_prompt_selection_mode": None,
+        "active_prompt_selection_mode": None,
+        "configured_prompt_batch_candidates": None,
+        "active_prompt_batch_candidates": None,
+        "configured_temperature": None,
+        "active_temperature": None,
+        "configured_top_p": None,
+        "active_top_p": None,
+        "configured_top_k": None,
+        "active_top_k": None,
+        "configured_repetition_penalty": None,
+        "active_repetition_penalty": None,
     }
     builder_cls.assert_not_called()
 
@@ -195,19 +225,45 @@ def test_start_uses_requested_bpm_without_mutating_base_config(builder_cls, tmp_
         tempo=TempoConfig(bpm=120, ticks_per_beat=8, beats_per_bar=3)
     )
     runtime.config = ApplicationConfig(
-        tempo=TempoConfig(bpm=80, ticks_per_beat=8, beats_per_bar=3)
+        tempo=TempoConfig(bpm=80, ticks_per_beat=8, beats_per_bar=3),
+        inference=InferenceConfig(
+            prompt_selection_mode="rule_s_if_else",
+            prompt_batch_candidates=10,
+            temperature=1.1,
+            top_p=0.95,
+            top_k=50,
+            repetition_penalty=1.0,
+        ),
     )
     builder_cls.return_value.build_web.return_value = runtime
     webserver._configure_server(config=base_config, log_dir=str(tmp_path))
     app = webserver.create_app()
 
     with TestClient(app) as client:
-        response = client.post("/api/start", json={"bpm": 80})
+        response = client.post(
+            "/api/start",
+            json={
+                "bpm": 80,
+                "prompt_selection_mode": "rule_s_if_else",
+                "prompt_batch_candidates": 10,
+                "temperature": 1.1,
+                "top_p": 0.95,
+                "top_k": 50,
+                "repetition_penalty": 1.0,
+            },
+        )
 
     assert response.status_code == 200
     assert response.json()["configured_bpm"] == 120
     assert response.json()["active_bpm"] == 80
     assert isinstance(response.json()["active_bpm"], int)
+    assert response.json()["configured_prompt_selection_mode"] is None
+    assert response.json()["active_prompt_selection_mode"] == "rule_s_if_else"
+    assert response.json()["active_prompt_batch_candidates"] == 10
+    assert response.json()["active_temperature"] == 1.1
+    assert response.json()["active_top_p"] == 0.95
+    assert response.json()["active_top_k"] == 50
+    assert response.json()["active_repetition_penalty"] == 1.0
     session_config = builder_cls.call_args.kwargs["config"]
     assert session_config is not base_config
     assert session_config.tempo == TempoConfig(
@@ -216,7 +272,15 @@ def test_start_uses_requested_bpm_without_mutating_base_config(builder_cls, tmp_
         beats_per_bar=3,
     )
     assert isinstance(session_config.tempo.bpm, int)
+    assert session_config.inference.prompt_selection_mode == "rule_s_if_else"
+    assert session_config.inference.prompt_batch_candidates == 10
+    assert session_config.inference.temperature == 1.1
+    assert session_config.inference.top_p == 0.95
+    assert session_config.inference.top_k == 50
+    assert session_config.inference.repetition_penalty == 1.0
     assert base_config.tempo.bpm == 120
+    assert base_config.inference.prompt_selection_mode is None
+    assert session_config.inference is not base_config.inference
 
 
 @pytest.mark.parametrize("bpm", [29, 301, 80.5])
@@ -230,6 +294,112 @@ def test_start_rejects_invalid_web_bpm(builder_cls, bpm, tmp_path):
 
     assert response.status_code == 422
     builder_cls.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"prompt_selection_mode": "unknown"},
+        {"prompt_batch_candidates": 0},
+        {"prompt_selection_mode": "rule_s", "prompt_batch_candidates": 1},
+        {"temperature": -0.1},
+        {"top_p": -0.1},
+        {"top_p": 1.1},
+        {"top_k": -1},
+        {"repetition_penalty": 0},
+    ],
+)
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+def test_start_rejects_invalid_web_generation_config(builder_cls, payload, tmp_path):
+    webserver._configure_server(config=ApplicationConfig(), log_dir=str(tmp_path))
+    app = webserver.create_app()
+
+    with TestClient(app) as client:
+        response = client.post("/api/start", json=payload)
+
+    assert response.status_code == 422
+    builder_cls.assert_not_called()
+
+
+@pytest.mark.parametrize("top_p", [0.0, 1.0])
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+def test_start_accepts_zero_temperature_and_top_p_boundaries(
+    builder_cls,
+    top_p,
+    tmp_path,
+):
+    runtime = _fake_runtime(tmp_path, f"boundary-{top_p}")
+    runtime.config = ApplicationConfig(
+        inference=InferenceConfig(temperature=0.0, top_p=top_p)
+    )
+    builder_cls.return_value.build_web.return_value = runtime
+    webserver._configure_server(config=ApplicationConfig(), log_dir=str(tmp_path))
+    app = webserver.create_app()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/start",
+            json={"temperature": 0, "top_p": top_p},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["active_temperature"] == 0.0
+    assert response.json()["active_top_p"] == top_p
+    session_config = builder_cls.call_args.kwargs["config"]
+    assert session_config.inference.temperature == 0.0
+    assert session_config.inference.top_p == top_p
+
+
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+def test_running_session_ignores_later_generation_overrides(builder_cls, tmp_path):
+    runtime = _fake_runtime(tmp_path, "active-generation")
+    runtime.config = ApplicationConfig(
+        inference=InferenceConfig(
+            prompt_selection_mode="rule_s",
+            prompt_batch_candidates=5,
+            temperature=1.1,
+            top_p=0.95,
+            top_k=50,
+            repetition_penalty=1.0,
+        )
+    )
+    builder_cls.return_value.build_web.return_value = runtime
+    webserver._configure_server(config=ApplicationConfig(), log_dir=str(tmp_path))
+    app = webserver.create_app()
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/start",
+            json={
+                "prompt_selection_mode": "rule_s",
+                "prompt_batch_candidates": 5,
+                "temperature": 1.1,
+                "top_p": 0.95,
+                "top_k": 50,
+                "repetition_penalty": 1.0,
+            },
+        )
+        second = client.post(
+            "/api/start",
+            json={
+                "prompt_selection_mode": "single",
+                "prompt_batch_candidates": 1,
+                "temperature": 0,
+                "top_p": 0,
+                "top_k": 0,
+                "repetition_penalty": 2.0,
+            },
+        )
+
+    assert first.json()["message"] == "started"
+    assert second.json()["message"] == "already running"
+    assert second.json()["active_prompt_selection_mode"] == "rule_s"
+    assert second.json()["active_prompt_batch_candidates"] == 5
+    assert second.json()["active_temperature"] == 1.1
+    assert second.json()["active_top_p"] == 0.95
+    assert second.json()["active_top_k"] == 50
+    assert second.json()["active_repetition_penalty"] == 1.0
+    builder_cls.assert_called_once()
 
 
 @patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
@@ -259,7 +429,14 @@ def test_fractional_cli_bpm_is_rounded_for_default_web_session(builder_cls, tmp_
 def test_stop_then_start_builds_fresh_runtime_and_sink(builder_cls, tmp_path):
     first_runtime = _fake_runtime(tmp_path, "session-1")
     second_runtime = _fake_runtime(tmp_path, "session-2")
-    first_runtime.config = ApplicationConfig(tempo=TempoConfig(bpm=80))
+    first_runtime.config = ApplicationConfig(
+        tempo=TempoConfig(bpm=80),
+        inference=InferenceConfig(
+            prompt_selection_mode="rule_s",
+            prompt_batch_candidates=5,
+            temperature=1.1,
+        ),
+    )
     second_runtime.config = ApplicationConfig(tempo=TempoConfig(bpm=100))
     builder_cls.return_value.build_web.side_effect = [first_runtime, second_runtime]
     base_config = ApplicationConfig(tempo=TempoConfig(bpm=120))
@@ -267,13 +444,25 @@ def test_stop_then_start_builds_fresh_runtime_and_sink(builder_cls, tmp_path):
     app = webserver.create_app()
 
     with TestClient(app) as client:
-        first = client.post("/api/start", json={"bpm": 80})
+        first = client.post(
+            "/api/start",
+            json={
+                "bpm": 80,
+                "prompt_selection_mode": "rule_s",
+                "prompt_batch_candidates": 5,
+                "temperature": 1.1,
+            },
+        )
         first_sink = webserver._ws_sink
         client.post("/api/stop")
         second = client.post("/api/start", json={"bpm": 100})
 
         assert first.json()["active_bpm"] == 80
+        assert first.json()["active_prompt_selection_mode"] == "rule_s"
         assert second.json()["active_bpm"] == 100
+        assert second.json()["active_prompt_selection_mode"] is None
+        assert second.json()["active_prompt_batch_candidates"] is None
+        assert second.json()["active_temperature"] is None
         assert second.json()["session_dir"].endswith("session-2")
         assert webserver._runtime is second_runtime
         assert webserver._ws_sink is second_runtime.websocket_sink
@@ -282,6 +471,10 @@ def test_stop_then_start_builds_fresh_runtime_and_sink(builder_cls, tmp_path):
     assert builder_cls.return_value.build_web.call_count == 2
     session_configs = [call.kwargs["config"] for call in builder_cls.call_args_list]
     assert [config.tempo.bpm for config in session_configs] == [80, 100]
+    assert session_configs[0].inference.prompt_selection_mode == "rule_s"
+    assert session_configs[0].inference.temperature == 1.1
+    assert session_configs[1].inference.prompt_selection_mode is None
+    assert session_configs[1].inference.temperature is None
     assert all(isinstance(config.tempo.bpm, int) for config in session_configs)
     assert session_configs[0] is not session_configs[1]
     assert base_config.tempo.bpm == 120

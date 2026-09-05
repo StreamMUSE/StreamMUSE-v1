@@ -142,6 +142,65 @@ main {
     cursor: not-allowed;
 }
 
+.session-generation-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px 10px;
+    margin-bottom: 14px;
+    padding: 12px 0 0;
+    border: 0;
+    border-top: 1px solid #eee;
+}
+
+.session-generation-controls legend {
+    padding-right: 8px;
+    color: #666;
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+
+.generation-field {
+    min-width: 0;
+    color: #666;
+    font-size: 0.76rem;
+}
+
+.generation-field-wide {
+    grid-column: 1 / -1;
+}
+
+.generation-field span {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.generation-field input,
+.generation-field select {
+    width: 100%;
+    min-width: 0;
+    height: 31px;
+    padding: 5px 7px;
+    border: 1px solid #d8d8d8;
+    border-radius: 6px;
+    background: #fff;
+    color: #333;
+    font-family: 'Monaco', 'Consolas', monospace;
+    font-size: 0.78rem;
+}
+
+.generation-field input:focus,
+.generation-field select:focus {
+    border-color: #E91E63;
+    outline: 2px solid rgba(233, 30, 99, 0.12);
+}
+
+.session-generation-controls:disabled input,
+.session-generation-controls:disabled select {
+    background: #f3f3f3;
+    color: #888;
+    cursor: not-allowed;
+}
+
 .btn {
     padding: 8px 16px;
     border: none;

@@ -129,6 +129,12 @@ class RuntimeSessionBuilder:
             "continuation_mode": self._continuation_mode(),
             "inference_type": self.config.inference.type,
             "prompt_length_ticks": self._prompt_length_ticks(default=None),
+            "prompt_selection_mode": self.config.inference.prompt_selection_mode,
+            "prompt_batch_candidates": self.config.inference.prompt_batch_candidates,
+            "temperature": self.config.inference.temperature,
+            "top_p": self.config.inference.top_p,
+            "top_k": self.config.inference.top_k,
+            "repetition_penalty": self.config.inference.repetition_penalty,
             "generation_interval_ticks": self.config.inference.generation_interval_ticks,
             "generation_length_frames": self.config.inference.generation_length_frames,
             "session_artifact_tier": self.config.output.session_artifact_tier,
@@ -356,6 +362,12 @@ class RuntimeSessionBuilder:
                 model_name="lekai_prompt_continuation",
                 inference_mode=self.config.inference.inference_mode,
                 checkpoint_path=self.config.inference.checkpoint_path,
+                prompt_selection_mode=self.config.inference.prompt_selection_mode,
+                prompt_batch_candidates=self.config.inference.prompt_batch_candidates,
+                temperature=self.config.inference.temperature,
+                top_p=self.config.inference.top_p,
+                top_k=self.config.inference.top_k,
+                repetition_penalty=self.config.inference.repetition_penalty,
             )
         )
 

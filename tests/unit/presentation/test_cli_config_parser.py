@@ -45,6 +45,12 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "generation_length_frames": 20,
         "generation_interval_ticks": 2,
         "prompt_length_ticks": 32,
+        "prompt_selection_mode": None,
+        "prompt_batch_candidates": None,
+        "temperature": None,
+        "top_p": None,
+        "top_k": None,
+        "repetition_penalty": None,
         "continuation_mode": "standard",
         "model_condition_bpm": None,
         "rap_topic": None,
@@ -89,6 +95,12 @@ def test_parse_args_defaults() -> None:
     assert config.inference.generation_length_frames == 20
     assert config.inference.prompt_length_ticks == 32
     assert config.inference.model_condition_bpm is None
+    assert config.inference.prompt_selection_mode is None
+    assert config.inference.prompt_batch_candidates is None
+    assert config.inference.temperature is None
+    assert config.inference.top_p is None
+    assert config.inference.top_k is None
+    assert config.inference.repetition_penalty is None
     assert config.rap.topic is None
     assert config.rap.pattern == "boom_bap"
     assert config.rap.lookahead_bars == 2
@@ -96,6 +108,19 @@ def test_parse_args_defaults() -> None:
     assert config.continuation_mode == "standard"
     assert config.input_snap_forward_fraction == 0.4
     assert config.input_quantization_trace_enabled is False
+
+
+def test_cli_generation_settings_default_to_backend_configuration(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["streammuse-cli"])
+
+    args = parse_args()
+
+    assert args.prompt_selection_mode is None
+    assert args.prompt_batch_candidates is None
+    assert args.temperature is None
+    assert args.top_p is None
+    assert args.top_k is None
+    assert args.repetition_penalty is None
 
 
 def test_parse_args_exposes_rt_horizon_and_drain_contract(monkeypatch) -> None:
@@ -130,6 +155,99 @@ def test_parse_args_exposes_rt_horizon_and_drain_contract(monkeypatch) -> None:
     assert args.tail_beats == 24
     assert args.drain_timeout_s == 15.0
     assert args.model_condition_bpm == 120
+
+
+def test_parse_args_maps_session_generation_settings(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "streammuse-cli",
+            "--prompt-selection-mode",
+            "rule_s_if_else",
+            "--prompt-batch-candidates",
+            "10",
+            "--temperature",
+            "1.1",
+            "--top-p",
+            "0.95",
+            "--top-k",
+            "50",
+            "--repetition-penalty",
+            "1.0",
+        ],
+    )
+
+    config = args_to_config(parse_args())
+
+    assert config.inference.prompt_selection_mode == "rule_s_if_else"
+    assert config.inference.prompt_batch_candidates == 10
+    assert config.inference.temperature == 1.1
+    assert config.inference.top_p == 0.95
+    assert config.inference.top_k == 50
+    assert config.inference.repetition_penalty == 1.0
+
+
+@pytest.mark.parametrize(
+    ("temperature", "top_p"),
+    [(0.0, 0.0), (0.0, 1.0)],
+)
+def test_args_to_config_accepts_sampling_boundaries(
+    temperature: float,
+    top_p: float,
+) -> None:
+    config = args_to_config(
+        _make_args(temperature=temperature, top_p=top_p)
+    )
+
+    assert config.inference.temperature == temperature
+    assert config.inference.top_p == top_p
+
+
+def test_args_to_config_accepts_legacy_namespace_without_generation_fields() -> None:
+    args = _make_args()
+    for name in (
+        "prompt_selection_mode",
+        "prompt_batch_candidates",
+        "temperature",
+        "top_p",
+        "top_k",
+        "repetition_penalty",
+    ):
+        delattr(args, name)
+
+    config = args_to_config(args)
+
+    assert config.inference.prompt_selection_mode is None
+    assert config.inference.prompt_batch_candidates is None
+    assert config.inference.temperature is None
+    assert config.inference.top_p is None
+    assert config.inference.top_k is None
+    assert config.inference.repetition_penalty is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"prompt_selection_mode": "unknown"}, "prompt_selection_mode must be"),
+        ({"prompt_batch_candidates": 0}, "prompt_batch_candidates must be >= 1"),
+        (
+            {"prompt_selection_mode": "rule_s", "prompt_batch_candidates": 1},
+            "prompt_batch_candidates must be >= 2",
+        ),
+        ({"temperature": -0.1}, "temperature must be >= 0"),
+        ({"temperature": float("nan")}, "temperature must be >= 0"),
+        ({"top_p": 1.1}, "top_p must be between 0 and 1"),
+        ({"top_k": -1}, "top_k must be >= 0"),
+        ({"repetition_penalty": 0}, "repetition_penalty must be > 0"),
+    ],
+)
+def test_args_to_config_rejects_invalid_generation_settings(
+    overrides,
+    message,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        args_to_config(_make_args(**overrides))
 
 
 def test_parse_args_enables_input_quantization_trace(monkeypatch) -> None:

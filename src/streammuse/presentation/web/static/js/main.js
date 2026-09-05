@@ -11,7 +11,16 @@
     let ws = null;
     let reconnectAttempts = 0;
     let bpmInitialized = false;
+    let generationInitialized = false;
     const MAX_RECONNECT_ATTEMPTS = 10;
+    const GENERATION_CONTROLS = [
+        {name: 'prompt_selection_mode', id: 'prompt-selection-mode', type: 'string'},
+        {name: 'prompt_batch_candidates', id: 'prompt-batch-candidates', type: 'integer'},
+        {name: 'temperature', id: 'generation-temperature', type: 'number'},
+        {name: 'top_p', id: 'generation-top-p', type: 'number'},
+        {name: 'top_k', id: 'generation-top-k', type: 'integer'},
+        {name: 'repetition_penalty', id: 'generation-repetition-penalty', type: 'number'},
+    ];
 
     function statusBpm(status) {
         if (status && status.active_bpm !== null && status.active_bpm !== undefined) {
@@ -49,6 +58,74 @@
         setTempoDisplay(displayBpm);
     }
 
+    function syncGenerationControls(status, running) {
+        if (!status || (!running && generationInitialized)) return;
+        const prefix = running ? 'active_' : 'configured_';
+        let receivedConfiguration = false;
+        GENERATION_CONTROLS.forEach(({name, id}) => {
+            const key = `${prefix}${name}`;
+            if (!Object.prototype.hasOwnProperty.call(status, key)) return;
+            const control = document.getElementById(id);
+            if (!control) return;
+            const value = status[key];
+            control.value = value === null || value === undefined ? '' : String(value);
+            receivedConfiguration = true;
+        });
+        if (receivedConfiguration) generationInitialized = true;
+    }
+
+    function selectedGenerationConfig() {
+        const values = {};
+        for (const {name, id, type} of GENERATION_CONTROLS) {
+            const control = document.getElementById(id);
+            if (!control) continue;
+            control.setCustomValidity('');
+            const raw = control.value.trim();
+            if (raw === '') continue;
+            if (!control.checkValidity()) {
+                control.reportValidity();
+                return null;
+            }
+            if (type === 'string') {
+                values[name] = raw;
+                continue;
+            }
+            const value = Number(raw);
+            if (!Number.isFinite(value) || (type === 'integer' && !Number.isInteger(value))) {
+                control.setCustomValidity(
+                    type === 'integer' ? 'Enter a whole number.' : 'Enter a finite number.'
+                );
+                control.reportValidity();
+                return null;
+            }
+            values[name] = value;
+        }
+
+        if (
+            values.repetition_penalty !== undefined
+            && values.repetition_penalty <= 0
+        ) {
+            const control = document.getElementById('generation-repetition-penalty');
+            control.setCustomValidity('Repetition penalty must be greater than zero.');
+            control.reportValidity();
+            return null;
+        }
+        if (
+            values.prompt_selection_mode !== undefined
+            && values.prompt_selection_mode !== 'single'
+            && values.prompt_batch_candidates !== undefined
+            && values.prompt_batch_candidates < 2
+        ) {
+            const control = document.getElementById('prompt-batch-candidates');
+            control.setCustomValidity(
+                'Use at least two candidates for a non-single selection mode.'
+            );
+            control.reportValidity();
+            return null;
+        }
+        return values;
+    }
+
     function updateServiceState(status) {
         const running = Boolean(status && status.is_running);
         const state = status && status.state ? String(status.state) : (running ? 'running' : 'idle');
@@ -56,13 +133,16 @@
         const startBtn = document.getElementById('btn-start');
         const stopBtn = document.getElementById('btn-stop');
         const bpmInput = document.getElementById('session-bpm');
+        const generationControls = document.getElementById('session-generation-controls');
         if (stateEl) {
             stateEl.textContent = state.charAt(0).toUpperCase() + state.slice(1);
         }
         if (startBtn) startBtn.disabled = running || state === 'starting';
         if (stopBtn) stopBtn.disabled = !running && state !== 'starting';
         if (bpmInput) bpmInput.disabled = state !== 'idle' || running;
+        if (generationControls) generationControls.disabled = state !== 'idle' || running;
         syncBpmDisplay(status, running);
+        syncGenerationControls(status, running);
     }
 
     async function refreshServiceStatus() {
@@ -85,12 +165,14 @@
             bpmInput.reportValidity();
             return;
         }
+        const generationConfig = selectedGenerationConfig();
+        if (generationConfig === null) return;
         updateServiceState({is_running: false, state: 'starting'});
         try {
             const response = await fetch('/api/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({bpm}),
+                body: JSON.stringify({bpm, ...generationConfig}),
             });
             const result = await response.json();
             if (!response.ok || !result.success) {
@@ -250,6 +332,13 @@
         if (stopBtn) stopBtn.addEventListener('click', stopService);
         if (bpmInput) bpmInput.addEventListener('input', () => {
             setTempoDisplay(selectedBpm());
+        });
+        GENERATION_CONTROLS.forEach(({id}) => {
+            const control = document.getElementById(id);
+            if (control) {
+                control.addEventListener('input', () => control.setCustomValidity(''));
+                control.addEventListener('change', () => control.setCustomValidity(''));
+            }
         });
         refreshServiceStatus();
         connectWebSocket();

@@ -20,6 +20,13 @@ SessionArtifactTier = Literal["normal", "debug"]
 InferenceType = Literal["http", "stanley"]
 ModelName = Literal["stanley", "lekai"]
 ContinuationMode = Literal["standard", "prompt_continuation"]
+PromptSelectionMode = Literal[
+    "single",
+    "batch_first",
+    "rule_s",
+    "rule_s_v3",
+    "rule_s_if_else",
+]
 RapPattern = Literal["boom_bap", "straight_8", "trap_sparse"]
 RapGenerator = Literal["phrase_bank", "local_chat"]
 
@@ -66,6 +73,12 @@ class InferenceConfig:
     # playback tempo (for example, robustness RT playback at 60 BPM while the
     # Lekai prompt remains conditioned at its trained 120 BPM).
     model_condition_bpm: Optional[int] = None
+    prompt_selection_mode: Optional[PromptSelectionMode] = None
+    prompt_batch_candidates: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repetition_penalty: Optional[float] = None
 
 
 @dataclass(frozen=True)

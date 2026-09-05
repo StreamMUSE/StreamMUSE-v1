@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from typing import Optional
 
@@ -16,6 +17,15 @@ from streammuse.application.config import (
     TempoConfig,
 )
 from streammuse.application.rap.rhythm import available_patterns
+
+
+PROMPT_SELECTION_MODES = (
+    "single",
+    "batch_first",
+    "rule_s",
+    "rule_s_v3",
+    "rule_s_if_else",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -162,6 +172,42 @@ def parse_args() -> argparse.Namespace:
             "--tempo; defaults to the playback tempo for backward compatibility"
         ),
     )
+    parser.add_argument(
+        "--prompt-selection-mode",
+        choices=PROMPT_SELECTION_MODES,
+        default=None,
+        help="Prompt candidate selection mode; defaults to the backend setting",
+    )
+    parser.add_argument(
+        "--prompt-batch-candidates",
+        type=int,
+        default=None,
+        help="Prompt candidates generated per batch; defaults to the backend setting",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Shared Prompt and Continuation sampling temperature",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=None,
+        help="Shared Prompt and Continuation nucleus-sampling threshold",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Shared Prompt and Continuation top-k sampling limit",
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=None,
+        help="Shared Prompt and Continuation repetition penalty",
+    )
 
     # Optional beat-aligned rap text layer
     parser.add_argument("--rap-topic", type=str, default=None, help="Enable live rap text for this topic")
@@ -287,6 +333,45 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         metronome_channel=int(getattr(args, "metronome_channel", 9)),
     )
 
+    prompt_selection_mode = getattr(args, "prompt_selection_mode", None)
+    prompt_batch_candidates = getattr(args, "prompt_batch_candidates", None)
+    temperature = getattr(args, "temperature", None)
+    top_p = getattr(args, "top_p", None)
+    top_k = getattr(args, "top_k", None)
+    repetition_penalty = getattr(args, "repetition_penalty", None)
+    if (
+        prompt_selection_mode is not None
+        and prompt_selection_mode not in PROMPT_SELECTION_MODES
+    ):
+        raise ValueError(
+            "prompt_selection_mode must be one of: "
+            + ", ".join(PROMPT_SELECTION_MODES)
+        )
+    if prompt_batch_candidates is not None and prompt_batch_candidates < 1:
+        raise ValueError("prompt_batch_candidates must be >= 1")
+    if (
+        prompt_selection_mode not in (None, "single")
+        and prompt_batch_candidates is not None
+        and prompt_batch_candidates < 2
+    ):
+        raise ValueError(
+            "prompt_batch_candidates must be >= 2 for non-single selection modes"
+        )
+    if temperature is not None and (
+        not math.isfinite(temperature) or temperature < 0
+    ):
+        raise ValueError("temperature must be >= 0")
+    if top_p is not None and (
+        not math.isfinite(top_p) or not 0 <= top_p <= 1
+    ):
+        raise ValueError("top_p must be between 0 and 1")
+    if top_k is not None and top_k < 0:
+        raise ValueError("top_k must be >= 0")
+    if repetition_penalty is not None and (
+        not math.isfinite(repetition_penalty) or repetition_penalty <= 0
+    ):
+        raise ValueError("repetition_penalty must be > 0")
+
     # Inference config
     inference_config = InferenceConfig(
         type=args.inference_type,  # type: ignore
@@ -305,6 +390,12 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
             if getattr(args, "model_condition_bpm", None) is not None
             else None
         ),
+        prompt_selection_mode=prompt_selection_mode,
+        prompt_batch_candidates=prompt_batch_candidates,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        repetition_penalty=repetition_penalty,
     )
 
     raw_topic = getattr(args, "rap_topic", None)

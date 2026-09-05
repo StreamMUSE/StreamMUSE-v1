@@ -9,12 +9,12 @@ import threading
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from streammuse.application.config import ApplicationConfig
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
@@ -25,6 +25,14 @@ from streammuse.presentation.cli.config_parser import args_to_config, parse_args
 STATIC_DIR = Path(__file__).parent / "static"
 MIN_SESSION_BPM = 30
 MAX_SESSION_BPM = 300
+GENERATION_CONFIG_FIELDS = (
+    "prompt_selection_mode",
+    "prompt_batch_candidates",
+    "temperature",
+    "top_p",
+    "top_k",
+    "repetition_penalty",
+)
 
 
 class StartSessionRequest(BaseModel):
@@ -35,6 +43,34 @@ class StartSessionRequest(BaseModel):
         ge=MIN_SESSION_BPM,
         le=MAX_SESSION_BPM,
     )
+    prompt_selection_mode: Literal[
+        "single",
+        "batch_first",
+        "rule_s",
+        "rule_s_v3",
+        "rule_s_if_else",
+    ] | None = None
+    prompt_batch_candidates: int | None = Field(default=None, ge=1)
+    temperature: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    top_p: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    top_k: int | None = Field(default=None, ge=0)
+    repetition_penalty: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+    )
+
+    @model_validator(mode="after")
+    def validate_candidate_count(self) -> "StartSessionRequest":
+        if (
+            self.prompt_selection_mode not in (None, "single")
+            and self.prompt_batch_candidates is not None
+            and self.prompt_batch_candidates < 2
+        ):
+            raise ValueError(
+                "prompt_batch_candidates must be >= 2 for non-single selection modes"
+            )
+        return self
 
 # ---------------------------------------------------------------------------
 # Module-level state. Set once at boot, read by request handlers.
@@ -122,16 +158,43 @@ def _runtime_status() -> dict[str, object]:
             if running and _runtime is not None
             else None
         )
-        return {
+        status = {
             "is_running": bool(running),
             "state": state,
             "session_dir": _last_session_dir,
             "configured_bpm": configured_bpm,
             "active_bpm": active_bpm,
         }
+        configured_generation = _generation_config_values(_config)
+        active_generation = _generation_config_values(
+            _runtime.config if running and _runtime is not None else None
+        )
+        for name in GENERATION_CONFIG_FIELDS:
+            status[f"configured_{name}"] = configured_generation[name]
+            status[f"active_{name}"] = active_generation[name]
+        return status
 
 
-def _derive_session_config(*, bpm: int | None) -> ApplicationConfig:
+def _generation_config_values(
+    config: ApplicationConfig | None,
+) -> dict[str, object | None]:
+    inference = config.inference if config is not None else None
+    return {
+        name: getattr(inference, name, None)
+        for name in GENERATION_CONFIG_FIELDS
+    }
+
+
+def _derive_session_config(
+    *,
+    bpm: int | None,
+    prompt_selection_mode: str | None,
+    prompt_batch_candidates: int | None,
+    temperature: float | None,
+    top_p: float | None,
+    top_k: int | None,
+    repetition_penalty: float | None,
+) -> ApplicationConfig:
     """Create an immutable per-session config from the server's base config."""
     if _config is None:
         raise RuntimeError("server not initialized")
@@ -141,10 +204,33 @@ def _derive_session_config(*, bpm: int | None) -> ApplicationConfig:
         else int(bpm)
     )
     session_tempo = replace(_config.tempo, bpm=session_bpm)
-    return replace(_config, tempo=session_tempo)
+    requested_generation = {
+        "prompt_selection_mode": prompt_selection_mode,
+        "prompt_batch_candidates": prompt_batch_candidates,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "repetition_penalty": repetition_penalty,
+    }
+    inference_overrides = {
+        name: value
+        for name, value in requested_generation.items()
+        if value is not None
+    }
+    session_inference = replace(_config.inference, **inference_overrides)
+    return replace(_config, tempo=session_tempo, inference=session_inference)
 
 
-def _start_service(*, bpm: int | None = None) -> tuple[RuntimeSession, bool]:
+def _start_service(
+    *,
+    bpm: int | None = None,
+    prompt_selection_mode: str | None = None,
+    prompt_batch_candidates: int | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    repetition_penalty: float | None = None,
+) -> tuple[RuntimeSession, bool]:
     """Build and start one fresh runtime; return (runtime, newly_started)."""
     global _runtime, _service, _composite_sink, _ws_sink
     global _last_session_dir, _lifecycle_state
@@ -160,7 +246,15 @@ def _start_service(*, bpm: int | None = None) -> tuple[RuntimeSession, bool]:
         _lifecycle_state = "starting"
         runtime: RuntimeSession | None = None
         try:
-            session_config = _derive_session_config(bpm=bpm)
+            session_config = _derive_session_config(
+                bpm=bpm,
+                prompt_selection_mode=prompt_selection_mode,
+                prompt_batch_candidates=prompt_batch_candidates,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+            )
             runtime = RuntimeSessionBuilder(
                 config=session_config,
                 log_dir=_log_dir,
@@ -264,10 +358,17 @@ def create_app() -> FastAPI:
 
     @app.post("/api/start")
     async def api_start(request: StartSessionRequest | None = None) -> JSONResponse:
+        requested = request or StartSessionRequest()
         try:
             _, newly_started = await asyncio.to_thread(
                 _start_service,
-                bpm=request.bpm if request is not None else None,
+                bpm=requested.bpm,
+                prompt_selection_mode=requested.prompt_selection_mode,
+                prompt_batch_candidates=requested.prompt_batch_candidates,
+                temperature=requested.temperature,
+                top_p=requested.top_p,
+                top_k=requested.top_k,
+                repetition_penalty=requested.repetition_penalty,
             )
         except Exception as exc:
             return JSONResponse(
