@@ -41,7 +41,6 @@ GENERATION_LENGTH_FRAMES = 4
 HISTORY_MAX_TICKS = 128
 PROMPT_CONTEXT_BEATS = 32
 CHECKPOINT_TIME_SIGNATURE = "4/4"
-CHECKPOINT_TIME_SIGNATURE_INDEX = 0
 SAMPLING = {
     "temperature": 1.05,
     "top_p": 0.98,
@@ -88,6 +87,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--prompt-checkpoint", type=Path, required=True)
     parser.add_argument("--continuation-checkpoint", type=Path, required=True)
+    parser.add_argument("--time-signature-index", type=int, default=0)
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument(
         "--systems",
@@ -126,6 +126,14 @@ def effective_prompt_candidate_count(selection_mode: str, requested: int) -> int
             f"--prompt-batch-candidates must be at least 2 for {selection_mode}"
         )
     return int(requested)
+
+
+def _checkpoint_conditioning(time_signature_index: int) -> dict[str, Any]:
+    return {
+        "time_signature": CHECKPOINT_TIME_SIGNATURE,
+        "continuation_time_signature_index": time_signature_index,
+        "prompt_time_signature_index": time_signature_index,
+    }
 
 
 def file_sha256(path: Path) -> str:
@@ -398,6 +406,7 @@ def build_server_environment(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, str]:
@@ -414,10 +423,8 @@ def build_server_environment(
             "LEKAI_DEFAULT_BPM": str(BPM),
             "LEKAI_DEVICE": "cuda",
             "LEKAI_DTYPE": "float16",
-            "LEKAI_TIME_SIGNATURE_INDEX": str(CHECKPOINT_TIME_SIGNATURE_INDEX),
-            "LEKAI_PROMPT_TIME_SIGNATURE_INDEX": str(
-                CHECKPOINT_TIME_SIGNATURE_INDEX
-            ),
+            "LEKAI_TIME_SIGNATURE_INDEX": str(time_signature_index),
+            "LEKAI_PROMPT_TIME_SIGNATURE_INDEX": str(time_signature_index),
             "LEKAI_RT_TEMPERATURE": str(SAMPLING["temperature"]),
             "LEKAI_RT_TOP_P": str(SAMPLING["top_p"]),
             "LEKAI_RT_TOP_K": str(SAMPLING["top_k"]),
@@ -520,6 +527,7 @@ def runtime_contract_errors(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
     expected_seed: int | None = None,
     reset_ack: Mapping[str, Any] | None = None,
     prompt_selection_mode: str = "rule_s",
@@ -541,7 +549,7 @@ def runtime_contract_errors(
         "ticks_per_beat": TICKS_PER_BEAT,
         "prompt_context_beats": PROMPT_CONTEXT_BEATS,
         "history_retention_ticks": HISTORY_MAX_TICKS,
-        "time_signature_index": CHECKPOINT_TIME_SIGNATURE_INDEX,
+        "time_signature_index": time_signature_index,
         **SAMPLING,
     }
     for key, expected in expected_values.items():
@@ -600,6 +608,7 @@ def wait_for_server(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, Any]:
@@ -623,6 +632,7 @@ def wait_for_server(
                     code=code,
                     prompt_checkpoint=prompt_checkpoint,
                     continuation_checkpoint=continuation_checkpoint,
+                    time_signature_index=time_signature_index,
                     prompt_selection_mode=prompt_selection_mode,
                     prompt_batch_candidates=prompt_batch_candidates,
                 )
@@ -647,6 +657,7 @@ def start_server(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> ServerHandle:
@@ -662,6 +673,7 @@ def start_server(
         code=code,
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
+        time_signature_index=time_signature_index,
         prompt_selection_mode=prompt_selection_mode,
         prompt_batch_candidates=prompt_batch_candidates,
     )
@@ -690,6 +702,7 @@ def start_server(
             code=code,
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
+            time_signature_index=time_signature_index,
             prompt_selection_mode=prompt_selection_mode,
             prompt_batch_candidates=prompt_batch_candidates,
         )
@@ -988,6 +1001,7 @@ def _trial_record(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
 ) -> dict[str, Any]:
     return {
         "piece_id": piece.piece_id,
@@ -1008,6 +1022,7 @@ def _trial_record(
         "reset_ack": None,
         "runtime_before_trial": None,
         "runtime_after_trial": None,
+        "checkpoint_conditioning": _checkpoint_conditioning(time_signature_index),
         "code_identity": dict(code),
         "checkpoint_identities": {
             "prompt": (
@@ -1031,6 +1046,7 @@ def run_trial(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
 ) -> dict[str, Any]:
@@ -1043,6 +1059,7 @@ def run_trial(
         code=code,
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
+        time_signature_index=time_signature_index,
     )
     record["run_status"] = "running"
     write_json(trial_dir / "trial_manifest.json", record)
@@ -1058,6 +1075,7 @@ def run_trial(
             code=code,
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
+            time_signature_index=time_signature_index,
             expected_seed=seed,
             reset_ack=reset_ack,
             prompt_selection_mode=prompt_selection_mode,
@@ -1109,6 +1127,7 @@ def run_trial(
             code=code,
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
+            time_signature_index=time_signature_index,
             expected_seed=seed,
             reset_ack=reset_ack,
             prompt_selection_mode=prompt_selection_mode,
@@ -1148,6 +1167,7 @@ def _dry_run_trial(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
 ) -> dict[str, Any]:
     trial_dir.mkdir(parents=True, exist_ok=False)
     record = _trial_record(
@@ -1158,6 +1178,7 @@ def _dry_run_trial(
         code=code,
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
+        time_signature_index=time_signature_index,
     )
     record.update(
         {
@@ -1206,6 +1227,7 @@ def _mark_failed_system_trials(
     code: Mapping[str, Any],
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
+    time_signature_index: int,
 ) -> None:
     for piece, seed in pending_trials:
         trial_dir = (
@@ -1224,6 +1246,7 @@ def _mark_failed_system_trials(
             code=code,
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
+            time_signature_index=time_signature_index,
         )
         record["run_status"] = "failed"
         record["failure_reason"] = reason
@@ -1281,6 +1304,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             code=code,
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
+            time_signature_index=args.time_signature_index,
         )
         for system_id in systems
         for piece in pieces
@@ -1307,13 +1331,9 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             "generation_interval_ticks": GENERATION_INTERVAL_TICKS,
             "generation_length_frames": GENERATION_LENGTH_FRAMES,
             "late_recovery": False,
-            "checkpoint_conditioning": {
-                "time_signature": CHECKPOINT_TIME_SIGNATURE,
-                "continuation_time_signature_index": (
-                    CHECKPOINT_TIME_SIGNATURE_INDEX
-                ),
-                "prompt_time_signature_index": CHECKPOINT_TIME_SIGNATURE_INDEX,
-            },
+            "checkpoint_conditioning": _checkpoint_conditioning(
+                args.time_signature_index
+            ),
             "streammuse_v2_prompt": {
                 "selection_mode": args.prompt_selection_mode,
                 "candidate_count": prompt_candidate_count,
@@ -1352,6 +1372,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         code=code,
                         prompt_checkpoint=prompt_checkpoint,
                         continuation_checkpoint=continuation_checkpoint,
+                        time_signature_index=args.time_signature_index,
                     )
                     _replace_trial(manifest, record)
                     persist_run_manifests(output_root, manifest)
@@ -1368,6 +1389,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 code=code,
                 prompt_checkpoint=prompt_checkpoint,
                 continuation_checkpoint=continuation_checkpoint,
+                time_signature_index=args.time_signature_index,
                 prompt_selection_mode=args.prompt_selection_mode,
                 prompt_batch_candidates=prompt_candidate_count,
             )
@@ -1390,6 +1412,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         code=code,
                         prompt_checkpoint=prompt_checkpoint,
                         continuation_checkpoint=continuation_checkpoint,
+                        time_signature_index=args.time_signature_index,
                         prompt_selection_mode=args.prompt_selection_mode,
                         prompt_batch_candidates=prompt_candidate_count,
                     )
@@ -1415,6 +1438,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 code=code,
                 prompt_checkpoint=prompt_checkpoint,
                 continuation_checkpoint=continuation_checkpoint,
+                time_signature_index=args.time_signature_index,
             )
         finally:
             if handle is not None:

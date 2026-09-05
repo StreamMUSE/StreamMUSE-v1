@@ -136,6 +136,7 @@ def test_default_seed_contract_is_three_trials(matched_runner) -> None:
     )
 
     assert args.seeds == "0,1,2"
+    assert args.time_signature_index == 0
     assert args.prompt_selection_mode == "rule_s"
     assert args.prompt_batch_candidates == 5
 
@@ -168,6 +169,7 @@ def test_server_environments_freeze_mode_specific_contracts(
         code=code,
         prompt_checkpoint=_identity(prompt),
         continuation_checkpoint=_identity(continuation),
+        time_signature_index=4,
     )
     prompt_continuation = script.build_server_environment(
         "streammuse_v2_prompt_continuation",
@@ -177,12 +179,13 @@ def test_server_environments_freeze_mode_specific_contracts(
         code=code,
         prompt_checkpoint=_identity(prompt),
         continuation_checkpoint=_identity(continuation),
+        time_signature_index=4,
     )
 
     assert standard["LEKAI_CHECKPOINT_PATH"] == str(continuation.resolve())
     assert standard["LEKAI_REQUIRE_SESSION"] == "1"
-    assert standard["LEKAI_TIME_SIGNATURE_INDEX"] == "0"
-    assert standard["LEKAI_PROMPT_TIME_SIGNATURE_INDEX"] == "0"
+    assert standard["LEKAI_TIME_SIGNATURE_INDEX"] == "4"
+    assert standard["LEKAI_PROMPT_TIME_SIGNATURE_INDEX"] == "4"
     assert "LEKAI_PROMPT_CHECKPOINT_PATH" not in standard
     assert prompt_continuation["LEKAI_PROMPT_CHECKPOINT_PATH"] == str(prompt.resolve())
     assert prompt_continuation["LEKAI_CONTINUATION_CHECKPOINT_PATH"] == str(
@@ -190,8 +193,8 @@ def test_server_environments_freeze_mode_specific_contracts(
     )
     assert "LEKAI_CHECKPOINT_PATH" not in prompt_continuation
     assert "LEKAI_REQUIRE_SESSION" not in prompt_continuation
-    assert prompt_continuation["LEKAI_TIME_SIGNATURE_INDEX"] == "0"
-    assert prompt_continuation["LEKAI_PROMPT_TIME_SIGNATURE_INDEX"] == "0"
+    assert prompt_continuation["LEKAI_TIME_SIGNATURE_INDEX"] == "4"
+    assert prompt_continuation["LEKAI_PROMPT_TIME_SIGNATURE_INDEX"] == "4"
     assert prompt_continuation["LEKAI_PROMPT_SELECTION_MODE"] == "rule_s"
     assert prompt_continuation["LEKAI_PROMPT_BATCH_CANDIDATES"] == "5"
     assert prompt_continuation["LEKAI_PROMPT_TEMPERATURE"] == "1.05"
@@ -223,6 +226,7 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         code=code,
         prompt_checkpoint=prompt_identity,
         continuation_checkpoint=continuation_identity,
+        time_signature_index=4,
         prompt_selection_mode="single",
     )
 
@@ -239,7 +243,7 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         "ticks_per_beat": script.TICKS_PER_BEAT,
         "prompt_context_beats": script.PROMPT_CONTEXT_BEATS,
         "history_retention_ticks": script.HISTORY_MAX_TICKS,
-        "time_signature_index": script.CHECKPOINT_TIME_SIGNATURE_INDEX,
+        "time_signature_index": 4,
         "prompt_has_real_model": True,
         "prompt_fallback_reason": None,
         "prompt_checkpoint_path": prompt_identity["path"],
@@ -253,6 +257,7 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         code=code,
         prompt_checkpoint=prompt_identity,
         continuation_checkpoint=continuation_identity,
+        time_signature_index=4,
         prompt_selection_mode="single",
     )
 
@@ -526,6 +531,8 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
             str(continuation),
             "--seeds",
             "3,7",
+            "--time-signature-index",
+            "4",
             "--smoke-limit",
             "1",
             "--dry-run",
@@ -535,11 +542,15 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     result = script.run_evaluation(args)
 
     assert result["run_status"] == "dry_run"
-    assert result["evaluation_contract"]["checkpoint_conditioning"] == {
+    checkpoint_conditioning = {
         "time_signature": "4/4",
-        "continuation_time_signature_index": 0,
-        "prompt_time_signature_index": 0,
+        "continuation_time_signature_index": 4,
+        "prompt_time_signature_index": 4,
     }
+    assert (
+        result["evaluation_contract"]["checkpoint_conditioning"]
+        == checkpoint_conditioning
+    )
     assert result["evaluation_contract"]["streammuse_v2_prompt"] == {
         "selection_mode": "rule_s",
         "candidate_count": 5,
@@ -552,6 +563,7 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     assert {row["system_id"] for row in result["trials"]} == set(script.SYSTEM_IDS)
     assert len({row["melody_input_sha256"] for row in result["trials"]}) == 1
     for row in result["trials"]:
+        assert row["checkpoint_conditioning"] == checkpoint_conditioning
         command = row["client_command"]
         assert command[command.index("--tempo") + 1] == "120"
         assert command[command.index("--ticks-per-beat") + 1] == "4"
@@ -564,6 +576,21 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     assert len(eval_rows) == 4
     assert {row["run_status"] for row in eval_rows} == {"missing"}
     assert all(row["failure_reason"] == "dry_run_not_executed" for row in eval_rows)
+    run_manifest = json.loads(
+        (output / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert (
+        run_manifest["evaluation_contract"]["checkpoint_conditioning"]
+        == checkpoint_conditioning
+    )
+    for row in run_manifest["trials"]:
+        assert row["checkpoint_conditioning"] == checkpoint_conditioning
+        trial_manifest = json.loads(
+            (Path(row["trial_dir"]) / "trial_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert trial_manifest["checkpoint_conditioning"] == checkpoint_conditioning
 
 
 def test_single_prompt_selection_manifest_records_effective_n1(
