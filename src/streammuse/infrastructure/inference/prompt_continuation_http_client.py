@@ -99,6 +99,9 @@ class PromptContinuationHttpClient:
     def status(self) -> dict[str, Any]:
         return self._request_json("GET", "/prompt_continuation/status")
 
+    def replay_audit(self) -> dict[str, Any]:
+        return self._request_json("GET", "/prompt_continuation/replay_audit")
+
     def playable(self) -> tuple[list[MusicalEvent], dict[str, Any]]:
         data = self._request_json("GET", "/prompt_continuation/playable")
         accompaniment = [event_from_dict(event) for event in data.get("accompaniment", [])]
@@ -188,6 +191,7 @@ def normalize_prompt_continuation_base_url(server_url: str) -> str:
         "/prompt_continuation/playable",
         "/prompt_continuation/raw_history",
         "/prompt_continuation/prompt_history",
+        "/prompt_continuation/replay_audit",
     )
     path = parsed.path.rstrip("/")
     for suffix in known_suffixes:

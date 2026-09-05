@@ -77,6 +77,9 @@ class LekaiPromptContinuationBackend:
     def prompt_generation_log(self) -> dict[str, Any]:
         return self._engine.prompt_generation_log()
 
+    def replay_audit(self) -> dict[str, Any]:
+        return self._engine.replay_audit()
+
     def catchup_status(self) -> dict[str, int | bool]:
         return self._engine.catchup_status()
 

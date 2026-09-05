@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from streammuse.infrastructure.inference.lekai_prompt_continuation import (
@@ -20,6 +21,13 @@ class _FakePromptEngine:
     def __init__(self):
         self.calls = []
         self.reset_calls = []
+        self.sample_seed = None
+        self.generation_log = {
+            "prompt_tokens": [257, 263],
+            "generated_tokens": [257, 263, 169],
+            "new_tokens": [169],
+            "prompt_candidates": [{"candidate_number": 1}],
+        }
 
     def runtime_info(self):
         return {
@@ -31,6 +39,7 @@ class _FakePromptEngine:
             "warmup_time_ms": 9.0,
             "warmup_error": None,
             "is_warmed_up": True,
+            "sample_seed": self.sample_seed,
         }
 
     def generate_prompt_accompaniment(
@@ -48,7 +57,11 @@ class _FakePromptEngine:
 
     def reset_session(self, seed):
         self.reset_calls.append(int(seed))
+        self.sample_seed = int(seed)
         return int(seed)
+
+    def last_generation_log(self):
+        return dict(self.generation_log)
 
     def last_effective_bpm(self):
         return self.calls[-1]["bpm"] if self.calls else None
@@ -60,6 +73,9 @@ class _FakeContinuationEngine:
         self.inject_calls = []
         self.reset_calls = []
         self.session_epoch = 0
+        self.session_id = None
+        self.sample_seed = 0
+        self.generation_metadata = []
 
     def configure(self, config):
         self.config = config
@@ -81,6 +97,12 @@ class _FakeContinuationEngine:
             "last_generation_bpm": (
                 self.generate_calls[-1]["bpm"] if self.generate_calls else None
             ),
+            "sample_seed": self.sample_seed,
+            "session_id": self.session_id,
+            "session_epoch": self.session_epoch,
+            "checkpoint_sha256": "continuation-checkpoint-sha",
+            "source_sha256": "continuation-source-sha",
+            "code_identity": "continuation-code-id",
         }
 
     def generate(self, **kwargs):
@@ -104,18 +126,25 @@ class _FakeContinuationEngine:
         }
 
     def clear_history(self):
+        self.generation_metadata = []
         return {"success": True, "message": "ok"}
 
     def reset_session(self, seed):
         self.reset_calls.append(int(seed))
         self.session_epoch += 1
+        self.session_id = f"session-{self.session_epoch}"
+        self.sample_seed = int(seed)
+        self.generation_metadata = []
         return {
             "success": True,
-            "session_id": f"session-{self.session_epoch}",
+            "session_id": self.session_id,
             "session_epoch": self.session_epoch,
             "effective_seed": int(seed),
             "pending_boundary_generations": 0,
         }
+
+    def generation_metadata_snapshot(self):
+        return [dict(row) for row in self.generation_metadata]
 
     def injection_status(self):
         return {
@@ -307,6 +336,115 @@ def test_prompt_continuation_engine_runtime_info_includes_subengines():
     assert info["prompt_is_warmed_up"] is True
     assert info["catchup_melody_history_beats"] == 0
     assert info["catchup_beats_needed_for_playback"] == 1
+
+
+def test_replay_audit_reports_seed_provenance_model_identity_and_full_evidence():
+    prompt_engine = _FakePromptEngine()
+    continuation_engine = _FakeContinuationEngine()
+    continuation_engine.generation_metadata = [
+        {
+            "request_id": "continuation-1",
+            "generation_start_tick": 32,
+            "raw_tokens": [258, 169],
+            "raw_token_digest": "raw-1",
+            "input_cumulative_digest": "input-1",
+            "part0_roll_digest": "roll-1",
+            "output_event_digest": "events-1",
+        },
+        {
+            "request_id": "continuation-2",
+            "generation_start_tick": 36,
+            "raw_tokens": [169],
+            "raw_token_digest": "raw-2",
+            "input_cumulative_digest": "input-2",
+            "part0_roll_digest": "roll-2",
+            "output_event_digest": "events-2",
+        },
+    ]
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+
+    unseeded = engine.replay_audit()
+    assert unseeded["runtime_info"]["seeded_session_active"] is False
+    assert unseeded["runtime_info"]["seed_provenance_complete"] is False
+    assert (
+        unseeded["runtime_info"]["seed_provenance_reason"]
+        == "continuation_session_id_missing"
+    )
+
+    engine.reset_session(prompt_seed=11, continuation_seed=22)
+    continuation_engine.generation_metadata = [
+        {
+            "request_id": "continuation-after-reset",
+            "raw_tokens": [169],
+            "raw_token_digest": "raw-after-reset",
+        }
+    ]
+    audit = engine.replay_audit()
+
+    assert audit["schema_version"] == 1
+    assert audit["trace_capture_complete"] is True
+    assert audit["trace_capture_reason"] == "complete"
+    assert audit["prompt_generation_log"] == prompt_engine.generation_log
+    assert [row["request_id"] for row in audit["continuation_generations"]] == [
+        "continuation-after-reset"
+    ]
+    runtime = audit["runtime_info"]
+    assert runtime["prompt_sample_seed"] == 11
+    assert runtime["continuation_sample_seed"] == 22
+    assert runtime["session_id"] == "session-1"
+    assert runtime["session_epoch"] == 1
+    assert runtime["seeded_session_active"] is True
+    assert runtime["seed_provenance_complete"] is True
+    assert runtime["seed_provenance_reason"] == "complete"
+    assert runtime["trace_capture_complete"] is True
+    assert runtime["trace_capture_reason"] == "complete"
+    assert runtime["prompt_checkpoint_path"] == "/tmp/prompt.safetensors"
+    assert runtime["continuation_checkpoint_path"] == "/tmp/continuation.safetensors"
+    assert runtime["continuation_checkpoint_sha256"] == "continuation-checkpoint-sha"
+    assert runtime["continuation_source_sha256"] == "continuation-source-sha"
+    assert runtime["continuation_code_identity"] == "continuation-code-id"
+
+
+@pytest.mark.parametrize(
+    ("is_running", "is_failed", "expected_complete", "expected_reason"),
+    [
+        (True, False, False, "scheduler_running"),
+        (False, True, False, "scheduler_failed"),
+        (False, False, True, "complete"),
+    ],
+)
+def test_replay_audit_marks_scheduler_capture_state_without_waiting(
+    is_running,
+    is_failed,
+    expected_complete,
+    expected_reason,
+):
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=_FakePromptEngine(),
+        continuation_engine=_FakeContinuationEngine(),
+    )
+    status = engine.scheduler_status()
+    status.update(
+        {
+            "phase": "failed" if is_failed else "catchup_running" if is_running else "ready",
+            "is_running": is_running,
+            "is_failed": is_failed,
+            "error": "generation failed" if is_failed else None,
+        }
+    )
+    engine._scheduler.status = lambda: dict(status)
+
+    audit = engine.replay_audit()
+
+    assert audit["trace_capture_complete"] is expected_complete
+    assert audit["trace_capture_reason"] == expected_reason
+    assert audit["runtime_info"]["trace_capture_complete"] is expected_complete
+    assert audit["runtime_info"]["trace_capture_reason"] == expected_reason
+    assert audit["runtime_info"]["scheduler_is_running"] is is_running
+    assert audit["runtime_info"]["scheduler_is_failed"] is is_failed
 
 
 def test_prompt_continuation_backend_generates_with_fallback_contract():

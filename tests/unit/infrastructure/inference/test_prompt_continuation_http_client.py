@@ -33,6 +33,7 @@ def test_normalize_prompt_continuation_base_url_accepts_known_endpoints():
     assert normalize_prompt_continuation_base_url("http://x:8000") == "http://x:8000"
     assert normalize_prompt_continuation_base_url("http://x:8000/generate_accompaniment") == "http://x:8000"
     assert normalize_prompt_continuation_base_url("http://x:8000/prompt_continuation/playable") == "http://x:8000"
+    assert normalize_prompt_continuation_base_url("http://x:8000/prompt_continuation/replay_audit") == "http://x:8000"
 
 
 def test_prompt_continuation_http_client_start_append_status_playable(monkeypatch):
@@ -52,6 +53,15 @@ def test_prompt_continuation_http_client_start_append_status_playable(monkeypatc
         calls.append(("GET", url, None, timeout))
         if url.endswith("/prompt_continuation/status"):
             return _FakeResponse({"phase": "ready", "is_playback_ready": True})
+        if url.endswith("/prompt_continuation/replay_audit"):
+            return _FakeResponse(
+                {
+                    "schema_version": 1,
+                    "runtime_info": {"seed_provenance_complete": True},
+                    "prompt_generation_log": {"generated_tokens": [169]},
+                    "continuation_generations": [{"raw_token_digest": "digest"}],
+                }
+            )
         if url.endswith("/prompt_continuation/playable"):
             events = [{"type": "note_on", "pitch": 48, "tick": 32, "velocity": 100}]
             return _FakeResponse(
@@ -85,9 +95,12 @@ def test_prompt_continuation_http_client_start_append_status_playable(monkeypatc
     )["phase"] == "prompt_running"
     assert client.append_melody(melody_events=[_event(36)], observed_until_tick=36)["phase"] == "catchup_running"
     assert client.status()["is_playback_ready"] is True
+    audit = client.replay_audit()
     accompaniment, status = client.playable()
 
     assert accompaniment[0].pitch == 48
+    assert audit["schema_version"] == 1
+    assert audit["continuation_generations"][0]["raw_token_digest"] == "digest"
     assert status["phase"] == "ready"
     assert status["playable_representation_match"] is True
     assert status["server_playable_representation"]["digest"] == status["client_playable_representation"]["digest"]

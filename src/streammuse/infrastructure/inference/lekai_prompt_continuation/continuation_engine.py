@@ -34,6 +34,9 @@ class LekaiContinuationEngine:
         info["last_generation_bpm"] = self._last_generation_bpm
         return info
 
+    def generation_metadata_snapshot(self) -> list[dict[str, Any]]:
+        return self._backend.generation_metadata_snapshot()
+
     def generate(
         self,
         melody_events: list[EventPayload],

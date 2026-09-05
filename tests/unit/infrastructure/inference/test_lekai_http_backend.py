@@ -953,6 +953,86 @@ def test_clear_history_returns_previous_histories_before_clearing():
     assert backend._pending_boundary_generations == {}
 
 
+def test_generation_metadata_snapshot_is_ordered_read_only_and_cleared():
+    backend = LekaiHttpBackend()
+
+    for index, generation_tick in enumerate((4, 8), start=1):
+        backend.generate(
+            melody_events=[_note_on(59 + index, generation_tick - 4)],
+            generation_start_tick=generation_tick,
+            generation_length_frames=4,
+            generation_interval_ticks=4,
+            prompt_length_ticks=None,
+            inference_mode="sliding_window",
+            model_name="lekai",
+            checkpoint_path=None,
+            request_id=f"audit-{index}",
+        )
+
+    first_snapshot = backend.generation_metadata_snapshot()
+    second_snapshot = backend.generation_metadata_snapshot()
+
+    assert [row["request_id"] for row in first_snapshot] == ["audit-1", "audit-2"]
+    assert first_snapshot == second_snapshot
+    assert {
+        "raw_tokens",
+        "structural_tokens",
+        "raw_token_digest",
+        "token_decode_digest",
+        "prompt_token_digest",
+        "part0_token_digest",
+        "input_increment_digest",
+        "input_cumulative_digest",
+        "part0_roll_digest",
+        "output_event_digest",
+    } <= first_snapshot[0].keys()
+
+    first_snapshot[0]["raw_tokens"].append(-1)
+    assert backend.generation_metadata_snapshot()[0]["raw_tokens"] != first_snapshot[0][
+        "raw_tokens"
+    ]
+
+    backend.clear_history()
+    assert backend.generation_metadata_snapshot() == []
+
+
+def test_generation_metadata_snapshot_does_not_wait_for_model_session_gate():
+    backend = LekaiHttpBackend()
+    with backend._generation_metadata_lock:
+        backend._generation_metadata = {
+            "completed": {"request_id": "completed", "raw_tokens": [169]}
+        }
+
+    gate_entered = threading.Event()
+    release_gate = threading.Event()
+    snapshot_finished = threading.Event()
+    snapshot_result = []
+
+    def hold_generation_gate():
+        with backend._session_gate:
+            gate_entered.set()
+            release_gate.wait(timeout=2.0)
+
+    def read_snapshot():
+        snapshot_result.extend(backend.generation_metadata_snapshot())
+        snapshot_finished.set()
+
+    holder = threading.Thread(target=hold_generation_gate, daemon=True)
+    reader = threading.Thread(target=read_snapshot, daemon=True)
+    holder.start()
+    assert gate_entered.wait(timeout=1.0)
+    reader.start()
+    try:
+        assert snapshot_finished.wait(timeout=0.5)
+        assert snapshot_result == [
+            {"request_id": "completed", "raw_tokens": [169]}
+        ]
+    finally:
+        release_gate.set()
+        holder.join(timeout=1.0)
+        reader.join(timeout=1.0)
+
+
 def test_reset_session_increments_epoch_applies_seed_and_retires_old_session():
     backend = LekaiHttpBackend()
     backend._melody_history = [_note_on(60, 0)]

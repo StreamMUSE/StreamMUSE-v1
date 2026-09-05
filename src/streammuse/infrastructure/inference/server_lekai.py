@@ -221,6 +221,15 @@ class PromptContinuationRawHistoryResponse(BaseModel):
     representation: dict[str, Any] = Field(default_factory=dict)
 
 
+class PromptContinuationReplayAuditResponse(BaseModel):
+    schema_version: int
+    trace_capture_complete: bool
+    trace_capture_reason: str
+    runtime_info: dict[str, Any]
+    prompt_generation_log: dict[str, Any]
+    continuation_generations: List[dict[str, Any]]
+
+
 LEKAI_MODEL_NAME = "lekai"
 LEKAI_PROMPT_CONTINUATION_MODEL_NAME = "lekai_prompt_continuation"
 _LEKAI_FIXED_BEAT_MODELS = {
@@ -484,6 +493,16 @@ async def prompt_continuation_runtime_info() -> dict[str, object]:
 @app.get("/prompt_continuation/prompt_generation_log")
 async def prompt_continuation_prompt_generation_log() -> dict[str, Any]:
     return prompt_continuation_backend.prompt_generation_log()
+
+
+@app.get(
+    "/prompt_continuation/replay_audit",
+    response_model=PromptContinuationReplayAuditResponse,
+)
+async def prompt_continuation_replay_audit() -> PromptContinuationReplayAuditResponse:
+    return PromptContinuationReplayAuditResponse(
+        **prompt_continuation_backend.replay_audit()
+    )
 
 
 @app.get(

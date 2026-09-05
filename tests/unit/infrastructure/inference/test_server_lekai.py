@@ -117,6 +117,53 @@ def test_prompt_continuation_prompt_generation_log_contract():
     assert "generated_acc_beats" in payload
 
 
+def test_prompt_continuation_replay_audit_endpoint_is_read_only(monkeypatch):
+    expected = {
+        "schema_version": 1,
+        "trace_capture_complete": True,
+        "trace_capture_reason": "complete",
+        "runtime_info": {
+            "prompt_sample_seed": 7,
+            "continuation_sample_seed": 9,
+            "session_id": "session-1",
+            "session_epoch": 1,
+            "seeded_session_active": True,
+            "seed_provenance_complete": True,
+            "seed_provenance_reason": "complete",
+        },
+        "prompt_generation_log": {
+            "prompt_tokens": [257, 263],
+            "generated_tokens": [257, 263, 169],
+        },
+        "continuation_generations": [
+            {
+                "request_id": "continuation-1",
+                "raw_tokens": [258, 169],
+                "raw_token_digest": "raw-digest",
+                "part0_roll_digest": "roll-digest",
+                "output_event_digest": "event-digest",
+            }
+        ],
+    }
+
+    class _AuditBackend:
+        def __init__(self):
+            self.calls = 0
+
+        def replay_audit(self):
+            self.calls += 1
+            return expected
+
+    audit_backend = _AuditBackend()
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", audit_backend)
+
+    response = TestClient(app).get("/prompt_continuation/replay_audit")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert audit_backend.calls == 1
+
+
 def test_prompt_continuation_poll_endpoints_contract():
     client.post("/clear_history")
 

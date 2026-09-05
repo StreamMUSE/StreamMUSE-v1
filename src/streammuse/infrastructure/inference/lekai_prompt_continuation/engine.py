@@ -6,6 +6,7 @@ loading models or constructing inference inputs directly.
 
 from __future__ import annotations
 
+import copy
 import os
 import threading
 from typing import Any, Optional
@@ -149,7 +150,85 @@ class LekaiPromptContinuationEngine:
     def prompt_generation_log(self) -> dict[str, Any]:
         """Return diagnostics for the latest Prompt Model generation."""
 
-        return dict(self._prompt_engine.last_generation_log())
+        return copy.deepcopy(self._prompt_engine.last_generation_log())
+
+    def replay_audit(self) -> dict[str, Any]:
+        """Return read-only evidence for replaying the current history run."""
+
+        with self._session_gate:
+            scheduler_status = self.scheduler_status()
+            scheduler_is_running = bool(scheduler_status["is_running"])
+            scheduler_is_failed = bool(scheduler_status["is_failed"])
+            if scheduler_is_failed:
+                trace_capture_reason = "scheduler_failed"
+            elif scheduler_is_running:
+                trace_capture_reason = "scheduler_running"
+            else:
+                trace_capture_reason = "complete"
+            trace_capture_complete = trace_capture_reason == "complete"
+
+            prompt_info = dict(self._prompt_engine.runtime_info())
+            continuation_info = dict(self._continuation_engine.runtime_info())
+            runtime_info = dict(self.runtime_info())
+
+            prompt_sample_seed = prompt_info.get("sample_seed")
+            continuation_sample_seed = continuation_info.get("sample_seed")
+            session_id = continuation_info.get("session_id")
+            session_epoch = int(continuation_info.get("session_epoch") or 0)
+            seeded_session_active = bool(session_id) and session_epoch > 0
+
+            if not session_id:
+                seed_provenance_reason = "continuation_session_id_missing"
+            elif session_epoch <= 0:
+                seed_provenance_reason = "continuation_session_epoch_not_reset"
+            elif prompt_sample_seed is None:
+                seed_provenance_reason = "prompt_sample_seed_missing"
+            elif continuation_sample_seed is None:
+                seed_provenance_reason = "continuation_sample_seed_missing"
+            else:
+                seed_provenance_reason = "complete"
+
+            seed_provenance_complete = seed_provenance_reason == "complete"
+            runtime_info.update(
+                {
+                    "prompt_sample_seed": prompt_sample_seed,
+                    "continuation_sample_seed": continuation_sample_seed,
+                    "prompt_checkpoint_path": prompt_info.get("checkpoint_path"),
+                    "continuation_checkpoint_path": continuation_info.get(
+                        "checkpoint_path"
+                    ),
+                    "continuation_checkpoint_sha256": continuation_info.get(
+                        "checkpoint_sha256"
+                    ),
+                    "continuation_source_sha256": continuation_info.get(
+                        "source_sha256"
+                    ),
+                    "continuation_code_identity": continuation_info.get(
+                        "code_identity"
+                    ),
+                    "session_id": session_id,
+                    "session_epoch": session_epoch,
+                    "seeded_session_active": seeded_session_active,
+                    "seed_provenance_complete": seed_provenance_complete,
+                    "seed_provenance_reason": seed_provenance_reason,
+                    "scheduler_phase": str(scheduler_status["phase"]),
+                    "scheduler_is_running": scheduler_is_running,
+                    "scheduler_is_failed": scheduler_is_failed,
+                    "scheduler_error": scheduler_status.get("error"),
+                    "trace_capture_complete": trace_capture_complete,
+                    "trace_capture_reason": trace_capture_reason,
+                }
+            )
+            return {
+                "schema_version": 1,
+                "trace_capture_complete": trace_capture_complete,
+                "trace_capture_reason": trace_capture_reason,
+                "runtime_info": runtime_info,
+                "prompt_generation_log": self.prompt_generation_log(),
+                "continuation_generations": (
+                    self._continuation_engine.generation_metadata_snapshot()
+                ),
+            }
 
     @staticmethod
     def _ticks_to_beats(ticks: int) -> int:

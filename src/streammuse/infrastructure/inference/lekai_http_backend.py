@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -169,6 +170,7 @@ class LekaiHttpBackend:
         self._session_id: Optional[str] = None
         self._effective_seed = int(os.environ.get("LEKAI_RT_SEED", "0"))
         self._sample_generator = self._make_generator(self._effective_seed, "cpu")
+        self._generation_metadata_lock = threading.Lock()
         self._generation_metadata: Dict[str, Dict[str, Any]] = {}
         self._current_generation_trace: Dict[str, Any] = {}
         self._checkpoint_sha256_cache: Dict[tuple[str, int, int], str] = {}
@@ -610,7 +612,8 @@ class LekaiHttpBackend:
                     self._injection_length_ticks = 0
                     self._active_pitches = set()
                     self._request_bpm = None
-                    self._generation_metadata = {}
+                    with self._generation_metadata_lock:
+                        self._generation_metadata = {}
                     self._current_generation_trace = {}
                     self._session_epoch += 1
                     self._session_id = uuid.uuid4().hex
@@ -654,7 +657,18 @@ class LekaiHttpBackend:
             )
 
     def consume_generation_metadata(self, request_id: str) -> Dict[str, Any]:
-        return dict(self._generation_metadata.pop(str(request_id), {}))
+        with self._generation_metadata_lock:
+            return dict(self._generation_metadata.pop(str(request_id), {}))
+
+    def generation_metadata_snapshot(self) -> List[Dict[str, Any]]:
+        """Return current-run generation metadata in generation order.
+
+        Unlike ``consume_generation_metadata``, this audit view leaves the
+        stored envelopes intact so multiple readers observe the same evidence.
+        """
+
+        with self._generation_metadata_lock:
+            return copy.deepcopy(list(self._generation_metadata.values()))
 
     @staticmethod
     def _event_sort_key(event: EventPayload) -> Tuple[int, int]:
@@ -1303,7 +1317,8 @@ class LekaiHttpBackend:
                 "empty_success": len(accompaniment) == 0,
                 "context_start_tick": trace.get("context_start_tick"),
             }
-            self._generation_metadata[effective_request_id] = metadata
+            with self._generation_metadata_lock:
+                self._generation_metadata[effective_request_id] = metadata
             return accompaniment, timings
 
     def _generate_locked(
@@ -1651,6 +1666,9 @@ class LekaiHttpBackend:
         self._injection_length_ticks = 0
         self._active_pitches = set()
         self._request_bpm = None
+        with self._generation_metadata_lock:
+            self._generation_metadata = {}
+        self._current_generation_trace = {}
         return {
             "success": True,
             "message": "History cleared",
