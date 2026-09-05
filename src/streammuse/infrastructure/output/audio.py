@@ -14,6 +14,7 @@ from streammuse.domain.musical import EventType, MusicalEvent
 class AudioOutputConfig:
     port_name: Optional[str] = None
     default_program: int = 0
+    mute_melody_output: bool = False
 
 
 class AudioOutputSink:
@@ -36,6 +37,8 @@ class AudioOutputSink:
             pass
 
     def output_event(self, event: MusicalEvent, source: str) -> None:
+        if self._config.mute_melody_output and source == "user":
+            return
         if event.is_placeholder or event.pitch == -1:
             return
         self._ensure_port()
@@ -96,4 +99,3 @@ class AudioOutputSink:
             except Exception:
                 pass
             self._port = None
-

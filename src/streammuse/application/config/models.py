@@ -48,6 +48,7 @@ class InputConfig:
 class OutputConfig:
     type: OutputType = "console"
     midi_out_port: Optional[str] = None
+    mute_melody_output: bool = False
     midi_file_output_path: Optional[str] = None
     inference_log_detail: InferenceLogDetail = "summary"
     session_artifact_tier: SessionArtifactTier = "debug"

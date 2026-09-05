@@ -97,6 +97,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--web-host", type=str, default="127.0.0.1", help="Host/interface for the web viewer to bind (use 0.0.0.0 to allow LAN access)")
     parser.add_argument("--web-port", type=int, default=8001, help="Port for the web viewer")
     parser.add_argument("--midi-out-port", type=str, default=None, help="MIDI output port name (for audio output)")
+    parser.add_argument(
+        "--mute-melody-output",
+        action="store_true",
+        help="Mute live playback of user Melody while retaining it in model input and recordings",
+    )
     parser.add_argument("--midi-file-output-path", type=str, default=None, help="Path to save MIDI file output")
     parser.add_argument(
         "--close-active-notes-on-finalize",
@@ -333,6 +338,7 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
     output_config = OutputConfig(
         type=args.output_type,  # type: ignore
         midi_out_port=args.midi_out_port,
+        mute_melody_output=bool(getattr(args, "mute_melody_output", False)),
         midi_file_output_path=args.midi_file_output_path,
         close_active_notes_on_finalize=bool(
             getattr(args, "close_active_notes_on_finalize", True)

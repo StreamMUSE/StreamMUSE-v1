@@ -27,6 +27,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "inject_acc_file": None,
         "output_type": "console",
         "midi_out_port": None,
+        "mute_melody_output": False,
         "midi_file_output_path": None,
         "close_active_notes_on_finalize": True,
         "enable_metronome": False,
@@ -85,6 +86,7 @@ def test_parse_args_defaults() -> None:
     assert config.input.injection_length_ticks == 0
     assert config.input.injection_acc_file is None
     assert config.output.type == "console"
+    assert config.output.mute_melody_output is False
     assert config.output.close_active_notes_on_finalize is True
     assert config.output.inference_log_detail == "summary"
     assert config.output.session_artifact_tier == "debug"
@@ -306,6 +308,14 @@ def test_parse_args_exposes_midi_finalize_policy(monkeypatch, flag, expected) ->
     assert args.close_active_notes_on_finalize is expected
 
 
+def test_parse_args_enables_live_melody_mute(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["streammuse-cli", "--mute-melody-output"])
+
+    config = args_to_config(parse_args())
+
+    assert config.output.mute_melody_output is True
+
+
 def test_args_to_config_separates_playback_and_model_condition_bpm() -> None:
     config = args_to_config(_make_args(tempo=60.0, model_condition_bpm=120))
 
@@ -322,6 +332,7 @@ def test_args_to_config_keyboard_input() -> None:
         input_mode="keyboard",
         output_type="audio",
         midi_out_port="Virtual MIDI Port",
+        mute_melody_output=True,
         inference_log_detail="full",
         session_artifact_tier="normal",
         server_url="http://example.com/generate",
@@ -336,6 +347,7 @@ def test_args_to_config_keyboard_input() -> None:
     assert config.input.type == "keyboard"
     assert config.output.type == "audio"
     assert config.output.midi_out_port == "Virtual MIDI Port"
+    assert config.output.mute_melody_output is True
     assert config.output.inference_log_detail == "full"
     assert config.inference.server_generate_url == "http://example.com/generate"
     assert config.inference.timeout_s == 60.0

@@ -54,13 +54,17 @@ def test_output_factory_console_with_session_manager_attaches_auto_midi(tmp_path
 
 
 def test_output_factory_audio_with_session_manager_attaches_auto_midi(tmp_path):
-    config = _make_config("audio", bpm=110.0, ticks_per_beat=4)
+    config = ApplicationConfig(
+        tempo=TempoConfig(bpm=110.0, ticks_per_beat=4, beats_per_bar=4),
+        output=OutputConfig(type="audio", mute_melody_output=True),
+    )
     session_manager = SessionManager(base_log_dir=str(tmp_path))
     session_dir = session_manager.create_session_directory()
 
     sink = OutputSinkFactory.create(config, session_manager=session_manager)
     assert isinstance(sink, CompositeOutputSink)
     assert isinstance(sink.sinks[0], AudioOutputSink)
+    assert sink.sinks[0]._config.mute_melody_output is True
     assert isinstance(sink.sinks[1], MidiFileOutputSink)
     assert sink.sinks[1]._config.output_path == str(session_dir / "combined.mid")
     sink.close()

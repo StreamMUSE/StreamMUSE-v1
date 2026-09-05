@@ -115,6 +115,7 @@ class RuntimeSessionBuilder:
             "beats_per_bar": self.config.tempo.beats_per_bar,
             "input_type": self.config.input.type,
             "output_type": self.config.output.type,
+            "mute_melody_output": self.config.output.mute_melody_output,
             "close_active_notes_on_finalize": (
                 self.config.output.close_active_notes_on_finalize
             ),
@@ -409,7 +410,12 @@ class RuntimeSessionBuilder:
             )
         if self.config.output.midi_out_port:
             try:
-                audio_sink = AudioOutputSink(AudioOutputConfig(port_name=self.config.output.midi_out_port))
+                audio_sink = AudioOutputSink(
+                    AudioOutputConfig(
+                        port_name=self.config.output.midi_out_port,
+                        mute_melody_output=self.config.output.mute_melody_output,
+                    )
+                )
                 audio_sink._ensure_port()  # noqa: SLF001
                 sinks.append(audio_sink)
             except Exception as exc:
