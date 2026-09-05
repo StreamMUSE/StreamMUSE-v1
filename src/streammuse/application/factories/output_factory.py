@@ -91,7 +91,12 @@ class OutputSinkFactory:
 
         if cfg.type == "audio":
             sink = OutputSinkFactory._attach_auto_midi_if_needed(
-                base_sink=AudioOutputSink(AudioOutputConfig(port_name=cfg.midi_out_port)),
+                base_sink=AudioOutputSink(
+                    AudioOutputConfig(
+                        port_name=cfg.midi_out_port,
+                        mute_melody_output=cfg.mute_melody_output,
+                    )
+                ),
                 app_config=app_config,
                 session_manager=session_manager,
             )

@@ -6,6 +6,7 @@ import pretty_midi
 import pytest
 
 from streammuse.domain.musical import EventType, MusicalEvent
+from streammuse.infrastructure.output.audio import AudioOutputConfig, AudioOutputSink
 from streammuse.infrastructure.output.composite import CompositeOutputSink
 from streammuse.infrastructure.output.json_logger import JsonLoggerOutputSink
 from streammuse.infrastructure.output.metronome import MetronomeOutputConfig, MetronomeOutputSink
@@ -43,6 +44,82 @@ def _seeded_runtime_info(
         "session_id": "server-session",
         "session_epoch": 1,
     }
+
+
+def test_audio_output_sink_mutes_only_live_user_melody(
+    monkeypatch,
+    tmp_path,
+):
+    class FakePort:
+        def __init__(self) -> None:
+            self.messages = []
+
+        def send(self, message) -> None:
+            self.messages.append(message)
+
+        def reset(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+    fake_port = FakePort()
+    monkeypatch.setattr(mido, "open_output", lambda port_name=None: fake_port)
+    combined_path = tmp_path / "combined.mid"
+    sink = CompositeOutputSink(
+        [
+            AudioOutputSink(AudioOutputConfig(mute_melody_output=True)),
+            MidiFileOutputSink(
+                MidiFileOutputConfig(
+                    bpm=120.0,
+                    ticks_per_beat=4,
+                    output_path=str(combined_path),
+                )
+            ),
+        ]
+    )
+
+    user_on = MusicalEvent(
+        tick=0,
+        pitch=60,
+        event_type=EventType.NOTE_ON,
+        velocity=100,
+    )
+    model_on = MusicalEvent(
+        tick=0,
+        pitch=48,
+        event_type=EventType.NOTE_ON,
+        velocity=90,
+    )
+    user_off = MusicalEvent(
+        tick=1,
+        pitch=60,
+        event_type=EventType.NOTE_OFF,
+        velocity=0,
+    )
+    model_off = MusicalEvent(
+        tick=1,
+        pitch=48,
+        event_type=EventType.NOTE_OFF,
+        velocity=0,
+    )
+    sink.output_event(user_on, source="user")
+    sink.output_event(model_on, source="model")
+    sink.output_event(user_off, source="user")
+    sink.output_event(model_off, source="model")
+    sink.close()
+
+    note_messages = [message for message in fake_port.messages if message.type == "note_on"]
+    note_off_messages = [
+        message for message in fake_port.messages if message.type == "note_off"
+    ]
+    assert [message.note for message in note_messages] == [48]
+    assert [message.note for message in note_off_messages] == [48]
+
+    recorded = pretty_midi.PrettyMIDI(str(combined_path))
+    tracks = {instrument.name: instrument for instrument in recorded.instruments}
+    assert [note.pitch for note in tracks["Melody"].notes] == [60]
+    assert [note.pitch for note in tracks["Accompaniment"].notes] == [48]
 
 
 def test_websocket_output_sink_queues_messages():
