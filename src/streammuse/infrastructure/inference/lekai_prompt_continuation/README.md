@@ -218,6 +218,51 @@ That is a prompt-model/data-preparation constraint, not a frontend display rule.
 
 ## Prompt Batch Selection
 
+`LEKAI_PROMPT_SELECTION_MODE=rule_s_if_else` (also `rule-s-if-else`) enables the
+staged selector. Stage 1 requires both a complete prompt and at least four
+accompaniment notes. Later stages apply the 25-note cap, inferred-key filtering
+with a bounded tonal fallback, pitch-change ranking, and combined pitch-class
+entropy/note-count rank points.
+
+The Prompt Engine defaults this mode to `N=10` when
+`LEKAI_PROMPT_BATCH_CANDIDATES` is unset. Selection diagnostics retain the final
+Top 3, but only rank 1 is decoded and handed to the continuation model. A batch
+with no rank-1 candidate is regenerated at `base_seed + attempt`, up to
+`LEKAI_PROMPT_SELECTION_MAX_ATTEMPTS` attempts (default 3). The generation log
+records `selection_attempt_count`, `selection_attempt_fallback_reasons`,
+`selection_seed`, `ranked_candidate_numbers`, and
+`selection_output_policy=rank1_only`.
+
+Existing mode sampling defaults remain unchanged. Set the production values
+explicitly:
+
+```bash
+export LEKAI_PROMPT_SELECTION_MODE=rule_s_if_else
+export LEKAI_PROMPT_BATCH_CANDIDATES=10
+export LEKAI_PROMPT_TEMPERATURE=1.1
+export LEKAI_PROMPT_TOP_P=0.95
+export LEKAI_PROMPT_TOP_K=50
+export LEKAI_PROMPT_REPETITION_PENALTY=1
+```
+
+To inspect one prepared NPZ without running continuation inference:
+
+```bash
+python scripts/run_rule_s_if_else_prompt_selection.py \
+  --npz-file path/to/piece.npz \
+  --prompt-checkpoint path/to/model.safetensors \
+  --candidate-count 10 \
+  --temperature 1.1 \
+  --top-p 0.95 \
+  --top-k 50 \
+  --repetition-penalty 1
+```
+
+The standalone runner uses N=10 and the deployment sampling values by default.
+It writes the prompt MIDI, all selected/unselected candidate MIDIs,
+`ranking.csv`, and `selection.json` under the gitignored
+`prompt_selection_runs/` directory unless `--output-dir` is supplied.
+
 `LEKAI_PROMPT_SELECTION_MODE=rule_s_v3` (also `rule-s-v3`) adds prompt-only
 duration, tonal, and low-register compatibility to batch selection. Its duration
 match uses `tau = ln(2)` (about `0.6931`), so a 2x median-duration ratio yields

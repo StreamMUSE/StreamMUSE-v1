@@ -33,6 +33,64 @@ runner = importlib.util.module_from_spec(_RUNNER_SPEC)
 _RUNNER_SPEC.loader.exec_module(runner)
 
 
+def _parse_prompt_mode(mode: str, *extra: str):
+    return offline.parse_args(
+        [
+            "--midi-file",
+            "input.mid",
+            "--output-dir",
+            "output",
+            "--prompt-selection-mode",
+            mode,
+            *extra,
+        ]
+    )
+
+
+def test_offline_runner_uses_rule_s_if_else_defaults_when_omitted():
+    args = _parse_prompt_mode("rule_s_if_else")
+
+    assert args.prompt_selection_mode == "rule_s_if_else"
+    assert args.prompt_batch_candidates == 10
+    assert args.prompt_temperature == 1.1
+    assert args.prompt_top_p == 0.95
+    assert args.prompt_top_k == 50
+    assert args.prompt_repetition_penalty == 1.0
+
+
+@pytest.mark.parametrize("mode", ["single", "batch_first", "rule_s", "rule_s_v3"])
+def test_offline_runner_preserves_existing_mode_defaults(mode):
+    args = _parse_prompt_mode(mode)
+
+    assert args.prompt_batch_candidates == 5
+    assert args.prompt_temperature == 1.1
+    assert args.prompt_top_p == 0.95
+    assert args.prompt_top_k == 0
+    assert args.prompt_repetition_penalty == 1.0
+
+
+def test_offline_runner_explicit_values_override_rule_s_if_else_defaults():
+    args = _parse_prompt_mode(
+        "rule_s_if_else",
+        "--prompt-batch-candidates",
+        "7",
+        "--prompt-temperature",
+        "0.7",
+        "--prompt-top-p",
+        "0.8",
+        "--prompt-top-k",
+        "11",
+        "--prompt-repetition-penalty",
+        "1.2",
+    )
+
+    assert args.prompt_batch_candidates == 7
+    assert args.prompt_temperature == 0.7
+    assert args.prompt_top_p == 0.8
+    assert args.prompt_top_k == 11
+    assert args.prompt_repetition_penalty == 1.2
+
+
 def test_trim_leading_rest_applies_max_tick_after_shift(tmp_path, monkeypatch):
     notes = [
         {"pitch": 60, "tick": 76, "duration": 2},

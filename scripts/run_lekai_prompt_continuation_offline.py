@@ -5,7 +5,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from streammuse.domain.musical import MusicalEvent
 from streammuse.infrastructure.inference.lekai_prompt_continuation import (
@@ -26,7 +26,30 @@ DEFAULT_CONTINUATION_CHECKPOINT = DEFAULT_MODELS_DIR / "lekai_continuation_model
 EventPayload = dict[str, int | str]
 
 
-def parse_args() -> argparse.Namespace:
+def resolve_prompt_cli_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    if args.prompt_selection_mode == "rule_s_if_else":
+        defaults = {
+            "prompt_batch_candidates": 10,
+            "prompt_temperature": 1.1,
+            "prompt_top_p": 0.95,
+            "prompt_top_k": 50,
+            "prompt_repetition_penalty": 1.0,
+        }
+    else:
+        defaults = {
+            "prompt_batch_candidates": 5,
+            "prompt_temperature": 1.1,
+            "prompt_top_p": 0.95,
+            "prompt_top_k": 0,
+            "prompt_repetition_penalty": 1.0,
+        }
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    return args
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run offline two-stage Lekai prompt+continuation inference and save MIDI/logs."
     )
@@ -59,21 +82,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-seed", type=int, default=12345)
     parser.add_argument(
         "--prompt-selection-mode",
-        choices=("single", "batch_first", "rule_s"),
+        choices=(
+            "single",
+            "batch_first",
+            "rule_s",
+            "rule_s_v3",
+            "rule_s_if_else",
+        ),
         default="single",
     )
-    parser.add_argument("--prompt-batch-candidates", type=int, default=5)
-    parser.add_argument("--prompt-temperature", type=float, default=1.1)
-    parser.add_argument("--prompt-top-k", type=int, default=0)
-    parser.add_argument("--prompt-top-p", type=float, default=0.95)
-    parser.add_argument("--prompt-repetition-penalty", type=float, default=1.0)
+    parser.add_argument("--prompt-batch-candidates", type=int)
+    parser.add_argument("--prompt-temperature", type=float)
+    parser.add_argument("--prompt-top-k", type=int)
+    parser.add_argument("--prompt-top-p", type=float)
+    parser.add_argument("--prompt-repetition-penalty", type=float)
     parser.add_argument("--rt-temperature", type=float, default=0.0)
     parser.add_argument("--rt-top-k", type=int, default=1)
     parser.add_argument("--rt-top-p", type=float, default=0.0)
     parser.add_argument("--rt-repetition-penalty", type=float, default=1.0)
     parser.add_argument("--rt-seed", type=int, default=0)
 
-    return parser.parse_args()
+    return resolve_prompt_cli_defaults(parser.parse_args(argv))
 
 
 def _json_default(value: Any) -> Any:
