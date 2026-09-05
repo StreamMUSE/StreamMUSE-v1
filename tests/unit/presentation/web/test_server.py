@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mido
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 from streammuse.application.config import (
     ApplicationConfig,
     InferenceConfig,
+    InputConfig,
     TempoConfig,
 )
 from streammuse.infrastructure.output.websocket import WebSocketOutputSink
@@ -70,6 +72,43 @@ def test_index_serves_html():
         assert resp.text.count('step="any"') == 3
 
 
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+def test_idle_web_lifespan_does_not_access_configured_midi_device(
+    builder_cls,
+    monkeypatch,
+    tmp_path,
+):
+    def fail_if_midi_is_accessed(*_args, **_kwargs):
+        pytest.fail("idle Web lifespan must not access MIDI devices")
+
+    for function_name in (
+        "get_input_names",
+        "get_output_names",
+        "open_input",
+        "open_output",
+    ):
+        monkeypatch.setattr(mido, function_name, fail_if_midi_is_accessed)
+
+    webserver._configure_server(
+        config=ApplicationConfig(
+            input=InputConfig(
+                type="midi_device",
+                midi_device_name="missing-midi-device",
+            )
+        ),
+        log_dir=str(tmp_path),
+    )
+
+    with TestClient(webserver.create_app()) as client:
+        status = client.get("/api/status")
+
+    assert status.status_code == 200
+    assert status.json()["state"] == "idle"
+    assert status.json()["is_running"] is False
+    assert webserver._runtime is None
+    builder_cls.assert_not_called()
+
+
 def test_web_javascript_posts_session_config_and_locks_controls_outside_idle():
     app = webserver.create_app()
     with TestClient(app) as client:
@@ -87,6 +126,13 @@ def test_web_javascript_posts_session_config_and_locks_controls_outside_idle():
         in resp.text
     )
     assert "bpmInput.addEventListener('input'" in resp.text
+    assert "PianoVisualizer.clearNotes();" in resp.text
+    assert "PianoVisualizer.setCurrentTick(0);" in resp.text
+    assert "Stats.reset();" in resp.text
+    start_fetch = resp.text.index("const response = await fetch('/api/start'")
+    assert resp.text.index("PianoVisualizer.clearNotes();") < start_fetch
+    assert resp.text.index("PianoVisualizer.setCurrentTick(0);") < start_fetch
+    assert resp.text.index("Stats.reset();") < start_fetch
 
 
 def test_websocket_broadcasts_pending_messages_from_sink():
@@ -484,6 +530,73 @@ def test_stop_then_start_builds_fresh_runtime_and_sink(builder_cls, tmp_path):
 
 
 @patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+def test_worker_stop_failure_retains_runtime_until_retry_succeeds(
+    builder_cls,
+    tmp_path,
+):
+    first_runtime = _fake_runtime(tmp_path, "session-1")
+    second_runtime = _fake_runtime(tmp_path, "session-2")
+    first_runtime.stop.side_effect = RuntimeError("worker still running")
+    builder_cls.return_value.build_web.side_effect = [
+        first_runtime,
+        second_runtime,
+    ]
+    webserver._configure_server(config=ApplicationConfig(), log_dir=str(tmp_path))
+
+    with TestClient(webserver.create_app()) as client:
+        assert client.post("/api/start").status_code == 200
+        failed_stop = client.post("/api/stop")
+
+        assert failed_stop.status_code == 500
+        assert webserver._runtime is first_runtime
+        assert webserver._ws_sink is first_runtime.websocket_sink
+        first_runtime.cleanup.assert_not_called()
+        assert builder_cls.return_value.build_web.call_count == 1
+
+        # Simulate the bounded worker finishing after the failed Stop. The next
+        # Start must retire that same runtime before constructing a fresh one.
+        first_runtime.running = False
+        first_runtime.stop.side_effect = None
+        restarted = client.post("/api/start")
+
+        assert restarted.status_code == 200
+        assert restarted.json()["message"] == "started"
+        assert webserver._runtime is second_runtime
+        first_runtime.cleanup.assert_called_once_with()
+        assert first_runtime.stop.call_count == 2
+        assert builder_cls.return_value.build_web.call_count == 2
+
+
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+def test_restart_never_broadcasts_pending_messages_from_old_sink(
+    builder_cls,
+    tmp_path,
+):
+    first_runtime = _fake_runtime(tmp_path, "session-1")
+    second_runtime = _fake_runtime(tmp_path, "session-2")
+    builder_cls.return_value.build_web.side_effect = [
+        first_runtime,
+        second_runtime,
+    ]
+    webserver._configure_server(config=ApplicationConfig(), log_dir=str(tmp_path))
+    app = webserver.create_app()
+
+    with TestClient(app) as client:
+        client.post("/api/start")
+        old_sink = first_runtime.websocket_sink
+        old_sink.output_status("old-session", "must not leak")
+        client.post("/api/stop")
+        client.post("/api/start")
+
+        with client.websocket_connect("/ws") as ws:
+            second_runtime.websocket_sink.output_status("running", "fresh")
+            envelope = ws.receive_json()
+
+    assert envelope["state"] == "running"
+    assert envelope["message"] == "fresh"
+
+
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
 def test_broadcaster_handles_sink_assignment_after_idle_boot(builder_cls, tmp_path):
     runtime = _fake_runtime(tmp_path, "session-1")
     builder_cls.return_value.build_web.return_value = runtime
@@ -505,13 +618,25 @@ def test_broadcaster_handles_sink_assignment_after_idle_boot(builder_cls, tmp_pa
 @patch("streammuse.presentation.web.server.parse_args")
 @patch("streammuse.presentation.web.server.args_to_config")
 @patch("uvicorn.run")
-def test_web_main_configures_idle_server_without_building_runtime(
+def test_web_main_boots_idle_without_accessing_midi_devices(
     uvicorn_run,
     args_to_config,
     parse_args,
     builder_cls,
     tmp_path,
+    monkeypatch,
 ):
+    def fail_if_midi_is_accessed(*_args, **_kwargs):
+        pytest.fail("idle Web boot must not access MIDI devices")
+
+    for function_name in (
+        "get_input_names",
+        "get_output_names",
+        "open_input",
+        "open_output",
+    ):
+        monkeypatch.setattr(mido, function_name, fail_if_midi_is_accessed)
+
     args = MagicMock(
         log_dir=str(tmp_path),
         web_host="127.0.0.1",
@@ -520,7 +645,7 @@ def test_web_main_configures_idle_server_without_building_runtime(
     parse_args.return_value = args
     config = MagicMock()
     config.tempo.bpm = 120.0
-    config.input.type = "midi_file"
+    config.input.type = "midi_device"
     config.inference.type = "http"
     config.inference.model_name = "lekai"
     args_to_config.return_value = config

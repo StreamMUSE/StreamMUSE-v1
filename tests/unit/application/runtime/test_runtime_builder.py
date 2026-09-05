@@ -14,6 +14,7 @@ from streammuse.application.config import (
 from streammuse.application.runtime import RuntimeSession, RuntimeSessionBuilder
 from streammuse.domain.logging import SessionManager
 from streammuse.infrastructure.output.composite import CompositeOutputSink
+from streammuse.infrastructure.output.audio import AudioOutputSink
 from streammuse.infrastructure.output.metronome import MetronomeOutputSink
 from streammuse.infrastructure.output.midi_file import MidiFileOutputSink
 from streammuse.infrastructure.output.session_logger import SessionLoggerOutputSink
@@ -94,6 +95,8 @@ def test_builder_web_composite_honors_metronome_and_midi_recording_config(
     config = ApplicationConfig(
         tempo=TempoConfig(bpm=90.0, ticks_per_beat=6, beats_per_bar=3),
         output=OutputConfig(
+            midi_out_port="music-port",
+            mute_melody_output=True,
             metronome_enabled=True,
             metronome_port="click-port",
             metronome_channel=8,
@@ -103,7 +106,8 @@ def test_builder_web_composite_honors_metronome_and_midi_recording_config(
     inference_factory.create.return_value = MagicMock()
     service_cls.return_value = MagicMock(running=False)
 
-    session = RuntimeSessionBuilder(config=config, log_dir=str(tmp_path)).build_web()
+    with patch.object(AudioOutputSink, "_ensure_port"):
+        session = RuntimeSessionBuilder(config=config, log_dir=str(tmp_path)).build_web()
 
     midi_sink = next(
         sink for sink in session.output_sink.sinks if isinstance(sink, MidiFileOutputSink)
@@ -111,12 +115,17 @@ def test_builder_web_composite_honors_metronome_and_midi_recording_config(
     metronome_sink = next(
         sink for sink in session.output_sink.sinks if isinstance(sink, MetronomeOutputSink)
     )
+    audio_sink = next(
+        sink for sink in session.output_sink.sinks if isinstance(sink, AudioOutputSink)
+    )
     assert midi_sink._config.beats_per_bar == 3
     assert midi_sink._config.record_metronome is True
     assert metronome_sink._config.port_name == "click-port"
     assert metronome_sink._config.ticks_per_beat == 6
     assert metronome_sink._config.beats_per_bar == 3
     assert metronome_sink._config.channel == 8
+    assert audio_sink._config.mute_melody_output is True
+    assert session.session_config["mute_melody_output"] is True
 
 
 @patch("streammuse.application.runtime.builder.RealTimeMusicService")
@@ -324,6 +333,9 @@ def test_runtime_session_records_server_generated_seeds_before_service_start(
     class _Service:
         running = False
 
+        def mark_backend_session_initialized(self):
+            calls.append("mark_backend_session_initialized")
+
         def start(self, *, max_ticks=None):
             calls.append(("service_start", max_ticks))
 
@@ -344,6 +356,7 @@ def test_runtime_session_records_server_generated_seeds_before_service_start(
     assert calls == [
         "initialize_session",
         "record_seed",
+        "mark_backend_session_initialized",
         "output_config",
         ("service_start", 64),
     ]

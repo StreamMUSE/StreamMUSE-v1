@@ -913,6 +913,132 @@ def test_prompt_count_in_protocol_waits_before_any_backend_call():
     assert client.playable_calls == 0
 
 
+def test_protocol_worker_skips_clear_for_preinitialized_backend_session():
+    service = _make_service()
+    client = service._client
+    service.mark_backend_session_initialized()
+    service._running = True
+
+    worker = threading.Thread(target=service._protocol_worker)
+    worker.start()
+    time.sleep(0.05)
+    service._running = False
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert client.clear_history_calls == 0
+
+
+def test_stop_interrupts_default_count_in_and_timeline_sleep_promptly():
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=30.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        count_in_beats=8,
+    )
+    service.start()
+    time.sleep(0.05)
+
+    stop_complete = threading.Event()
+    stop_errors = []
+
+    def stop_service():
+        try:
+            service.stop()
+        except Exception as exc:  # pragma: no cover - asserted below
+            stop_errors.append(exc)
+        finally:
+            stop_complete.set()
+
+    stopper = threading.Thread(target=stop_service, daemon=True)
+    stopper.start()
+
+    # The nominal count-in is 16 seconds. Stop must wake both the tick/count-in
+    # worker and protocol worker rather than waiting for that timeline sleep.
+    assert stop_complete.wait(timeout=0.75)
+    assert stop_errors == []
+    assert service.running is False
+
+
+def test_stop_waits_for_workers_before_closing_and_discards_pending_work():
+    calls = []
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    stop_complete = threading.Event()
+
+    class _Input:
+        def close(self):
+            calls.append("input_close")
+
+    class _Output(_RecordingOutput):
+        def output_status(self, state, message=""):
+            calls.append(f"status:{state}")
+
+        def close(self):
+            calls.append("output_close")
+
+    scheduler = PlaybackScheduler()
+    client = _FakePromptClient()
+    service = PromptContinuationRealtimeService(
+        input_source=_Input(),
+        prompt_client=client,
+        output_sink=_Output(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=scheduler,
+    )
+    service._running = True
+    service._runtime = SimpleNamespace(session_start_time=0.0, timeline_start_time=0.0)
+    service._event_q.put(_note(60, 0))
+    service._control_q.put(
+        _ControlAction(kind="start", melody_events=[], observed_until_tick=32)
+    )
+    service._playable_q.put(([], {}))
+    service._prompt_events.append(_note(60, 0))
+    service._pending_append_events.append(_note(62, 4))
+    scheduler.schedule(_note(64, 8), tick=8)
+
+    def worker_target():
+        worker_started.set()
+        release_worker.wait(timeout=1.0)
+        calls.append("worker_done")
+
+    worker = threading.Thread(target=worker_target)
+    service._protocol_thread = worker
+    worker.start()
+    assert worker_started.wait(timeout=1.0)
+
+    def stop_service():
+        service.stop()
+        stop_complete.set()
+
+    stopper = threading.Thread(target=stop_service)
+    stopper.start()
+    deadline = time.monotonic() + 1.0
+    while "input_close" not in calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert "input_close" in calls
+    assert not stop_complete.wait(timeout=0.05)
+    release_worker.set()
+    stopper.join(timeout=1.0)
+
+    assert stop_complete.is_set()
+    assert calls.index("worker_done") < calls.index("status:stopped")
+    assert calls.index("status:stopped") < calls.index("output_close")
+    with pytest.raises(queue.Empty):
+        service._event_q.get_nowait()
+    with pytest.raises(queue.Empty):
+        service._control_q.get_nowait()
+    with pytest.raises(queue.Empty):
+        service._playable_q.get_nowait()
+    assert service._prompt_events == []
+    assert service._pending_append_events == []
+    assert scheduler.get_events_at_tick(8) == []
+    assert client.clear_history_calls == 0
+
+
 def test_prompt_continuation_enqueues_start_after_prompt_window():
     service = _make_service()
     service._prompt_events = [_note(60, 0), _note(62, 31)]

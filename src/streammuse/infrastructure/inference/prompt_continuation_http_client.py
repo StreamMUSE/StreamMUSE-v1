@@ -49,6 +49,11 @@ class PromptContinuationHttpClient:
     def base_url(self) -> str:
         return self._base_url
 
+    @property
+    def timeout_s(self) -> float:
+        """Maximum duration of one blocking backend request."""
+        return float(self._config.timeout_s)
+
     def _url(self, path: str) -> str:
         return f"{self._base_url}{path}"
 

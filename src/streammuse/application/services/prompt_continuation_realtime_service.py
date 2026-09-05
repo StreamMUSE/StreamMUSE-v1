@@ -150,12 +150,27 @@ class PromptContinuationRealtimeService:
         self._protocol_poll_interval_s = float(protocol_poll_interval_s)
         self._now = now
         self._sleep = sleep
+        self._stop_event = threading.Event()
+
+        request_timeout_s = getattr(prompt_client, "timeout_s", 0.0)
+        try:
+            request_timeout_s = float(request_timeout_s)
+        except (TypeError, ValueError):
+            request_timeout_s = 0.0
+        # A protocol worker may be inside one blocking HTTP request when Stop
+        # is pressed. Give that request its configured timeout plus a small
+        # scheduling margin, but never wait without a bound.
+        self._worker_join_timeout_s = max(1.0, request_timeout_s + 1.0)
 
         self._running = False
         self._runtime: PromptContinuationRuntime | None = None
         self._input_thread: threading.Thread | None = None
         self._tick_thread: threading.Thread | None = None
         self._protocol_thread: threading.Thread | None = None
+        # RuntimeSession may initialize/adopt the backend session before any
+        # worker starts.  In that case the protocol worker must not issue the
+        # legacy clear_history reset a second time.
+        self._backend_session_initialized = False
 
         self._event_q: queue.Queue[MusicalEvent] = queue.Queue()
         self._control_q: queue.Queue[_ControlAction] = queue.Queue()
@@ -333,10 +348,25 @@ class PromptContinuationRealtimeService:
     def effective_model_bpm(self) -> int:
         return self._model_condition_bpm
 
+    def mark_backend_session_initialized(self) -> None:
+        """Adopt a backend session prepared before service workers start."""
+        if self._running:
+            raise RuntimeError("backend session must be prepared before service start")
+        self._backend_session_initialized = True
+
     def _sleep_until(self, target_time: float) -> None:
         delay = target_time - self._now()
         if delay > 0:
-            self._sleep(delay)
+            self._sleep_for(delay)
+
+    def _sleep_for(self, delay: float) -> None:
+        if delay <= 0:
+            return
+        if self._sleep is time.sleep:
+            self._stop_event.wait(delay)
+            return
+        # Tests and deterministic runners inject their own clock/sleep pair.
+        self._sleep(delay)
 
     def _output_metronome_tick(self, tick: int, bar: int, beat: int) -> None:
         if hasattr(self._output, "output_metronome_tick"):
@@ -357,6 +387,8 @@ class PromptContinuationRealtimeService:
                 return
             target_time = start + self._tempo.tick_to_seconds(elapsed_tick)
             self._sleep_until(target_time)
+            if not self._running:
+                return
 
             count_tick = elapsed_tick - self._count_in_ticks
             beat = (elapsed_tick // ticks_per_beat) % beats_per_bar
@@ -407,10 +439,16 @@ class PromptContinuationRealtimeService:
         self._sleep_until(self._runtime.timeline_start_time)
         if not self._running:
             return
-        try:
-            self._client.clear_history()
-        except Exception as exc:
-            self._output.output_status("error", f"Prompt-continuation clear_history failed: {exc}")
+        if not self._backend_session_initialized:
+            try:
+                self._client.clear_history()
+            except Exception as exc:
+                self._output.output_status(
+                    "error",
+                    f"Prompt-continuation clear_history failed: {exc}",
+                )
+            else:
+                self._backend_session_initialized = True
 
         while self._running:
             try:
@@ -555,7 +593,7 @@ class PromptContinuationRealtimeService:
                             self._output.output_status("ready", "Prompt-continuation accompaniment is playable")
                 except Exception as exc:
                     self._output.output_status("error", f"Prompt-continuation status/playable failed: {exc}")
-                    self._sleep(self._protocol_poll_interval_s)
+                    self._sleep_for(self._protocol_poll_interval_s)
 
     def _drain_user_events(self) -> list[MusicalEvent]:
         drained: list[MusicalEvent] = []
@@ -1457,11 +1495,17 @@ class PromptContinuationRealtimeService:
             deadline_time = target_time + self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO
             delay = target_time - self._now()
             if delay > 0:
-                self._sleep(delay)
+                self._sleep_for(delay)
+            if not self._running:
+                break
 
             mt = MusicalTime.from_tick(tick, self._tempo)
             self._output.output_tick(tick=tick, bar=mt.bar, beat=mt.beat)
-            self._sleep(self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO)
+            self._sleep_for(
+                self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO
+            )
+            if not self._running:
+                break
 
             self._enqueue_source_tick_events(tick)
             self._drain_user_events()
@@ -1506,6 +1550,7 @@ class PromptContinuationRealtimeService:
             return
         if self._source_tick_prepare is not None:
             self._source_tick_prepare()
+        self._stop_event.clear()
         self._running = True
         session_start_time = self._now()
         count_in_seconds = self._tempo.tick_to_seconds(self._count_in_ticks)
@@ -1530,22 +1575,58 @@ class PromptContinuationRealtimeService:
         self._protocol_thread.start()
 
     def stop(self) -> None:
-        if not self._running:
+        workers = (
+            self._protocol_thread,
+            self._tick_thread,
+            self._input_thread,
+        )
+        if not self._running and all(worker is None for worker in workers):
             return
         self._running = False
+        self._stop_event.set()
         try:
             self._input.close()
         except Exception:
             pass
+
+        current = threading.current_thread()
+        join_deadline = time.monotonic() + self._worker_join_timeout_s
+        for worker in workers:
+            if worker is None or worker is current or worker.ident is None:
+                continue
+            remaining = max(0.0, join_deadline - time.monotonic())
+            worker.join(timeout=remaining)
+
+        alive_workers = [
+            worker.name
+            for worker in workers
+            if worker is not None and worker is not current and worker.is_alive()
+        ]
+        if alive_workers:
+            raise RuntimeError(
+                "prompt-continuation workers did not stop before timeout: "
+                + ", ".join(alive_workers)
+            )
+
+        self._event_q = queue.Queue()
+        self._control_q = queue.Queue()
+        self._playable_q = queue.Queue()
+        self._prompt_events.clear()
+        self._pending_append_events.clear()
+        self._start_enqueued = False
+        self._last_append_observed_tick = 0
+        self._scheduler.clear_future_events(from_tick=0)
+        self._runtime = None
+        self._protocol_thread = None
+        self._tick_thread = None
+        self._input_thread = None
+        self._backend_session_initialized = False
+
         try:
             self._output.output_status("stopped", "")
+        except Exception:
+            pass
+        try:
             self._output.close()
         except Exception:
             pass
-
-        if self._protocol_thread is not None:
-            self._protocol_thread.join(timeout=1.0)
-        if self._tick_thread is not None:
-            self._tick_thread.join(timeout=1.0)
-        if self._input_thread is not None:
-            self._input_thread.join(timeout=1.0)

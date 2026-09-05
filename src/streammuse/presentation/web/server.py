@@ -298,22 +298,23 @@ def _stop_service_locked() -> bool:
         return False
 
     _lifecycle_state = "stopping"
-    stop_error: Exception | None = None
     try:
         runtime.stop()
-    except Exception as exc:
-        stop_error = exc
+    except Exception:
+        # Keep the old runtime and sinks installed if a worker has not stopped.
+        # A later Stop/Start can retry, but a new backend session must not race
+        # an old protocol worker.
+        _lifecycle_state = "stop_failed"
+        raise
+
+    try:
+        runtime.cleanup()
     finally:
-        try:
-            runtime.cleanup()
-        finally:
-            _runtime = None
-            _service = None
-            _composite_sink = None
-            _ws_sink = None
-            _lifecycle_state = "idle"
-    if stop_error is not None:
-        raise stop_error
+        _runtime = None
+        _service = None
+        _composite_sink = None
+        _ws_sink = None
+        _lifecycle_state = "idle"
     return True
 
 

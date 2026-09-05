@@ -158,6 +158,13 @@ class RuntimeSession:
         }
         recorder(provenance)
         self.metadata["prompt_continuation_session_seed"] = provenance
+        mark_initialized = getattr(
+            self.service,
+            "mark_backend_session_initialized",
+            None,
+        )
+        if callable(mark_initialized):
+            mark_initialized()
         self._prompt_session_initialized = True
 
     def stop(self) -> None:
