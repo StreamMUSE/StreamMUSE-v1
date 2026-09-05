@@ -295,8 +295,8 @@ def test_runtime_session_records_server_generated_seeds_before_service_start(
         "success": True,
         "prompt_requested_seed": 17,
         "prompt_effective_seed": 17,
-        "continuation_requested_seed": 23,
-        "continuation_effective_seed": 23,
+        "continuation_requested_seed": 17,
+        "continuation_effective_seed": 17,
         "prompt_seed_source": "system",
         "continuation_seed_source": "system",
         "session_id": "server-session",
@@ -348,7 +348,7 @@ def test_runtime_session_records_server_generated_seeds_before_service_start(
     ]
     assert session.metadata["prompt_continuation_session_seed"][
         "continuation_effective_seed"
-    ] == 23
+    ] == 17
 
 
 def test_runtime_session_without_audit_logger_does_not_initialize_prompt_session() -> None:

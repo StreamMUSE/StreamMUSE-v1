@@ -167,7 +167,7 @@ def test_prompt_continuation_replay_audit_endpoint_is_read_only(monkeypatch):
 def test_prompt_continuation_session_initialize_generates_fresh_server_seeds(
     monkeypatch,
 ):
-    generated = iter((101, 202))
+    generated = []
     calls = []
 
     class _SessionBackend:
@@ -185,7 +185,11 @@ def test_prompt_continuation_session_initialize_generates_fresh_server_seeds(
             }
 
     monkeypatch.delenv("LEKAI_ENABLE_DEBUG_RESET", raising=False)
-    monkeypatch.setattr(server_lekai, "_new_session_seed", lambda: next(generated))
+    monkeypatch.setattr(
+        server_lekai,
+        "_new_session_seed",
+        lambda: generated.append(101) or 101,
+    )
     monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _SessionBackend())
 
     response = TestClient(app).post(
@@ -194,13 +198,14 @@ def test_prompt_continuation_session_initialize_generates_fresh_server_seeds(
     )
 
     assert response.status_code == 200
-    assert calls == [(101, 202)]
+    assert generated == [101]
+    assert calls == [(101, 101)]
     assert response.json() == {
         "success": True,
         "prompt_requested_seed": 101,
         "prompt_effective_seed": 101,
-        "continuation_requested_seed": 202,
-        "continuation_effective_seed": 202,
+        "continuation_requested_seed": 101,
+        "continuation_effective_seed": 101,
         "prompt_seed_source": "system",
         "continuation_seed_source": "system",
         "session_id": "pc-session",
@@ -242,6 +247,38 @@ def test_prompt_continuation_session_initialize_accepts_saved_replay_seeds(
     assert payload["continuation_effective_seed"] == 23
     assert payload["prompt_seed_source"] == "requested"
     assert payload["continuation_seed_source"] == "requested"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"prompt_seed": 17},
+        {"continuation_seed": 23},
+    ],
+)
+def test_prompt_continuation_session_initialize_rejects_partial_seed_pair(
+    monkeypatch,
+    payload,
+):
+    class _UnexpectedBackend:
+        def reset_session(self, **kwargs):
+            pytest.fail(f"partial seed pair reached backend: {kwargs}")
+
+    monkeypatch.setattr(
+        server_lekai,
+        "prompt_continuation_backend",
+        _UnexpectedBackend(),
+    )
+
+    response = TestClient(app).post(
+        "/prompt_continuation/session/initialize",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert "must either both be supplied or both be omitted" in response.json()[
+        "detail"
+    ]
 
 
 def test_prompt_continuation_poll_endpoints_contract():

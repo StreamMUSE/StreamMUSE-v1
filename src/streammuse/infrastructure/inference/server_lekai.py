@@ -537,20 +537,23 @@ async def prompt_continuation_replay_audit() -> PromptContinuationReplayAuditRes
 async def prompt_continuation_initialize_session(
     request: PromptContinuationSessionInitializeRequest,
 ) -> PromptContinuationSessionInitializeResponse:
+    if (request.prompt_seed is None) != (request.continuation_seed is None):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "prompt_seed and continuation_seed must either both be supplied "
+                "or both be omitted"
+            ),
+        )
     prompt_seed_source = "requested" if request.prompt_seed is not None else "system"
-    continuation_seed_source = (
-        "requested" if request.continuation_seed is not None else "system"
-    )
-    requested_prompt_seed = (
-        int(request.prompt_seed)
-        if request.prompt_seed is not None
-        else _new_session_seed()
-    )
-    requested_continuation_seed = (
-        int(request.continuation_seed)
-        if request.continuation_seed is not None
-        else _new_session_seed()
-    )
+    continuation_seed_source = prompt_seed_source
+    if request.prompt_seed is None:
+        requested_prompt_seed = _new_session_seed()
+        requested_continuation_seed = requested_prompt_seed
+    else:
+        assert request.continuation_seed is not None
+        requested_prompt_seed = int(request.prompt_seed)
+        requested_continuation_seed = int(request.continuation_seed)
     result = prompt_continuation_backend.reset_session(
         prompt_seed=requested_prompt_seed,
         continuation_seed=requested_continuation_seed,

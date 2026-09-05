@@ -16,8 +16,12 @@ the pipeline is not sufficient.
 An ordinary Prompt+Continuation Web Start requires no seed input. Before the
 clock, MIDI input, or model protocol starts, the RuntimeSession calls the normal
 `/prompt_continuation/session/initialize` lifecycle endpoint. The server creates
-fresh system-random Prompt and Continuation seeds and returns their requested
-and effective values together with the server session ID and epoch.
+a fresh system-random session seed, applies it to both Prompt and Continuation,
+and returns their requested and effective values together with the server
+session ID and epoch. This shared default is directly reproducible through the
+matched runner's existing single `--seeds` trial interface. Callers may still
+provide an explicit, distinct Prompt/Continuation seed pair; supplying only one
+member of the pair is rejected with HTTP 422.
 
 The ORIGINAL session stores those values in
 `prompt_continuation_session_seed.json`. A replay harness must read the two
