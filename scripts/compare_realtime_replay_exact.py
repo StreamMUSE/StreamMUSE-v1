@@ -49,6 +49,17 @@ CONTINUATION_OUTPUT_FIELDS = (
     "empty_success",
 )
 
+PROMPT_OUTPUT_SELECTION_FIELDS = (
+    "selection_mode",
+    "candidate_count",
+    "selected_candidate_number",
+    "rule_s_id",
+    "rule_s_recommended_candidate_number",
+    "eligible_candidate_count",
+    "selection_fallback_reason",
+    "ranked_candidate_numbers",
+)
+
 class EvidenceError(ValueError):
     """Raised when a session lacks evidence required for exact comparison."""
 
@@ -287,6 +298,93 @@ def _prompt_output_evidence(record: Mapping[str, Any]) -> dict[str, Any]:
     return output
 
 
+def _prompt_generated_output_evidence(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract generated-token and discrete selection evidence only.
+
+    The strict prompt comparison intentionally retains all scores and features.
+    This narrower view answers whether candidate/final token sequences and the
+    resulting discrete selection/ranking were identical, without treating
+    timings or numerically insignificant PPL metadata as generated output.
+    """
+
+    output: dict[str, Any] = {
+        "generated_tokens": _require_token_list(record, "generated_tokens"),
+        "new_tokens": _require_token_list(record, "new_tokens"),
+    }
+    for field in PROMPT_OUTPUT_SELECTION_FIELDS:
+        if field in record:
+            output[field] = record[field]
+
+    candidates = record.get("prompt_candidates")
+    if candidates is not None:
+        if not isinstance(candidates, list):
+            raise EvidenceError("prompt_candidates must be an ordered list")
+        candidate_tokens: list[dict[str, Any]] = []
+        candidate_ranking: list[dict[str, Any]] = []
+        for index, candidate in enumerate(candidates):
+            if not isinstance(candidate, dict):
+                raise EvidenceError(f"prompt candidate {index} must be a JSON object")
+            identity = {
+                field: candidate[field]
+                for field in (
+                    "candidate_number",
+                    "prompt_token_hash",
+                    "generated_token_count",
+                )
+                if field in candidate
+            }
+            candidate_tokens.append(identity)
+
+            ranking = {
+                field: value
+                for field, value in candidate.items()
+                if "rank" in field and "score" not in field
+            }
+            for field in ("selected", "selection_status"):
+                if field in candidate:
+                    ranking[field] = candidate[field]
+            candidate_ranking.append(
+                {
+                    "candidate_number": candidate.get("candidate_number"),
+                    **ranking,
+                }
+            )
+        output["candidate_tokens"] = candidate_tokens
+        output["candidate_ranking"] = candidate_ranking
+    return output
+
+
+def _continuation_raw_generated_output_evidence(
+    record: Mapping[str, Any], index: int
+) -> dict[str, Any]:
+    output = {
+        "raw_token_digest": _require_continuation_field(
+            record, "raw_token_digest", index
+        )
+    }
+    raw_tokens = record.get("raw_tokens")
+    if raw_tokens is not None:
+        if not isinstance(raw_tokens, list) or any(
+            isinstance(token, bool) or not isinstance(token, int)
+            for token in raw_tokens
+        ):
+            raise EvidenceError(
+                f"continuation generation {index} field raw_tokens must be an "
+                "integer list"
+            )
+        output["raw_tokens"] = list(raw_tokens)
+    return output
+
+
+def _continuation_decoded_output_evidence(
+    record: Mapping[str, Any], index: int
+) -> dict[str, Any]:
+    return {
+        field: _require_continuation_field(record, field, index)
+        for field in ("token_decode_digest", "output_event_digest", "empty_success")
+    }
+
+
 def _require_continuation_field(
     record: Mapping[str, Any], field: str, index: int
 ) -> Any:
@@ -514,6 +612,14 @@ def _load_session(session_dir: Path) -> dict[str, Any]:
         }
         for index, record in enumerate(continuation)
     ]
+    continuation_raw_generated_output = [
+        _continuation_raw_generated_output_evidence(record, index)
+        for index, record in enumerate(continuation)
+    ]
+    continuation_decoded_output = [
+        _continuation_decoded_output_evidence(record, index)
+        for index, record in enumerate(continuation)
+    ]
     trace_seed_provenance = _seed_provenance(trace)
     session_seed_provenance = _seed_provenance(session_seed_document)
     for field in (
@@ -579,8 +685,11 @@ def _load_session(session_dir: Path) -> dict[str, Any]:
         ],
         "prompt_input": {"prompt_tokens": prompt_evidence["prompt_tokens"]},
         "prompt_output": _prompt_output_evidence(prompt),
+        "prompt_generated_output": _prompt_generated_output_evidence(prompt),
         "continuation_input": continuation_input,
         "continuation_output": continuation_output,
+        "continuation_raw_generated_output": continuation_raw_generated_output,
+        "continuation_decoded_output": continuation_decoded_output,
         "seed_provenance": session_seed_provenance,
         "trace_capture_complete": True,
         "manifest_present": (session_dir / MANIFEST_NAME).is_file(),
@@ -599,6 +708,10 @@ def _invalid_result(
         "prompt_output_exact": False,
         "continuation_input_exact": False,
         "continuation_output_exact": False,
+        "prompt_generated_token_sequence_exact": False,
+        "continuation_raw_generated_tokens_exact": False,
+        "continuation_decoded_output_events_exact": False,
+        "inference_output_exact": False,
         "seed_provenance_complete": False,
         "trace_capture_complete": False,
         "seed_provenance_exact": False,
@@ -608,6 +721,13 @@ def _invalid_result(
             "component": "evidence",
             "reason": "missing_or_invalid_evidence",
             "detail": errors[0],
+        },
+        "strict_differences": {
+            "evidence": {
+                "component": "evidence",
+                "reason": "missing_or_invalid_evidence",
+                "detail": errors[0],
+            }
         },
         "errors": errors,
     }
@@ -671,6 +791,7 @@ def compare_session_directories(
         "trace_capture_complete": True,
         "comparable": True,
         "first_mismatch": None,
+        "strict_differences": {},
         "errors": [],
         "evidence": {
             "original_protocol_request_count": len(
@@ -703,6 +824,7 @@ def compare_session_directories(
     result["seed_provenance_exact"] = seed_exact
     if seed_difference is not None:
         result["first_mismatch"] = seed_difference
+        result["strict_differences"]["seed_provenance"] = seed_difference
 
     for component, result_field, original_value, replay_value in components:
         exact, difference = _compare_component(
@@ -711,6 +833,35 @@ def compare_session_directories(
         result[result_field] = exact
         if result["first_mismatch"] is None and difference is not None:
             result["first_mismatch"] = difference
+        if difference is not None:
+            result["strict_differences"][component] = difference
+
+    output_components = (
+        (
+            "prompt_generated_token_sequence_exact",
+            original_evidence["prompt_generated_output"],
+            replay_evidence["prompt_generated_output"],
+        ),
+        (
+            "continuation_raw_generated_tokens_exact",
+            original_evidence["continuation_raw_generated_output"],
+            replay_evidence["continuation_raw_generated_output"],
+        ),
+        (
+            "continuation_decoded_output_events_exact",
+            original_evidence["continuation_decoded_output"],
+            replay_evidence["continuation_decoded_output"],
+        ),
+    )
+    for result_field, original_value, replay_value in output_components:
+        exact, _difference = _compare_component(
+            result_field, original_value, replay_value
+        )
+        result[result_field] = exact
+    result["inference_output_exact"] = all(
+        result[result_field]
+        for result_field, _original_value, _replay_value in output_components
+    )
 
     result["model_exact"] = bool(
         result["seed_provenance_exact"]

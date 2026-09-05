@@ -77,6 +77,7 @@ def _continuation_generation(
         "prompt_token_digest": f"prompt-{tick}",
         "part0_token_digest": f"part0-{tick}",
         "raw_token_digest": f"raw-{tick}",
+        "raw_tokens": [tick, tick + 1],
         "token_decode_digest": f"decode-{tick}",
         "output_event_digest": f"events-{tick}",
         "empty_success": empty,
@@ -237,6 +238,11 @@ def test_exact_comparison_uses_direct_trace_and_ignores_ack_timing_and_ids(
     assert saved["prompt_output_exact"] is True
     assert saved["continuation_input_exact"] is True
     assert saved["continuation_output_exact"] is True
+    assert saved["prompt_generated_token_sequence_exact"] is True
+    assert saved["continuation_raw_generated_tokens_exact"] is True
+    assert saved["continuation_decoded_output_events_exact"] is True
+    assert saved["inference_output_exact"] is True
+    assert saved["strict_differences"] == {}
     assert saved["first_mismatch"] is None
 
 
@@ -262,6 +268,92 @@ def test_single_prompt_mode_does_not_require_rule_s_candidate_evidence(tmp_path)
     result = comparator.compare_session_directories(original, replay)
     assert result["comparable"] is True
     assert result["model_exact"] is True
+
+
+def test_ppl_metadata_difference_remains_strict_but_generated_output_is_exact(
+    tmp_path,
+):
+    original_trace = _model_trace(session_id="original-session", session_epoch=1)
+    replay_trace = copy.deepcopy(original_trace)
+    replay_trace["runtime_info"]["session_id"] = "replay-session"
+    replay_trace["prompt_generation_log"]["prompt_candidates"][0][
+        "prompt_ppl"
+    ] += 0.00061
+    original = _write_session(tmp_path / "original", model_trace=original_trace)
+    replay = _write_session(tmp_path / "replay", model_trace=replay_trace)
+
+    result = comparator.compare_session_directories(original, replay)
+
+    assert result["model_exact"] is False
+    assert result["prompt_output_exact"] is False
+    assert result["prompt_generated_token_sequence_exact"] is True
+    assert result["continuation_raw_generated_tokens_exact"] is True
+    assert result["continuation_decoded_output_events_exact"] is True
+    assert result["inference_output_exact"] is True
+    assert result["strict_differences"]["prompt_output"]["path"].endswith(
+        ".prompt_ppl"
+    )
+
+
+def test_protocol_input_difference_remains_visible_when_output_is_exact(tmp_path):
+    requests = _request_rows(
+        request_id="stable-request",
+        session_id="stable-session",
+        observed_at=1.0,
+    )
+    trace = _model_trace(session_id="stable-session", session_epoch=1)
+    original = _write_session(
+        tmp_path / "original",
+        request_rows=copy.deepcopy(requests),
+        model_trace=copy.deepcopy(trace),
+    )
+    replay_requests = copy.deepcopy(requests)
+    replay_requests[0]["request"]["melody_events"][0]["velocity"] = 64
+    replay = _write_session(
+        tmp_path / "replay",
+        request_rows=replay_requests,
+        model_trace=copy.deepcopy(trace),
+    )
+
+    result = comparator.compare_session_directories(original, replay)
+
+    assert result["protocol_request_exact"] is False
+    assert result["model_exact"] is False
+    assert result["inference_output_exact"] is True
+    assert result["strict_differences"]["protocol_request"]["path"].endswith(
+        ".velocity"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "result_field"),
+    [
+        (
+            "raw_tokens",
+            [999],
+            "continuation_raw_generated_tokens_exact",
+        ),
+        (
+            "output_event_digest",
+            "different-events",
+            "continuation_decoded_output_events_exact",
+        ),
+    ],
+)
+def test_inference_output_exact_tracks_continuation_output_kinds(
+    tmp_path, field, replacement, result_field
+):
+    original_trace = _model_trace(session_id="original-session", session_epoch=1)
+    replay_trace = copy.deepcopy(original_trace)
+    replay_trace["runtime_info"]["session_id"] = "replay-session"
+    replay_trace["continuation_generations"][0][field] = replacement
+    original = _write_session(tmp_path / "original", model_trace=original_trace)
+    replay = _write_session(tmp_path / "replay", model_trace=replay_trace)
+
+    result = comparator.compare_session_directories(original, replay)
+
+    assert result[result_field] is False
+    assert result["inference_output_exact"] is False
 
 
 @pytest.mark.parametrize(

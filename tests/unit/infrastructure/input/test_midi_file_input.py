@@ -219,3 +219,35 @@ def test_midi_file_source_tick_replay_returns_only_the_requested_tick(
     ]
     assert src.read_events_at_tick(4) == []
     assert len(parse_calls) == 1
+
+
+def test_midi_file_source_tick_replay_preserves_note_on_velocity(tmp_path):
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("note_on", note=60, velocity=37, time=0))
+    track.append(mido.Message("note_off", note=60, velocity=19, time=480))
+
+    path = tmp_path / "velocity.mid"
+    mid.save(str(path))
+    cfg = MidiFileInputConfig(bpm=120.0, ticks_per_beat=4)
+    source_tick = MidiFileInput(str(path), config=cfg, velocity_default=64)
+
+    note_on = source_tick.read_events_at_tick(0)
+    note_off = source_tick.read_events_at_tick(4)
+
+    assert [(event.event_type, event.velocity) for event in note_on] == [
+        (EventType.NOTE_ON, 37)
+    ]
+    assert [(event.event_type, event.velocity) for event in note_off] == [
+        (EventType.NOTE_OFF, 0)
+    ]
+
+    wall_clock = MidiFileInput(
+        str(path),
+        config=cfg,
+        velocity_default=64,
+        now=lambda: 0.0,
+        sleep=lambda _delay: None,
+    )
+    assert [event.velocity for event in wall_clock.read_events()] == [64, 0]

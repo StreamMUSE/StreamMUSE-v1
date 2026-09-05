@@ -70,7 +70,7 @@ class MidiFileInput:
         quantization is identical to what the model was trained on.
 
         Returns (notes, resolution, actual_max_tick).
-        Each note dict has: pitch, tick, duration.
+        Each note dict has: pitch, tick, duration, velocity.
         """
         from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
 
@@ -87,7 +87,14 @@ class MidiFileInput:
                 continue
             if program is not None and n.get("program") != program:
                 continue
-            notes.append({"pitch": n["pitch"], "tick": n["tick"], "duration": n["duration"]})
+            notes.append(
+                {
+                    "pitch": n["pitch"],
+                    "tick": n["tick"],
+                    "duration": n["duration"],
+                    "velocity": n["velocity"],
+                }
+            )
 
         notes.sort(key=lambda n: (n["tick"], n["pitch"]))
         if max_tick is not None:
@@ -131,7 +138,11 @@ class MidiFileInput:
                     tick=onset if preserve_source_ticks else 0,
                     pitch=int(n["pitch"]),
                     event_type=EventType.NOTE_ON,
-                    velocity=self._velocity_default,
+                    velocity=(
+                        int(n.get("velocity", self._velocity_default))
+                        if preserve_source_ticks
+                        else self._velocity_default
+                    ),
                 )
             )
             schedule.setdefault(offset, []).append(
