@@ -51,6 +51,7 @@ class MidiFileInput:
         self._now = now
         self._sleep = sleep
         self._closed = False
+        self._source_tick_schedule: Optional[Dict[int, List[MusicalEvent]]] = None
 
     @staticmethod
     def _midi_to_notes(
@@ -94,11 +95,7 @@ class MidiFileInput:
             actual_max_tick = min(actual_max_tick, int(max_tick))
         return notes, beat_div, int(actual_max_tick)
 
-    def read_events(self) -> Iterator[MusicalEvent]:
-        # Anchor playback before parsing so file-conversion latency cannot shift
-        # the entire simulated performance relative to the service timeline.
-        start_time = self._now()
-        seconds_per_tick = self._config.seconds_per_tick()
+    def _build_schedule(self, *, preserve_source_ticks: bool) -> Dict[int, List[MusicalEvent]]:
         notes, _resolution, _max_tick = self._midi_to_notes(
             self._path,
             beat_div=self._config.ticks_per_beat,
@@ -131,7 +128,7 @@ class MidiFileInput:
 
             schedule.setdefault(onset, []).append(
                 MusicalEvent(
-                    tick=0,
+                    tick=onset if preserve_source_ticks else 0,
                     pitch=int(n["pitch"]),
                     event_type=EventType.NOTE_ON,
                     velocity=self._velocity_default,
@@ -139,12 +136,38 @@ class MidiFileInput:
             )
             schedule.setdefault(offset, []).append(
                 MusicalEvent(
-                    tick=0,
+                    tick=offset if preserve_source_ticks else 0,
                     pitch=int(n["pitch"]),
                     event_type=EventType.NOTE_OFF,
                     velocity=0,
                 )
             )
+        return schedule
+
+    def prepare_source_tick_replay(self) -> None:
+        """Parse the MIDI before the realtime timeline starts."""
+        if self._source_tick_schedule is None:
+            self._source_tick_schedule = self._build_schedule(
+                preserve_source_ticks=True
+            )
+
+    def read_events_at_tick(self, tick: int) -> List[MusicalEvent]:
+        """Return only events quantized to ``tick``, at most once."""
+        source_tick = int(tick)
+        if source_tick < 0:
+            raise ValueError("source tick must be >= 0")
+        if self._closed:
+            return []
+        self.prepare_source_tick_replay()
+        assert self._source_tick_schedule is not None
+        return list(self._source_tick_schedule.pop(source_tick, []))
+
+    def read_events(self) -> Iterator[MusicalEvent]:
+        # Anchor playback before parsing so file-conversion latency cannot shift
+        # the entire simulated performance relative to the service timeline.
+        start_time = self._now()
+        seconds_per_tick = self._config.seconds_per_tick()
+        schedule = self._build_schedule(preserve_source_ticks=False)
 
         ticks = sorted(schedule.keys())
         for t in ticks:

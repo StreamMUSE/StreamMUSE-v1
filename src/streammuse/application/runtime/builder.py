@@ -139,6 +139,7 @@ class RuntimeSessionBuilder:
             "generation_length_frames": self.config.inference.generation_length_frames,
             "session_artifact_tier": self.config.output.session_artifact_tier,
             "midi_file_trim_leading_rest": self.config.input.midi_file_trim_leading_rest,
+            "midi_file_source_tick_mode": self.config.input.midi_file_source_tick_mode,
             "rap_enabled": self.config.rap.topic is not None,
             "rap_topic": self.config.rap.topic,
             "rap_pattern": self.config.rap.pattern,
@@ -191,6 +192,7 @@ class RuntimeSessionBuilder:
                 input_quantization_trace_enabled=(
                     self.config.input_quantization_trace_enabled
                 ),
+                source_tick_input=self.config.input.midi_file_source_tick_mode,
                 model_condition_bpm=self._effective_model_bpm(),
             )
         else:

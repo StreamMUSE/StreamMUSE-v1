@@ -38,6 +38,7 @@ class InputConfig:
     midi_file_path: Optional[str] = None
     midi_file_delay_ticks: int = 0
     midi_file_trim_leading_rest: bool = False
+    midi_file_source_tick_mode: bool = False
     injection_file: Optional[str] = None
     injection_length_ticks: int = 0
     injection_acc_file: Optional[str] = None

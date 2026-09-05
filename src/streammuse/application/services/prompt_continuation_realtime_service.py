@@ -95,6 +95,7 @@ class PromptContinuationRealtimeService:
         count_in_beats: int = 0,
         input_snap_forward_fraction: float = 0.0,
         input_quantization_trace_enabled: bool = False,
+        source_tick_input: bool = False,
         model_condition_bpm: int | None = None,
         protocol_poll_interval_s: float = 0.05,
         now: Callable[[], float] = time.time,
@@ -124,6 +125,21 @@ class PromptContinuationRealtimeService:
         self._input_quantization_trace_enabled = bool(
             input_quantization_trace_enabled
         )
+        self._source_tick_reader: Callable[[int], list[MusicalEvent]] | None = None
+        self._source_tick_prepare: Callable[[], None] | None = None
+        if source_tick_input:
+            source_tick_reader = getattr(input_source, "read_events_at_tick", None)
+            if not callable(source_tick_reader):
+                raise ValueError(
+                    "source_tick_input requires an input source with "
+                    "read_events_at_tick(tick)"
+                )
+            self._source_tick_reader = source_tick_reader
+            source_tick_prepare = getattr(
+                input_source, "prepare_source_tick_replay", None
+            )
+            if callable(source_tick_prepare):
+                self._source_tick_prepare = source_tick_prepare
         self._model_condition_bpm = (
             int(model_condition_bpm)
             if model_condition_bpm is not None
@@ -555,6 +571,19 @@ class PromptContinuationRealtimeService:
             else:
                 self._pending_append_events.append(event)
         return drained
+
+    def _enqueue_source_tick_events(self, tick: int) -> None:
+        if self._source_tick_reader is None:
+            return
+        for event in self._source_tick_reader(int(tick)):
+            if int(event.tick) != int(tick):
+                raise ValueError(
+                    "source-tick input returned an event outside the requested "
+                    f"tick: requested={tick}, event={event.tick}"
+                )
+            self._event_q.put(
+                stamp_user_input_event_at_tick(event, tick=int(event.tick))
+            )
 
     def _maybe_enqueue_start(self, observed_until_tick: int) -> None:
         if self._start_enqueued:
@@ -1434,6 +1463,7 @@ class PromptContinuationRealtimeService:
             self._output.output_tick(tick=tick, bar=mt.bar, beat=mt.beat)
             self._sleep(self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO)
 
+            self._enqueue_source_tick_events(tick)
             self._drain_user_events()
             observed_until_tick = tick + 1
             # The prompt window [0, prompt_length_ticks) is not fully observed
@@ -1474,6 +1504,8 @@ class PromptContinuationRealtimeService:
     def start(self, *, max_ticks: int | None = None) -> None:
         if self._running:
             return
+        if self._source_tick_prepare is not None:
+            self._source_tick_prepare()
         self._running = True
         session_start_time = self._now()
         count_in_seconds = self._tempo.tick_to_seconds(self._count_in_ticks)
@@ -1484,11 +1516,16 @@ class PromptContinuationRealtimeService:
         self._input_quantization_sequence = 0
         self._output.output_status("running", "prompt-continuation")
 
-        self._input_thread = threading.Thread(target=self._input_worker, daemon=True)
+        self._input_thread = (
+            None
+            if self._source_tick_reader is not None
+            else threading.Thread(target=self._input_worker, daemon=True)
+        )
         self._tick_thread = threading.Thread(target=self._tick_loop, kwargs={"max_ticks": max_ticks}, daemon=True)
         self._protocol_thread = threading.Thread(target=self._protocol_worker, daemon=True)
 
-        self._input_thread.start()
+        if self._input_thread is not None:
+            self._input_thread.start()
         self._tick_thread.start()
         self._protocol_thread.start()
 

@@ -170,3 +170,52 @@ def test_midi_file_input_trim_leading_rest_preserves_preparse_clock_anchor(tmp_p
     assert [event.pitch for event in events] == [64, 64]
     assert sleeps
     assert sleeps[0] == pytest.approx(1 * cfg.seconds_per_tick())
+
+
+def test_midi_file_source_tick_replay_returns_only_the_requested_tick(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "source_ticks.mid"
+    path.write_bytes(b"placeholder")
+    parse_calls = []
+    cfg = MidiFileInputConfig(bpm=120.0, ticks_per_beat=4)
+    src = MidiFileInput(
+        str(path),
+        config=cfg,
+        now=lambda: (_ for _ in ()).throw(AssertionError("wall clock used")),
+        sleep=lambda _delay: (_ for _ in ()).throw(AssertionError("sleep used")),
+    )
+
+    def _parse(*args, **kwargs):
+        parse_calls.append((args, kwargs))
+        return (
+            [
+                {"pitch": 60, "tick": 4, "duration": 2},
+                {"pitch": 62, "tick": 5, "duration": 1},
+            ],
+            4,
+            6,
+        )
+
+    monkeypatch.setattr(src, "_midi_to_notes", _parse)
+
+    src.prepare_source_tick_replay()
+
+    assert src.read_events_at_tick(3) == []
+    assert [
+        (event.event_type, event.pitch, event.tick)
+        for event in src.read_events_at_tick(4)
+    ] == [(EventType.NOTE_ON, 60, 4)]
+    assert [
+        (event.event_type, event.pitch, event.tick)
+        for event in src.read_events_at_tick(5)
+    ] == [(EventType.NOTE_ON, 62, 5)]
+    assert [
+        (event.event_type, event.pitch, event.tick)
+        for event in src.read_events_at_tick(6)
+    ] == [
+        (EventType.NOTE_OFF, 60, 6),
+        (EventType.NOTE_OFF, 62, 6),
+    ]
+    assert src.read_events_at_tick(4) == []
+    assert len(parse_calls) == 1

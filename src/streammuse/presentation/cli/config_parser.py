@@ -57,6 +57,14 @@ def parse_args() -> argparse.Namespace:
         help="Start MIDI-file playback from the first retained note instead of preserving leading silence",
     )
     parser.add_argument(
+        "--midi-file-source-tick-mode",
+        action="store_true",
+        help=(
+            "Synchronously replay pre-quantized MIDI ticks in prompt-continuation "
+            "mode instead of quantizing file events from wall-clock arrival"
+        ),
+    )
+    parser.add_argument(
         "--injection-file",
         type=str,
         default=None,
@@ -313,6 +321,9 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
         midi_file_trim_leading_rest=bool(
             getattr(args, "midi_file_trim_leading_rest", False)
         ),
+        midi_file_source_tick_mode=bool(
+            getattr(args, "midi_file_source_tick_mode", False)
+        ),
         injection_file=getattr(args, "injection_file", None),
         injection_length_ticks=int(getattr(args, "injection_length", 0) or 0),
         injection_acc_file=getattr(args, "inject_acc_file", None),
@@ -414,6 +425,15 @@ def args_to_config(args: argparse.Namespace) -> ApplicationConfig:
     continuation_mode = getattr(args, "continuation_mode", "standard")
     if continuation_mode == "prompt_continuation" and rap_config.topic:
         raise ValueError("rap cannot be combined with prompt_continuation mode")
+    if input_config.midi_file_source_tick_mode:
+        if input_config.type != "midi_file":
+            raise ValueError(
+                "midi_file_source_tick_mode requires input_mode=midi_file"
+            )
+        if continuation_mode != "prompt_continuation":
+            raise ValueError(
+                "midi_file_source_tick_mode requires prompt_continuation mode"
+            )
 
     return ApplicationConfig(
         tempo=tempo,

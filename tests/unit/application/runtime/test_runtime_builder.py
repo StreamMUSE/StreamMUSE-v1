@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from streammuse.application.config import (
     ApplicationConfig,
     InferenceConfig,
+    InputConfig,
     OutputConfig,
     RapConfig,
     TempoConfig,
@@ -557,6 +558,40 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     assert service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.25
     assert service_cls.call_args.kwargs["model_condition_bpm"] == 91
     assert session.session_config["effective_model_bpm"] == 91
+
+
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+def test_builder_wires_midi_file_source_tick_opt_in(
+    input_factory,
+    tmp_path,
+) -> None:
+    config = ApplicationConfig(
+        input=InputConfig(
+            type="midi_file",
+            midi_file_path="melody.mid",
+            midi_file_source_tick_mode=True,
+        ),
+        continuation_mode="prompt_continuation",
+    )
+    service_cls = MagicMock(return_value=MagicMock(running=False))
+    input_factory.create.return_value = MagicMock()
+    builder = RuntimeSessionBuilder(
+        config=config,
+        log_dir=str(tmp_path),
+        prompt_client_override=MagicMock(),
+        output_sink_override=MagicMock(),
+    )
+
+    with patch.object(
+        builder,
+        "_prompt_continuation_service_cls",
+        return_value=service_cls,
+    ):
+        session = builder.build_cli()
+
+    assert service_cls.call_args.kwargs["source_tick_input"] is True
+    assert service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.0
+    assert session.session_config["midi_file_source_tick_mode"] is True
 
 
 @patch("streammuse.application.runtime.builder.InputSourceFactory")

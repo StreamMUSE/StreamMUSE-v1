@@ -139,6 +139,7 @@ def test_default_seed_contract_is_three_trials(matched_runner) -> None:
     assert args.time_signature_index == 0
     assert args.prompt_selection_mode == "rule_s"
     assert args.prompt_batch_candidates == 5
+    assert args.midi_file_source_tick_mode is False
 
 
 @pytest.mark.parametrize("mode", ["rule_s", "rule_s_v3"])
@@ -556,6 +557,10 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
         "candidate_count": 5,
         "prompt_length_ticks": 32,
     }
+    assert result["evaluation_contract"]["midi_file_source_tick_mode_by_system"] == {
+        "streammuse_v1_standard": False,
+        "streammuse_v2_prompt_continuation": False,
+    }
     assert result["summary"] == {"dry_run": 4}
     assert len(result["trials"]) == 4
     assert {row["piece_id"] for row in result["trials"]} == {"first"}
@@ -568,6 +573,8 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
         assert command[command.index("--tempo") + 1] == "120"
         assert command[command.index("--ticks-per-beat") + 1] == "4"
         assert command[command.index("--run-stop-tick") + 1] == "128"
+        assert "--midi-file-source-tick-mode" not in command
+        assert row["midi_file_source_tick_mode"] is False
     assert (output / "run_manifest.json").is_file()
     with (output / "eval_manifest.csv").open(
         "r", encoding="utf-8", newline=""
@@ -591,6 +598,9 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
             )
         )
         assert trial_manifest["checkpoint_conditioning"] == checkpoint_conditioning
+        assert trial_manifest["midi_file_source_tick_mode"] == row[
+            "midi_file_source_tick_mode"
+        ]
 
 
 def test_single_prompt_selection_manifest_records_effective_n1(
@@ -626,6 +636,7 @@ def test_single_prompt_selection_manifest_records_effective_n1(
             "0",
             "--prompt-selection-mode",
             "single",
+            "--midi-file-source-tick-mode",
             "--dry-run",
         ]
     )
@@ -637,3 +648,15 @@ def test_single_prompt_selection_manifest_records_effective_n1(
         "candidate_count": 1,
         "prompt_length_ticks": 32,
     }
+    assert result["evaluation_contract"]["midi_file_source_tick_mode_by_system"] == {
+        "streammuse_v2_prompt_continuation": True,
+    }
+    trial = result["trials"][0]
+    assert trial["midi_file_source_tick_mode"] is True
+    assert "--midi-file-source-tick-mode" in trial["client_command"]
+    trial_manifest = json.loads(
+        (Path(trial["trial_dir"]) / "trial_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert trial_manifest["midi_file_source_tick_mode"] is True

@@ -21,6 +21,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "midi_file_path": None,
         "midi_file_delay_ticks": 0,
         "midi_file_trim_leading_rest": False,
+        "midi_file_source_tick_mode": False,
         "injection_file": None,
         "injection_length": 0,
         "inject_acc_file": None,
@@ -79,6 +80,7 @@ def test_parse_args_defaults() -> None:
     assert config.tempo.beats_per_bar == 4
     assert config.input.type == "midi_device"
     assert config.input.midi_file_trim_leading_rest is False
+    assert config.input.midi_file_source_tick_mode is False
     assert config.input.injection_file is None
     assert config.input.injection_length_ticks == 0
     assert config.input.injection_acc_file is None
@@ -121,6 +123,27 @@ def test_cli_generation_settings_default_to_backend_configuration(monkeypatch) -
     assert args.top_p is None
     assert args.top_k is None
     assert args.repetition_penalty is None
+
+
+def test_cli_parses_midi_file_source_tick_opt_in(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "streammuse-cli",
+            "--input-mode",
+            "midi_file",
+            "--midi-file-path",
+            "melody.mid",
+            "--continuation-mode",
+            "prompt_continuation",
+            "--midi-file-source-tick-mode",
+        ],
+    )
+
+    config = args_to_config(parse_args())
+
+    assert config.input.midi_file_source_tick_mode is True
 
 
 def test_parse_args_exposes_rt_horizon_and_drain_contract(monkeypatch) -> None:
@@ -362,6 +385,39 @@ def test_args_to_config_midi_file() -> None:
     assert config.output.midi_file_output_path == "/path/to/output.mid"
     assert config.output.close_active_notes_on_finalize is False
     assert config.output.inference_log_detail == "full"
+
+
+def test_args_to_config_enables_midi_file_source_tick_mode() -> None:
+    config = args_to_config(
+        _make_args(
+            input_mode="midi_file",
+            midi_file_path="/path/to/song.mid",
+            midi_file_source_tick_mode=True,
+            continuation_mode="prompt_continuation",
+        )
+    )
+
+    assert config.input.midi_file_source_tick_mode is True
+
+
+@pytest.mark.parametrize(
+    ("input_mode", "continuation_mode"),
+    [
+        ("midi_device", "prompt_continuation"),
+        ("midi_file", "standard"),
+    ],
+)
+def test_args_to_config_restricts_source_tick_mode_to_prompt_midi_file(
+    input_mode: str, continuation_mode: str
+) -> None:
+    with pytest.raises(ValueError, match="midi_file_source_tick_mode requires"):
+        args_to_config(
+            _make_args(
+                input_mode=input_mode,
+                midi_file_source_tick_mode=True,
+                continuation_mode=continuation_mode,
+            )
+        )
 
 
 def test_args_to_config_metronome_fields() -> None:

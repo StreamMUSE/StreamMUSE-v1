@@ -112,6 +112,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--server-start-timeout-s", type=float, default=600.0)
     parser.add_argument("--trial-timeout-s", type=float, default=900.0)
+    parser.add_argument(
+        "--midi-file-source-tick-mode",
+        action="store_true",
+        help="Opt into deterministic source-tick MIDI replay for P+C trials",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -776,6 +781,7 @@ def build_cli_command(
     midi_path: Path,
     log_root: Path,
     base_url: str,
+    midi_file_source_tick_mode: bool = False,
 ) -> list[str]:
     continuation_mode = (
         "standard"
@@ -827,6 +833,8 @@ def build_cli_command(
     ]
     if continuation_mode == "prompt_continuation":
         command.extend(["--prompt-length-ticks", str(PROMPT_LENGTH_TICKS)])
+        if midi_file_source_tick_mode:
+            command.append("--midi-file-source-tick-mode")
     return command
 
 
@@ -1002,6 +1010,7 @@ def _trial_record(
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
     time_signature_index: int,
+    midi_file_source_tick_mode: bool = False,
 ) -> dict[str, Any]:
     return {
         "piece_id": piece.piece_id,
@@ -1012,6 +1021,10 @@ def _trial_record(
         "melody_input_path": str(piece.midi_path),
         "melody_input_sha256": piece.melody_input_sha256,
         "canonical_melody_input_sha256": piece.canonical_melody_input_sha256,
+        "midi_file_source_tick_mode": bool(
+            midi_file_source_tick_mode
+            and system_id.endswith("prompt_continuation")
+        ),
         "failure_reason": None,
         "trial_dir": str(trial_dir.resolve()),
         "requested_seeds": {
@@ -1049,6 +1062,7 @@ def run_trial(
     time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    midi_file_source_tick_mode: bool = False,
 ) -> dict[str, Any]:
     trial_dir.mkdir(parents=True, exist_ok=False)
     record = _trial_record(
@@ -1060,6 +1074,7 @@ def run_trial(
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
         time_signature_index=time_signature_index,
+        midi_file_source_tick_mode=midi_file_source_tick_mode,
     )
     record["run_status"] = "running"
     write_json(trial_dir / "trial_manifest.json", record)
@@ -1089,6 +1104,7 @@ def run_trial(
             midi_path=piece.midi_path,
             log_root=log_root,
             base_url=handle.base_url,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
         )
         client_env = build_client_environment(handle.system_id, reset_ack)
         record.update(
@@ -1168,6 +1184,7 @@ def _dry_run_trial(
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
     time_signature_index: int,
+    midi_file_source_tick_mode: bool = False,
 ) -> dict[str, Any]:
     trial_dir.mkdir(parents=True, exist_ok=False)
     record = _trial_record(
@@ -1179,6 +1196,7 @@ def _dry_run_trial(
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
         time_signature_index=time_signature_index,
+        midi_file_source_tick_mode=midi_file_source_tick_mode,
     )
     record.update(
         {
@@ -1189,6 +1207,7 @@ def _dry_run_trial(
                 midi_path=piece.midi_path,
                 log_root=trial_dir / "session_logs",
                 base_url=base_url,
+                midi_file_source_tick_mode=midi_file_source_tick_mode,
             ),
             "failure_reason": None,
         }
@@ -1228,6 +1247,7 @@ def _mark_failed_system_trials(
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
     time_signature_index: int,
+    midi_file_source_tick_mode: bool = False,
 ) -> None:
     for piece, seed in pending_trials:
         trial_dir = (
@@ -1247,6 +1267,7 @@ def _mark_failed_system_trials(
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
             time_signature_index=time_signature_index,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
         )
         record["run_status"] = "failed"
         record["failure_reason"] = reason
@@ -1275,6 +1296,9 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
     pieces = load_cohort_manifest(args.cohort_manifest, args.smoke_limit)
     seeds = _parse_unique_ints(args.seeds, "--seeds")
     systems = _parse_systems(args.systems)
+    midi_file_source_tick_mode = bool(
+        getattr(args, "midi_file_source_tick_mode", False)
+    )
     if args.server_start_timeout_s <= 0 or args.trial_timeout_s <= 0:
         raise ValueError("timeouts must be positive")
     output_root = args.output_root.expanduser().resolve()
@@ -1305,6 +1329,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
             time_signature_index=args.time_signature_index,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
         )
         for system_id in systems
         for piece in pieces
@@ -1331,6 +1356,13 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             "generation_interval_ticks": GENERATION_INTERVAL_TICKS,
             "generation_length_frames": GENERATION_LENGTH_FRAMES,
             "late_recovery": False,
+            "midi_file_source_tick_mode_by_system": {
+                system_id: bool(
+                    midi_file_source_tick_mode
+                    and system_id.endswith("prompt_continuation")
+                )
+                for system_id in systems
+            },
             "checkpoint_conditioning": _checkpoint_conditioning(
                 args.time_signature_index
             ),
@@ -1373,6 +1405,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         prompt_checkpoint=prompt_checkpoint,
                         continuation_checkpoint=continuation_checkpoint,
                         time_signature_index=args.time_signature_index,
+                        midi_file_source_tick_mode=midi_file_source_tick_mode,
                     )
                     _replace_trial(manifest, record)
                     persist_run_manifests(output_root, manifest)
@@ -1415,6 +1448,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         time_signature_index=args.time_signature_index,
                         prompt_selection_mode=args.prompt_selection_mode,
                         prompt_batch_candidates=prompt_candidate_count,
+                        midi_file_source_tick_mode=midi_file_source_tick_mode,
                     )
                     _replace_trial(manifest, record)
                     persist_run_manifests(output_root, manifest)
@@ -1439,6 +1473,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 prompt_checkpoint=prompt_checkpoint,
                 continuation_checkpoint=continuation_checkpoint,
                 time_signature_index=args.time_signature_index,
+                midi_file_source_tick_mode=midi_file_source_tick_mode,
             )
         finally:
             if handle is not None:

@@ -15,6 +15,8 @@ from streammuse.application.services.prompt_continuation_realtime_service import
 )
 from streammuse.domain.musical import EventType, MusicalEvent
 from streammuse.domain.timing import PlaybackScheduler, Tempo
+from streammuse.infrastructure.inference.lekai_model.MidiConverter import MidiConverter
+from streammuse.infrastructure.input.midi_file import MidiFileInput, MidiFileInputConfig
 
 
 class _NoopInput:
@@ -243,6 +245,185 @@ def test_prompt_input_worker_uses_one_service_clock_receipt_for_stamp_and_trace(
     assert row["application_received_time_s"] == pytest.approx(100.490)
     assert row["raw_tick"] == pytest.approx(3.92)
     assert row["signed_error_ms"] == pytest.approx(10.0)
+
+
+def test_prompt_source_tick_mode_requires_a_tick_addressable_input() -> None:
+    with pytest.raises(ValueError, match="read_events_at_tick"):
+        PromptContinuationRealtimeService(
+            input_source=_NoopInput(),
+            prompt_client=_FakePromptClient(),
+            output_sink=_RecordingOutput(),
+            tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+            scheduler=PlaybackScheduler(),
+            source_tick_input=True,
+        )
+
+
+def test_prompt_source_tick_mode_is_opt_in_for_input_worker(monkeypatch) -> None:
+    class _TickInput(_NoopInput):
+        def __init__(self):
+            self.prepare_calls = 0
+
+        def prepare_source_tick_replay(self):
+            self.prepare_calls += 1
+
+        def read_events_at_tick(self, _tick):
+            return []
+
+    class _Thread:
+        def __init__(self, *, target, kwargs=None, daemon=None):
+            self.target = target
+            self.kwargs = kwargs
+            self.daemon = daemon
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def join(self, timeout=None):
+            _ = timeout
+
+    monkeypatch.setattr(threading, "Thread", _Thread)
+    tick_input = _TickInput()
+    exact = PromptContinuationRealtimeService(
+        input_source=tick_input,
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        source_tick_input=True,
+        now=lambda: 0.0,
+    )
+    default = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        now=lambda: 0.0,
+    )
+
+    exact.start(max_ticks=1)
+    default.start(max_ticks=1)
+
+    assert tick_input.prepare_calls == 1
+    assert exact._input_thread is None
+    assert default._input_thread is not None
+    assert default._input_thread.started is True
+
+
+def _source_tick_request_snapshot(*, jitter: tuple[float, ...], velocity: int):
+    notes = [
+        {"pitch": 60, "tick": 0, "duration": 4},
+        {"pitch": 62, "tick": 31, "duration": 1},
+        {"pitch": 64, "tick": 32, "duration": 4},
+        {"pitch": 67, "tick": 35, "duration": 1},
+        {"pitch": 64, "tick": 36, "duration": 4},
+        {"pitch": 69, "tick": 39, "duration": 1},
+        {"pitch": 71, "tick": 40, "duration": 2},
+    ]
+    source = MidiFileInput(
+        "prequantized.mid",
+        config=MidiFileInputConfig(bpm=120.0, ticks_per_beat=4),
+        velocity_default=velocity,
+    )
+    source._midi_to_notes = lambda *_args, **_kwargs: (list(notes), 4, 42)
+
+    clock = [0.0]
+    sleep_calls = [0]
+
+    def fake_sleep(delay: float) -> None:
+        overshoot = jitter[sleep_calls[0] % len(jitter)] if jitter else 0.0
+        sleep_calls[0] += 1
+        clock[0] += max(0.0, float(delay)) + overshoot
+
+    service = PromptContinuationRealtimeService(
+        input_source=source,
+        prompt_client=_FakePromptClient(),
+        output_sink=_RecordingOutput(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        source_tick_input=True,
+        now=lambda: clock[0],
+        sleep=fake_sleep,
+    )
+    source.prepare_source_tick_replay()
+    service._runtime = SimpleNamespace(
+        session_start_time=0.0,
+        timeline_start_time=0.0,
+    )
+    service._running = True
+
+    service._tick_loop(max_ticks=44)
+
+    actions = []
+    while True:
+        try:
+            actions.append(service._control_q.get_nowait())
+        except queue.Empty:
+            break
+    event_snapshot = [
+        (
+            action.kind,
+            action.observed_until_tick,
+            [
+                (
+                    event.event_type.value,
+                    event.pitch,
+                    event.tick,
+                    event.velocity,
+                    event.channel,
+                    event.program,
+                )
+                for event in action.melody_events
+            ],
+        )
+        for action in actions
+    ]
+
+    converter = MidiConverter(ticks_per_beat=4)
+    history = []
+    roll_snapshot = []
+    for action in actions:
+        history.extend(
+            PromptContinuationRealtimeService._serialize_replay_event(event)
+            for event in action.melody_events
+        )
+        roll = converter.events_to_pianoroll(
+            history,
+            start_tick=0,
+            end_tick=action.observed_until_tick,
+        )
+        roll_snapshot.append((roll.shape, roll.tobytes()))
+    return event_snapshot, roll_snapshot
+
+
+def test_prompt_source_tick_replay_is_deterministic_under_wall_clock_jitter() -> None:
+    steady_events, steady_rolls = _source_tick_request_snapshot(
+        jitter=(), velocity=23
+    )
+    jittered_events, jittered_rolls = _source_tick_request_snapshot(
+        jitter=(0.0, 0.071, 0.003, 0.129), velocity=23
+    )
+
+    assert jittered_events == steady_events
+    assert jittered_rolls == steady_rolls
+    assert [observed for _kind, observed, _events in steady_events] == [32, 36, 40, 44]
+    for _kind, observed_until_tick, events in steady_events:
+        assert all(event[2] < observed_until_tick for event in events)
+
+
+def test_prompt_source_tick_replay_keeps_velocity_out_of_encoder_roll() -> None:
+    _quiet_events, quiet_rolls = _source_tick_request_snapshot(
+        jitter=(0.02,), velocity=1
+    )
+    _loud_events, loud_rolls = _source_tick_request_snapshot(
+        jitter=(0.02,), velocity=127
+    )
+
+    assert quiet_rolls == loud_rolls
 
 
 def test_prompt_continuation_rejects_non_four_steps_per_beat() -> None:
