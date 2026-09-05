@@ -94,6 +94,12 @@ class LekaiPromptContinuationBackend:
         checkpoint_path: Optional[str],
         bpm: Optional[int] = None,
         observed_until_tick: Optional[int] = None,
+        prompt_selection_mode: Optional[str] = None,
+        prompt_batch_candidates: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
     ) -> dict[str, int | bool | str | None]:
         return self._engine.start_prompt_catchup(
             melody_events=melody_events,
@@ -104,6 +110,12 @@ class LekaiPromptContinuationBackend:
             checkpoint_path=checkpoint_path,
             bpm=bpm,
             observed_until_tick=observed_until_tick,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
         )
 
     def append_melody_events(

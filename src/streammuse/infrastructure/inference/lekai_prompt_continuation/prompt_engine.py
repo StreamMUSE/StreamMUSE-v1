@@ -7,6 +7,7 @@ request-facing backend should not load or call this model directly.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import time
 from typing import Any, Optional
@@ -90,6 +91,12 @@ class LekaiPromptEngine:
         self._last_new_token_ids: list[int] = []
         self._last_generation_metadata: dict[str, Any] = {}
         self._session_seed: Optional[int] = None
+        self._session_prompt_selection_mode: Optional[str] = None
+        self._session_prompt_batch_candidates: Optional[int] = None
+        self._session_temperature: Optional[float] = None
+        self._session_top_p: Optional[float] = None
+        self._session_top_k: Optional[int] = None
+        self._session_repetition_penalty: Optional[float] = None
 
         if checkpoint_path:
             self._load_model(checkpoint_path)
@@ -142,8 +149,9 @@ class LekaiPromptEngine:
     def _env_bool(name: str, default: bool) -> bool:
         return parse_env_bool(os.environ.get(name), default=default)
 
-    def _selection_mode(self) -> str:
-        raw = os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "single").strip().lower()
+    @staticmethod
+    def _canonical_selection_mode(raw: str) -> str:
+        normalized = str(raw).strip().lower()
         aliases = {
             "single": "single",
             "off": "single",
@@ -158,21 +166,30 @@ class LekaiPromptEngine:
             "rule_s_if_else": "rule_s_if_else",
             "rule-s-if-else": "rule_s_if_else",
         }
-        if raw not in aliases:
+        if normalized not in aliases:
             raise ValueError(
-                "LEKAI_PROMPT_SELECTION_MODE must be single, batch_first, "
-                f"rule_s, rule_s_v3, or rule_s_if_else, got {raw!r}"
+                "prompt_selection_mode must be single, batch_first, rule_s, "
+                f"rule_s_v3, or rule_s_if_else, got {raw!r}"
             )
-        return aliases[raw]
+        return aliases[normalized]
+
+    def _selection_mode(self) -> str:
+        if self._session_prompt_selection_mode is not None:
+            return self._session_prompt_selection_mode
+        return self._canonical_selection_mode(
+            os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "single")
+        )
 
     def _batch_candidate_count(self) -> int:
         default_count = 10 if self._selection_mode() == "rule_s_if_else" else 5
-        count = (
-            self._env_positive_int("LEKAI_PROMPT_BATCH_CANDIDATES")
-            or default_count
-        )
+        count = self._session_prompt_batch_candidates
+        if count is None:
+            count = (
+                self._env_positive_int("LEKAI_PROMPT_BATCH_CANDIDATES")
+                or default_count
+            )
         if count < 2:
-            raise ValueError("LEKAI_PROMPT_BATCH_CANDIDATES must be at least 2")
+            raise ValueError("prompt_batch_candidates must be at least 2")
         return int(count)
 
     def _generation_parameters(self, selection_mode: str) -> dict[str, float | int]:
@@ -182,7 +199,7 @@ class LekaiPromptEngine:
         else:
             default_temperature = 0.8
             default_top_k = 50
-        return {
+        parameters: dict[str, float | int] = {
             "temperature": self._env_float(
                 "LEKAI_PROMPT_TEMPERATURE", default_temperature
             ),
@@ -192,6 +209,100 @@ class LekaiPromptEngine:
                 "LEKAI_PROMPT_REPETITION_PENALTY", 1.0
             ),
         }
+        if self._session_temperature is not None:
+            parameters["temperature"] = self._session_temperature
+        if self._session_top_p is not None:
+            parameters["top_p"] = self._session_top_p
+        if self._session_top_k is not None:
+            parameters["top_k"] = self._session_top_k
+        if self._session_repetition_penalty is not None:
+            parameters["repetition_penalty"] = self._session_repetition_penalty
+        return parameters
+
+    @staticmethod
+    def _validate_sampling_override(
+        *,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
+        repetition_penalty: Optional[float],
+    ) -> None:
+        if temperature is not None and (
+            not math.isfinite(float(temperature)) or float(temperature) < 0
+        ):
+            raise ValueError("temperature must be finite and >= 0")
+        if top_p is not None and (
+            not math.isfinite(float(top_p)) or not 0 <= float(top_p) <= 1
+        ):
+            raise ValueError("top_p must be finite and in [0, 1]")
+        if top_k is not None and int(top_k) < 0:
+            raise ValueError("top_k must be >= 0")
+        if repetition_penalty is not None and (
+            not math.isfinite(float(repetition_penalty))
+            or float(repetition_penalty) <= 0
+        ):
+            raise ValueError("repetition_penalty must be finite and > 0")
+
+    def set_session_generation_config(
+        self,
+        *,
+        prompt_selection_mode: Optional[str] = None,
+        prompt_batch_candidates: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+    ) -> None:
+        """Replace all Prompt generation overrides for the next session."""
+
+        canonical_mode = (
+            self._canonical_selection_mode(prompt_selection_mode)
+            if prompt_selection_mode is not None
+            else None
+        )
+        if prompt_batch_candidates is not None and int(prompt_batch_candidates) < 1:
+            raise ValueError("prompt_batch_candidates must be >= 1")
+        effective_mode = canonical_mode or self._canonical_selection_mode(
+            os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "single")
+        )
+        if (
+            prompt_batch_candidates is not None
+            and effective_mode != "single"
+            and int(prompt_batch_candidates) < 2
+        ):
+            raise ValueError(
+                "prompt_batch_candidates must be at least 2 for batch selection"
+            )
+        self._validate_sampling_override(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+        )
+        self._session_prompt_selection_mode = canonical_mode
+        self._session_prompt_batch_candidates = (
+            int(prompt_batch_candidates)
+            if prompt_batch_candidates is not None
+            else None
+        )
+        self._session_temperature = (
+            float(temperature) if temperature is not None else None
+        )
+        self._session_top_p = float(top_p) if top_p is not None else None
+        self._session_top_k = int(top_k) if top_k is not None else None
+        self._session_repetition_penalty = (
+            float(repetition_penalty)
+            if repetition_penalty is not None
+            else None
+        )
+
+    def clear_session_generation_config(self) -> None:
+        self._session_prompt_selection_mode = None
+        self._session_prompt_batch_candidates = None
+        self._session_temperature = None
+        self._session_top_p = None
+        self._session_top_k = None
+        self._session_repetition_penalty = None
 
     def _require_real_model(self) -> bool:
         return self._env_bool("LEKAI_PROMPT_REQUIRE_REAL_MODEL", False) or self._env_bool(
@@ -219,6 +330,7 @@ class LekaiPromptEngine:
     def reset_session(self, seed: int) -> int:
         """Set the per-session Prompt RNG seed and discard prior diagnostics."""
 
+        self.clear_session_generation_config()
         self._session_seed = int(seed)
         self._last_generated_acc_beats = 0
         self._last_prompt_token_ids = []
@@ -324,6 +436,7 @@ class LekaiPromptEngine:
 
     def runtime_info(self) -> dict[str, str | float | bool | int | None]:
         selection_mode = self._selection_mode()
+        sampling = self._generation_parameters(selection_mode)
         return {
             "mode": self._mode,
             "has_real_model": self._has_real_model(),
@@ -339,6 +452,10 @@ class LekaiPromptEngine:
             "batch_candidate_count": (
                 self._batch_candidate_count() if selection_mode != "single" else 1
             ),
+            "temperature": float(sampling["temperature"]),
+            "top_p": float(sampling["top_p"]),
+            "top_k": int(sampling["top_k"]),
+            "repetition_penalty": float(sampling["repetition_penalty"]),
             "sample_seed": self._configured_seed(),
         }
 

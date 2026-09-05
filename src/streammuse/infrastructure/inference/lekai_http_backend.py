@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import threading
 import time
@@ -193,6 +194,10 @@ class LekaiHttpBackend:
         self._runtime_config: Optional[BackendRuntimeConfig] = None
         self._runtime_status = BackendRuntimeStatus()
         self._request_bpm: Optional[int] = None  # BPM from the current request, overrides LEKAI_DEFAULT_BPM
+        self._session_temperature: Optional[float] = None
+        self._session_top_p: Optional[float] = None
+        self._session_top_k: Optional[int] = None
+        self._session_repetition_penalty: Optional[float] = None
 
         # Model components (Phase 3: real model integration)
         self._model_adapter = None
@@ -263,12 +268,60 @@ class LekaiHttpBackend:
             except (TypeError, ValueError):
                 return default
 
-        return {
+        sampling: Dict[str, float | int] = {
             "temperature": _float("LEKAI_RT_TEMPERATURE", 0.8),
             "top_k": _int("LEKAI_RT_TOP_K", 50),
             "top_p": _float("LEKAI_RT_TOP_P", 0.95),
             "repetition_penalty": _float("LEKAI_RT_REPETITION_PENALTY", 1.2),
         }
+        if self._session_temperature is not None:
+            sampling["temperature"] = self._session_temperature
+        if self._session_top_p is not None:
+            sampling["top_p"] = self._session_top_p
+        if self._session_top_k is not None:
+            sampling["top_k"] = self._session_top_k
+        if self._session_repetition_penalty is not None:
+            sampling["repetition_penalty"] = self._session_repetition_penalty
+        return sampling
+
+    def set_session_generation_config(
+        self,
+        *,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+    ) -> None:
+        """Replace all continuation sampling overrides for the next session."""
+
+        if temperature is not None and (
+            not math.isfinite(float(temperature)) or float(temperature) < 0
+        ):
+            raise ValueError("temperature must be finite and >= 0")
+        if top_p is not None and (
+            not math.isfinite(float(top_p)) or not 0 <= float(top_p) <= 1
+        ):
+            raise ValueError("top_p must be finite and in [0, 1]")
+        if top_k is not None and int(top_k) < 0:
+            raise ValueError("top_k must be >= 0")
+        if repetition_penalty is not None and (
+            not math.isfinite(float(repetition_penalty))
+            or float(repetition_penalty) <= 0
+        ):
+            raise ValueError("repetition_penalty must be finite and > 0")
+        self._session_temperature = (
+            float(temperature) if temperature is not None else None
+        )
+        self._session_top_p = float(top_p) if top_p is not None else None
+        self._session_top_k = int(top_k) if top_k is not None else None
+        self._session_repetition_penalty = (
+            float(repetition_penalty)
+            if repetition_penalty is not None
+            else None
+        )
+
+    def clear_session_generation_config(self) -> None:
+        self.set_session_generation_config()
 
     @staticmethod
     def _checkpoint_format(path: str) -> str:
@@ -612,6 +665,7 @@ class LekaiHttpBackend:
                     self._injection_length_ticks = 0
                     self._active_pitches = set()
                     self._request_bpm = None
+                    self.clear_session_generation_config()
                     with self._generation_metadata_lock:
                         self._generation_metadata = {}
                     self._current_generation_trace = {}
@@ -1018,22 +1072,11 @@ class LekaiHttpBackend:
         beat_diagnostics: List[Dict[str, Any]] = []
         last_prompt_tokens: List[int] = []
 
-        try:
-            rt_temperature = float(os.environ.get("LEKAI_RT_TEMPERATURE", "0.8"))
-        except Exception:
-            rt_temperature = 0.8
-        try:
-            rt_top_k = int(os.environ.get("LEKAI_RT_TOP_K", "50"))
-        except Exception:
-            rt_top_k = 50
-        try:
-            rt_top_p = float(os.environ.get("LEKAI_RT_TOP_P", "0.95"))
-        except Exception:
-            rt_top_p = 0.95
-        try:
-            rt_repetition_penalty = float(os.environ.get("LEKAI_RT_REPETITION_PENALTY", "1.2"))
-        except Exception:
-            rt_repetition_penalty = 1.2
+        sampling = self._sampling_config()
+        rt_temperature = float(sampling["temperature"])
+        rt_top_k = int(sampling["top_k"])
+        rt_top_p = float(sampling["top_p"])
+        rt_repetition_penalty = float(sampling["repetition_penalty"])
 
         for beat_offset in range(num_beats_to_generate):
             target_beat = current_beat + beat_offset

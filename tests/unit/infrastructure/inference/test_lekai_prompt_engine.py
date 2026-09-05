@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -143,6 +144,67 @@ def test_prompt_engine_preserves_existing_sampling_defaults(monkeypatch):
             "top_p": 0.95,
             "repetition_penalty": 1.0,
         }
+
+
+def test_prompt_engine_session_overrides_win_without_mutating_environment(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "single")
+    monkeypatch.setenv("LEKAI_PROMPT_BATCH_CANDIDATES", "6")
+    monkeypatch.setenv("LEKAI_PROMPT_TEMPERATURE", "0.7")
+    monkeypatch.setenv("LEKAI_PROMPT_TOP_P", "0.8")
+    monkeypatch.setenv("LEKAI_PROMPT_TOP_K", "12")
+    monkeypatch.setenv("LEKAI_PROMPT_REPETITION_PENALTY", "1.2")
+    engine = LekaiPromptEngine()
+
+    engine.set_session_generation_config(
+        prompt_selection_mode="rule-s-if-else",
+        prompt_batch_candidates=10,
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+
+    info = engine.runtime_info()
+    assert info["selection_mode"] == "rule_s_if_else"
+    assert info["batch_candidate_count"] == 10
+    assert {
+        key: info[key]
+        for key in ("temperature", "top_p", "top_k", "repetition_penalty")
+    } == {
+        "temperature": 1.1,
+        "top_p": 0.95,
+        "top_k": 50,
+        "repetition_penalty": 1.0,
+    }
+    assert os.environ["LEKAI_PROMPT_TEMPERATURE"] == "0.7"
+
+
+def test_prompt_engine_reset_restores_environment_sampling(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "batch_first")
+    monkeypatch.setenv("LEKAI_PROMPT_BATCH_CANDIDATES", "6")
+    monkeypatch.setenv("LEKAI_PROMPT_TEMPERATURE", "0.7")
+    monkeypatch.setenv("LEKAI_PROMPT_TOP_P", "0.8")
+    monkeypatch.setenv("LEKAI_PROMPT_TOP_K", "12")
+    monkeypatch.setenv("LEKAI_PROMPT_REPETITION_PENALTY", "1.2")
+    engine = LekaiPromptEngine()
+    engine.set_session_generation_config(
+        prompt_selection_mode="rule_s",
+        prompt_batch_candidates=5,
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+
+    engine.reset_session(7)
+
+    info = engine.runtime_info()
+    assert info["selection_mode"] == "batch_first"
+    assert info["batch_candidate_count"] == 6
+    assert info["temperature"] == 0.7
+    assert info["top_p"] == 0.8
+    assert info["top_k"] == 12
+    assert info["repetition_penalty"] == 1.2
 
 
 def test_prompt_engine_accepts_rule_s_v3_aliases(monkeypatch):

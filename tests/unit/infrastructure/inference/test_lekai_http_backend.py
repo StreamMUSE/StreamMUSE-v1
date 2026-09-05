@@ -196,6 +196,55 @@ def test_runtime_info_contract_default_stub():
     assert "resolved_dtype" in info
 
 
+def test_session_sampling_overrides_environment_without_mutating_it(monkeypatch):
+    monkeypatch.setenv("LEKAI_RT_TEMPERATURE", "0.7")
+    monkeypatch.setenv("LEKAI_RT_TOP_P", "0.8")
+    monkeypatch.setenv("LEKAI_RT_TOP_K", "12")
+    monkeypatch.setenv("LEKAI_RT_REPETITION_PENALTY", "1.2")
+    backend = LekaiHttpBackend()
+
+    backend.set_session_generation_config(
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+
+    assert backend._sampling_config() == {
+        "temperature": 1.1,
+        "top_p": 0.95,
+        "top_k": 50,
+        "repetition_penalty": 1.0,
+    }
+    assert backend.runtime_info()["temperature"] == 1.1
+    assert backend.runtime_info()["top_k"] == 50
+    assert backend.runtime_info()["top_p"] == 0.95
+    assert backend.runtime_info()["repetition_penalty"] == 1.0
+
+
+def test_reset_session_clears_sampling_overrides_to_environment(monkeypatch):
+    monkeypatch.setenv("LEKAI_RT_TEMPERATURE", "0.7")
+    monkeypatch.setenv("LEKAI_RT_TOP_P", "0.8")
+    monkeypatch.setenv("LEKAI_RT_TOP_K", "12")
+    monkeypatch.setenv("LEKAI_RT_REPETITION_PENALTY", "1.2")
+    backend = LekaiHttpBackend()
+    backend.set_session_generation_config(
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+
+    backend.reset_session(seed=7)
+
+    assert backend._sampling_config() == {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 12,
+        "repetition_penalty": 1.2,
+    }
+
+
 def test_prompt_context_defaults_to_retained_history_window(monkeypatch):
     monkeypatch.delenv("LEKAI_PROMPT_CONTEXT_BEATS", raising=False)
     backend = LekaiHttpBackend()
@@ -355,6 +404,41 @@ def _install_interleaved_test_runtime(backend, monkeypatch):
         ),
     )
     return decoded_beats
+
+
+def test_interleaved_generation_uses_session_sampling_overrides(monkeypatch):
+    backend = LekaiHttpBackend()
+    _install_interleaved_test_runtime(backend, monkeypatch)
+    backend.set_session_generation_config(
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+    monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
+    generation_kwargs = []
+
+    def _generate(prompt_tokens, **kwargs):
+        _ = prompt_tokens
+        generation_kwargs.append(dict(kwargs))
+        return [169, 170]
+
+    monkeypatch.setattr(backend, "_generate_part1_tokens_from_prompt", _generate)
+
+    backend._generate_with_interleaved_prompt(
+        generation_start_tick=4,
+        generation_interval_ticks=4,
+        generation_length_frames=4,
+    )
+
+    assert generation_kwargs == [
+        {
+            "temperature": 1.1,
+            "top_k": 50,
+            "top_p": 0.95,
+            "repetition_penalty": 1.0,
+        }
+    ]
 
 
 def test_trimmed_active_anchors_preserve_sustain_in_continuation_prompt(monkeypatch):

@@ -198,6 +198,25 @@ class PromptContinuationStartRequest(BaseModel):
     model_name: str = "lekai_prompt_continuation"
     checkpoint_path: Optional[str] = None
     bpm: Optional[int] = Field(default=None, gt=0)
+    prompt_selection_mode: Optional[str] = None
+    prompt_batch_candidates: Optional[int] = Field(default=None, ge=1)
+    temperature: Optional[float] = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+    )
+    top_p: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        allow_inf_nan=False,
+    )
+    top_k: Optional[int] = Field(default=None, ge=0)
+    repetition_penalty: Optional[float] = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+    )
 
 
 class PromptContinuationAppendMelodyRequest(BaseModel):
@@ -469,6 +488,12 @@ async def prompt_continuation_start(
             model_name=request.model_name,
             checkpoint_path=request.checkpoint_path,
             bpm=request.bpm,
+            prompt_selection_mode=request.prompt_selection_mode,
+            prompt_batch_candidates=request.prompt_batch_candidates,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            repetition_penalty=request.repetition_penalty,
             observed_until_tick=(
                 int(request.observed_until_tick)
                 if request.observed_until_tick is not None

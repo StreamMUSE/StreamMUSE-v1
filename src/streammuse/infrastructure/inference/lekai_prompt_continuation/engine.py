@@ -103,7 +103,8 @@ class LekaiPromptContinuationEngine:
         self._continuation_engine.configure(config)
 
     def runtime_info(self) -> dict[str, str | float | bool | int | None]:
-        info = dict(self._continuation_engine.runtime_info())
+        continuation_info = dict(self._continuation_engine.runtime_info())
+        info = dict(continuation_info)
         info["continuation_effective_bpm"] = info.get("last_generation_bpm")
         info["runtime_model_name"] = self.MODEL_NAME
         prompt_info = self._prompt_engine.runtime_info()
@@ -130,6 +131,21 @@ class LekaiPromptContinuationEngine:
         )
         info["prompt_batch_candidate_count"] = int(
             prompt_info.get("batch_candidate_count", 1)
+        )
+        info["prompt_batch_candidates"] = int(
+            prompt_info.get("batch_candidate_count", 1)
+        )
+        info["prompt_temperature"] = prompt_info.get("temperature")
+        info["prompt_top_p"] = prompt_info.get("top_p")
+        info["prompt_top_k"] = prompt_info.get("top_k")
+        info["prompt_repetition_penalty"] = prompt_info.get(
+            "repetition_penalty"
+        )
+        info["continuation_temperature"] = continuation_info.get("temperature")
+        info["continuation_top_p"] = continuation_info.get("top_p")
+        info["continuation_top_k"] = continuation_info.get("top_k")
+        info["continuation_repetition_penalty"] = continuation_info.get(
+            "repetition_penalty"
         )
         info["prompt_effective_bpm"] = (
             self._prompt_engine.last_effective_bpm()
@@ -261,9 +277,31 @@ class LekaiPromptContinuationEngine:
         checkpoint_path: Optional[str],
         bpm: Optional[int] = None,
         observed_until_tick: Optional[int] = None,
+        prompt_selection_mode: Optional[str] = None,
+        prompt_batch_candidates: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
     ) -> dict[str, int | bool | str | None]:
         effective_bpm = resolve_prompt_bpm(bpm)
         with self._session_gate:
+            if bool(self.scheduler_status()["is_running"]):
+                raise RuntimeError("prompt-continuation scheduler is already running")
+            self._prompt_engine.set_session_generation_config(
+                prompt_selection_mode=prompt_selection_mode,
+                prompt_batch_candidates=prompt_batch_candidates,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+            )
+            self._continuation_engine.set_session_generation_config(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+            )
             return self._scheduler.start(
                 melody_events=melody_events,
                 prompt_length_ticks=prompt_length_ticks,

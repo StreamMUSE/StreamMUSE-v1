@@ -24,6 +24,12 @@ class PromptContinuationHttpClientConfig:
     model_name: str = "lekai_prompt_continuation"
     inference_mode: str = "sliding_window"
     checkpoint_path: Optional[str] = None
+    prompt_selection_mode: Optional[str] = None
+    prompt_batch_candidates: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repetition_penalty: Optional[float] = None
 
 
 class PromptContinuationHttpClient:
@@ -95,6 +101,17 @@ class PromptContinuationHttpClient:
         }
         if self._config.checkpoint_path:
             payload["checkpoint_path"] = self._config.checkpoint_path
+        for field_name in (
+            "prompt_selection_mode",
+            "prompt_batch_candidates",
+            "temperature",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+        ):
+            value = getattr(self._config, field_name)
+            if value is not None:
+                payload[field_name] = value
         if bpm is not None:
             if int(bpm) <= 0:
                 raise ValueError("bpm must be > 0")

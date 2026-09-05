@@ -60,17 +60,22 @@ class PianoLLaMA(PreTrainedModel):
         self.eval()
         input_ids = initial_tokens.unsqueeze(0).to(device)
 
-        output = self.model.generate(
+        generation_kwargs = dict(
             input_ids=input_ids,
             max_length=max_length,
-            do_sample=True,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
+            do_sample=temperature != 0,
             repetition_penalty=repetition_penalty,
             eos_token_id=self.eos_token_id,
             pad_token_id=self.pad_token_id,
         )
+        if temperature != 0:
+            generation_kwargs.update(
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
+
+        output = self.model.generate(**generation_kwargs)
         return output.cpu()
 
     @torch.no_grad()
@@ -96,15 +101,20 @@ class PianoLLaMA(PreTrainedModel):
             .contiguous()
             .to(device)
         )
-        output = self.model.generate(
+        generation_kwargs = dict(
             input_ids=input_ids,
             max_length=max_length,
-            do_sample=True,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
+            do_sample=temperature != 0,
             repetition_penalty=repetition_penalty,
             eos_token_id=self.eos_token_id,
             pad_token_id=self.pad_token_id,
         )
+        if temperature != 0:
+            generation_kwargs.update(
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
+
+        output = self.model.generate(**generation_kwargs)
         return output.cpu()

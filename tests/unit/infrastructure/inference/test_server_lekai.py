@@ -365,6 +365,112 @@ def test_prompt_continuation_start_forwards_optional_bpm(
     assert response.json()["effective_bpm"] == expected_bpm
 
 
+def test_prompt_continuation_start_forwards_session_generation_config(
+    monkeypatch,
+):
+    calls = []
+
+    class _Backend:
+        def start_prompt_catchup(self, **kwargs):
+            calls.append(dict(kwargs))
+            return _prompt_status(effective_bpm=kwargs["bpm"])
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _Backend())
+    response = client.post(
+        "/prompt_continuation/start",
+        json={
+            "melody_notes": [{"type": "note_on", "pitch": 60, "tick": 0}],
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "prompt_selection_mode": "rule_s_if_else",
+            "prompt_batch_candidates": 10,
+            "temperature": 1.1,
+            "top_p": 0.95,
+            "top_k": 50,
+            "repetition_penalty": 1.0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert {
+        key: calls[0][key]
+        for key in (
+            "prompt_selection_mode",
+            "prompt_batch_candidates",
+            "temperature",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+        )
+    } == {
+        "prompt_selection_mode": "rule_s_if_else",
+        "prompt_batch_candidates": 10,
+        "temperature": 1.1,
+        "top_p": 0.95,
+        "top_k": 50,
+        "repetition_penalty": 1.0,
+    }
+
+
+def test_prompt_continuation_start_forwards_omitted_generation_config_as_none(
+    monkeypatch,
+):
+    calls = []
+
+    class _Backend:
+        def start_prompt_catchup(self, **kwargs):
+            calls.append(dict(kwargs))
+            return _prompt_status(effective_bpm=kwargs["bpm"])
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _Backend())
+    response = client.post(
+        "/prompt_continuation/start",
+        json={
+            "melody_notes": [],
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    for field_name in (
+        "prompt_selection_mode",
+        "prompt_batch_candidates",
+        "temperature",
+        "top_p",
+        "top_k",
+        "repetition_penalty",
+    ):
+        assert calls[0][field_name] is None
+
+
+def test_prompt_continuation_start_accepts_greedy_sampling_values(monkeypatch):
+    calls = []
+
+    class _Backend:
+        def start_prompt_catchup(self, **kwargs):
+            calls.append(dict(kwargs))
+            return _prompt_status(effective_bpm=kwargs["bpm"])
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _Backend())
+    response = client.post(
+        "/prompt_continuation/start",
+        json={
+            "melody_notes": [],
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "temperature": 0,
+            "top_p": 0,
+            "top_k": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["temperature"] == 0
+    assert calls[0]["top_p"] == 0
+    assert calls[0]["top_k"] == 0
+
+
 def test_prompt_continuation_start_rejects_non_positive_bpm(monkeypatch):
     class _Backend:
         def start_prompt_catchup(self, **kwargs):
@@ -378,6 +484,58 @@ def test_prompt_continuation_start_rejects_non_positive_bpm(monkeypatch):
             "prompt_length_ticks": 32,
             "generation_interval_ticks": 4,
             "bpm": 0,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("prompt_batch_candidates", 0),
+        ("temperature", -0.1),
+        ("top_p", -0.1),
+        ("top_p", 1.1),
+        ("top_k", -1),
+        ("repetition_penalty", 0),
+    ],
+)
+def test_prompt_continuation_start_rejects_invalid_generation_config(
+    monkeypatch,
+    field_name,
+    value,
+):
+    class _Backend:
+        def start_prompt_catchup(self, **kwargs):
+            raise AssertionError("invalid request must not reach backend")
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _Backend())
+    payload = {
+        "melody_notes": [],
+        "prompt_length_ticks": 32,
+        "generation_interval_ticks": 4,
+        field_name: value,
+    }
+
+    response = client.post("/prompt_continuation/start", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_prompt_continuation_start_rejects_unknown_selection_mode(monkeypatch):
+    class _Backend:
+        def start_prompt_catchup(self, **kwargs):
+            raise ValueError("unknown prompt selection mode")
+
+    monkeypatch.setattr(server_lekai, "prompt_continuation_backend", _Backend())
+    response = client.post(
+        "/prompt_continuation/start",
+        json={
+            "melody_notes": [],
+            "prompt_length_ticks": 32,
+            "generation_interval_ticks": 4,
+            "prompt_selection_mode": "unknown",
         },
     )
 

@@ -29,6 +29,21 @@ class LekaiContinuationEngine:
     def configure(self, config: BackendRuntimeConfig) -> None:
         self._backend.configure(config)
 
+    def set_session_generation_config(
+        self,
+        *,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+    ) -> None:
+        self._backend.set_session_generation_config(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+        )
+
     def runtime_info(self) -> dict[str, str | float | bool | int | None]:
         info = dict(self._backend.runtime_info())
         info["last_generation_bpm"] = self._last_generation_bpm

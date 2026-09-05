@@ -110,6 +110,12 @@ def test_prompt_continuation_http_client_start_append_status_playable(monkeypatc
             base_url="http://x:8000/generate_accompaniment",
             timeout_s=7.0,
             checkpoint_path="/tmp/ckpt.pt",
+            prompt_selection_mode="rule_s_if_else",
+            prompt_batch_candidates=10,
+            temperature=1.1,
+            top_p=0.95,
+            top_k=50,
+            repetition_penalty=1.0,
         )
     )
 
@@ -137,8 +143,46 @@ def test_prompt_continuation_http_client_start_append_status_playable(monkeypatc
     assert start_payload["model_name"] == "lekai_prompt_continuation"
     assert start_payload["checkpoint_path"] == "/tmp/ckpt.pt"
     assert start_payload["bpm"] == 96
+    assert start_payload["prompt_selection_mode"] == "rule_s_if_else"
+    assert start_payload["prompt_batch_candidates"] == 10
+    assert start_payload["temperature"] == 1.1
+    assert start_payload["top_p"] == 0.95
+    assert start_payload["top_k"] == 50
+    assert start_payload["repetition_penalty"] == 1.0
     assert start_payload["melody_notes"][0]["tick"] == 0
     assert calls[1][3] == 7.0
+
+
+def test_prompt_continuation_http_client_omits_unset_generation_config(
+    monkeypatch,
+):
+    calls = []
+
+    def fake_post(url, json=None, timeout=None):
+        calls.append(dict(json))
+        return _FakeResponse({"phase": "prompt_running"})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    client = PromptContinuationHttpClient(
+        PromptContinuationHttpClientConfig(base_url="http://x:8000")
+    )
+
+    client.start(
+        melody_events=[],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        observed_until_tick=32,
+    )
+
+    for field_name in (
+        "prompt_selection_mode",
+        "prompt_batch_candidates",
+        "temperature",
+        "top_p",
+        "top_k",
+        "repetition_penalty",
+    ):
+        assert field_name not in calls[0]
 
 
 def test_prompt_continuation_http_client_strict_representation_loop_rejects_mismatch(

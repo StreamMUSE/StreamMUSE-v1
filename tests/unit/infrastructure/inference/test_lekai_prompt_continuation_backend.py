@@ -22,6 +22,8 @@ class _FakePromptEngine:
         self.calls = []
         self.reset_calls = []
         self.sample_seed = None
+        self.generation_config = {}
+        self.generation_config_calls = []
         self.generation_log = {
             "prompt_tokens": [257, 263],
             "generated_tokens": [257, 263, 169],
@@ -40,7 +42,25 @@ class _FakePromptEngine:
             "warmup_error": None,
             "is_warmed_up": True,
             "sample_seed": self.sample_seed,
+            "selection_mode": self.generation_config.get(
+                "prompt_selection_mode", "single"
+            ),
+            "batch_candidate_count": self.generation_config.get(
+                "prompt_batch_candidates", 1
+            ),
+            "temperature": self.generation_config.get("temperature", 0.8),
+            "top_p": self.generation_config.get("top_p", 0.95),
+            "top_k": self.generation_config.get("top_k", 50),
+            "repetition_penalty": self.generation_config.get(
+                "repetition_penalty", 1.0
+            ),
         }
+
+    def set_session_generation_config(self, **kwargs):
+        self.generation_config = {
+            key: value for key, value in kwargs.items() if value is not None
+        }
+        self.generation_config_calls.append(dict(kwargs))
 
     def generate_prompt_accompaniment(
         self, melody_events, prompt_start_tick, prompt_length_ticks, bpm=None
@@ -56,6 +76,7 @@ class _FakePromptEngine:
         return [_note_on(48, 0)]
 
     def reset_session(self, seed):
+        self.generation_config = {}
         self.reset_calls.append(int(seed))
         self.sample_seed = int(seed)
         return int(seed)
@@ -76,6 +97,8 @@ class _FakeContinuationEngine:
         self.session_id = None
         self.sample_seed = 0
         self.generation_metadata = []
+        self.generation_config = {}
+        self.generation_config_calls = []
 
     def configure(self, config):
         self.config = config
@@ -103,7 +126,19 @@ class _FakeContinuationEngine:
             "checkpoint_sha256": "continuation-checkpoint-sha",
             "source_sha256": "continuation-source-sha",
             "code_identity": "continuation-code-id",
+            "temperature": self.generation_config.get("temperature", 0.8),
+            "top_p": self.generation_config.get("top_p", 0.95),
+            "top_k": self.generation_config.get("top_k", 50),
+            "repetition_penalty": self.generation_config.get(
+                "repetition_penalty", 1.2
+            ),
         }
+
+    def set_session_generation_config(self, **kwargs):
+        self.generation_config = {
+            key: value for key, value in kwargs.items() if value is not None
+        }
+        self.generation_config_calls.append(dict(kwargs))
 
     def generate(self, **kwargs):
         self.generate_calls.append(kwargs)
@@ -130,6 +165,7 @@ class _FakeContinuationEngine:
         return {"success": True, "message": "ok"}
 
     def reset_session(self, seed):
+        self.generation_config = {}
         self.reset_calls.append(int(seed))
         self.session_epoch += 1
         self.session_id = f"session-{self.session_epoch}"
@@ -202,6 +238,38 @@ def test_prompt_continuation_backend_delegates_runtime_to_engine():
     assert backend.runtime_info()["runtime_model_name"] == "lekai_prompt_continuation"
 
 
+def test_prompt_continuation_backend_forwards_session_generation_config():
+    calls = []
+
+    class _Engine:
+        def start_prompt_catchup(self, **kwargs):
+            calls.append(dict(kwargs))
+            return {"phase": "prompt_running"}
+
+    backend = LekaiPromptContinuationBackend(engine=_Engine())
+    backend.start_prompt_catchup(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        prompt_selection_mode="rule_s_if_else",
+        prompt_batch_candidates=10,
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+
+    assert calls[0]["prompt_selection_mode"] == "rule_s_if_else"
+    assert calls[0]["prompt_batch_candidates"] == 10
+    assert calls[0]["temperature"] == 1.1
+    assert calls[0]["top_p"] == 0.95
+    assert calls[0]["top_k"] == 50
+    assert calls[0]["repetition_penalty"] == 1.0
+
+
 def test_prompt_start_omitted_bpm_resolves_legacy_env_once_for_both_stages(
     monkeypatch,
 ):
@@ -235,6 +303,180 @@ def test_prompt_start_omitted_bpm_resolves_legacy_env_once_for_both_stages(
     assert runtime_info["session_effective_bpm"] == 84
     assert runtime_info["prompt_effective_bpm"] == 84
     assert runtime_info["continuation_effective_bpm"] == 84
+
+
+def test_prompt_start_applies_shared_session_sampling_to_both_engines():
+    prompt_engine = _FakePromptEngine()
+    continuation_engine = _FakeContinuationEngine()
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+
+    engine.start_prompt_catchup(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        observed_until_tick=32,
+        prompt_selection_mode="rule-s-if-else",
+        prompt_batch_candidates=10,
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+    engine.wait_for_scheduler(timeout=2.0)
+
+    assert prompt_engine.generation_config == {
+        "prompt_selection_mode": "rule-s-if-else",
+        "prompt_batch_candidates": 10,
+        "temperature": 1.1,
+        "top_p": 0.95,
+        "top_k": 50,
+        "repetition_penalty": 1.0,
+    }
+    assert continuation_engine.generation_config == {
+        "temperature": 1.1,
+        "top_p": 0.95,
+        "top_k": 50,
+        "repetition_penalty": 1.0,
+    }
+    info = engine.runtime_info()
+    assert info["prompt_temperature"] == 1.1
+    assert info["continuation_temperature"] == 1.1
+    assert info["prompt_top_p"] == info["continuation_top_p"] == 0.95
+    assert info["prompt_top_k"] == info["continuation_top_k"] == 50
+    assert info["prompt_repetition_penalty"] == 1.0
+    assert info["continuation_repetition_penalty"] == 1.0
+    replay_runtime = engine.replay_audit()["runtime_info"]
+    assert replay_runtime["prompt_selection_mode"] == "rule-s-if-else"
+    assert replay_runtime["prompt_batch_candidates"] == 10
+    assert replay_runtime["prompt_temperature"] == 1.1
+    assert replay_runtime["continuation_temperature"] == 1.1
+
+
+def test_duplicate_start_does_not_mutate_active_session_generation_config():
+    prompt_engine = _FakePromptEngine()
+    continuation_engine = _FakeContinuationEngine()
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    prompt_engine.set_session_generation_config(
+        prompt_selection_mode="rule_s",
+        prompt_batch_candidates=5,
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+    continuation_engine.set_session_generation_config(
+        temperature=1.1,
+        top_p=0.95,
+        top_k=50,
+        repetition_penalty=1.0,
+    )
+
+    class _RunningScheduler:
+        @staticmethod
+        def status():
+            return {"is_running": True}
+
+    engine._scheduler = _RunningScheduler()
+    prompt_call_count = len(prompt_engine.generation_config_calls)
+    continuation_call_count = len(continuation_engine.generation_config_calls)
+
+    with pytest.raises(RuntimeError, match="already running"):
+        engine.start_prompt_catchup(
+            melody_events=[_note_on(60, 0)],
+            prompt_length_ticks=32,
+            generation_interval_ticks=4,
+            inference_mode="sliding_window",
+            model_name="lekai_prompt_continuation",
+            checkpoint_path=None,
+            prompt_selection_mode="single",
+            prompt_batch_candidates=1,
+            temperature=0,
+            top_p=0,
+            top_k=0,
+            repetition_penalty=2.0,
+        )
+
+    assert len(prompt_engine.generation_config_calls) == prompt_call_count
+    assert len(continuation_engine.generation_config_calls) == continuation_call_count
+    assert prompt_engine.generation_config["prompt_selection_mode"] == "rule_s"
+    assert prompt_engine.generation_config["temperature"] == 1.1
+    assert continuation_engine.generation_config["temperature"] == 1.1
+
+
+def test_prompt_start_omitted_overrides_clear_previous_session_values():
+    prompt_engine = _FakePromptEngine()
+    continuation_engine = _FakeContinuationEngine()
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    common = {
+        "melody_events": [_note_on(60, 0)],
+        "prompt_length_ticks": 32,
+        "generation_interval_ticks": 4,
+        "inference_mode": "sliding_window",
+        "model_name": "lekai_prompt_continuation",
+        "checkpoint_path": None,
+        "observed_until_tick": 32,
+    }
+
+    engine.start_prompt_catchup(
+        **common,
+        prompt_selection_mode="rule_s",
+        prompt_batch_candidates=5,
+        temperature=1.1,
+        top_p=0.98,
+        top_k=0,
+        repetition_penalty=1.0,
+    )
+    engine.wait_for_scheduler(timeout=2.0)
+    engine.start_prompt_catchup(**common)
+    engine.wait_for_scheduler(timeout=2.0)
+
+    assert prompt_engine.generation_config == {}
+    assert continuation_engine.generation_config == {}
+    assert all(value is None for value in prompt_engine.generation_config_calls[-1].values())
+    assert all(
+        value is None
+        for value in continuation_engine.generation_config_calls[-1].values()
+    )
+
+
+def test_prompt_continuation_reset_clears_session_generation_overrides():
+    prompt_engine = _FakePromptEngine()
+    continuation_engine = _FakeContinuationEngine()
+    engine = LekaiPromptContinuationEngine(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    prompt_engine.set_session_generation_config(
+        prompt_selection_mode="rule_s",
+        prompt_batch_candidates=5,
+        temperature=1.1,
+        top_p=0.98,
+        top_k=0,
+        repetition_penalty=1.0,
+    )
+    continuation_engine.set_session_generation_config(
+        temperature=1.1,
+        top_p=0.98,
+        top_k=0,
+        repetition_penalty=1.0,
+    )
+
+    engine.reset_session(prompt_seed=11, continuation_seed=22)
+
+    assert prompt_engine.generation_config == {}
+    assert continuation_engine.generation_config == {}
 
 
 def test_prompt_continuation_engine_calls_prompt_hook_when_prompt_window_exists():
