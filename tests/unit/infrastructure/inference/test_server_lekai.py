@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import mido
 import pytest
 
 from streammuse.infrastructure.inference import server_lekai
@@ -707,3 +708,42 @@ def test_prompt_continuation_reset_endpoint_is_fail_closed_by_default(monkeypatc
 
     assert response.status_code == 403
     assert "LEKAI_ENABLE_DEBUG_RESET" in response.json()["detail"]
+
+
+def test_backend_main_starts_without_accessing_midi_devices(monkeypatch):
+    def fail_if_midi_is_accessed(*_args, **_kwargs):
+        pytest.fail("the inference backend must not access MIDI devices")
+
+    for function_name in (
+        "get_input_names",
+        "get_output_names",
+        "open_input",
+        "open_output",
+    ):
+        monkeypatch.setattr(mido, function_name, fail_if_midi_is_accessed)
+
+    class _Backend:
+        @staticmethod
+        def runtime_info():
+            return {
+                "mode": "test",
+                "resolved_device": "cpu",
+                "resolved_dtype": "float32",
+                "checkpoint_format": "none",
+                "use_cache": False,
+                "fallback_reason": None,
+            }
+
+    uvicorn_calls = []
+
+    def fake_uvicorn_run(app, *, host, port):
+        uvicorn_calls.append((app, host, port))
+
+    monkeypatch.setattr(server_lekai, "backend", _Backend())
+    monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
+    monkeypatch.setenv("LEKAI_SERVER_HOST", "127.0.0.2")
+    monkeypatch.setenv("LEKAI_SERVER_PORT", "8765")
+
+    server_lekai.main()
+
+    assert uvicorn_calls == [(server_lekai.app, "127.0.0.2", 8765)]
