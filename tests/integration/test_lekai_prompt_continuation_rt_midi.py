@@ -88,7 +88,7 @@ def test_prompt_continuation_scheduler_starts_from_real_rt_midi_sample():
 
     events = _notes_to_event_payload(notes)
     prompt_events = [event for event in events if int(event["tick"]) < 32]
-    append_events = [event for event in events if 32 <= int(event["tick"]) <= 44]
+    append_events = [event for event in events if 32 <= int(event["tick"]) < 48]
 
     assert prompt_events, "classic RT sample should contain melody inside the first 8 beats"
     assert append_events, "classic RT sample should contain melody after the prompt window"
@@ -110,13 +110,13 @@ def test_prompt_continuation_scheduler_starts_from_real_rt_midi_sample():
         bpm=120,
         observed_until_tick=32,
     )
-    scheduler.append_melody(append_events, observed_until_tick=44)
+    scheduler.append_melody(append_events, observed_until_tick=48)
     ready_status = scheduler.wait(timeout=2.0)
 
     assert prompt_engine.calls[0]["melody_events"] == prompt_events
     assert prompt_engine.calls[0]["prompt_length_ticks"] == 32
-    assert continuation_engine.inject_calls[0]["melody_events"] == prompt_events + append_events
-    assert ready_status["melody_history_beats"] == 11
-    assert ready_status["accompaniment_history_beats"] == 12
-    assert ready_status["continuation_calls"] == 4
+    assert continuation_engine.inject_calls[0]["melody_events"] == prompt_events
+    assert ready_status["melody_history_beats"] == 12
+    assert ready_status["accompaniment_history_beats"] == 13
+    assert ready_status["continuation_calls"] == 5
     assert ready_status["is_playback_ready"] is True

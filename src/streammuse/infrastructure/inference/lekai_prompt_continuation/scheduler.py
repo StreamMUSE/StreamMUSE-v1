@@ -46,6 +46,7 @@ class LekaiPromptContinuationScheduler:
         self._continuation_engine = continuation_engine
         self._max_continuation_chunk_beats = int(max_continuation_chunk_beats)
         self._lock = threading.RLock()
+        self._melody_condition = threading.Condition(self._lock)
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="lekai-prompt-continuation",
@@ -57,7 +58,8 @@ class LekaiPromptContinuationScheduler:
         self._prompt_melody_input: list[EventPayload] = []
         self._prompt_accompaniment_history: list[EventPayload] = []
         self._accompaniment_history: list[EventPayload] = []
-        self._continuation_sent_melody_event_count = 0
+        self._pending_melody_events: list[EventPayload] = []
+        self._melody_observed_until_tick = 0
         self._catchup_state = CatchUpState()
         self._prompt_length_ticks = 0
         self._generation_interval_ticks = TIMESTEPS_PER_BEAT
@@ -84,10 +86,35 @@ class LekaiPromptContinuationScheduler:
             return 0
         return max(int(event.get("tick", 0)) for event in events)
 
+    @staticmethod
+    def _validate_events_before_boundary(
+        events: list[EventPayload],
+        *,
+        boundary_tick: int,
+        label: str,
+    ) -> None:
+        for event in events:
+            event_tick = int(event.get("tick", 0))
+            if event_tick >= int(boundary_tick):
+                raise ValueError(
+                    f"{label} must contain only events with tick < "
+                    f"observed_until_tick; got event tick {event_tick} "
+                    f"for boundary {int(boundary_tick)}"
+                )
+
     def _set_melody_observed_until(self, observed_until_tick: int) -> None:
+        observed_tick = int(observed_until_tick)
+        if observed_tick < 0:
+            raise ValueError("observed_until_tick must be >= 0")
+        if observed_tick < int(self._melody_observed_until_tick):
+            raise ValueError(
+                "observed_until_tick must be monotonic; "
+                f"got {observed_tick} after {self._melody_observed_until_tick}"
+            )
+        self._melody_observed_until_tick = observed_tick
         self._catchup_state.melody_history_beats = max(
             self._catchup_state.melody_history_beats,
-            self._ticks_to_beats(observed_until_tick),
+            self._ticks_to_beats(self._melody_observed_until_tick),
         )
 
     def start(
@@ -125,7 +152,8 @@ class LekaiPromptContinuationScheduler:
             self._prompt_melody_input = copy_events(melody_events)
             self._prompt_accompaniment_history = []
             self._accompaniment_history = []
-            self._continuation_sent_melody_event_count = 0
+            self._pending_melody_events = []
+            self._melody_observed_until_tick = 0
             self._catchup_state.reset()
             self._prompt_length_ticks = int(prompt_length_ticks)
             self._generation_interval_ticks = int(generation_interval_ticks)
@@ -147,6 +175,13 @@ class LekaiPromptContinuationScheduler:
                 if observed_until_tick is not None
                 else max(self._max_event_tick(self._melody_history), int(prompt_length_ticks))
             )
+            if observed_tick < int(prompt_length_ticks):
+                raise ValueError("observed_until_tick must cover prompt_length_ticks")
+            self._validate_events_before_boundary(
+                self._prompt_melody_input,
+                boundary_tick=int(prompt_length_ticks),
+                label="prompt melody_events",
+            )
             self._set_melody_observed_until(observed_tick)
             self._future = self._executor.submit(self._run_prompt_then_catchup, run_id)
             return self.status()
@@ -159,13 +194,34 @@ class LekaiPromptContinuationScheduler:
     ) -> dict[str, int | bool | str | None]:
         """Append user melody while prompt or continuation is running."""
         with self._lock:
-            self._melody_history.extend(copy_events(melody_events))
+            copied_events = copy_events(melody_events)
+            previous_observed_tick = int(self._melody_observed_until_tick)
             observed_tick = (
                 int(observed_until_tick)
                 if observed_until_tick is not None
-                else self._max_event_tick(self._melody_history)
+                else max(
+                    int(self._melody_observed_until_tick),
+                    self._max_event_tick(copied_events) + (1 if copied_events else 0),
+                )
             )
+            self._validate_events_before_boundary(
+                copied_events,
+                boundary_tick=observed_tick,
+                label="append melody_events",
+            )
+            for event in copied_events:
+                event_tick = int(event.get("tick", 0))
+                if event_tick < previous_observed_tick:
+                    raise ValueError(
+                        "append melody_events must have ticks in "
+                        "[previous_observed_until_tick, observed_until_tick); "
+                        f"got event tick {event_tick} before "
+                        f"{previous_observed_tick}"
+                    )
+            self._melody_history.extend(copy_events(copied_events))
+            self._pending_melody_events.extend(copy_events(copied_events))
             self._set_melody_observed_until(observed_tick)
+            self._melody_condition.notify_all()
             if (
                 self._phase == "ready"
                 and (self._future is None or self._future.done())
@@ -196,7 +252,8 @@ class LekaiPromptContinuationScheduler:
             self._prompt_melody_input = []
             self._prompt_accompaniment_history = []
             self._accompaniment_history = []
-            self._continuation_sent_melody_event_count = 0
+            self._pending_melody_events = []
+            self._melody_observed_until_tick = 0
             self._catchup_state.reset()
             self._continuation_calls = 0
             self._last_continuation_event_count = 0
@@ -205,6 +262,7 @@ class LekaiPromptContinuationScheduler:
             self._last_continuation_max_tick = None
             self._empty_continuation_output_streak = 0
             self._effective_bpm = None
+            self._melody_condition.notify_all()
             return self.status()
 
     def drain_and_clear(self) -> dict[str, int | bool | str | None]:
@@ -213,6 +271,7 @@ class LekaiPromptContinuationScheduler:
         with self._lock:
             self._run_id += 1
             future = self._future
+            self._melody_condition.notify_all()
         if future is not None:
             try:
                 future.result()
@@ -227,7 +286,8 @@ class LekaiPromptContinuationScheduler:
             self._prompt_melody_input = []
             self._prompt_accompaniment_history = []
             self._accompaniment_history = []
-            self._continuation_sent_melody_event_count = 0
+            self._pending_melody_events = []
+            self._melody_observed_until_tick = 0
             self._catchup_state.reset()
             self._continuation_calls = 0
             self._last_continuation_event_count = 0
@@ -239,6 +299,9 @@ class LekaiPromptContinuationScheduler:
             return self.status()
 
     def shutdown(self) -> None:
+        with self._lock:
+            self._run_id += 1
+            self._melody_condition.notify_all()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def status(self) -> dict[str, int | bool | str | None]:
@@ -252,6 +315,8 @@ class LekaiPromptContinuationScheduler:
                 "error": self._error,
                 "melody_event_count": len(self._melody_history),
                 "accompaniment_event_count": len(self._accompaniment_history),
+                "melody_observed_until_tick": int(self._melody_observed_until_tick),
+                "pending_melody_event_count": len(self._pending_melody_events),
                 "prompt_length_ticks": int(self._prompt_length_ticks),
                 "generation_interval_ticks": int(self._generation_interval_ticks),
                 "effective_bpm": self._effective_bpm,
@@ -321,11 +386,23 @@ class LekaiPromptContinuationScheduler:
                     self._ticks_to_beats(actual_prompt_length_ticks),
                 )
                 self._phase = "catchup_running"
-                melody_snapshot = copy_events(self._melody_history)
-                self._continuation_sent_melody_event_count = len(self._melody_history)
+                prompt_melody_snapshot = [
+                    event
+                    for event in copy_events(self._prompt_melody_input)
+                    if int(event.get("tick", 0)) < actual_prompt_length_ticks
+                ]
+                frozen_future_events = [
+                    event
+                    for event in copy_events(self._prompt_melody_input)
+                    if int(event.get("tick", 0)) >= actual_prompt_length_ticks
+                ]
+                if frozen_future_events:
+                    self._pending_melody_events = (
+                        frozen_future_events + self._pending_melody_events
+                    )
 
             self._continuation_engine.inject_history(
-                melody_events=melody_snapshot,
+                melody_events=prompt_melody_snapshot,
                 accompaniment_events=prompt_accompaniment,
                 injection_length_ticks=actual_prompt_length_ticks,
             )
@@ -351,9 +428,23 @@ class LekaiPromptContinuationScheduler:
                 generation_start_tick = (
                     int(self._catchup_state.accompaniment_history_beats) * TIMESTEPS_PER_BEAT
                 )
-                sent_melody_event_count = int(self._continuation_sent_melody_event_count)
-                melody_increment = copy_events(self._melody_history[sent_melody_event_count:])
-                next_sent_melody_event_count = len(self._melody_history)
+                while (
+                    self._is_current_run(run_id)
+                    and int(self._melody_observed_until_tick) < generation_start_tick
+                ):
+                    self._melody_condition.wait()
+                if not self._is_current_run(run_id):
+                    return
+                melody_increment = [
+                    event
+                    for event in copy_events(self._pending_melody_events)
+                    if int(event.get("tick", 0)) < generation_start_tick
+                ]
+                self._pending_melody_events = [
+                    event
+                    for event in self._pending_melody_events
+                    if int(event.get("tick", 0)) >= generation_start_tick
+                ]
                 generation_interval_ticks = int(self._generation_interval_ticks)
                 inference_mode = str(self._inference_mode)
                 model_name = str(self._model_name)
@@ -388,10 +479,6 @@ class LekaiPromptContinuationScheduler:
                 )
                 self._accompaniment_history.extend(copy_events(accompaniment))
                 self._catchup_state.accept_continuation_beats(chunk_beats)
-                self._continuation_sent_melody_event_count = max(
-                    int(self._continuation_sent_melody_event_count),
-                    int(next_sent_melody_event_count),
-                )
                 self._continuation_calls += 1
                 self._last_continuation_event_count = int(len(accompaniment))
                 self._last_continuation_note_on_count = int(continuation_note_on_count)

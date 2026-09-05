@@ -302,7 +302,7 @@ def test_prompt_continuation_poll_endpoints_contract():
     append_response = client.post(
         "/prompt_continuation/append_melody",
         json={
-            "melody_notes": [{"type": "note_on", "pitch": 62, "tick": 44}],
+            "melody_notes": [{"type": "note_on", "pitch": 62, "tick": 40}],
             "observed_until_tick": 44,
         },
     )

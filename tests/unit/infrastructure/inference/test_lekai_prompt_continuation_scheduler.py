@@ -1,8 +1,13 @@
 import threading
+from concurrent.futures import TimeoutError
 
 import mido
+import pytest
 
 from streammuse.infrastructure.input.midi_file import MidiFileInput
+from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_extension_scheduler import (
+    LekaiPromptExtensionContinuationScheduler,
+)
 from streammuse.infrastructure.inference.lekai_prompt_continuation.scheduler import (
     LekaiPromptContinuationScheduler,
 )
@@ -84,6 +89,274 @@ class _RecordingContinuationEngine:
         return [_note_on(55, tick)], {"response_output_time": 1.0}
 
 
+class _BlockingRecordingContinuationEngine(_RecordingContinuationEngine):
+    def __init__(self):
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(self, **kwargs):
+        self.generate_calls.append(kwargs)
+        if len(self.generate_calls) == 1:
+            self.started.set()
+            assert self.release.wait(timeout=2.0)
+        tick = int(kwargs["generation_start_tick"])
+        return [_note_on(55, tick)], {"response_output_time": 1.0}
+
+
+class _ShortPromptEngine(_ImmediatePromptEngine):
+    def last_generated_acc_beats(self):
+        return 7
+
+
+class _GeneratedBeatPromptEngine(_ImmediatePromptEngine):
+    def __init__(self, generated_acc_beats: int):
+        super().__init__()
+        self._generated_acc_beats = int(generated_acc_beats)
+
+    def last_generated_acc_beats(self):
+        return self._generated_acc_beats
+
+
+
+def _run_fifo_packet_scenario(*, block_prompt: bool):
+    prompt_engine = _BlockingPromptEngine() if block_prompt else _ImmediatePromptEngine()
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    packets = [
+        (36, [_note_on(62, 32)]),
+        (40, []),
+        (44, [_note_on(64, 40)]),
+    ]
+
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=96,
+        observed_until_tick=32,
+    )
+
+    if block_prompt:
+        assert prompt_engine.started.wait(timeout=2.0)
+        for observed_until_tick, melody_events in packets:
+            scheduler.append_melody(
+                melody_events,
+                observed_until_tick=observed_until_tick,
+            )
+        prompt_engine.release.set()
+        ready_status = scheduler.wait(timeout=2.0)
+    else:
+        scheduler.wait(timeout=2.0)
+        for observed_until_tick, melody_events in packets:
+            scheduler.append_melody(
+                melody_events,
+                observed_until_tick=observed_until_tick,
+            )
+            ready_status = scheduler.wait(timeout=2.0)
+
+    trace = [
+        (call["generation_start_tick"], call["melody_events"])
+        for call in continuation_engine.generate_calls
+    ]
+    return trace, continuation_engine.inject_calls, ready_status
+
+
+def test_scheduler_fifo_requests_match_fast_and_blocked_prompt_paths():
+    fast_trace, fast_inject_calls, fast_status = _run_fifo_packet_scenario(
+        block_prompt=False
+    )
+    blocked_trace, blocked_inject_calls, blocked_status = _run_fifo_packet_scenario(
+        block_prompt=True
+    )
+
+    expected_trace = [
+        (32, []),
+        (36, [_note_on(62, 32)]),
+        (40, []),
+        (44, [_note_on(64, 40)]),
+    ]
+    assert fast_trace == expected_trace
+    assert blocked_trace == expected_trace
+    assert fast_trace == blocked_trace
+    assert fast_inject_calls[0]["melody_events"] == [_note_on(60, 0)]
+    assert blocked_inject_calls[0]["melody_events"] == [_note_on(60, 0)]
+    assert fast_status["melody_observed_until_tick"] == 44
+    assert blocked_status["melody_observed_until_tick"] == 44
+    assert fast_status["pending_melody_event_count"] == 0
+    assert blocked_status["pending_melody_event_count"] == 0
+    for generation_start_tick, melody_events in fast_trace + blocked_trace:
+        assert all(int(event["tick"]) < generation_start_tick for event in melody_events)
+
+
+def test_scheduler_boundaries_remain_exact_while_continuation_is_blocked():
+    prompt_engine = _ImmediatePromptEngine()
+    continuation_engine = _BlockingRecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=120,
+        observed_until_tick=32,
+    )
+    assert continuation_engine.started.wait(timeout=2.0)
+    scheduler.append_melody([_note_on(62, 32)], observed_until_tick=36)
+    scheduler.append_melody([], observed_until_tick=40)
+    scheduler.append_melody([_note_on(64, 40)], observed_until_tick=44)
+    continuation_engine.release.set()
+    scheduler.wait(timeout=2.0)
+
+    assert [
+        (call["generation_start_tick"], call["melody_events"])
+        for call in continuation_engine.generate_calls
+    ] == [
+        (32, []),
+        (36, [_note_on(62, 32)]),
+        (40, []),
+        (44, [_note_on(64, 40)]),
+    ]
+
+
+def test_scheduler_partial_watermark_does_not_authorize_next_boundary():
+    prompt_engine = _ImmediatePromptEngine()
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=120,
+        observed_until_tick=32,
+    )
+    scheduler.wait(timeout=2.0)
+    scheduler.append_melody([_note_on(62, 32)], observed_until_tick=34)
+
+    with pytest.raises(TimeoutError):
+        scheduler.wait(timeout=0.05)
+    assert [call["generation_start_tick"] for call in continuation_engine.generate_calls] == [32]
+
+    scheduler.append_melody([], observed_until_tick=36)
+    scheduler.wait(timeout=2.0)
+    assert [call["generation_start_tick"] for call in continuation_engine.generate_calls] == [
+        32,
+        36,
+    ]
+    assert continuation_engine.generate_calls[-1]["melody_events"] == [_note_on(62, 32)]
+
+
+def test_scheduler_shutdown_wakes_partial_watermark_wait():
+    prompt_engine = _ImmediatePromptEngine()
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=120,
+        observed_until_tick=32,
+    )
+    scheduler.wait(timeout=2.0)
+    scheduler.append_melody([_note_on(62, 32)], observed_until_tick=34)
+    with scheduler._lock:
+        worker = scheduler._future
+    assert worker is not None
+    with pytest.raises(TimeoutError):
+        worker.result(timeout=0.05)
+
+    shutdown_thread = threading.Thread(target=scheduler.shutdown)
+    shutdown_thread.start()
+    shutdown_thread.join(timeout=2.0)
+
+    assert not shutdown_thread.is_alive()
+    worker.result(timeout=2.0)
+    assert worker.done()
+
+
+def test_scheduler_defers_frozen_events_after_short_actual_prompt():
+    prompt_engine = _ShortPromptEngine()
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    scheduler.start(
+        melody_events=[_note_on(60, 0), _note_on(62, 28)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=120,
+        observed_until_tick=32,
+    )
+    scheduler.wait(timeout=2.0)
+
+    assert continuation_engine.inject_calls[0]["injection_length_ticks"] == 28
+    assert continuation_engine.inject_calls[0]["melody_events"] == [_note_on(60, 0)]
+    assert [
+        (call["generation_start_tick"], call["melody_events"])
+        for call in continuation_engine.generate_calls
+    ] == [
+        (28, []),
+        (32, [_note_on(62, 28)]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("generated_acc_beats", "expected_first_tick"),
+    [(9, 36), (8, 32)],
+)
+def test_prompt_extension_preserves_success_and_fallback_start_boundaries(
+    generated_acc_beats, expected_first_tick
+):
+    prompt_engine = _GeneratedBeatPromptEngine(generated_acc_beats)
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptExtensionContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+        prompt_extension_ticks=4,
+    )
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=120,
+        observed_until_tick=44,
+    )
+    scheduler.wait(timeout=2.0)
+
+    assert continuation_engine.inject_calls[0]["melody_events"] == [_note_on(60, 0)]
+    assert continuation_engine.generate_calls[0]["generation_start_tick"] == expected_first_tick
+
+
 def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
     prompt_engine = _BlockingPromptEngine()
     continuation_engine = _RecordingContinuationEngine()
@@ -105,7 +378,7 @@ def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
 
     assert prompt_engine.started.wait(timeout=2.0)
     running_status = scheduler.append_melody(
-        [_note_on(62, 44)],
+        [_note_on(62, 40)],
         observed_until_tick=44,
     )
     assert running_status["phase"] == "prompt_running"
@@ -134,14 +407,13 @@ def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
         [],
         [],
         [],
-        [],
+        [_note_on(62, 40)],
     ]
     assert prompt_engine.calls[0]["bpm"] == 96
     assert {call["bpm"] for call in continuation_engine.generate_calls} == {96}
     assert ready_status["effective_bpm"] == 96
     assert continuation_engine.inject_calls[0]["melody_events"] == [
         _note_on(60, 0),
-        _note_on(62, 44),
     ]
     assert scheduler.playable_accompaniment()
 
@@ -171,7 +443,7 @@ def test_scheduler_restarts_catchup_when_append_arrives_after_prompt_ready():
     assert initial_ready["is_playback_ready"] is True
 
     appended = scheduler.append_melody(
-        [_note_on(62, 44)],
+        [_note_on(62, 40)],
         observed_until_tick=44,
     )
     assert appended["phase"] == "catchup_running"
@@ -248,18 +520,73 @@ def test_scheduler_uses_midi_converted_ticks_for_prompt_and_append_boundaries(tm
 
     status_after_append = scheduler.append_melody(
         append_events,
-        observed_until_tick=44,
+        observed_until_tick=48,
     )
-    assert status_after_append["melody_history_beats"] == 11
+    assert status_after_append["melody_observed_until_tick"] == 48
+    assert status_after_append["melody_history_beats"] == 12
 
     prompt_engine.release.set()
     ready_status = scheduler.wait(timeout=2.0)
 
     assert ready_status["phase"] == "ready"
-    assert ready_status["accompaniment_history_beats"] == 12
-    assert ready_status["continuation_calls"] == 4
-    assert continuation_engine.inject_calls[0]["melody_events"] == events
-    assert all(call["melody_events"] == [] for call in continuation_engine.generate_calls)
+    assert ready_status["accompaniment_history_beats"] == 13
+    assert ready_status["continuation_calls"] == 5
+    assert [call["generation_start_tick"] for call in continuation_engine.generate_calls] == [
+        32,
+        36,
+        40,
+        44,
+        48,
+    ]
+    assert continuation_engine.inject_calls[0]["melody_events"] == prompt_events
+    assert [call["melody_events"] for call in continuation_engine.generate_calls] == [
+        [],
+        [],
+        [],
+        [],
+        append_events,
+    ]
+
+
+
+def test_scheduler_rejects_contract_violating_append_without_mutating_history():
+    prompt_engine = _BlockingPromptEngine()
+    continuation_engine = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt_engine,
+        continuation_engine=continuation_engine,
+    )
+    scheduler.start(
+        melody_events=[_note_on(60, 0)],
+        prompt_length_ticks=32,
+        generation_interval_ticks=4,
+        inference_mode="sliding_window",
+        model_name="lekai_prompt_continuation",
+        checkpoint_path=None,
+        bpm=120,
+        observed_until_tick=32,
+    )
+    assert prompt_engine.started.wait(timeout=2.0)
+
+    accepted = scheduler.append_melody([], observed_until_tick=36)
+    assert accepted["melody_observed_until_tick"] == 36
+    assert accepted["pending_melody_event_count"] == 0
+    before = scheduler.status()
+
+    with pytest.raises(ValueError, match="previous_observed_until_tick"):
+        scheduler.append_melody([_note_on(63, 35)], observed_until_tick=40)
+    assert scheduler.status() == before
+
+    with pytest.raises(ValueError, match="tick < observed_until_tick"):
+        scheduler.append_melody([_note_on(64, 40)], observed_until_tick=40)
+    assert scheduler.status() == before
+
+    with pytest.raises(ValueError, match="must be monotonic"):
+        scheduler.append_melody([], observed_until_tick=34)
+    assert scheduler.status() == before
+
+    prompt_engine.release.set()
+    scheduler.wait(timeout=2.0)
 
 
 def test_scheduler_clear_invalidates_running_work():
@@ -281,11 +608,14 @@ def test_scheduler_clear_invalidates_running_work():
         observed_until_tick=32,
     )
     assert prompt_engine.started.wait(timeout=2.0)
+    scheduler.append_melody([], observed_until_tick=36)
 
     cleared = scheduler.clear()
     prompt_engine.release.set()
 
     assert cleared["phase"] == "idle"
+    assert cleared["melody_observed_until_tick"] == 0
+    assert cleared["pending_melody_event_count"] == 0
     assert scheduler.status()["phase"] == "idle"
     assert continuation_engine.generate_calls == []
 

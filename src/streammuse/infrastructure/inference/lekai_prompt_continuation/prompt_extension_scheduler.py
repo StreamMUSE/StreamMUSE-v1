@@ -95,11 +95,23 @@ class LekaiPromptExtensionContinuationScheduler(LekaiPromptContinuationScheduler
                     self._ticks_to_beats(actual_prompt_length_ticks),
                 )
                 self._phase = "catchup_running"
-                melody_snapshot = copy_events(self._melody_history)
-                self._continuation_sent_melody_event_count = len(self._melody_history)
+                prompt_melody_snapshot = [
+                    event
+                    for event in copy_events(self._prompt_melody_input)
+                    if int(event.get("tick", 0)) < actual_prompt_length_ticks
+                ]
+                frozen_future_events = [
+                    event
+                    for event in copy_events(self._prompt_melody_input)
+                    if int(event.get("tick", 0)) >= actual_prompt_length_ticks
+                ]
+                if frozen_future_events:
+                    self._pending_melody_events = (
+                        frozen_future_events + self._pending_melody_events
+                    )
 
             self._continuation_engine.inject_history(
-                melody_events=melody_snapshot,
+                melody_events=prompt_melody_snapshot,
                 accompaniment_events=prompt_accompaniment,
                 injection_length_ticks=actual_prompt_length_ticks,
             )
