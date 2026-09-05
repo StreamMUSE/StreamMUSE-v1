@@ -43,14 +43,33 @@ uv run streammuse-cli \
 
 ### 方案 B：Lekai HTTP server
 
+推理 backend 与 MIDI 设备相互独立。下面的 backend-only launcher 只加载模型并提供 HTTP API，不会枚举或打开 MIDI 输入/输出设备：
+
 ```bash
-# 终端 1：启动 Lekai 推理服务器
+# 终端 1：只启动 Lekai 推理 backend
 LEKAI_CHECKPOINT_PATH=path/to/lekai_checkpoint.safetensors \
 LEKAI_DEVICE=auto \
 LEKAI_DTYPE=auto \
-uv run python -m streammuse.infrastructure.inference.server_lekai
+bash scripts/start_lekai_backend.sh
+```
 
-# 终端 2：启动 CLI 客户端（走 HTTP）
+Web 是独立进程；启动后保持 idle，只有点击 **Start** 时才创建 session 并打开配置的 MIDI 设备：
+
+```bash
+# 终端 2：启动 idle Web
+uv run streammuse-web \
+    --web-host 0.0.0.0 \
+    --web-port 8001 \
+    --input-mode midi_device \
+    --inference-type http \
+    --model-name lekai \
+    --server-url http://localhost:8000/generate_accompaniment
+```
+
+CLI 客户端也可以单独连接同一个 backend：
+
+```bash
+# 终端 2（CLI 方案）
 uv run streammuse-cli \
     --input-mode keyboard \
     --inference-type http \
@@ -59,6 +78,10 @@ uv run streammuse-cli \
     --generation-interval-ticks 4 \
     --generation-length-frames 16
 ```
+
+在 Web 或 CLI 启动命令中加入 `--mute-melody-output`，可关闭系统对用户 Melody 的实时 MIDI 监听播放。Melody 仍会进入模型，并保留在 Web、session 日志和 `combined.mid` 中。
+
+缺少或断开 MIDI 设备不会阻止 backend 或 idle Web 启动；设备错误只会在用户点击 Start、session 实际打开输入时报告。
 
 ---
 
