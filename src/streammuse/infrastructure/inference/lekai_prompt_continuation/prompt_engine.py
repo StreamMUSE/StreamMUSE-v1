@@ -30,8 +30,11 @@ from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_batch_
     duration_weighted_pitch_class_evidence,
     low_register_penalty_from_pianoroll,
     melody_features_from_pianoroll,
+    pitch_change_score_from_pianoroll,
+    pitch_class_note_distribution_from_pianoroll,
     score_prompt_batch_ppl,
     select_rule_s_candidate,
+    select_rule_s_if_else_candidates,
     select_rule_s_v3_candidate,
     trim_at_eos,
 )
@@ -152,16 +155,22 @@ class LekaiPromptEngine:
             "best_of_n": "rule_s",
             "rule_s_v3": "rule_s_v3",
             "rule-s-v3": "rule_s_v3",
+            "rule_s_if_else": "rule_s_if_else",
+            "rule-s-if-else": "rule_s_if_else",
         }
         if raw not in aliases:
             raise ValueError(
-                "LEKAI_PROMPT_SELECTION_MODE must be single, batch_first, or "
-                f"rule_s/rule_s_v3, got {raw!r}"
+                "LEKAI_PROMPT_SELECTION_MODE must be single, batch_first, "
+                f"rule_s, rule_s_v3, or rule_s_if_else, got {raw!r}"
             )
         return aliases[raw]
 
     def _batch_candidate_count(self) -> int:
-        count = self._env_positive_int("LEKAI_PROMPT_BATCH_CANDIDATES") or 5
+        default_count = 10 if self._selection_mode() == "rule_s_if_else" else 5
+        count = (
+            self._env_positive_int("LEKAI_PROMPT_BATCH_CANDIDATES")
+            or default_count
+        )
         if count < 2:
             raise ValueError("LEKAI_PROMPT_BATCH_CANDIDATES must be at least 2")
         return int(count)
@@ -198,13 +207,14 @@ class LekaiPromptEngine:
             seed = self._env_optional_int("LEKAI_SEED")
         return seed
 
-    def _seed_if_configured(self) -> None:
+    def _seed_if_configured(self, *, offset: int = 0) -> None:
         seed = self._configured_seed()
         if seed is None:
             return
-        torch.manual_seed(int(seed))
+        effective_seed = int(seed) + int(offset)
+        torch.manual_seed(effective_seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(int(seed))
+            torch.cuda.manual_seed_all(effective_seed)
 
     def reset_session(self, seed: int) -> int:
         """Set the per-session Prompt RNG seed and discard prior diagnostics."""
@@ -499,9 +509,10 @@ class LekaiPromptEngine:
         prompt_tokens: torch.Tensor,
         *,
         candidate_count: int,
+        seed_offset: int = 0,
     ) -> torch.Tensor:
         assert self._model is not None
-        self._seed_if_configured()
+        self._seed_if_configured(offset=seed_offset)
         return self._model.generate_music_batch(
             initial_tokens=prompt_tokens,
             batch_size=int(candidate_count),
@@ -520,6 +531,7 @@ class LekaiPromptEngine:
         prompt_length_ticks: int,
         ppl_score: dict[str, Any],
         include_rule_s_v3_features: bool = False,
+        include_rule_s_if_else_features: bool = False,
     ) -> dict[str, Any]:
         trimmed = trim_at_eos(
             sequence.detach().cpu(),
@@ -561,6 +573,23 @@ class LekaiPromptEngine:
                     ),
                 }
             )
+        if include_rule_s_if_else_features:
+            pitch_class_counts, pitch_class_entropy = (
+                pitch_class_note_distribution_from_pianoroll(
+                    acc_pr,
+                    length_ticks=int(prompt_length_ticks),
+                )
+            )
+            features.update(
+                {
+                    "acc_pitch_class_note_counts": pitch_class_counts,
+                    "acc_pitch_class_note_entropy": pitch_class_entropy,
+                    "acc_pitch_change_score": pitch_change_score_from_pianoroll(
+                        acc_pr,
+                        length_ticks=int(prompt_length_ticks),
+                    ),
+                }
+            )
         ppl_available = bool(ppl_score.get("available"))
         return {
             "candidate_number": int(candidate_number),
@@ -585,9 +614,18 @@ class LekaiPromptEngine:
         *,
         prompt_length_ticks: int,
         selection_mode: str,
+        selection_attempt: int = 0,
+        prior_fallback_reasons: tuple[str, ...] = (),
+        prior_generation_time_ms: float = 0.0,
+        prior_scoring_time_ms: float = 0.0,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         assert self._model is not None
-        if selection_mode not in {"batch_first", "rule_s", "rule_s_v3"}:
+        if selection_mode not in {
+            "batch_first",
+            "rule_s",
+            "rule_s_v3",
+            "rule_s_if_else",
+        }:
             raise ValueError(f"invalid batch selection mode: {selection_mode}")
         candidate_count = self._batch_candidate_count()
 
@@ -596,6 +634,7 @@ class LekaiPromptEngine:
         generated = self._generate_token_batch(
             prompt_tokens,
             candidate_count=candidate_count,
+            seed_offset=selection_attempt,
         )
         self._sync_device()
         generation_time_ms = (time.perf_counter() - generation_started) * 1000
@@ -625,10 +664,13 @@ class LekaiPromptEngine:
                 prompt_length_ticks=int(prompt_length_ticks),
                 ppl_score=ppl_scores[index],
                 include_rule_s_v3_features=selection_mode == "rule_s_v3",
+                include_rule_s_if_else_features=(
+                    selection_mode == "rule_s_if_else"
+                ),
             )
             for index in range(candidate_count)
         ]
-        if selection_mode == "rule_s_v3":
+        if selection_mode in {"rule_s_v3", "rule_s_if_else"}:
             melody_beats, _acc_beats = self._tokenizer.parse_generated_sequence(
                 prompt_tokens.detach().cpu()
             )
@@ -648,32 +690,102 @@ class LekaiPromptEngine:
             )
             for candidate in candidates:
                 candidate.update(melody_features)
-            rule_s_decision = select_rule_s_v3_candidate(candidates)
+            if selection_mode == "rule_s_v3":
+                rule_s_decision = select_rule_s_v3_candidate(candidates)
+            else:
+                rule_s_decision = select_rule_s_if_else_candidates(candidates)
         else:
             rule_s_decision = select_rule_s_candidate(candidates)
-        selected_index = (
-            0
-            if selection_mode == "batch_first"
-            else int(rule_s_decision["selected_index"])
-        )
-        return generated[selected_index].unsqueeze(0), {
+
+        if selection_mode == "batch_first":
+            selected_index = 0
+        elif selection_mode == "rule_s_if_else":
+            ranked_indices = rule_s_decision["selected_indices"]
+            if not ranked_indices:
+                fallback_reason = str(rule_s_decision["fallback_reason"])
+                max_attempts = (
+                    self._env_positive_int("LEKAI_PROMPT_SELECTION_MAX_ATTEMPTS")
+                    or 3
+                )
+                if selection_attempt + 1 < max_attempts:
+                    return self._generate_batch_selected_tokens(
+                        prompt_tokens,
+                        prompt_length_ticks=prompt_length_ticks,
+                        selection_mode=selection_mode,
+                        selection_attempt=selection_attempt + 1,
+                        prior_fallback_reasons=(
+                            *prior_fallback_reasons,
+                            fallback_reason,
+                        ),
+                        prior_generation_time_ms=(
+                            prior_generation_time_ms + generation_time_ms
+                        ),
+                        prior_scoring_time_ms=(
+                            prior_scoring_time_ms + scoring_time_ms
+                        ),
+                    )
+                raise RuntimeError(
+                    "rule_s_if_else produced no valid rank-1 candidate after "
+                    f"{max_attempts} attempts: {fallback_reason}"
+                )
+            selected_index = int(ranked_indices[0])
+        else:
+            selected_index = int(rule_s_decision["selected_index"])
+
+        if selection_mode == "rule_s_if_else":
+            recommended_candidate_number = int(
+                rule_s_decision["selected_candidate_numbers"][0]
+            )
+            eligible_candidate_count = len(
+                rule_s_decision["stage_2_candidate_numbers"]
+            )
+        else:
+            recommended_candidate_number = int(
+                rule_s_decision["selected_candidate_number"]
+            )
+            eligible_candidate_count = int(rule_s_decision["eligible_count"])
+
+        metadata: dict[str, Any] = {
             "selection_mode": selection_mode,
             "candidate_count": candidate_count,
             "selected_candidate_number": selected_index + 1,
-            "rule_s_recommended_candidate_number": int(
-                rule_s_decision["selected_candidate_number"]
-            ),
-            "eligible_candidate_count": int(rule_s_decision["eligible_count"]),
+            "rule_s_recommended_candidate_number": recommended_candidate_number,
+            "eligible_candidate_count": eligible_candidate_count,
             "selection_fallback_reason": (
                 rule_s_decision["fallback_reason"]
-                if selection_mode in {"rule_s", "rule_s_v3"}
+                if selection_mode in {"rule_s", "rule_s_v3", "rule_s_if_else"}
                 else None
             ),
             "rule_s_id": rule_s_decision["rule_id"],
-            "prompt_batch_generation_time_ms": generation_time_ms,
-            "prompt_batch_scoring_time_ms": scoring_time_ms,
+            "prompt_batch_generation_time_ms": (
+                prior_generation_time_ms + generation_time_ms
+            ),
+            "prompt_batch_scoring_time_ms": (
+                prior_scoring_time_ms + scoring_time_ms
+            ),
             "prompt_candidates": rule_s_decision["candidates"],
         }
+        if selection_mode == "rule_s_if_else":
+            configured_seed = self._configured_seed()
+            metadata.update(
+                {
+                    "selected_final_rank": 1,
+                    "selection_output_policy": "rank1_only",
+                    "selection_attempt_count": selection_attempt + 1,
+                    "selection_attempt_fallback_reasons": list(
+                        prior_fallback_reasons
+                    ),
+                    "selection_seed": (
+                        int(configured_seed) + selection_attempt
+                        if configured_seed is not None
+                        else None
+                    ),
+                    "ranked_candidate_numbers": list(
+                        rule_s_decision["selected_candidate_numbers"]
+                    ),
+                }
+            )
+        return generated[selected_index].unsqueeze(0), metadata
 
     def warmup(self) -> dict[str, str | float | bool | int | None]:
         """Run one dummy two-bar prompt generation to pay first-call overhead at startup."""

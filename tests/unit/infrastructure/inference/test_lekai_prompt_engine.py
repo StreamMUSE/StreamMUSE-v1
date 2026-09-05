@@ -1,3 +1,10 @@
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import torch
+
+from streammuse.infrastructure.inference.lekai_prompt_continuation import prompt_engine
 from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_engine import (
     LekaiPromptEngine,
 )
@@ -113,6 +120,31 @@ def test_prompt_engine_exposes_paired_batch_selection_modes(monkeypatch):
     assert engine.runtime_info()["selection_mode"] == "rule_s"
 
 
+def test_prompt_engine_preserves_existing_sampling_defaults(monkeypatch):
+    for name in (
+        "LEKAI_PROMPT_TEMPERATURE",
+        "LEKAI_PROMPT_TOP_K",
+        "LEKAI_PROMPT_TOP_P",
+        "LEKAI_PROMPT_REPETITION_PENALTY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    engine = LekaiPromptEngine()
+
+    assert engine._generation_parameters("single") == {
+        "temperature": 1.1,
+        "top_k": 0,
+        "top_p": 0.95,
+        "repetition_penalty": 1.0,
+    }
+    for mode in ("batch_first", "rule_s", "rule_s_v3"):
+        assert engine._generation_parameters(mode) == {
+            "temperature": 0.8,
+            "top_k": 50,
+            "top_p": 0.95,
+            "repetition_penalty": 1.0,
+        }
+
+
 def test_prompt_engine_accepts_rule_s_v3_aliases(monkeypatch):
     engine = LekaiPromptEngine()
 
@@ -121,6 +153,228 @@ def test_prompt_engine_accepts_rule_s_v3_aliases(monkeypatch):
 
     monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "rule-s-v3")
     assert engine.runtime_info()["selection_mode"] == "rule_s_v3"
+
+
+def test_prompt_engine_accepts_rule_s_if_else_aliases_with_default_n10(monkeypatch):
+    monkeypatch.delenv("LEKAI_PROMPT_BATCH_CANDIDATES", raising=False)
+    engine = LekaiPromptEngine()
+
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "rule_s_if_else")
+    assert engine.runtime_info()["selection_mode"] == "rule_s_if_else"
+    assert engine.runtime_info()["batch_candidate_count"] == 10
+
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MODE", "rule-s-if-else")
+    assert engine.runtime_info()["selection_mode"] == "rule_s_if_else"
+    assert engine.runtime_info()["batch_candidate_count"] == 10
+
+
+def test_prompt_engine_extracts_if_else_candidate_features():
+    engine = LekaiPromptEngine()
+    engine._model = object()
+    roll = np.zeros((2, 88, 8), dtype=np.uint8)
+    roll[0, [39, 43], 0] = 1
+    roll[1, [39, 43], 0] = 1
+    roll[0, 41, 4] = 1
+    roll[1, 41, 4] = 1
+    engine._tokenizer = SimpleNamespace(
+        vocab=SimpleNamespace(eos_token_id=99, track_marker_acc=7),
+        parse_generated_sequence=lambda _tokens: ([], [object(), object()]),
+        decode_beats_to_pianoroll=lambda _beats, *, track_marker_id: roll,
+    )
+
+    candidate = engine._candidate_from_tokens(
+        torch.tensor([1, 2], dtype=torch.long),
+        candidate_number=1,
+        prompt_length_ticks=8,
+        ppl_score={"available": False},
+        include_rule_s_if_else_features=True,
+    )
+
+    assert sum(candidate["acc_pitch_class_note_counts"]) == 3
+    assert candidate["acc_pitch_class_note_entropy"] > 0
+    assert candidate["acc_pitch_change_score"] == 1
+
+
+def test_prompt_engine_if_else_passes_only_rank1_to_continuation(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_BATCH_CANDIDATES", "4")
+    engine = LekaiPromptEngine()
+    engine._model = object()
+    generated = torch.tensor([[101], [202], [303], [404]], dtype=torch.long)
+
+    monkeypatch.setattr(
+        engine,
+        "_generate_token_batch",
+        lambda _prompt_tokens, *, candidate_count, seed_offset=0: generated,
+    )
+    monkeypatch.setattr(
+        engine,
+        "_candidate_from_tokens",
+        lambda _sequence, *, candidate_number, **_kwargs: {
+            "candidate_number": candidate_number
+        },
+    )
+    monkeypatch.setattr(
+        engine._tokenizer,
+        "parse_generated_sequence",
+        lambda _tokens: ([], []),
+    )
+    monkeypatch.setattr(
+        prompt_engine,
+        "score_prompt_batch_ppl",
+        lambda *_args, **_kwargs: [{} for _ in range(4)],
+    )
+    monkeypatch.setattr(
+        prompt_engine,
+        "select_rule_s_if_else_candidates",
+        lambda candidates: {
+            "rule_id": "rule_s_if_else_v1",
+            "selected_indices": [2, 0, 1],
+            "selected_candidate_numbers": [3, 1, 2],
+            "stage_2_candidate_numbers": [1, 2, 3, 4],
+            "fallback_reason": None,
+            "candidates": candidates,
+        },
+    )
+
+    selected, metadata = engine._generate_batch_selected_tokens(
+        torch.tensor([1], dtype=torch.long),
+        prompt_length_ticks=32,
+        selection_mode="rule_s_if_else",
+    )
+
+    assert selected.tolist() == [[303]]
+    assert metadata["selected_candidate_number"] == 3
+    assert metadata["selected_final_rank"] == 1
+    assert metadata["selection_output_policy"] == "rank1_only"
+    assert metadata["selection_attempt_count"] == 1
+    assert metadata["selection_attempt_fallback_reasons"] == []
+    assert metadata["ranked_candidate_numbers"] == [3, 1, 2]
+
+
+def test_prompt_engine_if_else_resamples_with_next_seed_when_rank1_is_missing(
+    monkeypatch,
+):
+    monkeypatch.setenv("LEKAI_PROMPT_BATCH_CANDIDATES", "2")
+    monkeypatch.setenv("LEKAI_PROMPT_SEED", "100")
+    engine = LekaiPromptEngine()
+    engine._model = object()
+    generated = torch.tensor([[101], [202]], dtype=torch.long)
+    seed_offsets = []
+
+    def generate(_prompt_tokens, *, candidate_count, seed_offset=0):
+        seed_offsets.append(seed_offset)
+        return generated
+
+    monkeypatch.setattr(engine, "_generate_token_batch", generate)
+    monkeypatch.setattr(
+        engine,
+        "_candidate_from_tokens",
+        lambda _sequence, *, candidate_number, **_kwargs: {
+            "candidate_number": candidate_number
+        },
+    )
+    monkeypatch.setattr(
+        engine._tokenizer,
+        "parse_generated_sequence",
+        lambda _tokens: ([], []),
+    )
+    monkeypatch.setattr(
+        prompt_engine,
+        "score_prompt_batch_ppl",
+        lambda *_args, **_kwargs: [{}, {}],
+    )
+    decisions = iter(
+        [
+            {
+                "rule_id": "rule_s_if_else_v1",
+                "selected_indices": [],
+                "selected_candidate_numbers": [],
+                "stage_2_candidate_numbers": [],
+                "fallback_reason": "no_candidate_with_minimum_note_count",
+                "candidates": [],
+            },
+            {
+                "rule_id": "rule_s_if_else_v1",
+                "selected_indices": [1],
+                "selected_candidate_numbers": [2],
+                "stage_2_candidate_numbers": [2],
+                "fallback_reason": "fewer_than_four_candidates_in_tonal_pool",
+                "candidates": [{"candidate_number": 1}, {"candidate_number": 2}],
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        prompt_engine,
+        "select_rule_s_if_else_candidates",
+        lambda _candidates: next(decisions),
+    )
+
+    selected, metadata = engine._generate_batch_selected_tokens(
+        torch.tensor([1], dtype=torch.long),
+        prompt_length_ticks=32,
+        selection_mode="rule_s_if_else",
+    )
+
+    assert selected.tolist() == [[202]]
+    assert seed_offsets == [0, 1]
+    assert metadata["selection_attempt_count"] == 2
+    assert metadata["selection_attempt_fallback_reasons"] == [
+        "no_candidate_with_minimum_note_count"
+    ]
+    assert metadata["selection_seed"] == 101
+
+
+def test_prompt_engine_if_else_resampling_is_bounded(monkeypatch):
+    monkeypatch.setenv("LEKAI_PROMPT_BATCH_CANDIDATES", "2")
+    monkeypatch.setenv("LEKAI_PROMPT_SELECTION_MAX_ATTEMPTS", "2")
+    engine = LekaiPromptEngine()
+    engine._model = object()
+    generated = torch.tensor([[101], [202]], dtype=torch.long)
+    seed_offsets = []
+
+    def generate(_prompt_tokens, *, candidate_count, seed_offset=0):
+        seed_offsets.append(seed_offset)
+        return generated
+
+    monkeypatch.setattr(engine, "_generate_token_batch", generate)
+    monkeypatch.setattr(
+        engine,
+        "_candidate_from_tokens",
+        lambda _sequence, *, candidate_number, **_kwargs: {
+            "candidate_number": candidate_number
+        },
+    )
+    monkeypatch.setattr(
+        engine._tokenizer,
+        "parse_generated_sequence",
+        lambda _tokens: ([], []),
+    )
+    monkeypatch.setattr(
+        prompt_engine,
+        "score_prompt_batch_ppl",
+        lambda *_args, **_kwargs: [{}, {}],
+    )
+    monkeypatch.setattr(
+        prompt_engine,
+        "select_rule_s_if_else_candidates",
+        lambda _candidates: {
+            "rule_id": "rule_s_if_else_v1",
+            "selected_indices": [],
+            "selected_candidate_numbers": [],
+            "stage_2_candidate_numbers": [],
+            "fallback_reason": "no_candidate_with_minimum_note_count",
+            "candidates": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="after 2 attempts"):
+        engine._generate_batch_selected_tokens(
+            torch.tensor([1], dtype=torch.long),
+            prompt_length_ticks=32,
+            selection_mode="rule_s_if_else",
+        )
+
+    assert seed_offsets == [0, 1]
 
 
 def test_prompt_engine_session_seed_overrides_environment_and_clears_diagnostics(monkeypatch):

@@ -13,8 +13,11 @@ from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_batch_
     duration_match_score,
     low_register_penalty_from_pianoroll,
     median_note_duration_from_pianoroll,
+    pitch_change_score_from_pianoroll,
+    pitch_class_note_distribution_from_pianoroll,
     score_prompt_batch_ppl,
     select_rule_s_candidate,
+    select_rule_s_if_else_candidates,
     select_rule_s_v2_candidate,
     select_rule_s_v3_candidate,
     tonal_fit_score,
@@ -279,6 +282,171 @@ def test_rule_s_v3_ineligible_fallback_and_tie_are_deterministic():
     fallback = select_rule_s_v3_candidate(unavailable)
     assert fallback["selected_index"] == 0
     assert fallback["fallback_reason"] == "no_eligible_candidate"
+
+
+def test_if_else_pitch_change_matches_adjacent_onset_pitch_sets():
+    roll = np.zeros((2, 88, 8), dtype=np.uint8)
+    roll[0, [25, 30], 0] = 1
+    roll[1, [25, 30], 0] = 1
+    roll[0, [23, 28], 4] = 1
+    roll[1, [23, 28], 4] = 1
+
+    counts, entropy = pitch_class_note_distribution_from_pianoroll(
+        roll, length_ticks=8
+    )
+
+    assert sum(counts) == 4
+    assert entropy == 2.0
+    assert pitch_change_score_from_pianoroll(roll, length_ticks=8) == 1
+
+
+def test_if_else_stage_one_requires_complete_prompt_and_minimum_notes():
+    melody = [8.0, 0, 0, 0, 4.0, 0, 0, 4.0, 0, 0, 0, 0]
+    candidates = [
+        {
+            "candidate_number": 1,
+            "generated_beats": 5,
+            "required_beats": 6,
+            "acc_note_count": 8,
+            "mel_pitch_class_duration_evidence": melody,
+            "acc_pitch_class_note_counts": [8] + [0] * 11,
+            "acc_pitch_class_note_entropy": 0.0,
+            "acc_pitch_change_score": 3,
+        },
+        {
+            "candidate_number": 2,
+            "generated_beats": 6,
+            "required_beats": 6,
+            "acc_note_count": 3,
+            "mel_pitch_class_duration_evidence": melody,
+            "acc_pitch_class_note_counts": [3] + [0] * 11,
+            "acc_pitch_class_note_entropy": 0.0,
+            "acc_pitch_change_score": 2,
+        },
+        {
+            "candidate_number": 3,
+            "generated_beats": 6,
+            "required_beats": 6,
+            "acc_note_count": 4,
+            "mel_pitch_class_duration_evidence": melody,
+            "acc_pitch_class_note_counts": [4] + [0] * 11,
+            "acc_pitch_class_note_entropy": 0.0,
+            "acc_pitch_change_score": 1,
+        },
+    ]
+
+    decision = select_rule_s_if_else_candidates(candidates, min_notes=4)
+
+    assert decision["stage_1_candidate_numbers"] == [3]
+    assert decision["selected_candidate_numbers"] == [3]
+    rows = {row["candidate_number"]: row for row in decision["candidates"]}
+    assert rows[1]["complete_prompt"] is False
+    assert rows[1]["stage_1_note_count_pass"] is True
+    assert rows[1]["stage_1_pass"] is False
+    assert rows[2]["complete_prompt"] is True
+    assert rows[2]["stage_1_note_count_pass"] is False
+    assert rows[2]["stage_1_pass"] is False
+    assert rows[3]["stage_1_pass"] is True
+
+
+def test_if_else_selector_keeps_change_top4_then_combines_entropy_and_note_ranks():
+    base = {
+        "generated_beats": 8,
+        "required_beats": 8,
+        "acc_note_count": 4,
+        "mel_pitch_class_duration_evidence": [
+            8.0,
+            0,
+            0,
+            0,
+            4.0,
+            0,
+            0,
+            4.0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        "acc_pitch_class_note_counts": [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0],
+    }
+    candidates = [
+        {
+            **base,
+            "candidate_number": number,
+            "acc_pitch_class_note_entropy": entropy,
+            "acc_pitch_change_score": variation,
+        }
+        for number, (entropy, variation) in enumerate(
+            [(2.0, 0), (1.5, 3), (1.0, 2), (0.5, 1)], start=1
+        )
+    ]
+
+    decision = select_rule_s_if_else_candidates(candidates)
+
+    assert decision["pitch_change_ranked_candidate_numbers"] == [2, 3, 4, 1]
+    assert decision["pitch_change_rank_1_to_4_candidate_numbers"] == [2, 3, 4, 1]
+    assert decision["entropy_ranked_candidate_numbers"] == [1, 2, 3, 4]
+    assert decision["note_count_ranked_candidate_numbers"] == [1, 2, 3, 4]
+    assert decision["final_combined_ranked_candidate_numbers"] == [1, 2, 3]
+    assert decision["selected_candidate_numbers"] == [1, 2, 3]
+
+
+def test_if_else_uses_most_in_key_top5_when_strict_pool_is_empty():
+    melody = [8.0, 0, 0, 0, 4.0, 0, 0, 4.0, 0, 0, 0, 0]
+    counts = [
+        [3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0],
+        [2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0],
+        [1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ]
+    candidates = [
+        {
+            "candidate_number": index,
+            "generated_beats": 8,
+            "required_beats": 8,
+            "acc_note_count": 4,
+            "mel_pitch_class_duration_evidence": melody,
+            "acc_pitch_class_note_counts": distribution,
+            "acc_pitch_class_note_entropy": float(index),
+            "acc_pitch_change_score": index,
+        }
+        for index, distribution in enumerate(counts, start=1)
+    ]
+
+    decision = select_rule_s_if_else_candidates(candidates)
+
+    assert decision["stage_2_strict_in_key_candidate_numbers"] == []
+    assert decision["stage_2_tonal_fallback_used"] is True
+    assert decision["stage_2_tonal_fallback_candidate_numbers"] == [1, 2, 3, 4, 5]
+    assert decision["stage_2_candidate_numbers"] == [1, 2, 3, 4, 5]
+    assert decision["pitch_change_rank_1_to_4_candidate_numbers"] == [5, 4, 3, 2]
+    assert decision["final_combined_ranked_candidate_numbers"] == [5, 4, 3]
+
+
+def test_if_else_never_reintroduces_candidates_above_note_cap():
+    melody = [8.0, 0, 0, 0, 4.0, 0, 0, 4.0, 0, 0, 0, 0]
+    candidates = [
+        {
+            "candidate_number": number,
+            "generated_beats": 8,
+            "required_beats": 8,
+            "acc_note_count": note_count,
+            "mel_pitch_class_duration_evidence": melody,
+            "acc_pitch_class_note_counts": [note_count] + [0] * 11,
+            "acc_pitch_class_note_entropy": 0.0,
+            "acc_pitch_change_score": number,
+        }
+        for number, note_count in enumerate([4, 8, 12, 20, 26], start=1)
+    ]
+
+    decision = select_rule_s_if_else_candidates(candidates, max_notes=25)
+
+    assert decision["stage_2_note_count_cap_candidate_numbers"] == [1, 2, 3, 4]
+    assert 5 not in decision["stage_2_candidate_numbers"]
+    assert 5 not in decision["selected_candidate_numbers"]
 
 
 def test_prompt_ppl_scores_only_accompaniment_content_tokens():

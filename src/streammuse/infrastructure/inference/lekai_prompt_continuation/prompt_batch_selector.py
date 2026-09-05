@@ -32,6 +32,14 @@ RULE_S_V3_DURATION_EPSILON = 1e-6
 RULE_S_V3_DURATION_TAU = math.log(2.0)
 RULE_S_V3_LOW_REGISTER_MIDI = 36
 RULE_S_V3_LOW_REGISTER_SPAN = 15.0
+RULE_S_IF_ELSE_ID = "rule_s_if_else_v1"
+RULE_S_IF_ELSE_MIN_NOTES = 4
+RULE_S_IF_ELSE_MAX_NOTES = 25
+RULE_S_IF_ELSE_TONAL_FALLBACK_TOP_K = 5
+RULE_S_IF_ELSE_ENTROPY_TOP_K = 3
+RULE_S_IF_ELSE_VARIATION_KEEP_RANKS = (1, 2, 3, 4)
+RULE_S_IF_ELSE_ENTROPY_WEIGHT = 1.0
+RULE_S_IF_ELSE_NOTE_COUNT_WEIGHT = 1.1
 
 # Soft major/minor pitch-class templates. Values are compatibility strengths,
 # not probabilities; rotations provide all 24 keys.
@@ -43,6 +51,94 @@ _MINOR_TONAL_TEMPLATE = np.asarray(
     [1.0, 0.1, 0.6, 0.8, 0.1, 0.7, 0.1, 0.9, 0.65, 0.1, 0.6, 0.1],
     dtype=np.float64,
 )
+
+_MAJOR_SCALE_DEGREES = frozenset((0, 2, 4, 5, 7, 9, 11))
+_MINOR_SCALE_DEGREES = frozenset((0, 2, 3, 5, 7, 8, 10))
+
+
+def infer_tonal_key(
+    melody_evidence: list[float] | np.ndarray,
+) -> dict[str, Any] | None:
+    """Infer one major/minor key and return its seven in-key pitch classes."""
+
+    melody = np.asarray(melody_evidence, dtype=np.float64).copy()
+    if (
+        melody.shape != (12,)
+        or not np.all(np.isfinite(melody))
+        or np.any(melody < 0)
+        or melody.sum() <= 0
+    ):
+        return None
+    melody /= melody.sum()
+
+    labelled_templates = [
+        (mode, tonic, np.roll(template, tonic))
+        for mode, template in (
+            ("major", _MAJOR_TONAL_TEMPLATE),
+            ("minor", _MINOR_TONAL_TEMPLATE),
+        )
+        for tonic in range(12)
+    ]
+    fits = np.asarray(
+        [
+            float(np.dot(melody, template))
+            for _mode, _tonic, template in labelled_templates
+        ]
+    )
+    mode, tonic, best_template = labelled_templates[int(np.argmax(fits))]
+    uniform_fit = float(best_template.mean())
+    confidence = float(
+        np.clip((float(fits.max()) - uniform_fit) / (1.0 - uniform_fit), 0.0, 1.0)
+    )
+    degrees = _MAJOR_SCALE_DEGREES if mode == "major" else _MINOR_SCALE_DEGREES
+    return {
+        "tonic_pitch_class": int(tonic),
+        "mode": mode,
+        "confidence": confidence,
+        "in_key_pitch_classes": sorted((int(tonic) + degree) % 12 for degree in degrees),
+    }
+
+
+def pitch_class_note_distribution_from_pianoroll(
+    pianoroll: np.ndarray,
+    *,
+    length_ticks: int,
+) -> tuple[list[int], float]:
+    """Return onset counts for 12 pitch classes and their Shannon entropy."""
+
+    if pianoroll.ndim != 3 or pianoroll.shape[0] < 2:
+        raise ValueError("expected pianoroll with shape (2, pitch, time)")
+    onset = np.asarray(pianoroll[1, :, : int(length_ticks)] > 0, dtype=np.bool_)
+    counts = np.zeros(12, dtype=np.int64)
+    for pitch_index in np.flatnonzero(onset.any(axis=1)):
+        counts[(int(pitch_index) + 21) % 12] += int(onset[pitch_index].sum())
+    if counts.sum() <= 0:
+        return counts.tolist(), 0.0
+    probabilities = counts.astype(np.float64) / counts.sum()
+    nonzero = probabilities[probabilities > 0]
+    entropy = float(-np.sum(nonzero * np.log2(nonzero)))
+    return counts.tolist(), entropy
+
+
+def pitch_change_score_from_pianoroll(
+    pianoroll: np.ndarray,
+    *,
+    length_ticks: int,
+) -> int:
+    """Count pitch-set changes between consecutive non-empty onset times."""
+
+    if pianoroll.ndim != 3 or pianoroll.shape[0] < 2:
+        raise ValueError("expected pianoroll with shape (2, pitch, time)")
+    onset = np.asarray(pianoroll[1, :, : int(length_ticks)] > 0, dtype=np.bool_)
+    onset_times = np.flatnonzero(onset.any(axis=0))
+    pitch_sets = [
+        tuple(int(pitch) + 21 for pitch in np.flatnonzero(onset[:, tick]))
+        for tick in onset_times
+    ]
+    return sum(
+        current != following
+        for current, following in zip(pitch_sets, pitch_sets[1:])
+    )
 
 
 def duration_weighted_pitch_class_evidence(
@@ -542,6 +638,282 @@ def select_rule_s_v3_candidate(
         "fallback_reason": None,
         "duration_tau": RULE_S_V3_DURATION_TAU,
         "duration_epsilon": RULE_S_V3_DURATION_EPSILON,
+        "candidates": scored,
+    }
+
+
+def select_rule_s_if_else_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    min_notes: int = RULE_S_IF_ELSE_MIN_NOTES,
+    max_notes: int = RULE_S_IF_ELSE_MAX_NOTES,
+    tonal_fallback_top_k: int = RULE_S_IF_ELSE_TONAL_FALLBACK_TOP_K,
+    entropy_top_k: int = RULE_S_IF_ELSE_ENTROPY_TOP_K,
+) -> dict[str, Any]:
+    """Apply the staged note, key, pitch-change, and rank-point selector."""
+
+    if not candidates:
+        raise ValueError("at least one Prompt candidate is required")
+    if min_notes <= 0:
+        raise ValueError("min_notes must be positive")
+    if max_notes < min_notes:
+        raise ValueError("max_notes must be greater than or equal to min_notes")
+    if tonal_fallback_top_k <= 0:
+        raise ValueError("tonal_fallback_top_k must be positive")
+    if entropy_top_k <= 0:
+        raise ValueError("entropy_top_k must be positive")
+
+    scored = [dict(candidate) for candidate in candidates]
+    key = infer_tonal_key(scored[0].get("mel_pitch_class_duration_evidence", []))
+    in_key = set(key["in_key_pitch_classes"]) if key is not None else set()
+
+    stage_1 = []
+    for candidate in scored:
+        candidate["complete_prompt"] = int(
+            candidate.get("generated_beats", 0)
+        ) >= int(candidate.get("required_beats", 0))
+        candidate["stage_1_note_count_pass"] = int(
+            candidate.get("acc_note_count", 0)
+        ) >= int(min_notes)
+        candidate["stage_1_pass"] = bool(
+            candidate["complete_prompt"]
+            and candidate["stage_1_note_count_pass"]
+        )
+        candidate["stage_2_note_count_cap_pass"] = int(
+            candidate.get("acc_note_count", 0)
+        ) <= int(max_notes)
+        candidate["inferred_melody_key"] = key
+        counts = candidate.get("acc_pitch_class_note_counts", [])
+        counts_available = len(counts) == 12 and all(
+            int(count) >= 0 for count in counts
+        )
+        total_note_count = sum(int(count) for count in counts) if counts_available else 0
+        present_pitch_classes = {
+            index for index, count in enumerate(counts) if int(count) > 0
+        }
+        candidate["out_of_key_pitch_classes"] = sorted(
+            present_pitch_classes - in_key
+        )
+        candidate["out_of_key_note_count"] = sum(
+            int(counts[index])
+            for index in candidate["out_of_key_pitch_classes"]
+        )
+        candidate["in_key_note_count"] = total_note_count - int(
+            candidate["out_of_key_note_count"]
+        )
+        candidate["in_key_note_ratio"] = (
+            float(candidate["in_key_note_count"] / total_note_count)
+            if total_note_count > 0
+            else 0.0
+        )
+        candidate["stage_2_in_key_pass"] = bool(
+            candidate["stage_1_pass"]
+            and candidate["stage_2_note_count_cap_pass"]
+            and key is not None
+            and total_note_count > 0
+            and not candidate["out_of_key_pitch_classes"]
+        )
+        candidate["stage_2_tonal_fallback_top5"] = False
+        candidate["stage_2_tonal_top_up"] = False
+        candidate["stage_2_pool_member"] = False
+        candidate["pitch_change_rank"] = None
+        candidate["stage_3_pitch_change_rank_1_to_4"] = False
+        candidate["entropy_rank"] = None
+        candidate["entropy_top3"] = False
+        candidate["entropy_rank_points"] = 0
+        candidate["note_count_rank"] = None
+        candidate["note_count_top3"] = False
+        candidate["note_count_rank_points"] = 0
+        candidate["combined_rank_score"] = None
+        candidate["final_rank"] = None
+        candidate["selected"] = False
+        candidate["selection_status"] = "UNSELECTED"
+        if candidate["stage_1_pass"]:
+            stage_1.append(candidate)
+
+    capped_stage_2 = [
+        candidate for candidate in stage_1 if candidate["stage_2_note_count_cap_pass"]
+    ]
+    strict_stage_2 = [
+        candidate for candidate in capped_stage_2 if candidate["stage_2_in_key_pass"]
+    ]
+    tonal_fallback_used = bool(
+        capped_stage_2 and key is not None and not strict_stage_2
+    )
+    tonal_fallback = []
+    tonal_top_up = []
+    tonal_ranked = sorted(
+        capped_stage_2,
+        key=lambda candidate: (
+            -float(candidate["in_key_note_ratio"]),
+            int(candidate["out_of_key_note_count"]),
+            int(candidate["candidate_number"]),
+        ),
+    )
+    if tonal_fallback_used:
+        tonal_fallback = tonal_ranked[
+            : min(tonal_fallback_top_k, len(capped_stage_2))
+        ]
+        for candidate in tonal_fallback:
+            candidate["stage_2_tonal_fallback_top5"] = True
+        stage_2 = tonal_fallback
+    elif 0 < len(strict_stage_2) < max(RULE_S_IF_ELSE_VARIATION_KEEP_RANKS):
+        required = max(RULE_S_IF_ELSE_VARIATION_KEEP_RANKS) - len(strict_stage_2)
+        strict_numbers = {
+            int(candidate["candidate_number"]) for candidate in strict_stage_2
+        }
+        tonal_top_up = [
+            candidate
+            for candidate in tonal_ranked
+            if int(candidate["candidate_number"]) not in strict_numbers
+        ][:required]
+        for candidate in tonal_top_up:
+            candidate["stage_2_tonal_top_up"] = True
+        stage_2 = strict_stage_2 + tonal_top_up
+    else:
+        stage_2 = strict_stage_2
+    for candidate in stage_2:
+        candidate["stage_2_pool_member"] = True
+
+    variation_ranked = sorted(
+        stage_2,
+        key=lambda candidate: (
+            -int(candidate.get("acc_pitch_change_score", 0)),
+            int(candidate["candidate_number"]),
+        ),
+    )
+    for rank, candidate in enumerate(variation_ranked, start=1):
+        candidate["pitch_change_rank"] = rank
+    variation_kept = [
+        candidate
+        for candidate in variation_ranked
+        if int(candidate["pitch_change_rank"])
+        in RULE_S_IF_ELSE_VARIATION_KEEP_RANKS
+    ]
+    for candidate in variation_kept:
+        candidate["stage_3_pitch_change_rank_1_to_4"] = True
+
+    entropy_ranked = sorted(
+        variation_kept,
+        key=lambda candidate: (
+            -float(candidate.get("acc_pitch_class_note_entropy", 0.0)),
+            -int(candidate.get("acc_note_count", 0)),
+            int(candidate["candidate_number"]),
+        ),
+    )
+    for rank, candidate in enumerate(entropy_ranked, start=1):
+        candidate["entropy_rank"] = rank
+        candidate["entropy_top3"] = rank <= entropy_top_k
+        candidate["entropy_rank_points"] = max(0, entropy_top_k - rank + 1)
+
+    note_count_ranked = sorted(
+        variation_kept,
+        key=lambda candidate: (
+            -int(candidate.get("acc_note_count", 0)),
+            -float(candidate.get("acc_pitch_class_note_entropy", 0.0)),
+            int(candidate["candidate_number"]),
+        ),
+    )
+    for rank, candidate in enumerate(note_count_ranked, start=1):
+        candidate["note_count_rank"] = rank
+        candidate["note_count_top3"] = rank <= entropy_top_k
+        candidate["note_count_rank_points"] = max(0, entropy_top_k - rank + 1)
+
+    for candidate in variation_kept:
+        candidate["combined_rank_score"] = (
+            RULE_S_IF_ELSE_ENTROPY_WEIGHT
+            * int(candidate["entropy_rank_points"])
+            + RULE_S_IF_ELSE_NOTE_COUNT_WEIGHT
+            * int(candidate["note_count_rank_points"])
+        )
+
+    selected = sorted(
+        variation_kept,
+        key=lambda candidate: (
+            -float(candidate["combined_rank_score"]),
+            -int(candidate.get("acc_note_count", 0)),
+            -float(candidate.get("acc_pitch_class_note_entropy", 0.0)),
+            int(candidate["candidate_number"]),
+        ),
+    )[:entropy_top_k]
+    for final_rank, candidate in enumerate(selected, start=1):
+        candidate["final_rank"] = final_rank
+        candidate["selected"] = True
+        candidate["selection_status"] = "SELECTED"
+
+    has_minimum_notes = any(
+        bool(candidate["stage_1_note_count_pass"]) for candidate in scored
+    )
+    has_complete_prompt = any(
+        bool(candidate["complete_prompt"])
+        and bool(candidate["stage_1_note_count_pass"])
+        for candidate in scored
+    )
+    if len(selected) == entropy_top_k:
+        fallback_reason = None
+    elif not has_minimum_notes:
+        fallback_reason = "no_candidate_with_minimum_note_count"
+    elif not has_complete_prompt:
+        fallback_reason = "no_complete_candidate_with_minimum_note_count"
+    elif not capped_stage_2:
+        fallback_reason = "all_candidates_exceed_maximum_note_count"
+    elif key is None:
+        fallback_reason = "melody_key_unavailable"
+    elif not stage_2:
+        fallback_reason = "no_tonal_candidate_pool"
+    else:
+        fallback_reason = "fewer_than_four_candidates_in_tonal_pool"
+
+    return {
+        "rule_id": RULE_S_IF_ELSE_ID,
+        "selected_indices": [int(row["candidate_number"]) - 1 for row in selected],
+        "selected_candidate_numbers": [
+            int(row["candidate_number"]) for row in selected
+        ],
+        "fallback_reason": fallback_reason,
+        "inferred_melody_key": key,
+        "stage_1_candidate_numbers": [
+            int(row["candidate_number"]) for row in stage_1
+        ],
+        "stage_2_note_count_cap_candidate_numbers": [
+            int(row["candidate_number"]) for row in capped_stage_2
+        ],
+        "stage_2_strict_in_key_candidate_numbers": [
+            int(row["candidate_number"]) for row in strict_stage_2
+        ],
+        "stage_2_tonal_fallback_used": tonal_fallback_used,
+        "stage_2_tonal_fallback_candidate_numbers": [
+            int(row["candidate_number"]) for row in tonal_fallback
+        ],
+        "stage_2_tonal_top_up_used": bool(tonal_top_up),
+        "stage_2_tonal_top_up_candidate_numbers": [
+            int(row["candidate_number"]) for row in tonal_top_up
+        ],
+        "stage_2_candidate_numbers": [
+            int(row["candidate_number"]) for row in stage_2
+        ],
+        "pitch_change_ranked_candidate_numbers": [
+            int(row["candidate_number"]) for row in variation_ranked
+        ],
+        "pitch_change_rank_1_to_4_candidate_numbers": [
+            int(row["candidate_number"]) for row in variation_kept
+        ],
+        "entropy_ranked_candidate_numbers": [
+            int(row["candidate_number"]) for row in entropy_ranked
+        ],
+        "note_count_ranked_candidate_numbers": [
+            int(row["candidate_number"]) for row in note_count_ranked
+        ],
+        "final_combined_ranked_candidate_numbers": [
+            int(row["candidate_number"]) for row in selected
+        ],
+        "min_notes": int(min_notes),
+        "max_notes": int(max_notes),
+        "tonal_fallback_top_k": int(tonal_fallback_top_k),
+        "entropy_top_k": int(entropy_top_k),
+        "variation_keep_ranks": list(RULE_S_IF_ELSE_VARIATION_KEEP_RANKS),
+        "entropy_weight": RULE_S_IF_ELSE_ENTROPY_WEIGHT,
+        "note_count_weight": RULE_S_IF_ELSE_NOTE_COUNT_WEIGHT,
         "candidates": scored,
     }
 
