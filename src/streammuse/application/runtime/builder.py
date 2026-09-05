@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -60,6 +61,7 @@ class RuntimeSessionBuilder:
                 save_config=self.config.output.session_artifact_tier == "debug"
             )
         output_sink = self.output_sink_override or OutputSinkFactory.create(self.config, session_manager)
+        external_prompt_session = self._external_prompt_session_provenance()
         return self._build(
             session_manager=session_manager,
             output_sink=output_sink,
@@ -68,6 +70,7 @@ class RuntimeSessionBuilder:
                 session_manager is not None
                 and self.config.output.session_artifact_tier == "debug"
             ),
+            prompt_session_seed_provenance=external_prompt_session,
         )
 
     def build_web(self) -> RuntimeSession:
@@ -79,6 +82,7 @@ class RuntimeSessionBuilder:
             websocket_sink=websocket_sink,
             emit_output_config=True,
             write_summary_on_cleanup=False,
+            auto_initialize_prompt_session=True,
         )
 
     def _create_session_manager(
@@ -144,6 +148,8 @@ class RuntimeSessionBuilder:
         websocket_sink: WebSocketOutputSink | None = None,
         emit_output_config: bool = True,
         write_summary_on_cleanup: bool = True,
+        auto_initialize_prompt_session: bool = False,
+        prompt_session_seed_provenance: dict[str, Any] | None = None,
     ) -> RuntimeSession:
         output_sink = self._attach_input_quantization_trace_sink(
             output_sink=output_sink,
@@ -221,7 +227,12 @@ class RuntimeSessionBuilder:
             prompt_session_audit_enabled=(
                 prompt_client is not None
                 and self._contains_session_logger(output_sink)
+                and (
+                    auto_initialize_prompt_session
+                    or prompt_session_seed_provenance is not None
+                )
             ),
+            prompt_session_seed_provenance=prompt_session_seed_provenance,
         )
 
     def _continuation_mode(self) -> str:
@@ -246,6 +257,41 @@ class RuntimeSessionBuilder:
         if effective <= 0:
             raise ValueError("effective model BPM must be > 0")
         return effective
+
+    def _external_prompt_session_provenance(self) -> dict[str, Any] | None:
+        names = {
+            "prompt_requested_seed": "LEKAI_PROMPT_REQUESTED_SEED",
+            "prompt_effective_seed": "LEKAI_PROMPT_EFFECTIVE_SEED",
+            "continuation_requested_seed": "LEKAI_CONTINUATION_REQUESTED_SEED",
+            "continuation_effective_seed": "LEKAI_CONTINUATION_EFFECTIVE_SEED",
+            "session_id": "LEKAI_PROMPT_SESSION_ID",
+            "session_epoch": "LEKAI_PROMPT_SESSION_EPOCH",
+        }
+        present = {field: os.environ.get(name) for field, name in names.items()}
+        if all(value in (None, "") for value in present.values()):
+            return None
+        missing = [field for field, value in present.items() if value in (None, "")]
+        if missing:
+            raise ValueError(
+                "incomplete external prompt session provenance: "
+                + ", ".join(missing)
+            )
+        return {
+            "success": True,
+            "prompt_requested_seed": int(present["prompt_requested_seed"]),
+            "prompt_effective_seed": int(present["prompt_effective_seed"]),
+            "continuation_requested_seed": int(
+                present["continuation_requested_seed"]
+            ),
+            "continuation_effective_seed": int(
+                present["continuation_effective_seed"]
+            ),
+            "prompt_seed_source": "requested",
+            "continuation_seed_source": "requested",
+            "session_id": str(present["session_id"]),
+            "session_epoch": int(present["session_epoch"]),
+            "provenance_mode": "adopted_active_session",
+        }
 
     def _attach_input_quantization_trace_sink(
         self,

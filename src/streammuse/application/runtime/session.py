@@ -27,6 +27,7 @@ class RuntimeSession:
     emit_output_config: bool = True
     write_summary_on_cleanup: bool = True
     prompt_session_audit_enabled: bool = False
+    prompt_session_seed_provenance: dict[str, Any] | None = None
     _cleaned_up: bool = field(default=False, init=False, repr=False)
     _prompt_session_initialized: bool = field(default=False, init=False, repr=False)
     _cleanup_lock: threading.Lock = field(
@@ -102,20 +103,50 @@ class RuntimeSession:
             "record_prompt_continuation_session_seed",
             None,
         )
-        if not callable(initialize_session):
-            raise RuntimeError(
-                "prompt client does not provide initialize_session()"
-            )
         if not callable(recorder):
             raise RuntimeError(
                 "audit-capable output does not record prompt session seeds"
             )
 
-        response = initialize_session()
-        if not isinstance(response, dict) or response.get("success") is not True:
-            raise RuntimeError(
-                "prompt-continuation session initialization did not succeed"
-            )
+        if self.prompt_session_seed_provenance is None:
+            if not callable(initialize_session):
+                raise RuntimeError(
+                    "prompt client does not provide initialize_session()"
+                )
+            response = initialize_session()
+            if not isinstance(response, dict) or response.get("success") is not True:
+                raise RuntimeError(
+                    "prompt-continuation session initialization did not succeed"
+                )
+        else:
+            response = dict(self.prompt_session_seed_provenance)
+            replay_audit = getattr(self.prompt_client, "replay_audit", None)
+            if not callable(replay_audit):
+                raise RuntimeError(
+                    "prompt client does not provide replay_audit() for session adoption"
+                )
+            audit = replay_audit()
+            runtime_info = audit.get("runtime_info") if isinstance(audit, dict) else None
+            if not isinstance(runtime_info, dict):
+                raise RuntimeError("active prompt session has no runtime provenance")
+            expected = {
+                "prompt_sample_seed": response.get("prompt_effective_seed"),
+                "continuation_sample_seed": response.get(
+                    "continuation_effective_seed"
+                ),
+                "session_id": response.get("session_id"),
+                "session_epoch": response.get("session_epoch"),
+            }
+            mismatched = [
+                field
+                for field, value in expected.items()
+                if runtime_info.get(field) != value
+            ]
+            if mismatched:
+                raise RuntimeError(
+                    "active prompt session differs from runner reset: "
+                    + ", ".join(mismatched)
+                )
         provenance = {
             "schema_version": 1,
             "runtime_session_id": (

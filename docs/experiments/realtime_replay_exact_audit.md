@@ -26,6 +26,12 @@ same lifecycle endpoint before starting the realtime MIDI-file RuntimeSession.
 This endpoint is not debug-gated and does not require
 `LEKAI_ENABLE_DEBUG_RESET`.
 
+`scripts/run_matched_system_eval.py` remains externally seeded: its existing
+trial reset runs first, then the runner threads that reset acknowledgement into
+the CLI environment. The CLI adopts and records the already-active server
+session after a read-only provenance check; it does not initialize or reset the
+server a second time.
+
 Both traces must report:
 
 - `runtime_info.trace_capture_complete = true`

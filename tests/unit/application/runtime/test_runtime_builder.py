@@ -371,6 +371,69 @@ def test_runtime_session_without_audit_logger_does_not_initialize_prompt_session
     service.start.assert_called_once_with(max_ticks=16)
 
 
+def test_runtime_session_adopts_runner_seed_without_reinitializing(tmp_path) -> None:
+    runtime_info = {
+        "prompt_sample_seed": 7,
+        "continuation_sample_seed": 7,
+        "session_id": "runner-session",
+        "session_epoch": 4,
+    }
+
+    class _PromptClient:
+        def initialize_session(self):
+            raise AssertionError("runner-owned session must not be reinitialized")
+
+        def replay_audit(self):
+            return {"runtime_info": dict(runtime_info)}
+
+    manager = SessionManager(str(tmp_path), session_id="cli-session")
+    session_dir = manager.create_session_directory()
+    output = SessionLoggerOutputSink(
+        session_dir=session_dir,
+        include_midi=False,
+        include_json=False,
+    )
+    service = MagicMock(running=False)
+    session = RuntimeSession(
+        config=ApplicationConfig(continuation_mode="prompt_continuation"),
+        session_manager=manager,
+        output_sink=output,
+        service=service,
+        session_config={},
+        prompt_client=_PromptClient(),
+        prompt_session_audit_enabled=True,
+        prompt_session_seed_provenance={
+            "success": True,
+            "prompt_requested_seed": 7,
+            "prompt_effective_seed": 7,
+            "continuation_requested_seed": 7,
+            "continuation_effective_seed": 7,
+            "prompt_seed_source": "requested",
+            "continuation_seed_source": "requested",
+            "session_id": "runner-session",
+            "session_epoch": 4,
+            "provenance_mode": "adopted_active_session",
+        },
+        emit_output_config=False,
+    )
+
+    session.start(run_stop_tick=64)
+
+    service.start.assert_called_once_with(max_ticks=64)
+    artifact = json.loads(
+        (session_dir / "prompt_continuation_session_seed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert artifact["prompt_effective_seed"] == runtime_info["prompt_sample_seed"]
+    assert (
+        artifact["continuation_effective_seed"]
+        == runtime_info["continuation_sample_seed"]
+    )
+    assert artifact["session_id"] == runtime_info["session_id"]
+    assert artifact["session_epoch"] == runtime_info["session_epoch"]
+
+
 def test_runtime_session_stop_calls_idempotent_service_stop_after_natural_end() -> None:
     service = MagicMock(running=False)
     session = RuntimeSession(
@@ -464,6 +527,55 @@ def test_builder_web_prompt_runtime_always_has_replay_audit_logger(
     assert audit_sinks[0].midi_sink is None
     assert audit_sinks[0].json_sink is None
     assert session.prompt_session_audit_enabled is True
+
+
+@patch("streammuse.application.runtime.builder.InputSourceFactory")
+def test_builder_cli_adopts_external_prompt_session_provenance(
+    input_factory,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    values = {
+        "LEKAI_PROMPT_REQUESTED_SEED": "7",
+        "LEKAI_PROMPT_EFFECTIVE_SEED": "7",
+        "LEKAI_CONTINUATION_REQUESTED_SEED": "7",
+        "LEKAI_CONTINUATION_EFFECTIVE_SEED": "7",
+        "LEKAI_PROMPT_SESSION_ID": "runner-session",
+        "LEKAI_PROMPT_SESSION_EPOCH": "4",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    config = ApplicationConfig(
+        continuation_mode="prompt_continuation",
+        output=OutputConfig(type="session"),
+    )
+    input_factory.create.return_value = MagicMock()
+    builder = RuntimeSessionBuilder(
+        config=config,
+        log_dir=str(tmp_path),
+        prompt_client_override=MagicMock(),
+    )
+
+    with patch.object(
+        builder,
+        "_prompt_continuation_service_cls",
+        return_value=MagicMock(return_value=MagicMock(running=False)),
+    ):
+        session = builder.build_cli()
+
+    assert session.prompt_session_audit_enabled is True
+    assert session.prompt_session_seed_provenance == {
+        "success": True,
+        "prompt_requested_seed": 7,
+        "prompt_effective_seed": 7,
+        "continuation_requested_seed": 7,
+        "continuation_effective_seed": 7,
+        "prompt_seed_source": "requested",
+        "continuation_seed_source": "requested",
+        "session_id": "runner-session",
+        "session_epoch": 4,
+        "provenance_mode": "adopted_active_session",
+    }
 
 
 @patch("streammuse.application.runtime.builder.InputSourceFactory")

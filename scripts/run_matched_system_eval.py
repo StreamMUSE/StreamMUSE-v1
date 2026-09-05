@@ -837,6 +837,21 @@ def build_client_environment(
                 "LEKAI_EFFECTIVE_SEED": str(reset_ack["effective_seed"]),
             }
         )
+    elif system_id == "streammuse_v2_prompt_continuation" and reset_ack is not None:
+        env.update(
+            {
+                "LEKAI_PROMPT_REQUESTED_SEED": str(reset_ack["prompt_seed"]),
+                "LEKAI_PROMPT_EFFECTIVE_SEED": str(reset_ack["prompt_seed"]),
+                "LEKAI_CONTINUATION_REQUESTED_SEED": str(
+                    reset_ack["continuation_effective_seed"]
+                ),
+                "LEKAI_CONTINUATION_EFFECTIVE_SEED": str(
+                    reset_ack["continuation_effective_seed"]
+                ),
+                "LEKAI_PROMPT_SESSION_ID": str(reset_ack["session_id"]),
+                "LEKAI_PROMPT_SESSION_EPOCH": str(reset_ack["session_epoch"]),
+            }
+        )
     return env
 
 

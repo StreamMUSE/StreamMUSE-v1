@@ -311,6 +311,27 @@ def test_reset_trial_uses_mode_specific_atomic_endpoint(
     ]
 
 
+def test_prompt_continuation_client_environment_threads_reset_provenance(
+    matched_runner,
+) -> None:
+    env = matched_runner.build_client_environment(
+        "streammuse_v2_prompt_continuation",
+        {
+            "prompt_seed": 7,
+            "continuation_effective_seed": 7,
+            "session_id": "pc-session",
+            "session_epoch": 2,
+        },
+    )
+
+    assert env["LEKAI_PROMPT_REQUESTED_SEED"] == "7"
+    assert env["LEKAI_PROMPT_EFFECTIVE_SEED"] == "7"
+    assert env["LEKAI_CONTINUATION_REQUESTED_SEED"] == "7"
+    assert env["LEKAI_CONTINUATION_EFFECTIVE_SEED"] == "7"
+    assert env["LEKAI_PROMPT_SESSION_ID"] == "pc-session"
+    assert env["LEKAI_PROMPT_SESSION_EPOCH"] == "2"
+
+
 def _write_session(script, root: Path, *, mode: str) -> Path:
     session = root / "2026-09-02" / "session_120000"
     session.mkdir(parents=True)
