@@ -356,7 +356,7 @@ def _source_tick_request_snapshot(*, jitter: tuple[float, ...], velocity: int):
     )
     service._running = True
 
-    service._tick_loop(max_ticks=44)
+    service._tick_loop(max_ticks=45)
 
     actions = []
     while True:
@@ -415,6 +415,18 @@ def test_prompt_source_tick_replay_is_deterministic_under_wall_clock_jitter() ->
         assert all(event[2] < observed_until_tick for event in events)
 
 
+def test_prompt_source_tick_boundary_event_is_deferred_and_tick_39_is_not_rebucketed() -> None:
+    events, _rolls = _source_tick_request_snapshot(jitter=(), velocity=23)
+    by_boundary = {
+        observed_until_tick: batch
+        for _kind, observed_until_tick, batch in events
+    }
+
+    assert any(event[1:3] == (69, 39) for event in by_boundary[40])
+    assert all(event[2] != 40 for event in by_boundary[40])
+    assert any(event[2] == 40 for event in by_boundary[44])
+
+
 def test_prompt_source_tick_replay_keeps_velocity_out_of_encoder_roll() -> None:
     _quiet_events, quiet_rolls = _source_tick_request_snapshot(
         jitter=(0.02,), velocity=1
@@ -437,6 +449,21 @@ def test_prompt_continuation_rejects_non_four_steps_per_beat() -> None:
             output_sink=_RecordingOutput(),
             tempo=Tempo(bpm=120.0, ticks_per_beat=8, beats_per_bar=4),
             scheduler=PlaybackScheduler(),
+        )
+
+
+def test_prompt_continuation_requires_one_beat_generation_interval() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"generation_interval_ticks must equal one beat \(4\); got 2",
+    ):
+        PromptContinuationRealtimeService(
+            input_source=_NoopInput(),
+            prompt_client=_FakePromptClient(),
+            output_sink=_RecordingOutput(),
+            tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+            scheduler=PlaybackScheduler(),
+            generation_interval_ticks=2,
         )
 
 
@@ -1110,6 +1137,51 @@ def test_prompt_start_waits_for_closed_observation_window() -> None:
     assert [(event.pitch, event.tick) for event in action.melody_events] == [(62, 31)]
     assert [(event.pitch, event.tick) for event in service._pending_append_events] == [
         (64, 32)
+    ]
+
+
+def test_prompt_append_is_submitted_at_actual_boundary() -> None:
+    service = _make_service()
+    submitted_at = []
+    original = service._maybe_enqueue_append
+
+    def record_submission(boundary_tick: int) -> None:
+        before = service._control_q.qsize()
+        original(boundary_tick)
+        if service._control_q.qsize() > before:
+            submitted_at.append((service._output.ticks[-1][0], boundary_tick))
+
+    service._maybe_enqueue_append = record_submission
+    service._running = True
+    service._tick_loop(max_ticks=41)
+
+    assert submitted_at == [(36, 36), (40, 40)]
+
+
+def test_prompt_append_partitions_events_at_exclusive_boundary() -> None:
+    service = _make_service()
+    service._start_enqueued = True
+    service._last_append_observed_tick = 32
+    service._pending_append_events = [
+        _note(60, 35),
+        _note(61, 36),
+        _note(62, 39),
+        _note(63, 40),
+    ]
+
+    service._maybe_enqueue_append(observed_until_tick=36)
+    first = service._control_q.get_nowait()
+    assert [(event.pitch, event.tick) for event in first.melody_events] == [(60, 35)]
+    assert [event.tick for event in service._pending_append_events] == [36, 39, 40]
+
+    service._maybe_enqueue_append(observed_until_tick=40)
+    second = service._control_q.get_nowait()
+    assert [(event.pitch, event.tick) for event in second.melody_events] == [
+        (61, 36),
+        (62, 39),
+    ]
+    assert [(event.pitch, event.tick) for event in service._pending_append_events] == [
+        (63, 40)
     ]
 
 

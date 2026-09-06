@@ -136,7 +136,7 @@ class RuntimeSessionBuilder:
             "top_p": self.config.inference.top_p,
             "top_k": self.config.inference.top_k,
             "repetition_penalty": self.config.inference.repetition_penalty,
-            "generation_interval_ticks": self.config.inference.generation_interval_ticks,
+            "generation_interval_ticks": self._effective_generation_interval_ticks(),
             "generation_length_frames": self.config.inference.generation_length_frames,
             "session_artifact_tier": self.config.output.session_artifact_tier,
             "midi_file_trim_leading_rest": self.config.input.midi_file_trim_leading_rest,
@@ -187,7 +187,7 @@ class RuntimeSessionBuilder:
                 tempo=tempo,
                 scheduler=scheduler,
                 prompt_length_ticks=self._prompt_length_ticks(default=32),
-                generation_interval_ticks=self.config.inference.generation_interval_ticks,
+                generation_interval_ticks=self._effective_generation_interval_ticks(),
                 count_in_beats=self.config.count_in_beats,
                 input_snap_forward_fraction=self._input_snap_forward_fraction(),
                 input_quantization_trace_enabled=(
@@ -249,6 +249,11 @@ class RuntimeSessionBuilder:
 
     def _prompt_length_ticks(self, *, default: int | None) -> int | None:
         return getattr(self.config.inference, "prompt_length_ticks", default)
+
+    def _effective_generation_interval_ticks(self) -> int:
+        if self._continuation_mode() == "prompt_continuation":
+            return int(self.config.tempo.ticks_per_beat)
+        return int(self.config.inference.generation_interval_ticks)
 
     def _input_snap_forward_fraction(self) -> float:
         return effective_input_snap_forward_fraction(

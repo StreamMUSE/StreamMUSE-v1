@@ -539,7 +539,7 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
         input_snap_forward_fraction=0.25,
         inference=InferenceConfig(
             prompt_length_ticks=64,
-            generation_interval_ticks=4,
+            generation_interval_ticks=2,
         ),
     )
     prompt_client = MagicMock()
@@ -571,6 +571,7 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     assert service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.25
     assert service_cls.call_args.kwargs["model_condition_bpm"] == 80
     assert session.session_config["effective_model_bpm"] == 80
+    assert session.session_config["generation_interval_ticks"] == 4
 
 
 @patch("streammuse.application.runtime.builder.InputSourceFactory")

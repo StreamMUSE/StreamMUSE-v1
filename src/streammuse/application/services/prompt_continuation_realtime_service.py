@@ -112,13 +112,20 @@ class PromptContinuationRealtimeService:
                 "Prompt+Continuation requires exactly 4 steps per beat; "
                 f"got {tempo.ticks_per_beat}"
             )
+        prompt_interval_ticks = int(tempo.ticks_per_beat)
+        if int(generation_interval_ticks) != prompt_interval_ticks:
+            raise ValueError(
+                "Prompt+Continuation generation_interval_ticks must equal "
+                f"one beat ({prompt_interval_ticks}); "
+                f"got {int(generation_interval_ticks)}"
+            )
         self._input = input_source
         self._client = prompt_client
         self._output = output_sink
         self._tempo = tempo
         self._scheduler = scheduler
         self._prompt_length_ticks = int(prompt_length_ticks)
-        self._generation_interval_ticks = int(generation_interval_ticks)
+        self._generation_interval_ticks = prompt_interval_ticks
         self._count_in_beats = int(count_in_beats)
         self._count_in_ticks = self._count_in_beats * int(self._tempo.ticks_per_beat)
         self._input_snap_forward_fraction = float(input_snap_forward_fraction)
@@ -671,14 +678,23 @@ class PromptContinuationRealtimeService:
             return
         if (observed_until_tick - self._prompt_length_ticks) % self._generation_interval_ticks != 0:
             return
+        ready_events = [
+            event
+            for event in self._pending_append_events
+            if int(event.tick) < observed_until_tick
+        ]
+        self._pending_append_events = [
+            event
+            for event in self._pending_append_events
+            if int(event.tick) >= observed_until_tick
+        ]
         self._control_q.put(
             _ControlAction(
                 kind="append",
-                melody_events=list(self._pending_append_events),
+                melody_events=ready_events,
                 observed_until_tick=observed_until_tick,
             )
         )
-        self._pending_append_events = []
         self._last_append_observed_tick = observed_until_tick
 
     def _schedule_playable(
@@ -1534,11 +1550,10 @@ class PromptContinuationRealtimeService:
 
             self._enqueue_source_tick_events(tick)
             self._drain_user_events()
-            observed_until_tick = tick + 1
-            # The prompt window [0, prompt_length_ticks) is not fully observed
-            # until the wall clock reaches its exclusive end boundary.
+            # Close an exclusive Melody window only after the timeline has
+            # reached that actual boundary.
             self._maybe_enqueue_start(tick)
-            self._maybe_enqueue_append(observed_until_tick)
+            self._maybe_enqueue_append(tick)
 
             while True:
                 try:
