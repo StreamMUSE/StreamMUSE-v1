@@ -329,6 +329,10 @@ def test_prompt_continuation_client_environment_threads_reset_provenance(
             "session_epoch": 2,
         },
     )
+    v1_env = matched_runner.build_client_environment(
+        "streammuse_v1_standard",
+        None,
+    )
 
     assert env["LEKAI_PROMPT_REQUESTED_SEED"] == "7"
     assert env["LEKAI_PROMPT_EFFECTIVE_SEED"] == "7"
@@ -336,6 +340,9 @@ def test_prompt_continuation_client_environment_threads_reset_provenance(
     assert env["LEKAI_CONTINUATION_EFFECTIVE_SEED"] == "7"
     assert env["LEKAI_PROMPT_SESSION_ID"] == "pc-session"
     assert env["LEKAI_PROMPT_SESSION_EPOCH"] == "2"
+    assert env["LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS"] == "0"
+    assert env["LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"] == "1"
+    assert v1_env["LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"] == "0"
 
 
 def _write_session(script, root: Path, *, mode: str) -> Path:

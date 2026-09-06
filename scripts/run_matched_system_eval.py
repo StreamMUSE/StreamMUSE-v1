@@ -847,7 +847,11 @@ def build_client_environment(
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
             "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY": "0",
             "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS": "0",
-            "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
+            "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": (
+                "1"
+                if system_id == "streammuse_v2_prompt_continuation"
+                else "0"
+            ),
         }
     )
     if system_id == "streammuse_v1_standard" and reset_ack is not None:
