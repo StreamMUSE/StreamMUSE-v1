@@ -305,19 +305,21 @@ There are three histories to keep separate:
 The important realtime policy is in
 `PromptContinuationRealtimeService._schedule_playable`.
 
-Three scheduling policies are useful for diagnosis:
+The client distinguishes partial-note recovery from generic late-event
+recovery:
 
-- Default historical strict mode: pair `note_on/note_off`, drop events whose
+- Strict diagnostic mode: pair `note_on/note_off`, drop events whose
   original ticks are already in the past.
+- Partial-note recovery: enabled by default. If a `note_on` arrives after its
+  logical onset while the note is still open or its `note_off` is in the
+  future, schedule a replacement onset at the current tick. A later
+  `note_off` still closes the sounding note. Fully expired notes are not
+  replayed.
 - Unbounded recover-late mode: schedule returned events event-by-event. If an
   event is late, schedule it at the current tick.
 - Bounded recover-late mode: same event-by-event recovery, but drop late
   `note_on` events outside a configured recovery window. Late `note_off` events
   are still allowed so already-sounding notes can be closed.
-- Active-note rehydration: optional add-on for bounded recovery. If a late
-  `note_on` would be dropped but the matching `note_off` is still in the future,
-  synthesize a replacement `note_on` at the current tick so the client playback
-  state matches the backend accompaniment state.
 
 Recover-late mode is enabled by:
 
@@ -343,18 +345,18 @@ Setting `LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS` also opts into the
 bounded policy unless `LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=0` is set
 explicitly. Raw debug history is not affected by either scheduling policy.
 
-Active-note rehydration is controlled separately:
+Partial-note recovery is independent of both generic late-recovery switches.
+It can be disabled explicitly for strict diagnostic runs:
 
 ```bash
-export LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
+export LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=0
 ```
 
-For demo-style runs, the current practical setting is:
+The normal realtime policy leaves generic late recovery disabled while keeping
+partial-note recovery enabled:
 
 ```bash
-LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
-LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
-LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
+LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=0
 LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
 ```
 

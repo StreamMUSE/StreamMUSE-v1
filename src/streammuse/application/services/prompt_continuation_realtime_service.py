@@ -221,10 +221,12 @@ class PromptContinuationRealtimeService:
             self._bound_late_recovery = self._bound_late_recovery_env
         if self._recover_late_events and self._bound_late_recovery and self._recover_late_max_ticks is None:
             self._recover_late_max_ticks = self._generation_interval_ticks
-        self._rehydrate_active_notes = os.environ.get(
-            "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES",
-            "",
-        ).lower() in {"1", "true", "yes", "on"}
+        rehydrate_active_notes = self._env_optional_bool(
+            "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"
+        )
+        self._rehydrate_active_notes = (
+            True if rehydrate_active_notes is None else rehydrate_active_notes
+        )
         self._system_trace_frames: dict[int, dict[str, Any]] = {}
         self._system_trace_coverage_end_tick = 0
         self._system_trace_playable_request_counter = 0
@@ -848,9 +850,14 @@ class PromptContinuationRealtimeService:
         late_event_count = sum(1 for event in usable_events if int(event.tick) < current_tick)
 
         rehydrated_events: list[MusicalEvent] = []
+        rehydrated_metadata: dict[int, tuple[int, str]] = {}
         consumed_original_note_on_counts: Counter[EventKey] = Counter()
         if self._rehydrate_active_notes:
-            rehydrated_events, consumed_original_note_on_counts = self._rehydrate_sustaining_notes(
+            (
+                rehydrated_events,
+                consumed_original_note_on_counts,
+                rehydrated_metadata,
+            ) = self._rehydrate_sustaining_notes(
                 usable_events,
                 current_tick=current_tick,
             )
@@ -869,9 +876,15 @@ class PromptContinuationRealtimeService:
                 continue
 
             event_tick = int(event.tick)
+            rehydrated = rehydrated_metadata.get(id(event))
+            logical_tick = rehydrated[0] if rehydrated is not None else event_tick
             schedule_tick = event_tick
             event_to_schedule = event
-            policy = "future_event"
+            policy = (
+                rehydrated[1]
+                if rehydrated is not None
+                else "future_event"
+            )
             if event_tick < current_tick:
                 if not self._recover_late_events:
                     if event.event_type == EventType.NOTE_OFF:
@@ -921,7 +934,7 @@ class PromptContinuationRealtimeService:
             self._record_system_trace_event(
                 model_event,
                 scheduled_tick=schedule_tick,
-                logical_tick=event_tick,
+                logical_tick=logical_tick,
                 arrival_time_s=arrival_time_s,
                 action="scheduled",
                 policy=policy,
@@ -1274,12 +1287,17 @@ class PromptContinuationRealtimeService:
         events: list[MusicalEvent],
         *,
         current_tick: int,
-    ) -> tuple[list[MusicalEvent], Counter[EventKey]]:
-        """Clone sustaining note_on events that would otherwise be dropped as too late."""
+    ) -> tuple[
+        list[MusicalEvent],
+        Counter[EventKey],
+        dict[int, tuple[int, str]],
+    ]:
+        """Resume paired or still-open notes whose onset arrived late."""
         current_tick = int(current_tick)
         active: dict[tuple[int, int, int], list[tuple[MusicalEvent, int]]] = {}
         note_on_occurrences: Counter[EventKey] = Counter()
         rehydrated: list[MusicalEvent] = []
+        rehydrated_metadata: dict[int, tuple[int, str]] = {}
         consumed_original_note_on_counts: Counter[EventKey] = Counter()
         seen_span_counts: Counter[NoteSpanKey] = Counter()
 
@@ -1300,8 +1318,6 @@ class PromptContinuationRealtimeService:
                 active.pop(key, None)
             if not (int(note_on.tick) < current_tick < event_tick):
                 continue
-            if not self._would_drop_late_note_on(note_on, current_tick=current_tick):
-                continue
             span_key = self._note_span_key(note_on, event)
             seen_span_counts[span_key] += 1
             span_occurrence = seen_span_counts[span_key]
@@ -1310,14 +1326,43 @@ class PromptContinuationRealtimeService:
             note_on_key = self._event_key(note_on)
             if self._played_model_event_counts[note_on_key] >= note_on_occurrence:
                 continue
-            rehydrated.append(self._clone_event_at_tick(note_on, current_tick))
+            cloned_note_on = self._clone_event_at_tick(note_on, current_tick)
+            rehydrated.append(cloned_note_on)
+            rehydrated_metadata[id(cloned_note_on)] = (
+                int(note_on.tick),
+                "clamped_partial_note",
+            )
             consumed_original_note_on_counts[note_on_key] = max(
                 consumed_original_note_on_counts[note_on_key],
                 note_on_occurrence,
             )
             self._ensure_count(self._rehydrated_model_note_span_counts, span_key, span_occurrence)
 
-        return rehydrated, consumed_original_note_on_counts
+        # Beat-wise decoding can emit an onset one response before its matching
+        # note_off, so an unmatched late onset represents a currently open note.
+        for open_notes in active.values():
+            for note_on, note_on_occurrence in open_notes:
+                if int(note_on.tick) >= current_tick:
+                    continue
+                note_on_key = self._event_key(note_on)
+                if self._played_model_event_counts[note_on_key] >= note_on_occurrence:
+                    continue
+                cloned_note_on = self._clone_event_at_tick(note_on, current_tick)
+                rehydrated.append(cloned_note_on)
+                rehydrated_metadata[id(cloned_note_on)] = (
+                    int(note_on.tick),
+                    "clamped_open_note",
+                )
+                consumed_original_note_on_counts[note_on_key] = max(
+                    consumed_original_note_on_counts[note_on_key],
+                    note_on_occurrence,
+                )
+
+        return (
+            rehydrated,
+            consumed_original_note_on_counts,
+            rehydrated_metadata,
+        )
 
     def _active_notes_at_current_tick(
         self,
