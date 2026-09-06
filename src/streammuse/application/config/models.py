@@ -8,7 +8,7 @@ from typing import Literal, Optional
 
 @dataclass(frozen=True)
 class TempoConfig:
-    bpm: float = 120.0
+    bpm: float = 90.0
     ticks_per_beat: int = 4
     beats_per_bar: int = 4
 
@@ -72,15 +72,15 @@ class InferenceConfig:
     generation_interval_ticks: int = 2  # How often to trigger generation
     prompt_length_ticks: int = 32
     # Model-conditioning tempo can intentionally differ from wall-clock
-    # playback tempo (for example, robustness RT playback at 60 BPM while the
-    # Lekai prompt remains conditioned at its trained 120 BPM).
-    model_condition_bpm: Optional[int] = None
-    prompt_selection_mode: Optional[PromptSelectionMode] = None
-    prompt_batch_candidates: Optional[int] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    repetition_penalty: Optional[float] = None
+    # playback tempo (tested defaults: playback 90 BPM, model condition 80 BPM).
+    # Explicit None preserves the option to follow playback tempo instead.
+    model_condition_bpm: Optional[int] = 80
+    prompt_selection_mode: Optional[PromptSelectionMode] = "rule_s_if_else"
+    prompt_batch_candidates: Optional[int] = 10
+    temperature: Optional[float] = 1.1
+    top_p: Optional[float] = 0.95
+    top_k: Optional[int] = 50
+    repetition_penalty: Optional[float] = 1.0
 
 
 @dataclass(frozen=True)

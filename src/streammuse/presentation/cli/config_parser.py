@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Tempo configuration
-    parser.add_argument("--tempo", type=float, default=120.0, help="BPM (beats per minute)")
+    parser.add_argument("--tempo", type=float, default=90.0, help="BPM (beats per minute)")
     parser.add_argument("--ticks-per-beat", type=int, default=4, help="Ticks per beat")
     parser.add_argument("--beats-per-bar", type=int, default=4, help="Beats per bar")
 
@@ -179,46 +179,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-condition-bpm",
         type=int,
-        default=None,
+        default=80,
         help=(
             "Optional BPM token sent to the HTTP model, independent of wall-clock "
-            "--tempo; defaults to the playback tempo for backward compatibility"
+            "--tempo; defaults to the tested model condition of 80 BPM"
         ),
     )
     parser.add_argument(
         "--prompt-selection-mode",
         choices=PROMPT_SELECTION_MODES,
-        default=None,
-        help="Prompt candidate selection mode; defaults to the backend setting",
+        default="rule_s_if_else",
+        help="Prompt candidate selection mode",
     )
     parser.add_argument(
         "--prompt-batch-candidates",
         type=int,
-        default=None,
-        help="Prompt candidates generated per batch; defaults to the backend setting",
+        default=10,
+        help="Prompt candidates generated per batch",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=None,
+        default=1.1,
         help="Shared Prompt and Continuation sampling temperature",
     )
     parser.add_argument(
         "--top-p",
         type=float,
-        default=None,
+        default=0.95,
         help="Shared Prompt and Continuation nucleus-sampling threshold",
     )
     parser.add_argument(
         "--top-k",
         type=int,
-        default=None,
+        default=50,
         help="Shared Prompt and Continuation top-k sampling limit",
     )
     parser.add_argument(
         "--repetition-penalty",
         type=float,
-        default=None,
+        default=1.0,
         help="Shared Prompt and Continuation repetition penalty",
     )
 

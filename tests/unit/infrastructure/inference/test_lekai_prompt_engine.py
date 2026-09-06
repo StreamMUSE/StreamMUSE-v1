@@ -33,7 +33,7 @@ def test_prompt_engine_uses_time_signature_bar_length(monkeypatch):
 
 
 def test_prompt_engine_defaults_to_common_time_bars(monkeypatch):
-    monkeypatch.setenv("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", "4")
+    monkeypatch.delenv("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", raising=False)
     engine = LekaiPromptEngine()
 
     tokens, _bpm, window_ticks = engine._build_melody_prompt_tokens(
@@ -44,6 +44,7 @@ def test_prompt_engine_defaults_to_common_time_bars(monkeypatch):
 
     vocab = engine._tokenizer.vocab
     assert window_ticks == 32
+    assert tokens.tolist()[:2] == [257, 259]
     assert _count_markers(tokens, vocab.bar_token_id) == 2
     assert _count_markers(tokens, vocab.beat_marker) == 8
 
@@ -93,17 +94,17 @@ def test_prompt_engine_condition_length_can_be_overridden_by_beats(monkeypatch):
     assert engine._prompt_condition_length_ticks(32) == 16
 
 
-def test_prompt_engine_defaults_to_stanley_single_candidate_path(monkeypatch):
+def test_prompt_engine_defaults_to_if_else_ten_candidates(monkeypatch):
     monkeypatch.delenv("LEKAI_PROMPT_SELECTION_MODE", raising=False)
     engine = LekaiPromptEngine()
 
     info = engine.runtime_info()
 
-    assert info["selection_mode"] == "single"
-    assert info["batch_candidate_count"] == 1
-    assert engine._generation_parameters("single") == {
+    assert info["selection_mode"] == "rule_s_if_else"
+    assert info["batch_candidate_count"] == 10
+    assert engine._generation_parameters("rule_s_if_else") == {
         "temperature": 1.1,
-        "top_k": 0,
+        "top_k": 50,
         "top_p": 0.95,
         "repetition_penalty": 1.0,
     }
@@ -121,7 +122,7 @@ def test_prompt_engine_exposes_paired_batch_selection_modes(monkeypatch):
     assert engine.runtime_info()["selection_mode"] == "rule_s"
 
 
-def test_prompt_engine_preserves_existing_sampling_defaults(monkeypatch):
+def test_prompt_engine_uses_tested_sampling_defaults(monkeypatch):
     for name in (
         "LEKAI_PROMPT_TEMPERATURE",
         "LEKAI_PROMPT_TOP_K",
@@ -133,13 +134,13 @@ def test_prompt_engine_preserves_existing_sampling_defaults(monkeypatch):
 
     assert engine._generation_parameters("single") == {
         "temperature": 1.1,
-        "top_k": 0,
+        "top_k": 50,
         "top_p": 0.95,
         "repetition_penalty": 1.0,
     }
-    for mode in ("batch_first", "rule_s", "rule_s_v3"):
+    for mode in ("batch_first", "rule_s", "rule_s_v3", "rule_s_if_else"):
         assert engine._generation_parameters(mode) == {
-            "temperature": 0.8,
+            "temperature": 1.1,
             "top_k": 50,
             "top_p": 0.95,
             "repetition_penalty": 1.0,

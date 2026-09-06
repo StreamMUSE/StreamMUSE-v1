@@ -373,7 +373,7 @@ def default_campaign_config(
             "inference_mode": "sliding_window",
             "device": "cuda",
             "dtype": "float16",
-            "time_signature_index": 4,
+            "time_signature_index": 0,
             "max_generation_length_frames": None,
             "max_prompt_ticks": None,
             "use_cache": True,

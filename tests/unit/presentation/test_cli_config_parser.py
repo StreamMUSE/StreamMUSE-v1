@@ -114,17 +114,23 @@ def test_parse_args_defaults() -> None:
     assert config.input_quantization_trace_enabled is False
 
 
-def test_cli_generation_settings_default_to_backend_configuration(monkeypatch) -> None:
+def test_cli_generation_settings_default_to_tested_configuration(monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["streammuse-cli"])
 
     args = parse_args()
 
-    assert args.prompt_selection_mode is None
-    assert args.prompt_batch_candidates is None
-    assert args.temperature is None
-    assert args.top_p is None
-    assert args.top_k is None
-    assert args.repetition_penalty is None
+    assert args.tempo == 90
+    assert args.model_condition_bpm == 80
+    assert args.prompt_selection_mode == "rule_s_if_else"
+    assert args.prompt_batch_candidates == 10
+    assert args.temperature == 1.1
+    assert args.top_p == 0.95
+    assert args.top_k == 50
+    assert args.repetition_penalty == 1.0
+    from streammuse.application.config import ApplicationConfig
+    config = args_to_config(args)
+    assert config.tempo == ApplicationConfig().tempo
+    assert config.inference == ApplicationConfig().inference
 
 
 def test_cli_parses_midi_file_source_tick_opt_in(monkeypatch) -> None:

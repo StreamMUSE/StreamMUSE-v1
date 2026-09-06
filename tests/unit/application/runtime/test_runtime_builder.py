@@ -569,8 +569,8 @@ def test_builder_creates_prompt_continuation_runtime_with_override(
     assert service_cls.call_args.kwargs["generation_interval_ticks"] == 4
     assert service_cls.call_args.kwargs["count_in_beats"] == 4
     assert service_cls.call_args.kwargs["input_snap_forward_fraction"] == 0.25
-    assert service_cls.call_args.kwargs["model_condition_bpm"] == 91
-    assert session.session_config["effective_model_bpm"] == 91
+    assert service_cls.call_args.kwargs["model_condition_bpm"] == 80
+    assert session.session_config["effective_model_bpm"] == 80
 
 
 @patch("streammuse.application.runtime.builder.InputSourceFactory")

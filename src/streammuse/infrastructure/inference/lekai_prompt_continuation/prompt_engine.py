@@ -59,9 +59,9 @@ def resolve_prompt_bpm(bpm: Optional[int] = None) -> int:
 
     default_raw = os.environ.get("LEKAI_DEFAULT_BPM")
     try:
-        default_bpm = int(default_raw) if default_raw and default_raw.strip() else 120
+        default_bpm = int(default_raw) if default_raw and default_raw.strip() else 80
     except ValueError:
-        default_bpm = 120
+        default_bpm = 80
     prompt_raw = os.environ.get("LEKAI_PROMPT_BPM")
     try:
         return int(prompt_raw) if prompt_raw and prompt_raw.strip() else default_bpm
@@ -177,7 +177,7 @@ class LekaiPromptEngine:
         if self._session_prompt_selection_mode is not None:
             return self._session_prompt_selection_mode
         return self._canonical_selection_mode(
-            os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "single")
+            os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "rule_s_if_else")
         )
 
     def _batch_candidate_count(self) -> int:
@@ -193,12 +193,8 @@ class LekaiPromptEngine:
         return int(count)
 
     def _generation_parameters(self, selection_mode: str) -> dict[str, float | int]:
-        if selection_mode == "single":
-            default_temperature = 1.1
-            default_top_k = 0
-        else:
-            default_temperature = 0.8
-            default_top_k = 50
+        default_temperature = 1.1
+        default_top_k = 50
         parameters: dict[str, float | int] = {
             "temperature": self._env_float(
                 "LEKAI_PROMPT_TEMPERATURE", default_temperature
@@ -263,7 +259,7 @@ class LekaiPromptEngine:
         if prompt_batch_candidates is not None and int(prompt_batch_candidates) < 1:
             raise ValueError("prompt_batch_candidates must be >= 1")
         effective_mode = canonical_mode or self._canonical_selection_mode(
-            os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "single")
+            os.environ.get("LEKAI_PROMPT_SELECTION_MODE", "rule_s_if_else")
         )
         if (
             prompt_batch_candidates is not None
@@ -340,7 +336,7 @@ class LekaiPromptEngine:
         return int(self._session_seed)
 
     def _prompt_condition_length_ticks(self, prompt_length_ticks: int) -> int:
-        time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
+        time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 0)
         beats_per_bar = self._measure_beats_from_time_signature_idx(time_signature_idx)
         condition_beats = self._env_positive_int("LEKAI_PROMPT_CONDITION_BEATS")
         if condition_beats is not None:
@@ -486,7 +482,8 @@ class LekaiPromptEngine:
         prompt_length_ticks: int,
         bpm: Optional[int] = None,
     ) -> tuple[torch.Tensor, int, int]:
-        time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
+        # Category index, not beats per bar: training 4/4 is 0 (token 259).
+        time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 0)
         beats_per_bar = self._measure_beats_from_time_signature_idx(time_signature_idx)
         timesteps_per_bar = TIMESTEPS_PER_BEAT * beats_per_bar
         num_bars = max(1, int(np.ceil(prompt_length_ticks / timesteps_per_bar)))
@@ -912,7 +909,7 @@ class LekaiPromptEngine:
             self._is_warmed_up = False
             return self.runtime_info()
 
-        warmup_time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 4)
+        warmup_time_signature_idx = self._env_int("LEKAI_PROMPT_TIME_SIGNATURE_INDEX", 0)
         warmup_beats = self._env_positive_int("LEKAI_PROMPT_WARMUP_BEATS") or (
             self._measure_beats_from_time_signature_idx(warmup_time_signature_idx) * 2
         )

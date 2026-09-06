@@ -204,19 +204,19 @@ def test_web_boots_idle_without_building_runtime(builder_cls):
         "is_running": False,
         "state": "idle",
         "session_dir": None,
-        "configured_bpm": 120,
+        "configured_bpm": 90,
         "active_bpm": None,
-        "configured_prompt_selection_mode": None,
+        "configured_prompt_selection_mode": "rule_s_if_else",
         "active_prompt_selection_mode": None,
-        "configured_prompt_batch_candidates": None,
+        "configured_prompt_batch_candidates": 10,
         "active_prompt_batch_candidates": None,
-        "configured_temperature": None,
+        "configured_temperature": 1.1,
         "active_temperature": None,
-        "configured_top_p": None,
+        "configured_top_p": 0.95,
         "active_top_p": None,
-        "configured_top_k": None,
+        "configured_top_k": 50,
         "active_top_k": None,
-        "configured_repetition_penalty": None,
+        "configured_repetition_penalty": 1.0,
         "active_repetition_penalty": None,
     }
     builder_cls.assert_not_called()
@@ -303,7 +303,7 @@ def test_start_uses_requested_bpm_without_mutating_base_config(builder_cls, tmp_
     assert response.json()["configured_bpm"] == 120
     assert response.json()["active_bpm"] == 80
     assert isinstance(response.json()["active_bpm"], int)
-    assert response.json()["configured_prompt_selection_mode"] is None
+    assert response.json()["configured_prompt_selection_mode"] == "rule_s_if_else"
     assert response.json()["active_prompt_selection_mode"] == "rule_s_if_else"
     assert response.json()["active_prompt_batch_candidates"] == 10
     assert response.json()["active_temperature"] == 1.1
@@ -325,7 +325,7 @@ def test_start_uses_requested_bpm_without_mutating_base_config(builder_cls, tmp_
     assert session_config.inference.top_k == 50
     assert session_config.inference.repetition_penalty == 1.0
     assert base_config.tempo.bpm == 120
-    assert base_config.inference.prompt_selection_mode is None
+    assert base_config.inference.prompt_selection_mode == "rule_s_if_else"
     assert session_config.inference is not base_config.inference
 
 
@@ -506,9 +506,9 @@ def test_stop_then_start_builds_fresh_runtime_and_sink(builder_cls, tmp_path):
         assert first.json()["active_bpm"] == 80
         assert first.json()["active_prompt_selection_mode"] == "rule_s"
         assert second.json()["active_bpm"] == 100
-        assert second.json()["active_prompt_selection_mode"] is None
-        assert second.json()["active_prompt_batch_candidates"] is None
-        assert second.json()["active_temperature"] is None
+        assert second.json()["active_prompt_selection_mode"] == "rule_s_if_else"
+        assert second.json()["active_prompt_batch_candidates"] == 10
+        assert second.json()["active_temperature"] == 1.1
         assert second.json()["session_dir"].endswith("session-2")
         assert webserver._runtime is second_runtime
         assert webserver._ws_sink is second_runtime.websocket_sink
@@ -519,8 +519,8 @@ def test_stop_then_start_builds_fresh_runtime_and_sink(builder_cls, tmp_path):
     assert [config.tempo.bpm for config in session_configs] == [80, 100]
     assert session_configs[0].inference.prompt_selection_mode == "rule_s"
     assert session_configs[0].inference.temperature == 1.1
-    assert session_configs[1].inference.prompt_selection_mode is None
-    assert session_configs[1].inference.temperature is None
+    assert session_configs[1].inference.prompt_selection_mode == "rule_s_if_else"
+    assert session_configs[1].inference.temperature == 1.1
     assert all(isinstance(config.tempo.bpm, int) for config in session_configs)
     assert session_configs[0] is not session_configs[1]
     assert base_config.tempo.bpm == 120

@@ -99,7 +99,7 @@ def test_http_factory_keeps_model_condition_bpm_independent_from_playback():
     assert getattr(eng, "_config").bpm == 120
 
 
-def test_http_factory_defaults_model_condition_bpm_to_playback():
+def test_http_factory_defaults_model_condition_bpm_to_80():
     cfg = ApplicationConfig(
         tempo=TempoConfig(bpm=90.0),
         inference=InferenceConfig(
@@ -110,4 +110,9 @@ def test_http_factory_defaults_model_condition_bpm_to_playback():
 
     eng = InferenceEngineFactory.create(cfg)
 
-    assert getattr(eng, "_config").bpm == 90
+    assert getattr(eng, "_config").bpm == 80
+
+
+def test_http_factory_explicit_none_uses_playback_bpm():
+    cfg = ApplicationConfig(tempo=TempoConfig(bpm=90), inference=InferenceConfig(model_condition_bpm=None))
+    assert InferenceEngineFactory.create(cfg)._config.bpm == 90
