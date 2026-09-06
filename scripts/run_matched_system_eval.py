@@ -48,7 +48,7 @@ SAMPLING = {
     "repetition_penalty": 1.0,
 }
 PROMPT_CANDIDATES = 5
-PROMPT_SELECTION_MODES = ("single", "rule_s", "rule_s_v3")
+PROMPT_SELECTION_MODES = ("single", "rule_s", "rule_s_v3", "rule_s_if_else")
 EVAL_MANIFEST_FIELDS = (
     "piece_id",
     "seed",
@@ -79,6 +79,114 @@ class ServerHandle:
     startup_runtime: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class SamplingConfig:
+    temperature: float
+    top_p: float
+    top_k: int
+    repetition_penalty: float
+
+    def as_dict(self) -> dict[str, float | int]:
+        return {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "repetition_penalty": self.repetition_penalty,
+        }
+
+
+@dataclass(frozen=True)
+class EvaluationContract:
+    playback_bpm: float
+    model_condition_bpm: int
+    ticks_per_beat: int
+    window_end_tick: int
+    prompt_beats: int
+    generation_interval_ticks: int
+    generation_length_frames: int
+    prompt_sampling: SamplingConfig
+    continuation_sampling: SamplingConfig
+
+    @property
+    def prompt_length_ticks(self) -> int:
+        return self.prompt_beats * self.ticks_per_beat
+
+    def validate(self) -> None:
+        if not math.isfinite(self.playback_bpm) or self.playback_bpm <= 0:
+            raise ValueError("--playback-bpm must be > 0")
+        for label, value in (
+            ("--model-condition-bpm", self.model_condition_bpm),
+            ("--ticks-per-beat", self.ticks_per_beat),
+            ("--window-end-tick", self.window_end_tick),
+            ("--prompt-beats", self.prompt_beats),
+            ("--generation-interval-ticks", self.generation_interval_ticks),
+            ("--generation-length-frames", self.generation_length_frames),
+        ):
+            if value <= 0:
+                raise ValueError(f"{label} must be > 0")
+        for label, sampling in (
+            ("prompt", self.prompt_sampling),
+            ("continuation", self.continuation_sampling),
+        ):
+            if not math.isfinite(sampling.temperature) or sampling.temperature < 0:
+                raise ValueError(f"--{label}-temperature must be >= 0")
+            if not math.isfinite(sampling.top_p) or not 0 <= sampling.top_p <= 1:
+                raise ValueError(f"--{label}-top-p must be between 0 and 1")
+            if sampling.top_k < 0:
+                raise ValueError(f"--{label}-top-k must be >= 0")
+            if (
+                not math.isfinite(sampling.repetition_penalty)
+                or sampling.repetition_penalty <= 0
+            ):
+                raise ValueError(f"--{label}-repetition-penalty must be > 0")
+        if self.prompt_sampling != self.continuation_sampling:
+            raise ValueError(
+                "matched CLI replay currently exposes shared Prompt/Continuation "
+                "sampling; pass identical explicit values for both stages"
+            )
+
+
+def default_evaluation_contract() -> EvaluationContract:
+    sampling = SamplingConfig(**SAMPLING)
+    return EvaluationContract(
+        playback_bpm=float(BPM),
+        model_condition_bpm=int(BPM),
+        ticks_per_beat=TICKS_PER_BEAT,
+        window_end_tick=WINDOW_END_TICK,
+        prompt_beats=PROMPT_LENGTH_TICKS // TICKS_PER_BEAT,
+        generation_interval_ticks=GENERATION_INTERVAL_TICKS,
+        generation_length_frames=GENERATION_LENGTH_FRAMES,
+        prompt_sampling=sampling,
+        continuation_sampling=sampling,
+    )
+
+
+def evaluation_contract_from_args(args: argparse.Namespace) -> EvaluationContract:
+    contract = EvaluationContract(
+        playback_bpm=float(args.playback_bpm),
+        model_condition_bpm=int(args.model_condition_bpm),
+        ticks_per_beat=int(args.ticks_per_beat),
+        window_end_tick=int(args.window_end_tick),
+        prompt_beats=int(args.prompt_beats),
+        generation_interval_ticks=int(args.generation_interval_ticks),
+        generation_length_frames=int(args.generation_length_frames),
+        prompt_sampling=SamplingConfig(
+            temperature=float(args.prompt_temperature),
+            top_p=float(args.prompt_top_p),
+            top_k=int(args.prompt_top_k),
+            repetition_penalty=float(args.prompt_repetition_penalty),
+        ),
+        continuation_sampling=SamplingConfig(
+            temperature=float(args.continuation_temperature),
+            top_p=float(args.continuation_top_p),
+            top_k=int(args.continuation_top_k),
+            repetition_penalty=float(args.continuation_repetition_penalty),
+        ),
+    )
+    contract.validate()
+    return contract
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run matched StreamMUSE v1/v2 MIDI-file system trials."
@@ -96,6 +204,49 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--python-bin", default=sys.executable)
+    parser.add_argument("--playback-bpm", type=float, default=float(BPM))
+    parser.add_argument("--model-condition-bpm", type=int, default=int(BPM))
+    parser.add_argument("--ticks-per-beat", type=int, default=TICKS_PER_BEAT)
+    parser.add_argument("--window-end-tick", type=int, default=WINDOW_END_TICK)
+    parser.add_argument(
+        "--prompt-beats",
+        type=int,
+        default=PROMPT_LENGTH_TICKS // TICKS_PER_BEAT,
+    )
+    parser.add_argument(
+        "--generation-interval-ticks",
+        type=int,
+        default=GENERATION_INTERVAL_TICKS,
+    )
+    parser.add_argument(
+        "--generation-length-frames",
+        type=int,
+        default=GENERATION_LENGTH_FRAMES,
+    )
+    parser.add_argument(
+        "--prompt-temperature", type=float, default=SAMPLING["temperature"]
+    )
+    parser.add_argument("--prompt-top-p", type=float, default=SAMPLING["top_p"])
+    parser.add_argument("--prompt-top-k", type=int, default=SAMPLING["top_k"])
+    parser.add_argument(
+        "--prompt-repetition-penalty",
+        type=float,
+        default=SAMPLING["repetition_penalty"],
+    )
+    parser.add_argument(
+        "--continuation-temperature", type=float, default=SAMPLING["temperature"]
+    )
+    parser.add_argument(
+        "--continuation-top-p", type=float, default=SAMPLING["top_p"]
+    )
+    parser.add_argument(
+        "--continuation-top-k", type=int, default=SAMPLING["top_k"]
+    )
+    parser.add_argument(
+        "--continuation-repetition-penalty",
+        type=float,
+        default=SAMPLING["repetition_penalty"],
+    )
     parser.add_argument(
         "--prompt-selection-mode",
         choices=PROMPT_SELECTION_MODES,
@@ -409,9 +560,13 @@ def build_server_environment(
     time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
 ) -> dict[str, str]:
     if system_id not in SYSTEM_IDS:
         raise ValueError(f"unknown system: {system_id}")
+    contract = contract or default_evaluation_contract()
+    contract.validate()
+    continuation_sampling = contract.continuation_sampling
     env = _controlled_environment()
     env.update(
         {
@@ -420,16 +575,16 @@ def build_server_environment(
             "LEKAI_SERVER_HOST": "127.0.0.1",
             "LEKAI_SERVER_PORT": str(port),
             "LEKAI_ENABLE_DEBUG_RESET": "true",
-            "LEKAI_DEFAULT_BPM": str(BPM),
+            "LEKAI_DEFAULT_BPM": str(contract.model_condition_bpm),
             "LEKAI_DEVICE": "cuda",
             "LEKAI_DTYPE": "float16",
             "LEKAI_TIME_SIGNATURE_INDEX": str(time_signature_index),
             "LEKAI_PROMPT_TIME_SIGNATURE_INDEX": str(time_signature_index),
-            "LEKAI_RT_TEMPERATURE": str(SAMPLING["temperature"]),
-            "LEKAI_RT_TOP_P": str(SAMPLING["top_p"]),
-            "LEKAI_RT_TOP_K": str(SAMPLING["top_k"]),
+            "LEKAI_RT_TEMPERATURE": str(continuation_sampling.temperature),
+            "LEKAI_RT_TOP_P": str(continuation_sampling.top_p),
+            "LEKAI_RT_TOP_K": str(continuation_sampling.top_k),
             "LEKAI_RT_REPETITION_PENALTY": str(
-                SAMPLING["repetition_penalty"]
+                continuation_sampling.repetition_penalty
             ),
             "LEKAI_PROMPT_CONTEXT_BEATS": str(PROMPT_CONTEXT_BEATS),
             "LEKAI_HISTORY_MAX_TICKS": str(HISTORY_MAX_TICKS),
@@ -464,14 +619,16 @@ def build_server_environment(
                 "LEKAI_PROMPT_SELECTION_MODE": prompt_selection_mode,
                 "LEKAI_PROMPT_BATCH_CANDIDATES": str(effective_candidates),
                 "LEKAI_PROMPT_SEED": "0",
-                "LEKAI_PROMPT_BPM": str(BPM),
+                "LEKAI_PROMPT_BPM": str(contract.model_condition_bpm),
                 "LEKAI_PROMPT_DEVICE": "cuda",
                 "LEKAI_PROMPT_DTYPE": "float16",
-                "LEKAI_PROMPT_TEMPERATURE": str(SAMPLING["temperature"]),
-                "LEKAI_PROMPT_TOP_P": str(SAMPLING["top_p"]),
-                "LEKAI_PROMPT_TOP_K": str(SAMPLING["top_k"]),
+                "LEKAI_PROMPT_TEMPERATURE": str(
+                    contract.prompt_sampling.temperature
+                ),
+                "LEKAI_PROMPT_TOP_P": str(contract.prompt_sampling.top_p),
+                "LEKAI_PROMPT_TOP_K": str(contract.prompt_sampling.top_k),
                 "LEKAI_PROMPT_REPETITION_PENALTY": str(
-                    SAMPLING["repetition_penalty"]
+                    contract.prompt_sampling.repetition_penalty
                 ),
             }
         )
@@ -532,7 +689,11 @@ def runtime_contract_errors(
     reset_ack: Mapping[str, Any] | None = None,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
+    require_session_runtime_contract: bool = False,
 ) -> list[str]:
+    contract = contract or default_evaluation_contract()
+    contract.validate()
     errors: list[str] = []
     if runtime.get("has_real_model") is not True:
         errors.append("continuation model is not real")
@@ -545,13 +706,21 @@ def runtime_contract_errors(
     if not str(runtime.get("resolved_device", "")).startswith("cuda"):
         errors.append(f"continuation device is not CUDA: {runtime.get('resolved_device')}")
     expected_values = {
-        "effective_bpm": BPM,
-        "ticks_per_beat": TICKS_PER_BEAT,
+        "effective_bpm": contract.model_condition_bpm,
+        "ticks_per_beat": contract.ticks_per_beat,
         "prompt_context_beats": PROMPT_CONTEXT_BEATS,
         "history_retention_ticks": HISTORY_MAX_TICKS,
         "time_signature_index": time_signature_index,
-        **SAMPLING,
+        **contract.continuation_sampling.as_dict(),
     }
+    if require_session_runtime_contract:
+        expected_values.update(
+            {
+                "generation_interval_ticks": contract.generation_interval_ticks,
+                "generation_length_frames": contract.generation_length_frames,
+                "prompt_length_ticks": contract.prompt_length_ticks,
+            }
+        )
     for key, expected in expected_values.items():
         actual = runtime.get(key)
         if isinstance(expected, float):
@@ -585,6 +754,30 @@ def runtime_contract_errors(
                 f"is {runtime.get('prompt_batch_candidate_count')!r}, "
                 f"expected {effective_candidates}"
             )
+        prompt_expected = {
+            f"prompt_{key}": value
+            for key, value in contract.prompt_sampling.as_dict().items()
+        }
+        continuation_expected = {
+            f"continuation_{key}": value
+            for key, value in contract.continuation_sampling.as_dict().items()
+        }
+        for key, expected in {**prompt_expected, **continuation_expected}.items():
+            actual = runtime.get(key)
+            if isinstance(expected, float):
+                if not isinstance(actual, (int, float)) or not math.isclose(
+                    float(actual), expected, rel_tol=0.0, abs_tol=1e-9
+                ):
+                    errors.append(f"runtime {key}={actual!r}, expected {expected!r}")
+            elif actual != expected:
+                errors.append(f"runtime {key}={actual!r}, expected {expected!r}")
+        if require_session_runtime_contract:
+            for key in ("prompt_effective_bpm", "continuation_effective_bpm"):
+                if runtime.get(key) != contract.model_condition_bpm:
+                    errors.append(
+                        f"runtime {key}={runtime.get(key)!r}, expected "
+                        f"{contract.model_condition_bpm!r}"
+                    )
     if expected_seed is not None:
         if runtime.get("sample_seed") != expected_seed:
             errors.append(
@@ -611,6 +804,7 @@ def wait_for_server(
     time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     last_error = "server not contacted"
@@ -635,6 +829,7 @@ def wait_for_server(
                     time_signature_index=time_signature_index,
                     prompt_selection_mode=prompt_selection_mode,
                     prompt_batch_candidates=prompt_batch_candidates,
+                    contract=contract,
                 )
                 if errors:
                     raise RuntimeError("; ".join(errors))
@@ -660,6 +855,7 @@ def start_server(
     time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
 ) -> ServerHandle:
     server_dir = output_root / "servers" / system_id
     server_dir.mkdir(parents=True, exist_ok=True)
@@ -676,6 +872,7 @@ def start_server(
         time_signature_index=time_signature_index,
         prompt_selection_mode=prompt_selection_mode,
         prompt_batch_candidates=prompt_batch_candidates,
+        contract=contract,
     )
     command = [python_bin, "-m", "streammuse.infrastructure.inference.server_lekai"]
     log_handle = (server_dir / "server.log").open("w", encoding="utf-8")
@@ -705,6 +902,7 @@ def start_server(
             time_signature_index=time_signature_index,
             prompt_selection_mode=prompt_selection_mode,
             prompt_batch_candidates=prompt_batch_candidates,
+            contract=contract,
         )
     except Exception:
         stop_server(handle)
@@ -776,7 +974,13 @@ def build_cli_command(
     midi_path: Path,
     log_root: Path,
     base_url: str,
+    midi_file_source_tick_mode: bool = False,
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
 ) -> list[str]:
+    contract = contract or default_evaluation_contract()
+    contract.validate()
     continuation_mode = (
         "standard"
         if system_id == "streammuse_v1_standard"
@@ -787,9 +991,9 @@ def build_cli_command(
         "-m",
         "streammuse.presentation.cli.cli",
         "--tempo",
-        str(BPM),
+        str(contract.playback_bpm),
         "--ticks-per-beat",
-        str(TICKS_PER_BEAT),
+        str(contract.ticks_per_beat),
         "--beats-per-bar",
         str(BEATS_PER_BAR),
         "--input-mode",
@@ -813,20 +1017,42 @@ def build_cli_command(
         "--inference-mode",
         "sliding_window",
         "--model-condition-bpm",
-        str(BPM),
+        str(contract.model_condition_bpm),
         "--generation-length-frames",
-        str(GENERATION_LENGTH_FRAMES),
+        str(contract.generation_length_frames),
         "--generation-interval-ticks",
-        str(GENERATION_INTERVAL_TICKS),
+        str(contract.generation_interval_ticks),
         "--run-stop-tick",
-        str(WINDOW_END_TICK),
+        str(contract.window_end_tick),
         "--count-in-beats",
         "0",
         "--continuation-mode",
         continuation_mode,
     ]
     if continuation_mode == "prompt_continuation":
-        command.extend(["--prompt-length-ticks", str(PROMPT_LENGTH_TICKS)])
+        effective_candidates = effective_prompt_candidate_count(
+            prompt_selection_mode, prompt_batch_candidates
+        )
+        command.extend(
+            [
+                "--prompt-length-ticks",
+                str(contract.prompt_length_ticks),
+                "--prompt-selection-mode",
+                prompt_selection_mode,
+                "--prompt-batch-candidates",
+                str(effective_candidates),
+                "--temperature",
+                str(contract.prompt_sampling.temperature),
+                "--top-p",
+                str(contract.prompt_sampling.top_p),
+                "--top-k",
+                str(contract.prompt_sampling.top_k),
+                "--repetition-penalty",
+                str(contract.prompt_sampling.repetition_penalty),
+            ]
+        )
+        if midi_file_source_tick_mode:
+            command.append("--midi-file-source-tick-mode")
     return command
 
 
@@ -892,7 +1118,17 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def validate_session(system_id: str, log_root: Path) -> dict[str, Any]:
+def validate_session(
+    system_id: str,
+    log_root: Path,
+    *,
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    midi_file_source_tick_mode: bool = False,
+    contract: EvaluationContract | None = None,
+) -> dict[str, Any]:
+    contract = contract or default_evaluation_contract()
+    contract.validate()
     session_dir = _find_session(log_root)
     config = json.loads((session_dir / "session_config.json").read_text(encoding="utf-8"))
     expected_mode = (
@@ -901,17 +1137,38 @@ def validate_session(system_id: str, log_root: Path) -> dict[str, Any]:
         else "prompt_continuation"
     )
     expected_config = {
-        "tempo_bpm": float(BPM),
-        "ticks_per_beat": TICKS_PER_BEAT,
+        "tempo_bpm": float(contract.playback_bpm),
+        "model_condition_bpm": contract.model_condition_bpm,
+        "effective_model_bpm": contract.model_condition_bpm,
+        "ticks_per_beat": contract.ticks_per_beat,
         "beats_per_bar": BEATS_PER_BAR,
         "input_type": "midi_file",
         "output_type": "session",
         "session_artifact_tier": "debug",
         "continuation_mode": expected_mode,
-        "generation_interval_ticks": GENERATION_INTERVAL_TICKS,
-        "generation_length_frames": GENERATION_LENGTH_FRAMES,
+        "generation_interval_ticks": contract.generation_interval_ticks,
+        "generation_length_frames": contract.generation_length_frames,
         "count_in_beats": 0,
     }
+    if system_id == "streammuse_v2_prompt_continuation":
+        expected_config.update(
+            {
+                "prompt_length_ticks": contract.prompt_length_ticks,
+                "prompt_selection_mode": prompt_selection_mode,
+                "prompt_batch_candidates": effective_prompt_candidate_count(
+                    prompt_selection_mode, prompt_batch_candidates
+                ),
+                "temperature": contract.prompt_sampling.temperature,
+                "top_p": contract.prompt_sampling.top_p,
+                "top_k": contract.prompt_sampling.top_k,
+                "repetition_penalty": (
+                    contract.prompt_sampling.repetition_penalty
+                ),
+                "midi_file_source_tick_mode": bool(
+                    midi_file_source_tick_mode
+                ),
+            }
+        )
     errors = [
         f"session_config {key}={config.get(key)!r}, expected {expected!r}"
         for key, expected in expected_config.items()
@@ -929,10 +1186,11 @@ def validate_session(system_id: str, log_root: Path) -> dict[str, Any]:
         if any(row.get("schema_version") != 2 for row in deadline_rows):
             errors.append("frame deadlines are not all schema v2")
         ticks = [row.get("tick") for row in deadline_rows]
-        expected_ticks = list(range(WINDOW_START_TICK, WINDOW_END_TICK))
+        expected_ticks = list(range(WINDOW_START_TICK, contract.window_end_tick))
         if ticks != expected_ticks:
             errors.append(
-                "schema v2 frame deadlines do not continuously cover ticks 0..127"
+                "schema v2 frame deadlines do not continuously cover ticks "
+                f"0..{contract.window_end_tick - 1}"
             )
         expected_condition = (
             "standard"
@@ -950,7 +1208,7 @@ def validate_session(system_id: str, log_root: Path) -> dict[str, Any]:
         "deadline_schema_version": 2,
         "deadline_count": len(deadline_rows),
         "deadline_start_tick": WINDOW_START_TICK,
-        "deadline_end_tick_exclusive": WINDOW_END_TICK,
+        "deadline_end_tick_exclusive": contract.window_end_tick,
         "deadline_ticks_contiguous": True,
     }
 
@@ -992,6 +1250,40 @@ def _run_client(
             raise TimeoutError(f"client exceeded trial timeout {timeout_s}s")
 
 
+def _contract_record(
+    contract: EvaluationContract,
+    *,
+    system_id: str,
+    prompt_selection_mode: str,
+    prompt_batch_candidates: int,
+    midi_file_source_tick_mode: bool,
+) -> dict[str, Any]:
+    return {
+        "playback_bpm": contract.playback_bpm,
+        "model_condition_bpm": contract.model_condition_bpm,
+        "ticks_per_beat": contract.ticks_per_beat,
+        "beats_per_bar": BEATS_PER_BAR,
+        "window_start_tick": WINDOW_START_TICK,
+        "window_end_tick_exclusive": contract.window_end_tick,
+        "prompt_beats": contract.prompt_beats,
+        "prompt_length_ticks": contract.prompt_length_ticks,
+        "generation_interval_ticks": contract.generation_interval_ticks,
+        "generation_length_frames": contract.generation_length_frames,
+        "midi_file_source_tick_mode": bool(
+            midi_file_source_tick_mode
+            and system_id == "streammuse_v2_prompt_continuation"
+        ),
+        "prompt_selection": {
+            "mode": prompt_selection_mode,
+            "candidate_count": effective_prompt_candidate_count(
+                prompt_selection_mode, prompt_batch_candidates
+            ),
+        },
+        "prompt_sampling": contract.prompt_sampling.as_dict(),
+        "continuation_sampling": contract.continuation_sampling.as_dict(),
+    }
+
+
 def _trial_record(
     *,
     piece: CohortPiece,
@@ -1002,7 +1294,13 @@ def _trial_record(
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
     time_signature_index: int,
+    midi_file_source_tick_mode: bool = False,
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
 ) -> dict[str, Any]:
+    contract = contract or default_evaluation_contract()
+    contract.validate()
     return {
         "piece_id": piece.piece_id,
         "seed": seed,
@@ -1023,6 +1321,13 @@ def _trial_record(
         "runtime_before_trial": None,
         "runtime_after_trial": None,
         "checkpoint_conditioning": _checkpoint_conditioning(time_signature_index),
+        "evaluation_contract": _contract_record(
+            contract,
+            system_id=system_id,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
+        ),
         "code_identity": dict(code),
         "checkpoint_identities": {
             "prompt": (
@@ -1049,7 +1354,11 @@ def run_trial(
     time_signature_index: int,
     prompt_selection_mode: str = "rule_s",
     prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    midi_file_source_tick_mode: bool = False,
+    contract: EvaluationContract | None = None,
 ) -> dict[str, Any]:
+    contract = contract or default_evaluation_contract()
+    contract.validate()
     trial_dir.mkdir(parents=True, exist_ok=False)
     record = _trial_record(
         piece=piece,
@@ -1060,6 +1369,10 @@ def run_trial(
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
         time_signature_index=time_signature_index,
+        midi_file_source_tick_mode=midi_file_source_tick_mode,
+        prompt_selection_mode=prompt_selection_mode,
+        prompt_batch_candidates=prompt_batch_candidates,
+        contract=contract,
     )
     record["run_status"] = "running"
     write_json(trial_dir / "trial_manifest.json", record)
@@ -1080,6 +1393,7 @@ def run_trial(
             reset_ack=reset_ack,
             prompt_selection_mode=prompt_selection_mode,
             prompt_batch_candidates=prompt_batch_candidates,
+            contract=contract,
         )
         if errors:
             raise RuntimeError("pre-trial runtime rejected: " + "; ".join(errors))
@@ -1089,6 +1403,10 @@ def run_trial(
             midi_path=piece.midi_path,
             log_root=log_root,
             base_url=handle.base_url,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
+            contract=contract,
         )
         client_env = build_client_environment(handle.system_id, reset_ack)
         record.update(
@@ -1116,7 +1434,14 @@ def run_trial(
         record["client_returncode"] = returncode
         if returncode != 0:
             raise RuntimeError(f"StreamMUSE client exited with {returncode}")
-        session_validation = validate_session(handle.system_id, log_root)
+        session_validation = validate_session(
+            handle.system_id,
+            log_root,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
+            contract=contract,
+        )
         record["session_dir"] = session_validation["session_dir"]
         runtime_after = request_json(
             f"{handle.base_url}{_runtime_endpoint(handle.system_id)}", timeout=30.0
@@ -1132,6 +1457,8 @@ def run_trial(
             reset_ack=reset_ack,
             prompt_selection_mode=prompt_selection_mode,
             prompt_batch_candidates=prompt_batch_candidates,
+            contract=contract,
+            require_session_runtime_contract=True,
         )
         if errors:
             raise RuntimeError("post-trial runtime rejected: " + "; ".join(errors))
@@ -1168,7 +1495,12 @@ def _dry_run_trial(
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
     time_signature_index: int,
+    midi_file_source_tick_mode: bool = False,
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
 ) -> dict[str, Any]:
+    contract = contract or default_evaluation_contract()
     trial_dir.mkdir(parents=True, exist_ok=False)
     record = _trial_record(
         piece=piece,
@@ -1179,6 +1511,10 @@ def _dry_run_trial(
         prompt_checkpoint=prompt_checkpoint,
         continuation_checkpoint=continuation_checkpoint,
         time_signature_index=time_signature_index,
+        midi_file_source_tick_mode=midi_file_source_tick_mode,
+        prompt_selection_mode=prompt_selection_mode,
+        prompt_batch_candidates=prompt_batch_candidates,
+        contract=contract,
     )
     record.update(
         {
@@ -1189,6 +1525,10 @@ def _dry_run_trial(
                 midi_path=piece.midi_path,
                 log_root=trial_dir / "session_logs",
                 base_url=base_url,
+                midi_file_source_tick_mode=midi_file_source_tick_mode,
+                prompt_selection_mode=prompt_selection_mode,
+                prompt_batch_candidates=prompt_batch_candidates,
+                contract=contract,
             ),
             "failure_reason": None,
         }
@@ -1228,7 +1568,12 @@ def _mark_failed_system_trials(
     prompt_checkpoint: Mapping[str, Any],
     continuation_checkpoint: Mapping[str, Any],
     time_signature_index: int,
+    midi_file_source_tick_mode: bool = False,
+    prompt_selection_mode: str = "rule_s",
+    prompt_batch_candidates: int = PROMPT_CANDIDATES,
+    contract: EvaluationContract | None = None,
 ) -> None:
+    contract = contract or default_evaluation_contract()
     for piece, seed in pending_trials:
         trial_dir = (
             output_root
@@ -1247,6 +1592,10 @@ def _mark_failed_system_trials(
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
             time_signature_index=time_signature_index,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
+            prompt_selection_mode=prompt_selection_mode,
+            prompt_batch_candidates=prompt_batch_candidates,
+            contract=contract,
         )
         record["run_status"] = "failed"
         record["failure_reason"] = reason
@@ -1269,8 +1618,12 @@ def _validate_matched_hashes(trials: Sequence[Mapping[str, Any]]) -> None:
 
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
+    contract = evaluation_contract_from_args(args)
     prompt_candidate_count = effective_prompt_candidate_count(
         args.prompt_selection_mode, args.prompt_batch_candidates
+    )
+    midi_file_source_tick_mode = bool(
+        getattr(args, "midi_file_source_tick_mode", False)
     )
     pieces = load_cohort_manifest(args.cohort_manifest, args.smoke_limit)
     seeds = _parse_unique_ints(args.seeds, "--seeds")
@@ -1305,6 +1658,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             prompt_checkpoint=prompt_checkpoint,
             continuation_checkpoint=continuation_checkpoint,
             time_signature_index=args.time_signature_index,
+            midi_file_source_tick_mode=midi_file_source_tick_mode,
+            prompt_selection_mode=args.prompt_selection_mode,
+            prompt_batch_candidates=prompt_candidate_count,
+            contract=contract,
         )
         for system_id in systems
         for piece in pieces
@@ -1323,13 +1680,14 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
         "seeds": seeds,
         "piece_count": len(pieces),
         "evaluation_contract": {
-            "bpm": BPM,
-            "ticks_per_beat": TICKS_PER_BEAT,
+            "playback_bpm": contract.playback_bpm,
+            "model_condition_bpm": contract.model_condition_bpm,
+            "ticks_per_beat": contract.ticks_per_beat,
             "beats_per_bar": BEATS_PER_BAR,
             "window_start_tick": WINDOW_START_TICK,
-            "window_end_tick_exclusive": WINDOW_END_TICK,
-            "generation_interval_ticks": GENERATION_INTERVAL_TICKS,
-            "generation_length_frames": GENERATION_LENGTH_FRAMES,
+            "window_end_tick_exclusive": contract.window_end_tick,
+            "generation_interval_ticks": contract.generation_interval_ticks,
+            "generation_length_frames": contract.generation_length_frames,
             "late_recovery": False,
             "checkpoint_conditioning": _checkpoint_conditioning(
                 args.time_signature_index
@@ -1337,9 +1695,11 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             "streammuse_v2_prompt": {
                 "selection_mode": args.prompt_selection_mode,
                 "candidate_count": prompt_candidate_count,
-                "prompt_length_ticks": PROMPT_LENGTH_TICKS,
+                "prompt_beats": contract.prompt_beats,
+                "prompt_length_ticks": contract.prompt_length_ticks,
             },
-            "sampling": dict(SAMPLING),
+            "prompt_sampling": contract.prompt_sampling.as_dict(),
+            "continuation_sampling": contract.continuation_sampling.as_dict(),
         },
         "code_identity": code,
         "checkpoint_identities": {
@@ -1373,6 +1733,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         prompt_checkpoint=prompt_checkpoint,
                         continuation_checkpoint=continuation_checkpoint,
                         time_signature_index=args.time_signature_index,
+                        midi_file_source_tick_mode=midi_file_source_tick_mode,
+                        prompt_selection_mode=args.prompt_selection_mode,
+                        prompt_batch_candidates=prompt_candidate_count,
+                        contract=contract,
                     )
                     _replace_trial(manifest, record)
                     persist_run_manifests(output_root, manifest)
@@ -1392,6 +1756,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 time_signature_index=args.time_signature_index,
                 prompt_selection_mode=args.prompt_selection_mode,
                 prompt_batch_candidates=prompt_candidate_count,
+                contract=contract,
             )
             for piece in pieces:
                 for seed in seeds:
@@ -1415,6 +1780,8 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                         time_signature_index=args.time_signature_index,
                         prompt_selection_mode=args.prompt_selection_mode,
                         prompt_batch_candidates=prompt_candidate_count,
+                        midi_file_source_tick_mode=midi_file_source_tick_mode,
+                        contract=contract,
                     )
                     _replace_trial(manifest, record)
                     persist_run_manifests(output_root, manifest)
@@ -1439,6 +1806,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
                 prompt_checkpoint=prompt_checkpoint,
                 continuation_checkpoint=continuation_checkpoint,
                 time_signature_index=args.time_signature_index,
+                midi_file_source_tick_mode=midi_file_source_tick_mode,
+                prompt_selection_mode=args.prompt_selection_mode,
+                prompt_batch_candidates=prompt_candidate_count,
+                contract=contract,
             )
         finally:
             if handle is not None:
