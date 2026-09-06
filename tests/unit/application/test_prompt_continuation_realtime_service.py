@@ -1130,6 +1130,87 @@ def test_prompt_continuation_append_keeps_empty_rest_chunks():
     assert [event.pitch for event in note_action.melody_events] == [64]
 
 
+def test_prompt_continuation_rebuckets_late_event_to_append_watermark():
+    service = _make_service()
+    service._start_enqueued = True
+    service._last_append_observed_tick = 40
+    traces = []
+    service._trace = lambda kind, **payload: traces.append((kind, payload))
+    service._event_q.put(_note(60, 39))
+
+    drained = service._drain_user_events()
+
+    assert [(event.pitch, event.tick) for event in drained] == [(60, 40)]
+    assert [(event.pitch, event.tick) for event in service._pending_append_events] == [
+        (60, 40)
+    ]
+    assert service._prompt_events == []
+    assert [(event.pitch, event.tick) for event, source in service._output.events] == [
+        (60, 40)
+    ]
+    assert traces == [
+        (
+            "late_user_input_rebucketed",
+            {
+                "original_quantized_tick": 39,
+                "effective_model_tick": 40,
+                "late_rebucket_ticks": 1,
+                "previous_observed_until_tick": 40,
+                "pitch": 60,
+                "event_type": "note_on",
+            },
+        )
+    ]
+
+
+def test_prompt_continuation_late_pre_prompt_tick_does_not_reenter_prompt():
+    service = _make_service()
+    service._start_enqueued = True
+    service._last_append_observed_tick = 32
+    service._event_q.put(_note(61, 31))
+
+    service._drain_user_events()
+
+    assert service._prompt_events == []
+    assert [(event.pitch, event.tick) for event in service._pending_append_events] == [
+        (61, 32)
+    ]
+
+
+def test_prompt_continuation_on_time_event_keeps_tick():
+    service = _make_service()
+    service._start_enqueued = True
+    service._last_append_observed_tick = 40
+    service._event_q.put(_note(62, 41))
+
+    drained = service._drain_user_events()
+
+    assert [(event.pitch, event.tick) for event in drained] == [(62, 41)]
+    assert [(event.pitch, event.tick) for event in service._pending_append_events] == [
+        (62, 41)
+    ]
+
+
+def test_prompt_continuation_rebucket_preserves_same_tick_event_order():
+    service = _make_service()
+    service._start_enqueued = True
+    service._last_append_observed_tick = 40
+    service._event_q.put(_note(63, 39))
+    service._event_q.put(_note_off(63, 39))
+
+    drained = service._drain_user_events()
+
+    assert [event.tick for event in drained] == [40, 40]
+    assert [event.event_type for event in drained] == [
+        EventType.NOTE_ON,
+        EventType.NOTE_OFF,
+    ]
+    assert [event.event_type for event in service._pending_append_events] == [
+        EventType.NOTE_ON,
+        EventType.NOTE_OFF,
+    ]
+
+
 def test_prompt_continuation_default_scheduling_mode_is_streaming(monkeypatch):
     monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_SCHEDULING_MODE", raising=False)
     service = _make_service()

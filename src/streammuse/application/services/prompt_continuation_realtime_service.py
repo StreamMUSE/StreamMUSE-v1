@@ -602,9 +602,34 @@ class PromptContinuationRealtimeService:
                 event = self._event_q.get_nowait()
             except queue.Empty:
                 break
+
+            original_tick = int(event.tick)
+            effective_tick = original_tick
+            if self._start_enqueued:
+                effective_tick = max(
+                    original_tick,
+                    int(self._last_append_observed_tick),
+                )
+            if effective_tick != original_tick:
+                event = stamp_user_input_event_at_tick(event, tick=effective_tick)
+                self._trace(
+                    "late_user_input_rebucketed",
+                    original_quantized_tick=original_tick,
+                    effective_model_tick=effective_tick,
+                    late_rebucket_ticks=effective_tick - original_tick,
+                    previous_observed_until_tick=int(
+                        self._last_append_observed_tick
+                    ),
+                    pitch=int(event.pitch),
+                    event_type=event.event_type.value,
+                )
+
             drained.append(event)
             self._output.output_event(event, source="user")
-            if int(event.tick) < self._prompt_length_ticks:
+            if (
+                not self._start_enqueued
+                and int(event.tick) < self._prompt_length_ticks
+            ):
                 self._prompt_events.append(event)
             else:
                 self._pending_append_events.append(event)
