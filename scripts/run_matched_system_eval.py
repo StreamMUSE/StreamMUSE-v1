@@ -772,12 +772,12 @@ def runtime_contract_errors(
             elif actual != expected:
                 errors.append(f"runtime {key}={actual!r}, expected {expected!r}")
         if require_session_runtime_contract:
-            for key in ("prompt_effective_bpm", "continuation_effective_bpm"):
-                if runtime.get(key) != contract.model_condition_bpm:
-                    errors.append(
-                        f"runtime {key}={runtime.get(key)!r}, expected "
-                        f"{contract.model_condition_bpm!r}"
-                    )
+            if runtime.get("prompt_effective_bpm") != contract.model_condition_bpm:
+                errors.append(
+                    "runtime prompt_effective_bpm="
+                    f"{runtime.get('prompt_effective_bpm')!r}, expected "
+                    f"{contract.model_condition_bpm!r}"
+                )
     if expected_seed is not None:
         if runtime.get("sample_seed") != expected_seed:
             errors.append(

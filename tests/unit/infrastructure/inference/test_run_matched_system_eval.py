@@ -257,6 +257,12 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         "continuation_top_p": 0.98,
         "continuation_top_k": 0,
         "continuation_repetition_penalty": 1.0,
+        "generation_interval_ticks": 4,
+        "generation_length_frames": 4,
+        "prompt_length_ticks": 32,
+        "prompt_effective_bpm": script.BPM,
+        # Cleared when the client session ends; this is not a contract failure.
+        "continuation_effective_bpm": None,
         **script.SAMPLING,
     }
     errors = script.runtime_contract_errors(
@@ -267,6 +273,7 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         continuation_checkpoint=continuation_identity,
         time_signature_index=4,
         prompt_selection_mode="single",
+        require_session_runtime_contract=True,
     )
 
     assert errors == []
