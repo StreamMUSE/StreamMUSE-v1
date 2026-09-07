@@ -206,21 +206,6 @@ class PromptContinuationRealtimeService:
         if raw_scheduling_mode not in {"streaming_events", "paired_future_only"}:
             raw_scheduling_mode = "streaming_events"
         self._scheduling_mode = raw_scheduling_mode
-        self._recover_late_events = os.environ.get(
-            "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS",
-            "",
-        ).lower() in {"1", "true", "yes", "on"}
-        self._bound_late_recovery_env = self._env_optional_bool(
-            "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY"
-        )
-        self._recover_late_max_ticks = self._env_optional_int(
-            "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS"
-        )
-        self._bound_late_recovery = bool(self._recover_late_max_ticks is not None)
-        if self._bound_late_recovery_env is not None:
-            self._bound_late_recovery = self._bound_late_recovery_env
-        if self._recover_late_events and self._bound_late_recovery and self._recover_late_max_ticks is None:
-            self._recover_late_max_ticks = self._generation_interval_ticks
         rehydrate_active_notes = self._env_optional_bool(
             "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"
         )
@@ -326,16 +311,6 @@ class PromptContinuationRealtimeService:
         except Exception:
             # Tracing must never affect realtime playback.
             return
-
-    @staticmethod
-    def _env_optional_int(name: str) -> int | None:
-        value = os.environ.get(name)
-        if value is None or str(value).strip() == "":
-            return None
-        try:
-            return max(0, int(value))
-        except ValueError:
-            return None
 
     @staticmethod
     def _env_optional_bool(name: str) -> bool | None:
@@ -813,9 +788,7 @@ class PromptContinuationRealtimeService:
         scheduled = 0
         skipped_duplicate = 0
         late_event_count = 0
-        recovered_late_event_count = 0
         dropped_past = 0
-        dropped_too_late_note_on = 0
         closed_late_active_note_off = 0
         skipped_pending_late_note_off = 0
         dropped_orphan_late_note_off = 0
@@ -848,6 +821,10 @@ class PromptContinuationRealtimeService:
             ),
         )
         late_event_count = sum(1 for event in usable_events if int(event.tick) < current_tick)
+        unheard_completed_note_offs = self._unheard_completed_note_off_occurrences(
+            usable_events,
+            current_tick=current_tick,
+        )
 
         rehydrated_events: list[MusicalEvent] = []
         rehydrated_metadata: dict[int, tuple[int, str]] = {}
@@ -885,49 +862,49 @@ class PromptContinuationRealtimeService:
                 if rehydrated is not None
                 else "future_event"
             )
+            # Expired history is never replayed. The pass above has already
+            # extracted any partial/open note that should still be sounding.
+            if (
+                event.event_type == EventType.NOTE_OFF
+                and (event_key, occurrence) in unheard_completed_note_offs
+            ):
+                dropped_past += 1
+                self._ensure_count(
+                    self._handled_model_event_counts,
+                    event_key,
+                    occurrence,
+                )
+                continue
             if event_tick < current_tick:
-                if not self._recover_late_events:
-                    if event.event_type == EventType.NOTE_OFF:
-                        model_key = self._model_event_key(event)
-                        if model_key in self._active_model_note_keys:
-                            if model_key in self._pending_late_note_off_keys:
-                                skipped_pending_late_note_off += 1
-                                self._ensure_count(
-                                    self._handled_model_event_counts,
-                                    event_key,
-                                    occurrence,
-                                )
-                                continue
-                            self._pending_late_note_off_keys.add(model_key)
-                            schedule_tick = current_tick
-                            event_to_schedule = self._clone_event_at_tick(event, current_tick)
-                            policy = "late_active_note_off"
-                            closed_late_active_note_off += 1
-                        else:
-                            dropped_past += 1
-                            dropped_orphan_late_note_off += 1
+                if event.event_type == EventType.NOTE_OFF:
+                    model_key = self._model_event_key(event)
+                    if model_key in self._active_model_note_keys:
+                        if model_key in self._pending_late_note_off_keys:
+                            skipped_pending_late_note_off += 1
                             self._ensure_count(
                                 self._handled_model_event_counts,
                                 event_key,
                                 occurrence,
                             )
                             continue
+                        self._pending_late_note_off_keys.add(model_key)
+                        schedule_tick = current_tick
+                        event_to_schedule = self._clone_event_at_tick(event, current_tick)
+                        policy = "late_active_note_off"
+                        closed_late_active_note_off += 1
                     else:
                         dropped_past += 1
+                        dropped_orphan_late_note_off += 1
                         self._ensure_count(
                             self._handled_model_event_counts,
                             event_key,
                             occurrence,
                         )
                         continue
-                elif self._would_drop_late_note_on(event, current_tick=current_tick):
-                    dropped_too_late_note_on += 1
+                else:
+                    dropped_past += 1
                     self._ensure_count(self._handled_model_event_counts, event_key, occurrence)
                     continue
-                else:
-                    schedule_tick = current_tick
-                    policy = "recovered_late_event"
-                    recovered_late_event_count += 1
 
             model_event = self._to_model_event(event_to_schedule, current_tick=current_tick)
             self._scheduler.schedule(model_event, schedule_tick)
@@ -946,9 +923,7 @@ class PromptContinuationRealtimeService:
         self._output.output_status(
             "ready",
             f"Scheduled {scheduled} playable accompaniment event(s); "
-            f"recovered {recovered_late_event_count} late event(s); "
             f"dropped {dropped_past} past event(s); "
-            f"dropped {dropped_too_late_note_on} too-late note_on event(s); "
             f"closed {closed_late_active_note_off} active note(s) from late note_off; "
             f"skipped {skipped_pending_late_note_off} pending late note_off event(s); "
             f"dropped {dropped_orphan_late_note_off} orphan late note_off event(s); "
@@ -964,13 +939,9 @@ class PromptContinuationRealtimeService:
             **input_tick_stats,
             scheduled_event_count=scheduled,
             late_event_count=late_event_count,
-            recovered_late_event_count=recovered_late_event_count,
             dropped_past=dropped_past,
-            dropped_too_late_note_on=dropped_too_late_note_on,
             rehydrated_note_count=rehydrated_note_count,
             rehydrate_active_notes=self._rehydrate_active_notes,
-            bound_late_recovery=self._bound_late_recovery,
-            recover_late_max_ticks=self._recover_late_max_ticks,
             skipped_duplicate=skipped_duplicate,
             placeholder_count=placeholder_count,
         )
@@ -1244,16 +1215,6 @@ class PromptContinuationRealtimeService:
         self._output.output_event(event, source=event.source)
         self._observe_model_output_event(event)
 
-    def _would_drop_late_note_on(self, event: MusicalEvent, *, current_tick: int) -> bool:
-        return (
-            self._bound_late_recovery
-            and self._recover_late_max_ticks is not None
-            and int(event.tick) < int(current_tick)
-            and int(current_tick) - int(event.tick) > self._recover_late_max_ticks
-            and event.event_type == EventType.NOTE_ON
-            and int(event.velocity) > 0
-        )
-
     @staticmethod
     def _event_key(event: MusicalEvent) -> EventKey:
         return (
@@ -1363,6 +1324,39 @@ class PromptContinuationRealtimeService:
             consumed_original_note_on_counts,
             rehydrated_metadata,
         )
+
+    def _unheard_completed_note_off_occurrences(
+        self,
+        events: list[MusicalEvent],
+        *,
+        current_tick: int,
+    ) -> set[tuple[EventKey, int]]:
+        """Find completed pair endings whose onset was not accepted for playback."""
+        active: dict[ModelNoteKey, list[tuple[EventKey, int]]] = {}
+        event_occurrences: Counter[EventKey] = Counter()
+        unheard_note_offs: set[tuple[EventKey, int]] = set()
+
+        for event in events:
+            event_key = self._event_key(event)
+            event_occurrences[event_key] += 1
+            occurrence = event_occurrences[event_key]
+            model_key = self._model_event_key(event)
+            if event.event_type == EventType.NOTE_ON and int(event.velocity) > 0:
+                active.setdefault(model_key, []).append((event_key, occurrence))
+                continue
+            if event.event_type != EventType.NOTE_OFF or not active.get(model_key):
+                continue
+
+            note_on_key, note_on_occurrence = active[model_key].pop(0)
+            if not active[model_key]:
+                active.pop(model_key, None)
+            if (
+                int(event.tick) <= int(current_tick)
+                and self._played_model_event_counts[note_on_key] < note_on_occurrence
+            ):
+                unheard_note_offs.add((event_key, occurrence))
+
+        return unheard_note_offs
 
     def _active_notes_at_current_tick(
         self,
