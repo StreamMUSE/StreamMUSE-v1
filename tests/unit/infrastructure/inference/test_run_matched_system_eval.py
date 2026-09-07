@@ -202,9 +202,6 @@ def test_server_environments_freeze_mode_specific_contracts(
     assert prompt_continuation["LEKAI_PROMPT_TOP_P"] == "0.98"
     assert prompt_continuation["LEKAI_PROMPT_TOP_K"] == "0"
     assert prompt_continuation["LEKAI_PROMPT_REPETITION_PENALTY"] == "1.0"
-    assert prompt_continuation[
-        "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS"
-    ] == "0"
 
 
 def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
@@ -340,7 +337,6 @@ def test_prompt_continuation_client_environment_threads_reset_provenance(
     assert env["LEKAI_CONTINUATION_EFFECTIVE_SEED"] == "7"
     assert env["LEKAI_PROMPT_SESSION_ID"] == "pc-session"
     assert env["LEKAI_PROMPT_SESSION_EPOCH"] == "2"
-    assert env["LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS"] == "0"
     assert env["LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"] == "1"
     assert v1_env["LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"] == "0"
 

@@ -18,20 +18,12 @@ The current validated behavior is:
   exactly by event SHA for the tested pieces.
 - Continuation uses the RT offline tokenizer/model layout, not the older
   StreamMUSE Lekai tokenizer.
-- Realtime audible MIDI now preserves recoverable late model events instead of
-  dropping most cross-beat notes.
+- Realtime audible MIDI restores only notes that are still sounding across the
+  current tick; fully expired events are dropped.
 - MIDI exports now write the configured time signature, so 2/4 pieces are not
   exported as 4/4.
 - Debug exports retain raw prompt + continuation history even when the audible
   realtime output drops late notes.
-
-Recent validation artifacts are local generated files and are intentionally not
-tracked by git:
-
-```text
-realtime_runs/0509_unified_recover_late_author_top50_topp098_tempclamp120/
-realtime_runs/0509_6217163_2-4_recover_late_comparison/
-```
 
 ## Runtime Flow
 
@@ -157,15 +149,10 @@ Playback readiness
   v
 Local audible scheduling
   |
-  | default:
-  |   pair note_on/note_off
-  |   drop notes fully in the past
-  |   clip sustaining notes to current_tick
-  |
-  | recover-late mode:
-  |   recover late events at current_tick
-  |   optional bounded policy can drop very old late note_on events
-  |   late note_off is allowed to close already-sounding notes
+  | pair note_on/note_off
+  | drop fully expired notes
+  | restore a partial/open note only while it should still sound
+  | allow a late note_off to close an already-sounding note
   v
 PlaybackScheduler -> Output sinks
 ```
@@ -175,14 +162,11 @@ Important timing distinction:
 ```text
 Standard realtime continuation:
   request returns one future generation segment
-  -> late recovery can safely reschedule that segment at current_tick
 
 Prompt-continuation:
   /playable returns full prompt + continuation history
-  -> unbounded late recovery would replay old history after slow prompt-model
-     inference, especially on small GPUs
-  -> strict paired scheduling, unbounded recovery, and bounded recovery are
-     separate switchable policies for A/B diagnosis
+  -> old history must not be replayed after slow prompt-model inference
+  -> only a note that should still be sounding may be restored
 ```
 
 ## Catch-Up Rule
@@ -305,59 +289,16 @@ There are three histories to keep separate:
 The important realtime policy is in
 `PromptContinuationRealtimeService._schedule_playable`.
 
-The client distinguishes partial-note recovery from generic late-event
-recovery:
-
-- Strict diagnostic mode: pair `note_on/note_off`, drop events whose
-  original ticks are already in the past.
-- Partial-note recovery: enabled by default. If a `note_on` arrives after its
+The client pairs `note_on/note_off` events and drops fully expired notes.
+Partial-note recovery is enabled by default: if a `note_on` arrives after its
   logical onset while the note is still open or its `note_off` is in the
   future, schedule a replacement onset at the current tick. A later
-  `note_off` still closes the sounding note. Fully expired notes are not
-  replayed.
-- Unbounded recover-late mode: schedule returned events event-by-event. If an
-  event is late, schedule it at the current tick.
-- Bounded recover-late mode: same event-by-event recovery, but drop late
-  `note_on` events outside a configured recovery window. Late `note_off` events
-  are still allowed so already-sounding notes can be closed.
-
-Recover-late mode is enabled by:
-
-```bash
-export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=1
-```
-
-This switch alone is intentionally unbounded. To test the bounded policy, enable
-it separately:
-
-```bash
-export LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=1
-```
-
-If bounded recovery is enabled and no max is provided, the client uses
-`generation_interval_ticks` as the cap. To set the cap explicitly:
-
-```bash
-export LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS=4
-```
-
-Setting `LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS` also opts into the
-bounded policy unless `LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY=0` is set
-explicitly. Raw debug history is not affected by either scheduling policy.
-
-Partial-note recovery is independent of both generic late-recovery switches.
-It can be disabled explicitly for strict diagnostic runs:
+  `note_off` closes the sounding note. A late `note_off` may also close a note
+  that is already active. Partial-note recovery can be disabled for strict
+  diagnostic runs:
 
 ```bash
 export LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=0
-```
-
-The normal realtime policy leaves generic late recovery disabled while keeping
-partial-note recovery enabled:
-
-```bash
-LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS=0
-LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES=1
 ```
 
 ## Main Files
@@ -385,7 +326,7 @@ Small HTTP client used by the realtime service for the endpoints above.
 
 Realtime client-side service. It handles user input, sends prompt/append requests,
 polls backend status, fetches playable accompaniment, and schedules audible model
-events. Recent changes here added trace logging and recover-late scheduling.
+events. Recent changes here added trace logging and partial/open-note restoration.
 
 `src/streammuse/infrastructure/inference/lekai_prompt_continuation/backend.py`
 
@@ -573,9 +514,6 @@ RT_TEMPERATURE=0.8
 RT_TOP_K=50
 RT_TOP_P=0.98
 RT_REPETITION_PENALTY=1.2
-RECOVER_LATE_EVENTS=1
-BOUND_LATE_RECOVERY=1
-RECOVER_LATE_MAX_TICKS=4
 ```
 
 `PROMPT_BEATS=auto` means:
@@ -621,9 +559,6 @@ RT_TEMPERATURE=0.8 \
 RT_TOP_K=50 \
 RT_TOP_P=0.98 \
 RT_REPETITION_PENALTY=1.2 \
-RECOVER_LATE_EVENTS=1 \
-BOUND_LATE_RECOVERY=1 \
-RECOVER_LATE_MAX_TICKS=4 \
  scripts/run_cli_prompt_alignment_batch.sh
 ```
 
@@ -685,9 +620,8 @@ The current branch includes these key changes:
 - Added repeated status/playable polling so the client can continue fetching
   after more melody arrives.
 - Preserved note pairs in MIDI output and closed same-pitch retriggers.
-- Added recover-late event scheduling for prompt-continuation audible playback.
-- Added switchable bounded late recovery for dropping very old audible `note_on`
-  events while preserving raw history.
+- Restored partial/open notes that should still be sounding while dropping
+  fully expired notes.
 - Added a switchable prompt-extension engine variant where the prompt model can
   keep its generated extra beat before continuation starts.
 - Added correct MIDI time-signature export through `beats_per_bar`.
@@ -698,12 +632,8 @@ The current branch includes these key changes:
 
 - Prompt alignment can be exact, but continuation output is stochastic unless
   seeds/sampling are fixed and the same runtime path is used.
-- Real frontend behavior still needs a clear playback policy: when to start
-  sounding, how much late material to recover, and how to handle user timing
-  jitter.
+- Real frontend behavior still needs validation for startup timing and user
+  timing jitter.
 - `midi_file` tests simulate user input under controlled timing. Real MIDI-device
   latency should still be tested before claiming live performance reliability.
-- `BOUND_LATE_RECOVERY` and `RECOVER_LATE_MAX_TICKS` are policy knobs, not a
-  model fix. Tune them based on listening tests and keep unbounded recovery as
-  an A/B condition.
 - Generated outputs under `realtime_runs/` are not tracked by git.

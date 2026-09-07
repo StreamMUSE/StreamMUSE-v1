@@ -53,7 +53,6 @@ def _runtime_env(config: ReplayConfig, *, stage2_log_dir: Path) -> Iterator[None
         "LEKAI_DEVICE": config.device,
         "LEKAI_PROMPT_DEVICE": config.device,
         "LEKAI_PROMPT_CONTINUATION_ENGINE": "standard",
-        "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
         "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
         "LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS": "0",
         "LEKAI_RT_LOG_DIR": str(stage2_log_dir),

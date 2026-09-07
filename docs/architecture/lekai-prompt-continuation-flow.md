@@ -76,14 +76,10 @@ PromptContinuationRealtimeService
   v
 Local scheduling policy
   |
-  | strict:
-  |   pair notes, drop fully-past notes, clip sustaining notes
-  |
-  | recover_late:
-  |   recover late events at current_tick
-  |
-  | bounded recover_late:
-  |   drop note_on older than max recovery window
+  | pair note_on/note_off events
+  | drop fully expired notes
+  | restore a partial/open note only while it should still sound
+  | allow a late note_off to close an already-sounding note
   v
 OutputSink
 ```
@@ -186,7 +182,7 @@ pipeline to produce enough history plus lookahead.
 | Response shape | one generated segment | full accompaniment history |
 | Startup barrier | no prompt-stage barrier | must finish prompt stage and catch-up |
 | Stale request handling | latest-only queue collapses stale requests | scheduler serializes prompt then catch-up |
-| Late scheduling | can recover late returned segment | strict/recover/bounded policies needed because full history is returned |
+| Late scheduling | handles one returned segment | drops expired history and restores only a note that should still be sounding |
 | Main risk | late segment | first playable history is already in the past |
 
 ## Architecture-Level Hypotheses For "Too Late"
@@ -223,9 +219,8 @@ These are architecture hypotheses, not confirmed server measurements yet:
    to schedule.
 
 7. Scheduling policy changes audible result:
-   strict mode may drop old events; unbounded recovery may replay too much old
-   history at the current tick; bounded recovery may drop too-old note_on events.
-   This is why the recovery policies are switchable.
+   fully expired notes are dropped, while a partial/open note may be restored at
+   the current tick so its remaining duration can still be heard.
 
 ## What To Measure When Server Is Reachable
 
@@ -233,9 +228,7 @@ For the same MIDI, BPM, prompt length, and generation interval, run:
 
 ```text
 standard
-prompt_continuation standard engine + strict scheduling
-prompt_continuation standard engine + unbounded recover_late
-prompt_continuation standard engine + bounded recover_late
+prompt_continuation standard engine
 prompt_continuation prompt_extension engine
 ```
 
@@ -247,8 +240,8 @@ Collect:
 - number of continuation calls before `is_playback_ready`;
 - time from prompt boundary to first `/playable`;
 - current client tick when `/playable` is scheduled;
-- count of dropped past notes, recovered late events, and bounded dropped note_on
-  events;
+- count of dropped expired notes, restored partial/open notes, and late
+  `note_off` events that close active notes;
 - first audible model event tick in `combined.mid`;
 - raw model history in `prompt_continuation_raw_history.mid/json`.
 

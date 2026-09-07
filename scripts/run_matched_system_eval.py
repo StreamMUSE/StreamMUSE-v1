@@ -462,9 +462,6 @@ def build_server_environment(
                 "LEKAI_PROMPT_CONTINUATION_REQUIRE_REAL_MODELS": "1",
                 "LEKAI_PROMPT_CONTINUATION_ENGINE": "standard",
                 "LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP": "1",
-                "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
-                "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY": "0",
-                "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS": "0",
                 "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
                 "LEKAI_PROMPT_SELECTION_MODE": prompt_selection_mode,
                 "LEKAI_PROMPT_BATCH_CANDIDATES": str(effective_candidates),
@@ -844,9 +841,6 @@ def build_client_environment(
     env = _controlled_environment()
     env.update(
         {
-            "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
-            "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY": "0",
-            "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS": "0",
             "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": (
                 "1"
                 if system_id == "streammuse_v2_prompt_continuation"
@@ -1359,7 +1353,6 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             "window_end_tick_exclusive": WINDOW_END_TICK,
             "generation_interval_ticks": GENERATION_INTERVAL_TICKS,
             "generation_length_frames": GENERATION_LENGTH_FRAMES,
-            "late_recovery": False,
             "midi_file_source_tick_mode_by_system": {
                 system_id: bool(
                     midi_file_source_tick_mode

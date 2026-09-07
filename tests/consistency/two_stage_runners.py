@@ -79,7 +79,6 @@ def run_two_stage_realtime(
     env.update(
         {
             "LEKAI_PROMPT_CONTINUATION_TRACE_PATH": str(trace_path),
-            "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
             "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
             "LEKAI_PROMPT_CONTINUATION_STRICT_REPRESENTATION_LOOP": "1",
         }
@@ -208,7 +207,6 @@ def counter_summary(
 def count_dropped_and_clipped(trace_path: Path) -> dict[str, int]:
     dropped_past = 0
     clipped = 0
-    dropped_too_late = 0
     skipped_unpaired = 0
     scheduled_events = 0
     schedule_rows = 0
@@ -223,13 +221,11 @@ def count_dropped_and_clipped(trace_path: Path) -> dict[str, int]:
         schedule_rows += 1
         dropped_past += int(row.get("dropped_past", 0) or 0)
         clipped += int(row.get("clipped_sustains", 0) or 0)
-        dropped_too_late += int(row.get("dropped_too_late_note_on", 0) or 0)
         skipped_unpaired += int(row.get("skipped_unpaired", 0) or 0)
         scheduled_events += int(row.get("scheduled_event_count", 0) or 0)
     return {
         "dropped_past": dropped_past,
         "clipped_sustains": clipped,
-        "dropped_too_late_note_on": dropped_too_late,
         "skipped_unpaired": skipped_unpaired,
         "scheduled_events": scheduled_events,
         "schedule_rows": schedule_rows,

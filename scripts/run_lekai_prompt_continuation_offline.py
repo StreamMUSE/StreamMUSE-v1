@@ -189,7 +189,6 @@ def apply_runtime_env(args: argparse.Namespace, *, stage2_log_dir: Path) -> dict
     updates["LEKAI_RT_REPETITION_PENALTY"] = str(float(args.rt_repetition_penalty))
     updates["LEKAI_RT_SEED"] = str(int(args.rt_seed))
     updates["LEKAI_PROMPT_CONTINUATION_ENGINE"] = "standard"
-    updates["LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS"] = "0"
     updates["LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES"] = "0"
     updates["LEKAI_RT_LOG_DIR"] = str(stage2_log_dir)
     if args.require_real_models and not args.allow_fallback:

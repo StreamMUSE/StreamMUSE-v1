@@ -83,7 +83,6 @@ generation_interval_ticks = 4
 generation_length_frames = 4
 prompt_context_beats = 32
 history_max_ticks = 128
-late recovery = off
 active-note rehydration = off
 strict representation loop = on
 ```
