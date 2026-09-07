@@ -139,6 +139,8 @@ def test_default_seed_contract_is_three_trials(matched_runner) -> None:
     assert args.time_signature_index == 0
     assert args.prompt_selection_mode == "rule_s"
     assert args.prompt_batch_candidates == 5
+    assert args.continuation_tonal_constraint == 1
+    assert args.continuation_empty_token_guard == 1
 
 
 @pytest.mark.parametrize("mode", ["rule_s", "rule_s_v3", "rule_s_if_else"])
@@ -197,6 +199,8 @@ def test_server_environments_freeze_mode_specific_contracts(
     assert prompt_continuation["LEKAI_PROMPT_TIME_SIGNATURE_INDEX"] == "4"
     assert prompt_continuation["LEKAI_PROMPT_SELECTION_MODE"] == "rule_s"
     assert prompt_continuation["LEKAI_PROMPT_BATCH_CANDIDATES"] == "5"
+    assert prompt_continuation["LEKAI_CONTINUATION_TONAL_CONSTRAINT"] == "1"
+    assert prompt_continuation["LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD"] == "1"
     assert prompt_continuation["LEKAI_PROMPT_TEMPERATURE"] == "1.05"
     assert prompt_continuation["LEKAI_PROMPT_TOP_P"] == "0.98"
     assert prompt_continuation["LEKAI_PROMPT_TOP_K"] == "0"
@@ -257,6 +261,8 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         "continuation_top_p": 0.98,
         "continuation_top_k": 0,
         "continuation_repetition_penalty": 1.0,
+        "tonal_constraint_enabled": True,
+        "empty_token_guard_enabled": True,
         "generation_interval_ticks": 4,
         "generation_length_frames": 4,
         "prompt_length_ticks": 32,
@@ -277,6 +283,54 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
     )
 
     assert errors == []
+
+
+def test_single_prompt_selection_can_disable_continuation_constraints(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    args = script.parse_args(
+        [
+            "--cohort-manifest",
+            "cohort.json",
+            "--output-root",
+            "output",
+            "--prompt-checkpoint",
+            "prompt.safetensors",
+            "--continuation-checkpoint",
+            "continuation.safetensors",
+            "--prompt-selection-mode",
+            "single",
+            "--prompt-batch-candidates",
+            "1",
+            "--continuation-tonal-constraint",
+            "0",
+            "--continuation-empty-token-guard",
+            "0",
+        ]
+    )
+    contract = script.evaluation_contract_from_args(args)
+    prompt = tmp_path / "prompt.safetensors"
+    continuation = tmp_path / "continuation.safetensors"
+    prompt.write_bytes(b"p")
+    continuation.write_bytes(b"c")
+
+    env = script.build_server_environment(
+        "streammuse_v2_prompt_continuation",
+        port=18002,
+        gpu="2",
+        server_dir=tmp_path / "prompt_continuation",
+        code={"git_commit": "b" * 40},
+        prompt_checkpoint=_identity(prompt),
+        continuation_checkpoint=_identity(continuation),
+        time_signature_index=0,
+        prompt_selection_mode="single",
+        prompt_batch_candidates=1,
+        contract=contract,
+    )
+
+    assert env["LEKAI_CONTINUATION_TONAL_CONSTRAINT"] == "0"
+    assert env["LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD"] == "0"
 
 
 def test_reset_trial_uses_mode_specific_atomic_endpoint(

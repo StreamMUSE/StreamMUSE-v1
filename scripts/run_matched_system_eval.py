@@ -106,6 +106,8 @@ class EvaluationContract:
     generation_length_frames: int
     prompt_sampling: SamplingConfig
     continuation_sampling: SamplingConfig
+    continuation_tonal_constraint: bool = True
+    continuation_empty_token_guard: bool = True
 
     @property
     def prompt_length_ticks(self) -> int:
@@ -182,6 +184,8 @@ def evaluation_contract_from_args(args: argparse.Namespace) -> EvaluationContrac
             top_k=int(args.continuation_top_k),
             repetition_penalty=float(args.continuation_repetition_penalty),
         ),
+        continuation_tonal_constraint=bool(args.continuation_tonal_constraint),
+        continuation_empty_token_guard=bool(args.continuation_empty_token_guard),
     )
     contract.validate()
     return contract
@@ -246,6 +250,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--continuation-repetition-penalty",
         type=float,
         default=SAMPLING["repetition_penalty"],
+    )
+    parser.add_argument(
+        "--continuation-tonal-constraint",
+        type=int,
+        choices=(0, 1),
+        default=1,
+    )
+    parser.add_argument(
+        "--continuation-empty-token-guard",
+        type=int,
+        choices=(0, 1),
+        default=1,
     )
     parser.add_argument(
         "--prompt-selection-mode",
@@ -616,6 +632,12 @@ def build_server_environment(
                 "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY": "0",
                 "LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_MAX_TICKS": "0",
                 "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0",
+                "LEKAI_CONTINUATION_TONAL_CONSTRAINT": (
+                    "1" if contract.continuation_tonal_constraint else "0"
+                ),
+                "LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD": (
+                    "1" if contract.continuation_empty_token_guard else "0"
+                ),
                 "LEKAI_PROMPT_SELECTION_MODE": prompt_selection_mode,
                 "LEKAI_PROMPT_BATCH_CANDIDATES": str(effective_candidates),
                 "LEKAI_PROMPT_SEED": "0",
@@ -754,6 +776,14 @@ def runtime_contract_errors(
                 f"is {runtime.get('prompt_batch_candidate_count')!r}, "
                 f"expected {effective_candidates}"
             )
+        for key, expected in {
+            "tonal_constraint_enabled": contract.continuation_tonal_constraint,
+            "empty_token_guard_enabled": contract.continuation_empty_token_guard,
+        }.items():
+            if runtime.get(key) is not expected:
+                errors.append(
+                    f"runtime {key}={runtime.get(key)!r}, expected {expected!r}"
+                )
         prompt_expected = {
             f"prompt_{key}": value
             for key, value in contract.prompt_sampling.as_dict().items()
@@ -1282,6 +1312,10 @@ def _contract_record(
         },
         "prompt_sampling": contract.prompt_sampling.as_dict(),
         "continuation_sampling": contract.continuation_sampling.as_dict(),
+        "continuation_constraints": {
+            "tonal_constraint_enabled": contract.continuation_tonal_constraint,
+            "empty_token_guard_enabled": contract.continuation_empty_token_guard,
+        },
     }
 
 
@@ -1701,6 +1735,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
             },
             "prompt_sampling": contract.prompt_sampling.as_dict(),
             "continuation_sampling": contract.continuation_sampling.as_dict(),
+            "continuation_constraints": {
+                "tonal_constraint_enabled": contract.continuation_tonal_constraint,
+                "empty_token_guard_enabled": contract.continuation_empty_token_guard,
+            },
         },
         "code_identity": code,
         "checkpoint_identities": {
