@@ -369,6 +369,9 @@ def test_nonempty_beat_round_trips_through_real_continuation_codec():
 
 
 def _install_interleaved_test_runtime(backend, monkeypatch):
+    # These legacy tests exercise the unconstrained tokenizer/sampling contract.
+    monkeypatch.setenv("LEKAI_CONTINUATION_TONAL_CONSTRAINT", "0")
+    monkeypatch.setenv("LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD", "0")
     class _DummyAdapter:
         model = object()
         tokenizer = PianoMusicTokenizer()
@@ -404,6 +407,56 @@ def _install_interleaved_test_runtime(backend, monkeypatch):
         ),
     )
     return decoded_beats
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_empty_guard_counts_across_requests_and_expires(monkeypatch, enabled):
+    backend = LekaiHttpBackend()
+    _install_interleaved_test_runtime(backend, monkeypatch)
+    monkeypatch.setenv("LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD", str(int(enabled)))
+    monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
+    flags = []
+
+    def generate(prompt_tokens, **kwargs):
+        blocked = kwargs.get("block_empty_token", False)
+        flags.append(blocked)
+        return [170] if blocked else [169, 170]
+
+    monkeypatch.setattr(backend, "_generate_part1_tokens_from_prompt", generate)
+    traces = []
+    for tick in range(32, 84, 4):
+        backend._generate_with_interleaved_prompt(
+            generation_start_tick=tick, generation_interval_ticks=4, generation_length_frames=4,
+        )
+        traces.extend(backend._current_generation_trace["empty_token_guard"])
+    assert flags == ([False] * 4 + [True] * 8 + [False] if enabled else [False] * 13)
+    assert len(traces) == (13 if enabled else 0)
+    if enabled:
+        assert traces[3]["triggered_for_next_beat"]
+        assert traces[11]["remaining_after"] == 0
+
+
+def test_unknown_key_skips_tonal_mask_but_preserves_empty_guard(monkeypatch):
+    backend = LekaiHttpBackend()
+    _install_interleaved_test_runtime(backend, monkeypatch)
+    monkeypatch.setenv("LEKAI_CONTINUATION_TONAL_CONSTRAINT", "1")
+    monkeypatch.setenv("LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD", "1")
+    monkeypatch.setattr(backend._logger, "log_generation", lambda **kwargs: None)
+    backend.inject_history([_note_on(60, 0), _note_on(62, 4)], [], 32)
+    calls = []
+
+    def generate(prompt_tokens, **kwargs):
+        calls.append(kwargs)
+        assert "tonal_pitch_classes" not in kwargs
+        return [170] if kwargs.get("block_empty_token") else [169, 170]
+
+    monkeypatch.setattr(backend, "_generate_part1_tokens_from_prompt", generate)
+    for tick in range(32, 84, 4):
+        backend._generate_with_interleaved_prompt(tick, 2, 4)
+        decision = backend._current_generation_trace["tonal_decisions"][0]
+        assert decision["key_state"] == "NaN"
+        assert decision["allowed_pitch_classes"] is None
+    assert [c.get("block_empty_token", False) for c in calls] == [False] * 4 + [True] * 8 + [False]
 
 
 def test_interleaved_generation_uses_session_sampling_overrides(monkeypatch):

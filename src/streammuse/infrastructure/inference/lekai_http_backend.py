@@ -23,6 +23,8 @@ from streammuse.infrastructure.inference.runtime_device import (
     resolve_dtype,
 )
 from streammuse.infrastructure.inference.generation_logger import GenerationLogger
+from streammuse.infrastructure.inference.tonal_constraint import TwoBarKeyTracker, TonalBeatMask
+from streammuse.infrastructure.inference.empty_token_guard import EmptyTokenGuard
 
 
 EventPayload = Dict[str, int | str]
@@ -176,9 +178,10 @@ class LekaiHttpBackend:
         self._current_generation_trace: Dict[str, Any] = {}
         self._checkpoint_sha256_cache: Dict[tuple[str, int, int], str] = {}
         self._melody_history: List[EventPayload] = []
-        # Full session input is retained only for the cumulative audit digest;
-        # model prompt history may be trimmed independently.
+        # Full input supports the audit digest AND cumulative key estimation;
+        # the model's token context may be trimmed independently.
         self._input_digest_history: List[EventPayload] = []
+        self._tonal_input_snapshot: Optional[List[EventPayload]] = None
         self._accompaniment_history: List[EventPayload] = []
         # Preserve the exact generated accompaniment tokens across HTTP requests.
         # Event round-tripping cannot distinguish a model-generated BAR from an empty beat.
@@ -198,6 +201,8 @@ class LekaiHttpBackend:
         self._session_top_p: Optional[float] = None
         self._session_top_k: Optional[int] = None
         self._session_repetition_penalty: Optional[float] = None
+        self._tonal_tracker = TwoBarKeyTracker()
+        self._empty_token_guard = EmptyTokenGuard()
 
         # Model components (Phase 3: real model integration)
         self._model_adapter = None
@@ -636,6 +641,8 @@ class LekaiHttpBackend:
             ),
             "max_prompt_ticks": self._env_positive_int("LEKAI_MAX_PROMPT_TICKS"),
             "time_signature_index": int(os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4")),
+            "tonal_constraint_enabled": self._runtime_bool("LEKAI_CONTINUATION_TONAL_CONSTRAINT", True),
+            "empty_token_guard_enabled": self._runtime_bool("LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD", True),
             "sample_seed": self._effective_seed,
             "session_id": self._session_id,
             "session_epoch": self._session_epoch,
@@ -663,6 +670,8 @@ class LekaiHttpBackend:
                     self._accompaniment_token_history = {}
                     self._accompaniment_bar_token_history = {}
                     self._injection_length_ticks = 0
+                    self._tonal_tracker.reset()
+                    self._empty_token_guard.reset()
                     self._active_pitches = set()
                     self._request_bpm = None
                     self.clear_session_generation_config()
@@ -844,6 +853,8 @@ class LekaiHttpBackend:
         top_k: int,
         top_p: float,
         repetition_penalty: float,
+        tonal_pitch_classes: Optional[Set[int]] = None,
+        block_empty_token: bool = False,
     ) -> List[int]:
         assert self._model_adapter is not None
         from streammuse.infrastructure.inference.lekai_model.generation_utils import sample_token
@@ -858,15 +869,29 @@ class LekaiHttpBackend:
         generated = prompt_tokens.unsqueeze(0).to(device)
         raw_tokens: List[int] = []
         past_key_values = None
+        tonal_mask = TonalBeatMask(tonal_pitch_classes) if tonal_pitch_classes is not None else None
 
         with self._model_generation_lock, torch.no_grad():
-            for _ in range(100):
+            for step in range(100):
                 outputs = model(
                     input_ids=generated[:, -1:] if past_key_values is not None else generated,
                     past_key_values=past_key_values,
                     use_cache=use_cache,
                 )
                 logits = outputs.logits[:, -1, :]
+                if tonal_mask is not None:
+                    logits = tonal_mask.apply(logits, step)
+                if block_empty_token:
+                    logits = logits.clone()
+                    logits[:, LEKAI_EMPTY_TOKEN] = -float("inf")
+                    logits = logits.masked_fill(~torch.isfinite(logits), -float("inf"))
+                    # An invalid all-masked distribution may exit with ACC_END;
+                    # never restore EMPTY, force an onset, or relax the key.
+                    invalid = ~torch.isfinite(logits).any(dim=-1)
+                    logits[:, LEKAI_ACC_END_TOKEN] = torch.where(
+                        invalid, torch.zeros_like(logits[:, LEKAI_ACC_END_TOKEN]),
+                        logits[:, LEKAI_ACC_END_TOKEN],
+                    )
                 past_key_values = outputs.past_key_values
 
                 next_token = sample_token(
@@ -880,6 +905,8 @@ class LekaiHttpBackend:
                 )
 
                 token_val = int(next_token.item())
+                if tonal_mask is not None:
+                    tonal_mask.accept(token_val)
                 generated = torch.cat([generated, next_token], dim=1)
                 raw_tokens.append(token_val)
 
@@ -1070,6 +1097,8 @@ class LekaiHttpBackend:
             )
         )
         beat_diagnostics: List[Dict[str, Any]] = []
+        tonal_decisions: List[Dict[str, Any]] = []
+        empty_token_guard_trace: List[Dict[str, Any]] = []
         last_prompt_tokens: List[int] = []
 
         sampling = self._sampling_config()
@@ -1084,12 +1113,31 @@ class LekaiHttpBackend:
 
             prompt_tokens, part0_tokens = build_standard_offline_prompt(target_beat)
             last_prompt_tokens = [int(token) for token in prompt_tokens.tolist()]
+            tonal_kwargs = {}
+            guard_enabled = self._runtime_bool("LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD", True)
+            if guard_enabled:
+                if self._empty_token_guard.before_beat(beat_start_tick):
+                    tonal_kwargs["block_empty_token"] = True
+            else:
+                self._empty_token_guard.reset()
+            allowed_pitch_classes = None
+            if self._runtime_bool("LEKAI_CONTINUATION_TONAL_CONSTRAINT", True):
+                decision = self._tonal_tracker.update(
+                    self._tonal_input_snapshot if self._tonal_input_snapshot is not None
+                    else self._input_digest_history,
+                    beat_start_tick, measure_beats,
+                )
+                if decision["constraint_active"]:
+                    allowed_pitch_classes = set(decision["allowed_pitch_classes"])
+                    tonal_kwargs["tonal_pitch_classes"] = allowed_pitch_classes
+                tonal_decisions.append({"generation_start_tick": beat_start_tick, **decision})
             raw_generated_tokens = self._generate_part1_tokens_from_prompt(
                 prompt_tokens,
                 temperature=rt_temperature,
                 top_k=rt_top_k,
                 top_p=rt_top_p,
                 repetition_penalty=rt_repetition_penalty,
+                **tonal_kwargs,
             )
             playable_beat_tokens = self._playable_part1_tokens(raw_generated_tokens)
             raw_response_tokens.extend(int(token) for token in raw_generated_tokens)
@@ -1102,6 +1150,10 @@ class LekaiHttpBackend:
                 }
             )
             beat_pianoroll = self._decode_acc_beat_tokens(playable_beat_tokens)
+            if allowed_pitch_classes is not None:
+                forbidden = [i for i in range(88) if (i + 21) % 12 not in allowed_pitch_classes]
+                if np.any(beat_pianoroll[:, forbidden, :]):
+                    raise RuntimeError("Continuation tonal mask produced an out-of-key note")
             pianoroll_nonzero = int(np.count_nonzero(beat_pianoroll))
 
             expected_shape = (2, 88, TIMESTEPS_PER_BEAT)
@@ -1113,7 +1165,7 @@ class LekaiHttpBackend:
                     f"(expected={expected_shape}, got={got_shape}, "
                     f"start_tick={generation_start_tick}, gen_len={generation_length_frames})"
                 )
-                if got_time_axis == 0 and TIMESTEPS_PER_BEAT > 0:
+                if got_time_axis == 0 and TIMESTEPS_PER_BEAT > 0 and allowed_pitch_classes is None:
                     print("[LekaiHttpBackend] Recoverable mismatch detected; fallback to rule-based generation")
                     return self._generate_rule_based(
                         generation_start_tick=generation_start_tick,
@@ -1148,6 +1200,10 @@ class LekaiHttpBackend:
                 normalized_beat_events.append(payload)
 
             generated_events.extend(normalized_beat_events)
+            if guard_enabled:
+                empty_token_guard_trace.append(self._empty_token_guard.observe(
+                    beat_start_tick, raw_generated_tokens,
+                ))
             accompaniment_context_events.extend(normalized_beat_events)
             self._accompaniment_token_history[target_beat] = list(playable_beat_tokens)
 
@@ -1186,6 +1242,8 @@ class LekaiHttpBackend:
         )
         self._current_generation_trace = {
             "raw_tokens": raw_response_tokens,
+            "tonal_decisions": tonal_decisions,
+            "empty_token_guard": empty_token_guard_trace,
             "structural_tokens": structural_tokens,
             "token_decode_beats": token_decode_beats,
             "token_decode_initial_active_pitches": token_decode_initial_active_pitches,
@@ -1219,6 +1277,8 @@ class LekaiHttpBackend:
             bpm=self._request_bpm,
             notes=f"context_start_tick={context_start_tick}, current_beat={current_beat}",
             diagnostics={
+                **({"tonal_decisions": tonal_decisions} if tonal_decisions else {}),
+                **({"empty_token_guard": empty_token_guard_trace} if empty_token_guard_trace else {}),
                 "context_start_tick": int(context_start_tick),
                 "current_beat": int(current_beat),
                 "start_beat": int(start_beat),
@@ -1261,18 +1321,24 @@ class LekaiHttpBackend:
             input_increment = [dict(event) for event in melody_events]
             cumulative_input = [dict(event) for event in self._input_digest_history] + input_increment
             self._current_generation_trace = {}
-            accompaniment, timings = self._generate_locked(
-                melody_events=melody_events,
-                generation_start_tick=generation_start_tick,
-                generation_length_frames=generation_length_frames,
-                generation_interval_ticks=generation_interval_ticks,
-                prompt_length_ticks=prompt_length_ticks,
-                inference_mode=inference_mode,
-                model_name=model_name,
-                checkpoint_path=checkpoint_path,
-                bpm=bpm,
-                input_file=input_file,
-            )
+            # Include this request's new events without double-counting them
+            # or committing the audit history before generation succeeds.
+            self._tonal_input_snapshot = cumulative_input
+            try:
+                accompaniment, timings = self._generate_locked(
+                    melody_events=melody_events,
+                    generation_start_tick=generation_start_tick,
+                    generation_length_frames=generation_length_frames,
+                    generation_interval_ticks=generation_interval_ticks,
+                    prompt_length_ticks=prompt_length_ticks,
+                    inference_mode=inference_mode,
+                    model_name=model_name,
+                    checkpoint_path=checkpoint_path,
+                    bpm=bpm,
+                    input_file=input_file,
+                )
+            finally:
+                self._tonal_input_snapshot = None
             self._input_digest_history.extend(input_increment)
             trace = dict(self._current_generation_trace)
             raw_tokens = [int(token) for token in trace.get("raw_tokens", [])]
@@ -1310,6 +1376,8 @@ class LekaiHttpBackend:
                 part0_roll_bytes_sha256 = None
                 part0_roll_digest = None
             metadata: Dict[str, Any] = {
+                "tonal_decisions": copy.deepcopy(trace.get("tonal_decisions", [])),
+                "empty_token_guard": copy.deepcopy(trace.get("empty_token_guard", [])),
                 "request_id": effective_request_id,
                 "session_id": self._session_id,
                 "session_epoch": self._session_epoch,
@@ -1681,6 +1749,8 @@ class LekaiHttpBackend:
         self._accompaniment_token_history = {}
         self._accompaniment_bar_token_history = {}
         self._injection_length_ticks = int(injection_length_ticks)
+        self._tonal_tracker.reset()
+        self._empty_token_guard.reset()
         # Reset active pitches on injection
         self._active_pitches = set()
 
@@ -1708,6 +1778,8 @@ class LekaiHttpBackend:
         self._accompaniment_bar_token_history = {}
         self._injection_length_ticks = 0
         self._active_pitches = set()
+        self._tonal_tracker.reset()
+        self._empty_token_guard.reset()
         self._request_bpm = None
         with self._generation_metadata_lock:
             self._generation_metadata = {}
