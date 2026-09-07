@@ -142,7 +142,7 @@ def test_default_seed_contract_is_three_trials(matched_runner) -> None:
     assert args.midi_file_source_tick_mode is False
 
 
-@pytest.mark.parametrize("mode", ["rule_s", "rule_s_v3"])
+@pytest.mark.parametrize("mode", ["rule_s", "rule_s_v3", "rule_s_if_else"])
 def test_ranked_prompt_modes_require_at_least_two_candidates(
     matched_runner, mode: str
 ) -> None:
@@ -247,6 +247,20 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         "prompt_checkpoint_path": prompt_identity["path"],
         "prompt_selection_mode": "single",
         "prompt_batch_candidate_count": 1,
+        "prompt_temperature": 1.05,
+        "prompt_top_p": 0.98,
+        "prompt_top_k": 0,
+        "prompt_repetition_penalty": 1.0,
+        "continuation_temperature": 1.05,
+        "continuation_top_p": 0.98,
+        "continuation_top_k": 0,
+        "continuation_repetition_penalty": 1.0,
+        "generation_interval_ticks": 4,
+        "generation_length_frames": 4,
+        "prompt_length_ticks": 32,
+        "prompt_effective_bpm": script.BPM,
+        # Cleared when the client session ends; this is not a contract failure.
+        "continuation_effective_bpm": None,
         **script.SAMPLING,
     }
     errors = script.runtime_contract_errors(
@@ -257,6 +271,7 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         continuation_checkpoint=continuation_identity,
         time_signature_index=4,
         prompt_selection_mode="single",
+        require_session_runtime_contract=True,
     )
 
     assert errors == []
@@ -348,6 +363,8 @@ def _write_session(script, root: Path, *, mode: str) -> Path:
         session / "session_config.json",
         {
             "tempo_bpm": 120.0,
+            "model_condition_bpm": 120,
+            "effective_model_bpm": 120,
             "ticks_per_beat": 4,
             "beats_per_bar": 4,
             "input_type": "midi_file",
@@ -357,6 +374,14 @@ def _write_session(script, root: Path, *, mode: str) -> Path:
             "generation_interval_ticks": 4,
             "generation_length_frames": 4,
             "count_in_beats": 0,
+            "prompt_length_ticks": 32,
+            "prompt_selection_mode": "rule_s",
+            "prompt_batch_candidates": 5,
+            "temperature": 1.05,
+            "top_p": 0.98,
+            "top_k": 0,
+            "repetition_penalty": 1.0,
+            "midi_file_source_tick_mode": False,
         },
     )
     condition = "standard" if mode == "standard" else "prompt_continuation"
@@ -558,6 +583,7 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     assert result["evaluation_contract"]["streammuse_v2_prompt"] == {
         "selection_mode": "rule_s",
         "candidate_count": 5,
+        "prompt_beats": 8,
         "prompt_length_ticks": 32,
     }
     assert result["evaluation_contract"]["midi_file_source_tick_mode_by_system"] == {
@@ -573,7 +599,8 @@ def test_dry_run_builds_matched_piece_seed_system_matrix(
     for row in result["trials"]:
         assert row["checkpoint_conditioning"] == checkpoint_conditioning
         command = row["client_command"]
-        assert command[command.index("--tempo") + 1] == "120"
+        assert command[command.index("--tempo") + 1] == "120.0"
+        assert command[command.index("--model-condition-bpm") + 1] == "120"
         assert command[command.index("--ticks-per-beat") + 1] == "4"
         assert command[command.index("--run-stop-tick") + 1] == "128"
         assert "--midi-file-source-tick-mode" not in command
@@ -649,6 +676,7 @@ def test_single_prompt_selection_manifest_records_effective_n1(
     assert result["evaluation_contract"]["streammuse_v2_prompt"] == {
         "selection_mode": "single",
         "candidate_count": 1,
+        "prompt_beats": 8,
         "prompt_length_ticks": 32,
     }
     assert result["evaluation_contract"]["midi_file_source_tick_mode_by_system"] == {
@@ -663,3 +691,105 @@ def test_single_prompt_selection_manifest_records_effective_n1(
         )
     )
     assert trial_manifest["midi_file_source_tick_mode"] is True
+
+
+def test_rule_s_if_else_explicit_replay_contract_is_frozen(
+    matched_runner, tmp_path: Path
+) -> None:
+    script = matched_runner
+    prompt = tmp_path / "prompt.safetensors"
+    continuation = tmp_path / "continuation.safetensors"
+    midi = tmp_path / "piece.mid"
+    prompt.write_bytes(b"prompt")
+    continuation.write_bytes(b"continuation")
+    midi.write_bytes(b"MThd-piece")
+    cohort = tmp_path / "cohort.json"
+    cohort.write_text(
+        json.dumps({"pieces": [{"piece_id": "01", "midi_path": "piece.mid"}]}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "output"
+    args = script.parse_args(
+        [
+            "--cohort-manifest", str(cohort),
+            "--output-root", str(output),
+            "--prompt-checkpoint", str(prompt),
+            "--continuation-checkpoint", str(continuation),
+            "--systems", "streammuse_v2_prompt_continuation",
+            "--seeds", "0",
+            "--prompt-selection-mode", "rule_s_if_else",
+            "--prompt-batch-candidates", "10",
+            "--playback-bpm", "90",
+            "--model-condition-bpm", "80",
+            "--ticks-per-beat", "4",
+            "--window-end-tick", "128",
+            "--prompt-beats", "8",
+            "--generation-interval-ticks", "4",
+            "--generation-length-frames", "4",
+            "--prompt-temperature", "1.1",
+            "--prompt-top-p", "0.95",
+            "--prompt-top-k", "50",
+            "--prompt-repetition-penalty", "1.0",
+            "--continuation-temperature", "1.1",
+            "--continuation-top-p", "0.95",
+            "--continuation-top-k", "50",
+            "--continuation-repetition-penalty", "1.0",
+            "--midi-file-source-tick-mode",
+            "--dry-run",
+        ]
+    )
+
+    result = script.run_evaluation(args)
+    contract = result["evaluation_contract"]
+    assert contract["playback_bpm"] == 90.0
+    assert contract["model_condition_bpm"] == 80
+    assert contract["ticks_per_beat"] == 4
+    assert contract["window_end_tick_exclusive"] == 128
+    assert contract["generation_interval_ticks"] == 4
+    assert contract["generation_length_frames"] == 4
+    assert contract["streammuse_v2_prompt"] == {
+        "selection_mode": "rule_s_if_else",
+        "candidate_count": 10,
+        "prompt_beats": 8,
+        "prompt_length_ticks": 32,
+    }
+    expected_sampling = {
+        "temperature": 1.1,
+        "top_p": 0.95,
+        "top_k": 50,
+        "repetition_penalty": 1.0,
+    }
+    assert contract["prompt_sampling"] == expected_sampling
+    assert contract["continuation_sampling"] == expected_sampling
+    command = result["trials"][0]["client_command"]
+    assert command[command.index("--tempo") + 1] == "90.0"
+    assert command[command.index("--model-condition-bpm") + 1] == "80"
+    assert command[command.index("--prompt-selection-mode") + 1] == "rule_s_if_else"
+    assert command[command.index("--prompt-batch-candidates") + 1] == "10"
+    assert command[command.index("--temperature") + 1] == "1.1"
+    assert command[command.index("--top-p") + 1] == "0.95"
+    assert command[command.index("--top-k") + 1] == "50"
+    assert "--midi-file-source-tick-mode" in command
+
+    explicit_contract = script.evaluation_contract_from_args(args)
+    env = script.build_server_environment(
+        "streammuse_v2_prompt_continuation",
+        port=18002,
+        gpu="0",
+        server_dir=tmp_path / "server",
+        code={"git_commit": "b" * 40},
+        prompt_checkpoint=_identity(prompt),
+        continuation_checkpoint=_identity(continuation),
+        time_signature_index=0,
+        prompt_selection_mode="rule_s_if_else",
+        prompt_batch_candidates=10,
+        contract=explicit_contract,
+    )
+    assert env["LEKAI_DEFAULT_BPM"] == "80"
+    assert env["LEKAI_PROMPT_BPM"] == "80"
+    assert env["LEKAI_PROMPT_TEMPERATURE"] == "1.1"
+    assert env["LEKAI_PROMPT_TOP_P"] == "0.95"
+    assert env["LEKAI_PROMPT_TOP_K"] == "50"
+    assert env["LEKAI_RT_TEMPERATURE"] == "1.1"
+    assert env["LEKAI_RT_TOP_P"] == "0.95"
+    assert env["LEKAI_RT_TOP_K"] == "50"
