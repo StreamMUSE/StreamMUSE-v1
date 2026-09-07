@@ -1164,11 +1164,12 @@ def validate_session(
                 "repetition_penalty": (
                     contract.prompt_sampling.repetition_penalty
                 ),
-                "midi_file_source_tick_mode": bool(
-                    midi_file_source_tick_mode
-                ),
             }
         )
+        if midi_file_source_tick_mode or "midi_file_source_tick_mode" in config:
+            expected_config["midi_file_source_tick_mode"] = bool(
+                midi_file_source_tick_mode
+            )
     errors = [
         f"session_config {key}={config.get(key)!r}, expected {expected!r}"
         for key, expected in expected_config.items()
