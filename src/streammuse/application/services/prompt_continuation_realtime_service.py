@@ -135,6 +135,15 @@ class PromptContinuationRealtimeService:
         self._now = now
         self._sleep = sleep
 
+        request_timeout_s = getattr(prompt_client, "timeout_s", 0.0)
+        try:
+            request_timeout_s = float(request_timeout_s)
+        except (TypeError, ValueError):
+            request_timeout_s = 0.0
+        # A protocol worker can be blocked in one backend request when Stop is
+        # pressed. Bound the wait by that request timeout plus a small margin.
+        self._worker_join_timeout_s = max(1.0, request_timeout_s + 1.0)
+
         self._running = False
         self._runtime: PromptContinuationRuntime | None = None
         self._input_thread: threading.Thread | None = None
@@ -1493,22 +1502,43 @@ class PromptContinuationRealtimeService:
         self._protocol_thread.start()
 
     def stop(self) -> None:
-        if not self._running:
+        workers = (
+            self._protocol_thread,
+            self._tick_thread,
+            self._input_thread,
+        )
+        if not self._running and all(worker is None for worker in workers):
             return
         self._running = False
         try:
             self._input.close()
         except Exception:
             pass
+
+        current = threading.current_thread()
+        join_deadline = time.monotonic() + self._worker_join_timeout_s
+        for worker in workers:
+            if worker is None or worker is current or worker.ident is None:
+                continue
+            remaining = max(0.0, join_deadline - time.monotonic())
+            worker.join(timeout=remaining)
+
+        alive_workers = [
+            worker.name
+            for worker in workers
+            if worker is not None and worker is not current and worker.is_alive()
+        ]
+        if alive_workers:
+            raise RuntimeError(
+                "prompt-continuation workers did not stop before timeout: "
+                + ", ".join(alive_workers)
+            )
+
+        self._protocol_thread = None
+        self._tick_thread = None
+        self._input_thread = None
         try:
             self._output.output_status("stopped", "")
             self._output.close()
         except Exception:
             pass
-
-        if self._protocol_thread is not None:
-            self._protocol_thread.join(timeout=1.0)
-        if self._tick_thread is not None:
-            self._tick_thread.join(timeout=1.0)
-        if self._input_thread is not None:
-            self._input_thread.join(timeout=1.0)

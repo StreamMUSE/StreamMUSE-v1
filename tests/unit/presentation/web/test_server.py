@@ -87,6 +87,11 @@ def test_web_javascript_posts_session_config_and_locks_controls_outside_idle():
         in resp.text
     )
     assert "bpmInput.addEventListener('input'" in resp.text
+    assert "PianoVisualizer.setCurrentTick(0)" in resp.text
+    assert "Stats.reset()" in resp.text
+    assert resp.text.index("PianoVisualizer.clearNotes()") < resp.text.index(
+        "fetch('/api/start'"
+    )
 
 
 def test_websocket_broadcasts_pending_messages_from_sink():
@@ -216,6 +221,43 @@ def test_start_is_idempotent_and_stop_cleans_up(builder_cls, tmp_path):
     runtime.start.assert_called_once_with(run_stop_tick=None)
     runtime.stop.assert_called_once_with()
     runtime.cleanup.assert_called_once_with()
+
+
+@patch("streammuse.presentation.web.server.RuntimeSessionBuilder")
+def test_worker_stop_failure_retains_runtime_until_retry_succeeds(
+    builder_cls,
+    tmp_path,
+):
+    first_runtime = _fake_runtime(tmp_path, "session-1")
+    second_runtime = _fake_runtime(tmp_path, "session-2")
+    first_runtime.stop.side_effect = RuntimeError("worker still running")
+    builder_cls.return_value.build_web.side_effect = [
+        first_runtime,
+        second_runtime,
+    ]
+    webserver._configure_server(config=ApplicationConfig(), log_dir=str(tmp_path))
+
+    with TestClient(webserver.create_app()) as client:
+        assert client.post("/api/start").status_code == 200
+        failed_stop = client.post("/api/stop")
+
+        assert failed_stop.status_code == 500
+        assert webserver._runtime is first_runtime
+        assert webserver._ws_sink is first_runtime.websocket_sink
+        assert webserver._lifecycle_state == "stop_failed"
+        first_runtime.cleanup.assert_not_called()
+        assert builder_cls.return_value.build_web.call_count == 1
+
+        first_runtime.running = False
+        first_runtime.stop.side_effect = None
+        restarted = client.post("/api/start")
+
+        assert restarted.status_code == 200
+        assert restarted.json()["message"] == "started"
+        assert webserver._runtime is second_runtime
+        first_runtime.cleanup.assert_called_once_with()
+        assert first_runtime.stop.call_count == 2
+        assert builder_cls.return_value.build_web.call_count == 2
 
 
 @patch("streammuse.presentation.web.server.RuntimeSessionBuilder")

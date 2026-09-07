@@ -168,6 +168,16 @@
         const generationConfig = selectedGenerationConfig();
         if (generationConfig === null) return;
         updateServiceState({is_running: false, state: 'starting'});
+        // Reset the old display before the new runtime can publish events.
+        if (window.PianoVisualizer && PianoVisualizer.clearNotes) {
+            PianoVisualizer.clearNotes();
+        }
+        if (window.PianoVisualizer && PianoVisualizer.setCurrentTick) {
+            PianoVisualizer.setCurrentTick(0);
+        }
+        if (window.Stats && Stats.reset) {
+            Stats.reset();
+        }
         try {
             const response = await fetch('/api/start', {
                 method: 'POST',
@@ -177,9 +187,6 @@
             const result = await response.json();
             if (!response.ok || !result.success) {
                 throw new Error(result.message || 'start failed');
-            }
-            if (window.PianoVisualizer && PianoVisualizer.clearNotes) {
-                PianoVisualizer.clearNotes();
             }
             updateServiceState(result);
         } catch (error) {

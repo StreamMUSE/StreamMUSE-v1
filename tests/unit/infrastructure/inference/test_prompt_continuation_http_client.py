@@ -51,6 +51,7 @@ def test_prompt_continuation_http_client_initializes_generated_or_replay_session
         PromptContinuationHttpClientConfig(base_url="http://x:8000", timeout_s=7.0)
     )
 
+    assert client.timeout_s == 7.0
     assert client.initialize_session()["success"] is True
     assert client.initialize_session(prompt_seed=17, continuation_seed=23)[
         "session_id"

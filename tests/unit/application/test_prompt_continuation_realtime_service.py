@@ -136,6 +136,111 @@ def test_prompt_continuation_default_now_is_time_time() -> None:
     )
 
 
+def test_stop_waits_for_workers_before_closing_output() -> None:
+    calls: list[str] = []
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    stop_complete = threading.Event()
+
+    class _Input(_NoopInput):
+        def close(self):
+            calls.append("input_close")
+
+    class _Output(_RecordingOutput):
+        def output_status(self, state, message=""):
+            calls.append(f"status:{state}")
+
+        def close(self):
+            calls.append("output_close")
+
+    service = PromptContinuationRealtimeService(
+        input_source=_Input(),
+        prompt_client=_FakePromptClient(),
+        output_sink=_Output(),
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+    )
+    service._running = True
+
+    def worker_target() -> None:
+        worker_started.set()
+        release_worker.wait(timeout=1.0)
+        calls.append("worker_done")
+
+    worker = threading.Thread(target=worker_target, name="blocked-protocol")
+    service._protocol_thread = worker
+    worker.start()
+    assert worker_started.wait(timeout=1.0)
+
+    def stop_service() -> None:
+        service.stop()
+        stop_complete.set()
+
+    stopper = threading.Thread(target=stop_service)
+    stopper.start()
+    deadline = time.monotonic() + 1.0
+    while "input_close" not in calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert "input_close" in calls
+    assert not stop_complete.wait(timeout=0.05)
+    assert "output_close" not in calls
+
+    release_worker.set()
+    stopper.join(timeout=1.0)
+
+    assert stop_complete.is_set()
+    assert calls.index("worker_done") < calls.index("status:stopped")
+    assert calls.index("status:stopped") < calls.index("output_close")
+    assert service._protocol_thread is None
+
+
+def test_stop_failure_keeps_worker_and_output_for_retry() -> None:
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    class _Output(_RecordingOutput):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    output = _Output()
+    service = PromptContinuationRealtimeService(
+        input_source=_NoopInput(),
+        prompt_client=_FakePromptClient(),
+        output_sink=output,
+        tempo=Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4),
+        scheduler=PlaybackScheduler(),
+    )
+    service._running = True
+    service._worker_join_timeout_s = 0.01
+
+    def worker_target() -> None:
+        worker_started.set()
+        release_worker.wait(timeout=1.0)
+
+    worker = threading.Thread(target=worker_target, name="blocked-protocol")
+    service._protocol_thread = worker
+    worker.start()
+    assert worker_started.wait(timeout=1.0)
+
+    with pytest.raises(RuntimeError, match="blocked-protocol"):
+        service.stop()
+
+    assert service._protocol_thread is worker
+    assert output.close_calls == 0
+
+    release_worker.set()
+    worker.join(timeout=1.0)
+    service.stop()
+
+    assert service._protocol_thread is None
+    assert output.close_calls == 1
+
+
 def test_prompt_service_resolves_and_exposes_model_condition_bpm() -> None:
     fallback = PromptContinuationRealtimeService(
         input_source=_NoopInput(),

@@ -298,22 +298,22 @@ def _stop_service_locked() -> bool:
         return False
 
     _lifecycle_state = "stopping"
-    stop_error: Exception | None = None
     try:
         runtime.stop()
-    except Exception as exc:
-        stop_error = exc
+    except Exception:
+        # Keep the old runtime installed until every worker has stopped. A
+        # later Stop or Start can retry without racing a fresh backend session.
+        _lifecycle_state = "stop_failed"
+        raise
+
+    try:
+        runtime.cleanup()
     finally:
-        try:
-            runtime.cleanup()
-        finally:
-            _runtime = None
-            _service = None
-            _composite_sink = None
-            _ws_sink = None
-            _lifecycle_state = "idle"
-    if stop_error is not None:
-        raise stop_error
+        _runtime = None
+        _service = None
+        _composite_sink = None
+        _ws_sink = None
+        _lifecycle_state = "idle"
     return True
 
 
