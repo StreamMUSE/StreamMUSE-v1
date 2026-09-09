@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import queue
 import threading
 import time
@@ -854,61 +855,134 @@ def test_prompt_continuation_enqueues_start_after_prompt_window():
 
 
 def test_prompt_start_waits_for_closed_observation_window() -> None:
-    tempo = Tempo(bpm=120.0, ticks_per_beat=4, beats_per_bar=4)
-    now_value = [0.0]
-    injected = [False]
-    service = None
-
-    def fake_now() -> float:
-        return now_value[0]
-
-    def fake_sleep(duration: float) -> None:
-        nonlocal service
-        tick_31_buffer_end = tempo.tick_to_seconds(31) + (
-            tempo.seconds_per_tick
-            * PromptContinuationRealtimeService._INPUT_BUFFER_RATIO
-        )
-        tick_32_boundary = tempo.tick_to_seconds(32)
-        sleep_end = now_value[0] + duration
-        if (
-            not injected[0]
-            and now_value[0] >= tick_31_buffer_end - 1e-9
-            and sleep_end >= tick_32_boundary - 1e-9
-        ):
-            assert service is not None
-            assert service._start_enqueued is False
-            service._event_q.put(_note(62, 31))
-            service._event_q.put(_note(64, 32))
-            injected[0] = True
-        now_value[0] = sleep_end
-
-    service = PromptContinuationRealtimeService(
-        input_source=_NoopInput(),
-        prompt_client=_FakePromptClient(),
-        output_sink=_RecordingOutput(),
-        tempo=tempo,
-        scheduler=PlaybackScheduler(),
-        prompt_length_ticks=32,
-        generation_interval_ticks=4,
-        now=fake_now,
-        sleep=fake_sleep,
-    )
-    service._runtime = SimpleNamespace(
-        session_start_time=0.0,
-        timeline_start_time=0.0,
-    )
+    service = _make_service()
+    service._input_snap_forward_fraction = 0.4
     service._running = True
-
-    service._tick_loop(max_ticks=33)
-
-    assert injected[0] is True
+    service._input_window_events = [_note(62, 31), _note(64, 32)]
+    service._now = lambda: 31.9 * service._tempo.seconds_per_tick
+    assert not service._seal_input_window(32)
+    assert service._control_q.empty()
+    service._now = lambda: 32 * service._tempo.seconds_per_tick
+    assert service._seal_input_window(32)
     action = service._control_q.get_nowait()
     assert action.kind == "start"
     assert action.observed_until_tick == 32
     assert [(event.pitch, event.tick) for event in action.melody_events] == [(62, 31)]
-    assert [(event.pitch, event.tick) for event in service._pending_append_events] == [
+    assert [(event.pitch, event.tick) for event in service._input_window_events] == [
         (64, 32)
     ]
+
+
+@pytest.mark.parametrize("fraction, raw_tick", [(0.4, 81.244), (0.0, 81.022)])
+def test_closed_window_includes_off_from_device_and_file(fraction, raw_tick):
+    service = _make_service()
+    service._generation_interval_ticks = 2
+    service._input_snap_forward_fraction = fraction
+    service._running = True
+    service._start_enqueued = True
+    service._last_append_observed_tick = 80
+    service._input_closed_until_tick = 80
+    service._input = SimpleNamespace(read_events=lambda: iter([_note_off(65, 0)]))
+    service._now = lambda: raw_tick * service._tempo.seconds_per_tick
+    service._input_worker()
+    assert not service._seal_input_window(82)
+    service._now = lambda: math.nextafter(
+        (82 - fraction) * service._tempo.seconds_per_tick, math.inf
+    )
+    assert service._seal_input_window(82)
+    action = service._control_q.get_nowait()
+    assert action.observed_until_tick == 82
+    assert [(e.pitch, e.tick, e.event_type) for e in action.melody_events] == [
+        (65, 81, EventType.NOTE_OFF)
+    ]
+
+
+def test_closed_window_preserves_same_tick_order_and_holds_future_events():
+    service = _make_service()
+    service._running = True
+    service._start_enqueued = True
+    service._last_append_observed_tick = 80
+    service._input_snap_forward_fraction = 0.4
+    service._generation_interval_ticks = 2
+    events = [_note(60, 81), _note_off(60, 81), _note(61, 82)]
+    service._input_window_events = list(events)
+    # A delayed worker must still partition by tick, not drain its whole buffer.
+    service._now = lambda: 90 * service._tempo.seconds_per_tick
+    assert service._seal_input_window(82)
+    assert service._control_q.get_nowait().melody_events == events[:2]
+    assert service._input_window_events == events[2:]
+    assert service._seal_input_window(84)
+    assert service._control_q.get_nowait().melody_events == events[2:]
+    assert service._seal_input_window(86)
+    assert service._control_q.get_nowait().melody_events == []
+    assert not service._seal_input_window(86)
+
+
+def test_sealing_cannot_overtake_an_event_timestamped_inside_window():
+    service = _make_service()
+    service._running = True
+    service._start_enqueued = True
+    service._last_append_observed_tick = 80
+    service._generation_interval_ticks = 2
+    service._input_snap_forward_fraction = 0.4
+    timestamp_entered = threading.Event()
+    release_timestamp = threading.Event()
+    seal_finished = threading.Event()
+    worker_now_calls = [0]
+
+    def now():
+        if threading.current_thread().name == "admission-test":
+            worker_now_calls[0] += 1
+            if worker_now_calls[0] == 2:  # First call is the initial timeline wait.
+                timestamp_entered.set()
+                assert release_timestamp.wait(2)
+            return 81.244 * service._tempo.seconds_per_tick
+        return math.nextafter(81.6 * service._tempo.seconds_per_tick, math.inf)
+
+    service._now = now
+    service._input = SimpleNamespace(read_events=lambda: iter([_note_off(65, 0)]))
+    admission = threading.Thread(target=service._input_worker, name="admission-test")
+    admission.start()
+    assert timestamp_entered.wait(2)
+
+    def seal():
+        assert service._seal_input_window(82)
+        seal_finished.set()
+
+    sealing = threading.Thread(target=seal)
+    sealing.start()
+    assert not seal_finished.wait(0.03)
+    release_timestamp.set()
+    admission.join(2)
+    sealing.join(2)
+    assert seal_finished.is_set()
+    assert service._control_q.get_nowait().melody_events[0].tick == 81
+
+
+def test_stop_interrupts_window_wait_during_count_in():
+    service = _make_service()
+    service._runtime.timeline_start_time = time.time() + 60
+    service._now = time.time
+    service._running = True
+    worker = threading.Thread(target=service._input_window_worker)
+    service._input_window_thread = worker
+    worker.start()
+    service.stop()
+    assert not worker.is_alive()
+    assert service._control_q.empty()
+
+
+def test_playback_loop_does_not_seal_input_windows():
+    service = _make_service()
+    now_value = [0.0]
+    service._now = lambda: now_value[0]
+    service._sleep = lambda seconds: now_value.__setitem__(0, now_value[0] + seconds)
+    service._running = True
+    service._input_snap_forward_fraction = 0.4
+    service._tick_loop(max_ticks=33)
+    assert service._control_q.empty()
+    assert now_value[0] == pytest.approx(32.1 * service._tempo.seconds_per_tick)
+    assert len(service._output.ticks) == 33
 
 
 def test_prompt_continuation_append_keeps_empty_rest_chunks():
