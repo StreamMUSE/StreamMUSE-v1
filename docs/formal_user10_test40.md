@@ -37,6 +37,17 @@ Use the accepted asynchronous boundary generation order, not the old runner's
 forced synchronous setting. Generic late recovery and rehydration remain off.
 Continuation and Prompt seeds are explicitly reset for each trial.
 
+## Smoke fixes
+
+The first smoke attempt is preserved under `_metadata/smoke_attempt1/`.
+Pure Lekai stopped before inference because its HTTP runtime schema omits
+the constraint switches. A one-time native backend startup snapshot now
+verifies them; production code and inference calls are unchanged.
+Legacy completed its MIDI input before its configured playback stop tick.
+Commit `47496cbf` makes fixed-length evaluation wait for the playback thread,
+instead of exiting on MIDI EOF. Generation and tick scheduling are unchanged.
+The new smoke attempt reruns all six checks with both fixes before formal work.
+
 ## Inputs and outputs
 
 Reuse the existing trimmed user10 inputs from the Legacy duration batch and

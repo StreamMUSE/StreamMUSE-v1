@@ -17,7 +17,7 @@ import run_matched_system_eval as matched
 HOME = Path('/data/home/yuanxin')
 PYTHON = HOME / 'StreamMUSE-v1/.venv/bin/python'
 LEGACY = HOME / 'StreamMUSE-legacy-duration-absolute-clock'
-LEGACY_REF = '95a36bd3'
+LEGACY_REF = '47496cbf'
 MODERN_REF = 'ec843a79'
 CONDITIONS = ('legacy_m2a', 'lekai_no_prompt', 'pc_rule_if_else_n10')
 IDS = {'lekai_no_prompt': 'streammuse_v1_standard',

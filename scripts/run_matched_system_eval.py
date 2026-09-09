@@ -725,11 +725,14 @@ def runtime_contract_errors(
         "prompt_context_beats": PROMPT_CONTEXT_BEATS,
         "history_retention_ticks": HISTORY_MAX_TICKS,
         "time_signature_index": time_signature_index,
-        "tonal_constraint_enabled": contract.continuation_constraints,
-        "empty_token_guard_enabled": contract.continuation_constraints,
         "boundary_generation_order": "synchronous" if contract.deterministic_boundary_generation else "single_executor_then_request",
         **contract.continuation_sampling.as_dict(),
     }
+    # The standard HTTP schema omits these flags. Its actual backend values
+    # are checked from the one-time startup snapshot in start_server().
+    if system_id == "streammuse_v2_prompt_continuation":
+        expected_values.update(tonal_constraint_enabled=contract.continuation_constraints,
+                               empty_token_guard_enabled=contract.continuation_constraints)
     if require_session_runtime_contract:
         expected_values.update(
             {
@@ -891,7 +894,8 @@ def start_server(
         prompt_batch_candidates=prompt_batch_candidates,
         contract=contract,
     )
-    command = [python_bin, "-m", "streammuse.infrastructure.inference.server_lekai"]
+    env["STREAMMUSE_EVAL_RUNTIME_SNAPSHOT"] = str(server_dir / "backend_startup_snapshot.json")
+    command = [python_bin, str(REPO_ROOT / "scripts/launch_recorded_lekai_server.py")]
     log_handle = (server_dir / "server.log").open("w", encoding="utf-8")
     process = subprocess.Popen(
         command,
@@ -921,6 +925,19 @@ def start_server(
             prompt_batch_candidates=prompt_batch_candidates,
             contract=contract,
         )
+        snapshot = json.loads((server_dir / "backend_startup_snapshot.json").read_text(encoding="utf-8"))
+        selected = snapshot["standard" if system_id == "streammuse_v1_standard" else "prompt_continuation"]
+        actual_contract = contract or default_evaluation_contract()
+        for key in ("tonal_constraint_enabled", "empty_token_guard_enabled"):
+            if selected[key] != actual_contract.continuation_constraints:
+                raise RuntimeError(f"backend startup {key}={selected[key]!r}")
+        if selected["code_identity"] != code["git_commit"]:
+            raise RuntimeError("backend startup snapshot code mismatch")
+        handle.startup_runtime["constraint_evidence"] = {
+            "file": str(server_dir / "backend_startup_snapshot.json"),
+            "tonal_constraint_enabled": selected["tonal_constraint_enabled"],
+            "empty_token_guard_enabled": selected["empty_token_guard_enabled"],
+        }
     except Exception:
         stop_server(handle)
         raise
