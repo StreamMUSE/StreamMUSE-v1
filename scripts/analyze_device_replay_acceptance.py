@@ -104,20 +104,35 @@ def analyze(root):
         observed[item["session_epoch"]].append(item)
     output["observer_epoch_call_counts"] = {k: len(v) for k, v in observed.items()}
     for left, right in (("A", "B"), ("B", "C")):
-        a, b = [traces[k]["continuation_generations"] for k in (left, right)]
+        full_a, full_b = [traces[k]["continuation_generations"] for k in (left, right)]
+        by_tick = [{item["generation_start_tick"]: item for item in records} for records in (full_a, full_b)]
+        assert len(by_tick[0]) == len(full_a) and len(by_tick[1]) == len(full_b)
+        common_ticks = sorted(by_tick[0].keys() & by_tick[1].keys())
+        a, b = [[records[t] for t in common_ticks] for records in by_tick]
         counts = {field: sum(x[field] == y[field] for x, y in zip(a, b))
                   for field in ("part0_tokens", "prompt_token_digest", "raw_tokens", "output_event_digest")}
-        pair = {"left_calls": len(a), "right_calls": len(b), "equal_call_counts": counts,
+        pair = {"left_calls": len(full_a), "right_calls": len(full_b), "equal_call_counts": counts,
+                "compared_generation_ticks": common_ticks,
+                "left_only_generation_ticks": sorted(by_tick[0].keys() - by_tick[1].keys()),
+                "right_only_generation_ticks": sorted(by_tick[1].keys() - by_tick[0].keys()),
+                "different_generation_ticks": {field: [t for t, u, v in zip(common_ticks, a, b) if u[field] != v[field]]
+                    for field in counts},
                 "prompt_input_exact": prompts[left] == prompts[right],
                 "prompt_output_exact": traces[left]["prompt_generation_log"]["new_tokens"] == traces[right]["prompt_generation_log"]["new_tokens"]}
         epochs = [read(sessions[k] / "prompt_continuation_session_seed.json")["session_epoch"] for k in (left, right)]
-        x, y = [observed[e] for e in epochs]
+        full_x, full_y = [observed[e] for e in epochs]
+        assert len(full_x) == len(full_a) and len(full_y) == len(full_b)
+        observed_by_tick = [dict(zip([v["generation_start_tick"] for v in records], samples))
+                            for records, samples in ((full_a, full_x), (full_b, full_y))]
+        x, y = [[samples[t] for t in common_ticks] for samples in observed_by_tick]
         pair["observer_equal_call_counts"] = {field: sum(u[field] == v[field] for u, v in zip(x, y))
                                                for field in ("prompt_tokens", "sampling", "returned_tokens")}
         for field in ("rng_before_sha256", "logits_sha256"):
             pair["observer_equal_call_counts"][field] = sum(
                 [s[field] for s in u["samples"]] == [s[field] for s in v["samples"]] for u, v in zip(x, y))
         pair["observer_token_counts"] = [sum(len(v["samples"]) for v in run) for run in (x, y)]
+        pair["observer_token_count_scope"] = "compared_generation_ticks"
+        pair["observer_total_token_counts"] = [sum(len(v["samples"]) for v in run) for run in (full_x, full_y)]
         played = []
         for k in (left, right):
             played.append([(e["tick"], e["type"], e["data"]["pitch"], e["data"].get("velocity", 0))

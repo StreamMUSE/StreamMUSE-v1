@@ -32,7 +32,7 @@ modify sampling/weights, or change offline MIDI parsing or MIDI export.
 
 The recorded-input reconstruction is not a new live model inference test:
 it uses known histories and tick windows, not asynchronous request arrival.
-No post-fix GPU run or physical MIDI-device acceptance is claimed here.
+Those CPU assertions alone are not GPU inference or physical MIDI-device acceptance.
 If an OFF has not yet reached a request snapshot, the encoder must not use it
 early; this commit does not change that request-visibility issue or playback
 deadline variation. It cannot repair old logs whose ordering was already lost.
@@ -47,3 +47,31 @@ to verify system source against the fix commit. Use `--seed 1051154023138951872`
 on the client to retain the pre-fix test's seed; B/C still copy the seed record
 actually returned for A. This changes only harness configuration, not runtime
 quantization, scheduler or model behavior. Results must be saved to a new folder.
+
+Completed on H200 GPU0 with a virtual MIDI client on Spark, using checkout
+`0cb42f90` (system source identical to fix commit `99ddaa68`). Results are in
+`F:/repos/StreamMUSE-v1/remote_results/device_midi_replay_same_tick_fix_20260909`.
+
+- A/B Prompt input and selected output: exact.
+- A has 32 continuation calls; B/C have 33. B/C additionally generated at tick
+  160, the exclusive run stop. This extra call is not hidden or treated as equal.
+- On the 32 shared generation ticks, A/B Melody tokens match on 29, full model
+  input tokens on 12, raw output tokens and decoded events on 25.
+- A/B Melody differences occur at ticks 52, 84, 88. Each is reconstructed from
+  protocol history with a matching captured pianoroll SHA256. At generation 84,
+  A has not received OFF@81 but B has; at generation 88, A has OFF@86 but B does
+  not. At generation 52, A sees an as-yet-unclosed ON@49 absent from B's MIDI.
+- Completed A/B Melody histories encode identically; online visible snapshots
+  do not. Common-call RNG states match throughout, so the observed output
+  differences are not evidence of a seed reset failure.
+- B/C: all 33 calls and all 224 continuation sampling tokens/logits/RNG states
+  match. Nevertheless, B/C playback MIDI has 78/82 accompaniment notes.
+
+Device-to-MIDI end-to-end exact replay still fails. The same-tick ordering fix
+is retained; no subsequent timing or scheduler changes were made. The dedicated
+backend was stopped after the test. No physical keyboard/audio was tested, and
+the sampler observer makes these runs unsuitable as a latency benchmark.
+
+`scripts/analyze_device_replay_acceptance.py` reports unmatched calls explicitly.
+`scripts/check_device_replay_input_snapshots.py` reproduces the remaining three
+Melody-input differences using captured request prefixes, without a model load.
