@@ -48,3 +48,24 @@ Check Prompt selection, every common continuation input/output, raw history,
 and exported playback separately. Do not promote equal common prefixes or
 incomplete traces into a full-session exact-match claim. A passing automated
 case does not guarantee all human performances or cross-GPU exactness.
+
+## Observed result, 2026-09-09
+
+All three initialized runs finished with complete traces (33 continuation calls
+each). Device A recorded 66 input events; file B/C recorded 62. Two same-tick
+on/off pairs (pitch 70 at tick 5, pitch 61 at tick 33) were omitted by the
+positive-duration-only MIDI exporter. The existing event encoder instead sorts
+off before on, producing a sustain for pitch 70 from tick 5 through 31 in the
+Prompt window. CPU reconstruction matches each captured Prompt token sequence;
+removing just the omitted pairs from A reproduces B's Prompt tokens.
+
+B/C match in Prompt input/output, all 33 continuation input/output sequences,
+and all 174 continuation sampling logits/RNG states/tokens. Final playback is
+not exact: C contains one extra accompaniment note (pitch 42, ticks 39-40).
+No source fix is made by this test. Device-to-MIDI exact replay remains failed.
+
+Results: `F:/repos/StreamMUSE-v1/remote_results/device_midi_replay_acceptance_20260909`.
+Reproduce the read-only CPU analysis with `scripts/analyze_device_replay_acceptance.py`:
+provide the result root and `--output analysis.json`, with `PYTHONPATH=src` and
+`CUDA_VISIBLE_DEVICES` empty. The failed uninitialized harness run is preserved
+separately and excluded from all accepted comparisons.
