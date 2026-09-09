@@ -70,3 +70,45 @@ API; direct offline inference and model decoding code are not edited.
 
 Do not repair old recordings, overwrite their mismatch reports, or claim this
 revision reproduces a session recorded with the previous collection policy.
+
+## Observed acceptance, 2026-09-09
+
+Production commits: `20746739` (client collection) and `ec843a79` (backend
+snapshots). Local regressions: 446 inference/input tests and 265 application/
+presentation tests passed; these suites overlap and are not 711 unique tests.
+
+Real-model test sessions A/B/C: `session_110050`, `session_110120`,
+`session_110149`. Rule If-Else N=10, both models t=1.1/p=.95/k=50/rp=1,
+tonal and empty-token guards enabled, seed `1051154023138951872`, playback/model
+BPM 90/80, request interval 2 ticks, Prompt 32 ticks, exclusive run end 160.
+The source remains the first 24 beats of repository `001.mid`.
+
+- Prompt input and selected output match for A/B/C.
+- All 33 continuation calls have identical encoded Melody rolls, input tokens,
+  output tokens and decoded output events. There are no unmatched calls.
+- All 213 continuation sampling steps match in logits, RNG states and tokens.
+- Complete raw accompaniment histories match: 222 events, 111 note-ons each,
+  including Prompt and generated material outside the playback window.
+- Playback remains different: A/B/C contain 69/78/73 accompaniment notes.
+  Counts alone are NOT delivery recall; the raw and playback windows differ.
+- Original strict A/B comparator still reports false because its input check
+  includes raw event digests: A records 66 events, B/C 40. Thirteen zero-duration
+  on/off pairs are omitted by MIDI export. The comparator was NOT relaxed or
+  overwritten. B/C's original strict model/protocol comparison passes.
+
+Conclusion: encoded-input and backend-output equality passes for this one
+automated device/file case. Byte-identical raw input logs and identical emitted
+playback do not pass. This is not a universal human-replay or latency claim;
+the sampler observer adds synchronization and logging overhead.
+
+Local evidence:
+`F:/repos/StreamMUSE-v1/remote_results/device_midi_replay_closed_windows_20260909`.
+Remote test source on both machines is the isolated
+`StreamMUSE-same-tick-fix-acceptance-20260909` worktree at `ec843a79`.
+H200 server artifacts are under
+`/data/home/yuanxin/experiments/device_replay_closed_windows_20260909_r1`;
+Spark client artifacts under
+`/home/xiaosongma/experiments/device_replay_closed_windows_20260909`.
+An initial bind attempt on occupied port 18792 exited; accepted runs used 18843.
+No existing service was stopped. The dedicated H200 backend was stopped after
+the test, and Spark's active user-facing checkout was not changed.

@@ -37,10 +37,15 @@ def analyze(root):
     sessions = {k: next((client / v / "logs").glob("*/*")) for k, v in labels.items()}
     events = {k: read(p / "prompt_continuation_replay_melody.json")["events"] for k, p in sessions.items()}
     traces = {k: read(p / "prompt_continuation_model_trace.json") for k, p in sessions.items()}
+    histories = {k: read(p / "prompt_continuation_raw_history.json") for k, p in sessions.items()}
     prompts = {k: t["prompt_generation_log"]["prompt_tokens"] for k, t in traces.items()}
     output = {"session_names": {k: p.name for k, p in sessions.items()},
               "event_counts": {k: len(v) for k, v in events.items()}, "scope": "one automated source; not human acceptance"}
     output["trace_capture_complete"] = {k: t["trace_capture_complete"] for k, t in traces.items()}
+    output["raw_history_event_counts"] = {k: len(v) for k, v in histories.items()}
+    output["raw_history_note_on_counts"] = {
+        k: sum(e["type"] == "note_on" for e in v) for k, v in histories.items()
+    }
 
     ca, cb = (Counter(map(event_key, events[k])) for k in ("A", "B"))
     missing = ca - cb
@@ -110,7 +115,8 @@ def analyze(root):
         common_ticks = sorted(by_tick[0].keys() & by_tick[1].keys())
         a, b = [[records[t] for t in common_ticks] for records in by_tick]
         counts = {field: sum(x[field] == y[field] for x, y in zip(a, b))
-                  for field in ("part0_tokens", "prompt_token_digest", "raw_tokens", "output_event_digest")}
+                  for field in ("part0_tokens", "part0_roll_bytes_sha256", "prompt_token_digest",
+                                "raw_tokens", "output_event_digest")}
         pair = {"left_calls": len(full_a), "right_calls": len(full_b), "equal_call_counts": counts,
                 "compared_generation_ticks": common_ticks,
                 "left_only_generation_ticks": sorted(by_tick[0].keys() - by_tick[1].keys()),
@@ -119,6 +125,13 @@ def analyze(root):
                     for field in counts},
                 "prompt_input_exact": prompts[left] == prompts[right],
                 "prompt_output_exact": traces[left]["prompt_generation_log"]["new_tokens"] == traces[right]["prompt_generation_log"]["new_tokens"]}
+        pair["raw_history_exact"] = histories[left] == histories[right]
+        # Keep the original strict comparator unchanged. Raw input-event lists
+        # can differ even when the tensors actually supplied to the model match.
+        pair["recorded_input_digest_equal_call_counts"] = {
+            field: sum(u[field] == v[field] for u, v in zip(a, b))
+            for field in ("input_increment_digest", "input_cumulative_digest")
+        }
         epochs = [read(sessions[k] / "prompt_continuation_session_seed.json")["session_epoch"] for k in (left, right)]
         full_x, full_y = [observed[e] for e in epochs]
         assert len(full_x) == len(full_a) and len(full_y) == len(full_b)
