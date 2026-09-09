@@ -46,6 +46,27 @@ def test_batch_trial_count():
     assert (10 + 40) * 3 * len(formal.CONDITIONS) == 450
 
 
+def test_plain_runtime_has_no_prompt_length():
+    cohort = {'playback_bpm': 120, 'model_bpm': 120, 'count_in_beats_modern': 0,
+              'sampling': {'temperature': 1.05, 'top_p': .98, 'top_k': 0, 'repetition_penalty': 1.0}}
+    contract = formal.contract_for(cohort, 'lekai_no_prompt', 128)
+    runtime = {'has_real_model': True, 'checkpoint_sha256': 'checkpoint', 'code_identity': 'code',
+               'resolved_device': 'cuda:0', 'effective_bpm': 120, 'ticks_per_beat': 4,
+               'prompt_context_beats': 32, 'history_retention_ticks': 128, 'time_signature_index': 4,
+               'boundary_generation_order': 'single_executor_then_request',
+               'generation_interval_ticks': 4, 'generation_length_frames': 4,
+               **cohort['sampling']}
+    errors = formal.matched.runtime_contract_errors('streammuse_v1_standard', runtime,
+        code={'git_commit': 'code'}, prompt_checkpoint={}, continuation_checkpoint={'sha256': 'checkpoint'},
+        time_signature_index=4, contract=contract, require_session_runtime_contract=True)
+    assert errors == []
+    runtime['generation_interval_ticks'] = 8
+    errors = formal.matched.runtime_contract_errors('streammuse_v1_standard', runtime,
+        code={'git_commit': 'code'}, prompt_checkpoint={}, continuation_checkpoint={'sha256': 'checkpoint'},
+        time_signature_index=4, contract=contract, require_session_runtime_contract=True)
+    assert any('generation_interval_ticks' in error for error in errors)
+
+
 def test_reject_untrimmed_input(tmp_path):
     import mido
     path = tmp_path / 'm.mid'

@@ -46,7 +46,10 @@ verifies them; production code and inference calls are unchanged.
 Legacy completed its MIDI input before its configured playback stop tick.
 Commit `47496cbf` makes fixed-length evaluation wait for the playback thread,
 instead of exiting on MIDI EOF. Generation and tick scheduling are unchanged.
-The new smoke attempt reruns all six checks with both fixes before formal work.
+The second attempt retains Legacy and P+C independently. Pure Lekai's post-run validation
+also incorrectly required the P+C-only Prompt length field; this check is
+now scoped to P+C. Both pure Lekai smoke cases are rerun after that checker
+fix, without changing model settings or accepting output quality as a gate.
 
 ## Inputs and outputs
 

@@ -738,9 +738,10 @@ def runtime_contract_errors(
             {
                 "generation_interval_ticks": contract.generation_interval_ticks,
                 "generation_length_frames": contract.generation_length_frames,
-                "prompt_length_ticks": contract.prompt_length_ticks,
             }
         )
+        if system_id == "streammuse_v2_prompt_continuation":
+            expected_values["prompt_length_ticks"] = contract.prompt_length_ticks
     for key, expected in expected_values.items():
         actual = runtime.get(key)
         if isinstance(expected, float):
