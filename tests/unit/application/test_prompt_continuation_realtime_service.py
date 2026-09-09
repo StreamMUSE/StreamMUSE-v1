@@ -873,7 +873,7 @@ def test_prompt_start_waits_for_closed_observation_window() -> None:
     ]
 
 
-@pytest.mark.parametrize("fraction, raw_tick", [(0.4, 81.244), (0.0, 81.022)])
+@pytest.mark.parametrize("fraction, raw_tick", [(0.4, 81.244), (0.0, 81.244)])
 def test_tail_snapshot_retains_later_arriving_off_for_next_request(fraction, raw_tick):
     service = _make_service()
     service._generation_interval_ticks = 2
