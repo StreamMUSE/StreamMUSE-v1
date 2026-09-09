@@ -860,10 +860,10 @@ def test_prompt_start_waits_for_closed_observation_window() -> None:
     service._running = True
     service._input_window_events = [_note(62, 31), _note(64, 32)]
     service._now = lambda: 31.9 * service._tempo.seconds_per_tick
-    assert not service._seal_input_window(32)
+    assert not service._snapshot_input_for_request(32)
     assert service._control_q.empty()
     service._now = lambda: 32 * service._tempo.seconds_per_tick
-    assert service._seal_input_window(32)
+    assert service._snapshot_input_for_request(32)
     action = service._control_q.get_nowait()
     assert action.kind == "start"
     assert action.observed_until_tick == 32
@@ -874,30 +874,31 @@ def test_prompt_start_waits_for_closed_observation_window() -> None:
 
 
 @pytest.mark.parametrize("fraction, raw_tick", [(0.4, 81.244), (0.0, 81.022)])
-def test_closed_window_includes_off_from_device_and_file(fraction, raw_tick):
+def test_tail_snapshot_retains_later_arriving_off_for_next_request(fraction, raw_tick):
     service = _make_service()
     service._generation_interval_ticks = 2
     service._input_snap_forward_fraction = fraction
     service._running = True
     service._start_enqueued = True
     service._last_append_observed_tick = 80
-    service._input_closed_until_tick = 80
+    service._input_submitted_until_tick = 80
+    service._now = lambda: 81.1 * service._tempo.seconds_per_tick
+    assert service._snapshot_input_for_request(82)
+    assert service._control_q.get_nowait().melody_events == []
     service._input = SimpleNamespace(read_events=lambda: iter([_note_off(65, 0)]))
     service._now = lambda: raw_tick * service._tempo.seconds_per_tick
     service._input_worker()
-    assert not service._seal_input_window(82)
-    service._now = lambda: math.nextafter(
-        (82 - fraction) * service._tempo.seconds_per_tick, math.inf
-    )
-    assert service._seal_input_window(82)
+    assert not service._snapshot_input_for_request(82)
+    service._now = lambda: 83.1 * service._tempo.seconds_per_tick
+    assert service._snapshot_input_for_request(84)
     action = service._control_q.get_nowait()
-    assert action.observed_until_tick == 82
+    assert action.observed_until_tick == 84
     assert [(e.pitch, e.tick, e.event_type) for e in action.melody_events] == [
         (65, 81, EventType.NOTE_OFF)
     ]
 
 
-def test_closed_window_preserves_same_tick_order_and_holds_future_events():
+def test_tail_snapshot_preserves_same_tick_order_and_holds_future_events():
     service = _make_service()
     service._running = True
     service._start_enqueued = True
@@ -908,17 +909,17 @@ def test_closed_window_preserves_same_tick_order_and_holds_future_events():
     service._input_window_events = list(events)
     # A delayed worker must still partition by tick, not drain its whole buffer.
     service._now = lambda: 90 * service._tempo.seconds_per_tick
-    assert service._seal_input_window(82)
+    assert service._snapshot_input_for_request(82)
     assert service._control_q.get_nowait().melody_events == events[:2]
     assert service._input_window_events == events[2:]
-    assert service._seal_input_window(84)
+    assert service._snapshot_input_for_request(84)
     assert service._control_q.get_nowait().melody_events == events[2:]
-    assert service._seal_input_window(86)
+    assert service._snapshot_input_for_request(86)
     assert service._control_q.get_nowait().melody_events == []
-    assert not service._seal_input_window(86)
+    assert not service._snapshot_input_for_request(86)
 
 
-def test_sealing_cannot_overtake_an_event_timestamped_inside_window():
+def test_snapshot_cannot_overtake_an_event_already_being_timestamped():
     service = _make_service()
     service._running = True
     service._start_enqueued = True
@@ -946,7 +947,7 @@ def test_sealing_cannot_overtake_an_event_timestamped_inside_window():
     assert timestamp_entered.wait(2)
 
     def seal():
-        assert service._seal_input_window(82)
+        assert service._snapshot_input_for_request(82)
         seal_finished.set()
 
     sealing = threading.Thread(target=seal)
@@ -959,30 +960,40 @@ def test_sealing_cannot_overtake_an_event_timestamped_inside_window():
     assert service._control_q.get_nowait().melody_events[0].tick == 81
 
 
-def test_stop_interrupts_window_wait_during_count_in():
+@pytest.mark.parametrize("bpm", [80, 90, 120])
+@pytest.mark.parametrize("fraction", [0.0, 0.4])
+def test_playback_loop_requests_next_beat_at_tail_without_moving_playback(bpm, fraction):
     service = _make_service()
-    service._runtime.timeline_start_time = time.time() + 60
-    service._now = time.time
-    service._running = True
-    worker = threading.Thread(target=service._input_window_worker)
-    service._input_window_thread = worker
-    worker.start()
-    service.stop()
-    assert not worker.is_alive()
-    assert service._control_q.empty()
-
-
-def test_playback_loop_does_not_seal_input_windows():
-    service = _make_service()
+    service._tempo = Tempo(bpm=bpm, ticks_per_beat=4, beats_per_bar=4)
     now_value = [0.0]
     service._now = lambda: now_value[0]
     service._sleep = lambda seconds: now_value.__setitem__(0, now_value[0] + seconds)
     service._running = True
-    service._input_snap_forward_fraction = 0.4
-    service._tick_loop(max_ticks=33)
+    service._input_snap_forward_fraction = fraction
+    requests = []
+    original_snapshot = service._snapshot_input_for_request
+
+    def snapshot(end_tick):
+        submitted = original_snapshot(end_tick)
+        if submitted:
+            requests.append((end_tick, now_value[0] / service._tempo.seconds_per_tick))
+        return submitted
+
+    service._snapshot_input_for_request = snapshot
+    service._tick_loop(max_ticks=45)
+    assert requests == pytest.approx([(32, 32.1), (36, 35.1), (40, 39.1), (44, 43.1)])
+    assert now_value[0] == pytest.approx(44.1 * service._tempo.seconds_per_tick)
+    assert [t[0] for t in service._output.ticks] == list(range(45))
+
+
+def test_snapshot_invalid_boundary_does_not_consume_pending_events():
+    service = _make_service()
+    service._running = True
+    service._start_enqueued = True
+    service._input_window_events = [_note(60, 34)]
+    assert not service._snapshot_input_for_request(35)
     assert service._control_q.empty()
-    assert now_value[0] == pytest.approx(32.1 * service._tempo.seconds_per_tick)
-    assert len(service._output.ticks) == 33
+    assert service._input_window_events == [_note(60, 34)]
 
 
 def test_prompt_continuation_append_keeps_empty_rest_chunks():

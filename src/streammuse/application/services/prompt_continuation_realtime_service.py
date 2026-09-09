@@ -13,7 +13,6 @@ from typing import Any, Callable, Protocol
 
 from streammuse.application.services.input_timing import (
     build_input_quantization_trace_row,
-    clamp_snap_forward_fraction,
     diagnose_input_quantization,
     stamp_user_input_event_at_tick,
 )
@@ -150,11 +149,9 @@ class PromptContinuationRealtimeService:
         self._input_thread: threading.Thread | None = None
         self._tick_thread: threading.Thread | None = None
         self._protocol_thread: threading.Thread | None = None
-        self._input_window_thread: threading.Thread | None = None
         self._input_window_lock = threading.Lock()
-        self._input_window_stop = threading.Event()
         self._input_window_events: list[MusicalEvent] = []
-        self._input_closed_until_tick = 0
+        self._input_submitted_until_tick = 0
 
         self._event_q: queue.Queue[MusicalEvent] = queue.Queue()
         self._control_q: queue.Queue[_ControlAction] = queue.Queue()
@@ -371,8 +368,7 @@ class PromptContinuationRealtimeService:
         for ev in self._input.read_events():
             if not self._running:
                 break
-            # Timestamp and admission share the sealing lock: a window cannot
-            # close between assigning an event's tick and putting it in the buffer.
+            # A request snapshot cannot overtake an event already being stamped.
             with self._input_window_lock:
                 received_time_s = self._now()
                 result = diagnose_input_quantization(
@@ -571,31 +567,22 @@ class PromptContinuationRealtimeService:
             self._output.output_event(event, source="user")
         return drained
 
-    def _input_window_close_time(self, end_tick: int) -> float:
-        assert self._runtime is not None
-        fraction = clamp_snap_forward_fraction(self._input_snap_forward_fraction)
-        close_tick = float(end_tick) - fraction
-        # Keep the advertised eight-beat observation period for Prompt startup.
-        if int(end_tick) == self._prompt_length_ticks:
-            close_tick = float(end_tick)
-        return self._runtime.timeline_start_time + close_tick * self._tempo.seconds_per_tick
-
-    def _seal_input_window(self, end_tick: int) -> bool:
+    def _snapshot_input_for_request(self, end_tick: int) -> bool:
+        """Submit received events, not a promise that the last tick is closed."""
         with self._input_window_lock:
-            now = self._now()
-            if not self._running or now < self._input_window_close_time(end_tick):
+            if not self._running or end_tick <= self._input_submitted_until_tick:
                 return False
-            if end_tick <= self._input_closed_until_tick:
+            if end_tick < self._prompt_length_ticks:
                 return False
-            assert self._runtime is not None
-            # Use the quantizer itself at floating-point boundary ties.
-            closed_tick = diagnose_input_quantization(
-                max(0.0, now - self._runtime.timeline_start_time),
-                self._tempo,
-                snap_forward_fraction=self._input_snap_forward_fraction,
-            ).quantized_tick
-            if closed_tick < end_tick:
+            if (end_tick - self._prompt_length_ticks) % self._generation_interval_ticks:
                 return False
+            if not self._start_enqueued:
+                assert self._runtime is not None
+                if end_tick != self._prompt_length_ticks or self._now() < (
+                    self._runtime.timeline_start_time
+                    + self._prompt_length_ticks * self._tempo.seconds_per_tick
+                ):
+                    return False
             released = [e for e in self._input_window_events if int(e.tick) < end_tick]
             self._input_window_events = [
                 e for e in self._input_window_events if int(e.tick) >= end_tick
@@ -606,23 +593,14 @@ class PromptContinuationRealtimeService:
             else:
                 self._pending_append_events = released
                 self._maybe_enqueue_append(end_tick)
-            self._input_closed_until_tick = end_tick
+            self._input_submitted_until_tick = end_tick
         self._trace(
-            "input_window_closed",
+            "input_snapshot_submitted",
             observed_until_tick=end_tick,
-            close_time_s=self._input_window_close_time(end_tick),
+            input_visibility_policy="beat_tail_snapshot",
             melody_event_count=len(released),
         )
         return True
-
-    def _input_window_worker(self, *, max_ticks: int | None = None) -> None:
-        end_tick = self._prompt_length_ticks
-        while self._running and (max_ticks is None or end_tick < max_ticks):
-            delay = max(0.0, self._input_window_close_time(end_tick) - self._now())
-            if self._input_window_stop.wait(delay):
-                return
-            if self._seal_input_window(end_tick):
-                end_tick += self._generation_interval_ticks
 
     def _maybe_enqueue_start(self, observed_until_tick: int) -> None:
         if self._start_enqueued:
@@ -1490,7 +1468,6 @@ class PromptContinuationRealtimeService:
         while self._running:
             if max_ticks is not None and tick >= max_ticks:
                 self._running = False
-                self._input_window_stop.set()
                 break
 
             target_time = start + self._tempo.tick_to_seconds(tick)
@@ -1504,6 +1481,12 @@ class PromptContinuationRealtimeService:
             self._sleep(self._tempo.seconds_per_tick * self._INPUT_BUFFER_RATIO)
 
             self._drain_user_events()
+            if not self._start_enqueued and tick >= self._prompt_length_ticks:
+                self._snapshot_input_for_request(self._prompt_length_ticks)
+            if self._start_enqueued and tick + 1 > self._prompt_length_ticks:
+                # Match the standard service's beat-tail lead. Input arriving
+                # after this snapshot keeps its musical tick and goes next time.
+                self._snapshot_input_for_request(tick + 1)
 
             while True:
                 try:
@@ -1546,32 +1529,25 @@ class PromptContinuationRealtimeService:
             timeline_start_time=session_start_time + count_in_seconds,
         )
         self._input_quantization_sequence = 0
-        self._input_window_stop.clear()
         self._output.output_status("running", "prompt-continuation")
 
         self._input_thread = threading.Thread(target=self._input_worker, daemon=True)
         self._tick_thread = threading.Thread(target=self._tick_loop, kwargs={"max_ticks": max_ticks}, daemon=True)
         self._protocol_thread = threading.Thread(target=self._protocol_worker, daemon=True)
-        self._input_window_thread = threading.Thread(
-            target=self._input_window_worker, kwargs={"max_ticks": max_ticks}, daemon=True
-        )
 
         self._input_thread.start()
         self._tick_thread.start()
         self._protocol_thread.start()
-        self._input_window_thread.start()
 
     def stop(self) -> None:
         workers = (
             self._protocol_thread,
             self._tick_thread,
             self._input_thread,
-            self._input_window_thread,
         )
         if not self._running and all(worker is None for worker in workers):
             return
         self._running = False
-        self._input_window_stop.set()
         try:
             self._input.close()
         except Exception:
@@ -1599,7 +1575,6 @@ class PromptContinuationRealtimeService:
         self._protocol_thread = None
         self._tick_thread = None
         self._input_thread = None
-        self._input_window_thread = None
         try:
             self._output.output_status("stopped", "")
             self._output.close()
