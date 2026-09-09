@@ -202,16 +202,16 @@ def one_client(args, label, midi=None, seed=None, source=None):
     env.update({"LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS": "0",
                 "LEKAI_PROMPT_CONTINUATION_BOUND_LATE_RECOVERY": "0",
                 "LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES": "0"})
-    if seed is not None:
-        initialized = api(args.server, "/prompt_continuation/session/initialize",
-                          {"prompt_seed": seed, "continuation_seed": seed})
-        save(out / "session_initialized.json", initialized)
-        for field, name in {"prompt_requested_seed":"LEKAI_PROMPT_REQUESTED_SEED",
-            "prompt_effective_seed":"LEKAI_PROMPT_EFFECTIVE_SEED",
-            "continuation_requested_seed":"LEKAI_CONTINUATION_REQUESTED_SEED",
-            "continuation_effective_seed":"LEKAI_CONTINUATION_EFFECTIVE_SEED",
-            "session_id":"LEKAI_PROMPT_SESSION_ID", "session_epoch":"LEKAI_PROMPT_SESSION_EPOCH"}.items():
-            env[name] = str(initialized[field])
+    # The bare CLI adopts a session; Web Start normally performs this API call.
+    initialized = api(args.server, "/prompt_continuation/session/initialize",
+                      {} if seed is None else {"prompt_seed": seed, "continuation_seed": seed})
+    save(out / "session_initialized.json", initialized)
+    for field, name in {"prompt_requested_seed":"LEKAI_PROMPT_REQUESTED_SEED",
+        "prompt_effective_seed":"LEKAI_PROMPT_EFFECTIVE_SEED",
+        "continuation_requested_seed":"LEKAI_CONTINUATION_REQUESTED_SEED",
+        "continuation_effective_seed":"LEKAI_CONTINUATION_EFFECTIVE_SEED",
+        "session_id":"LEKAI_PROMPT_SESSION_ID", "session_epoch":"LEKAI_PROMPT_SESSION_EPOCH"}.items():
+        env[name] = str(initialized[field])
     command = [sys.executable, "-m", "streammuse.presentation.cli.cli",
         "--tempo", "90", "--model-condition-bpm", "80", "--ticks-per-beat", "4", "--beats-per-bar", "4",
         "--model-name", "lekai", "--continuation-mode", "prompt_continuation",

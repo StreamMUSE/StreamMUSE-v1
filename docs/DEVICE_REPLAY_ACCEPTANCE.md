@@ -26,9 +26,15 @@ not reused. The source is repository `prompts/old_input/mel/001.mid`.
    existing MIDI-file CLI, using A's recorded seed for both models.
 3. C: repeat B unchanged to distinguish path differences from replay variation.
 
-A uses the existing automatic session initialization. B and C initialize via
-the existing API with the recorded seed, then use the existing CLI session
+A invokes the same session initialization API as Web Start, without supplying
+a seed, and adopts the returned session using the existing CLI mechanism.
+B and C initialize via the existing API with the recorded seed, then use the existing CLI session
 adoption mechanism. No response or token is substituted.
+
+The first harness attempt omitted initialization for bare device CLI and did
+not produce a session-seed artifact. It stopped before B/C and is not an
+acceptance result. The corrected harness supplies initialization for all runs;
+no system code changed.
 
 ## Evidence and boundaries
 
