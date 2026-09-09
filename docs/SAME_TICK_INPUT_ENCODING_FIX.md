@@ -39,3 +39,11 @@ deadline variation. It cannot repair old logs whose ordering was already lost.
 
 The old acceptance analyzer must be run from its pinned pre-fix checkout to
 reproduce the original mismatch. Do not reinterpret old outputs as fixed runs.
+
+## Post-fix inference acceptance
+
+The isolated harness accepts `--system-ref 99ddaa68` on both server and client
+to verify system source against the fix commit. Use `--seed 1051154023138951872`
+on the client to retain the pre-fix test's seed; B/C still copy the seed record
+actually returned for A. This changes only harness configuration, not runtime
+quantization, scheduler or model behavior. Results must be saved to a new folder.

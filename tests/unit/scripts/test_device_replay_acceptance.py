@@ -56,3 +56,20 @@ def test_source_window_is_bounded():
     assert events[0][0] == 0
     assert max(t for t, _ in events) <= 24 * 60 / 90
     assert all(a[0] <= b[0] for a, b in zip(events, events[1:]))
+
+
+def test_explicit_system_ref_is_checked_and_recorded(monkeypatch):
+    calls = []
+
+    def output(command, **kwargs):
+        calls.append(command)
+        if "rev-parse" in command:
+            return "a" * 40 + "\n"
+        assert "diff" in command
+        return b""
+
+    monkeypatch.setattr(acceptance.subprocess, "check_output", output)
+    result = acceptance.identity("test-ref")
+    assert result["base"] == "a" * 40
+    assert calls[0][-1] == "test-ref^{commit}"
+    assert calls[1][-4:] == ["a" * 40, "--", "src", "transformers"]
