@@ -247,8 +247,8 @@ class MidiConverter:
                 }
             )
 
-        # Sort events by time; process note_off before note_on if same tick
-        evt_sorted.sort(key=lambda e: (int(e.get("tick", 0)), 0 if e.get("type") == "note_off" else 1))
+        # Preserve observed order at ties: ON/OFF is a tap; OFF/ON is a retrigger.
+        evt_sorted.sort(key=lambda e: int(e.get("tick", 0)))
 
         # Track active pitches within the window (initialized from carry-in)
         active = set(active_pitches)
@@ -267,6 +267,8 @@ class MidiConverter:
                 if p in active:
                     # Turn sustain off starting at tick t (relative)
                     pianoroll[0, idx, t:T] = 0
+                    # A same-tick ON followed by OFF occupies no model step.
+                    pianoroll[1, idx, t] = 0
                     active.discard(p)
 
             else:  # note_on

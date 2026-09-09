@@ -102,10 +102,9 @@ class LekaiPromptEngine:
             self._load_model(checkpoint_path)
 
     @staticmethod
-    def _event_sort_key(event: EventPayload) -> tuple[int, int]:
-        tick = int(event.get("tick", 0))
-        priority = 0 if str(event.get("type", "")) == "note_off" else 1
-        return tick, priority
+    def _event_sort_key(event: EventPayload) -> int:
+        # Keep same-tick input order consistent with events_to_pianoroll.
+        return int(event.get("tick", 0))
 
     @staticmethod
     def _env_positive_int(name: str) -> Optional[int]:

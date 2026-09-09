@@ -734,10 +734,9 @@ class LekaiHttpBackend:
             return copy.deepcopy(list(self._generation_metadata.values()))
 
     @staticmethod
-    def _event_sort_key(event: EventPayload) -> Tuple[int, int]:
-        tick = int(event.get("tick", 0))
-        priority = 0 if str(event.get("type", "")) == "note_off" else 1
-        return tick, priority
+    def _event_sort_key(event: EventPayload) -> int:
+        # Keep same-tick input order consistent in rolls, carry and trimmed history.
+        return int(event.get("tick", 0))
 
     def _active_pitches_before_tick(self, events: List[EventPayload], cutoff_tick: int) -> Set[int]:
         active: Set[int] = set()
