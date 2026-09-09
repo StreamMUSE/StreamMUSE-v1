@@ -106,12 +106,17 @@ class EvaluationContract:
     generation_length_frames: int
     prompt_sampling: SamplingConfig
     continuation_sampling: SamplingConfig
+    count_in_beats: int = 0
+    continuation_constraints: bool = False
+    deterministic_boundary_generation: bool = False
 
     @property
     def prompt_length_ticks(self) -> int:
         return self.prompt_beats * self.ticks_per_beat
 
     def validate(self) -> None:
+        if self.count_in_beats < 0:
+            raise ValueError("count_in_beats must be nonnegative")
         if not math.isfinite(self.playback_bpm) or self.playback_bpm <= 0:
             raise ValueError("--playback-bpm must be > 0")
         for label, value in (
@@ -182,6 +187,9 @@ def evaluation_contract_from_args(args: argparse.Namespace) -> EvaluationContrac
             top_k=int(args.continuation_top_k),
             repetition_penalty=float(args.continuation_repetition_penalty),
         ),
+        count_in_beats=int(getattr(args, "count_in_beats", 0)),
+        continuation_constraints=bool(getattr(args, "continuation_constraints", False)),
+        deterministic_boundary_generation=bool(getattr(args, "deterministic_boundary_generation", False)),
     )
     contract.validate()
     return contract
@@ -196,6 +204,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prompt-checkpoint", type=Path, required=True)
     parser.add_argument("--continuation-checkpoint", type=Path, required=True)
     parser.add_argument("--time-signature-index", type=int, default=0)
+    parser.add_argument("--count-in-beats", type=int, default=0)
+    parser.add_argument("--continuation-constraints", action="store_true")
+    parser.add_argument("--deterministic-boundary-generation", action="store_true")
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument(
         "--systems",
@@ -588,7 +599,10 @@ def build_server_environment(
             ),
             "LEKAI_PROMPT_CONTEXT_BEATS": str(PROMPT_CONTEXT_BEATS),
             "LEKAI_HISTORY_MAX_TICKS": str(HISTORY_MAX_TICKS),
-            "LEKAI_DETERMINISTIC_BOUNDARY_GENERATION": "1",
+            "LEKAI_DETERMINISTIC_BOUNDARY_GENERATION": str(int(contract.deterministic_boundary_generation)),
+            "LEKAI_CONTINUATION_TONAL_CONSTRAINT": str(int(contract.continuation_constraints)),
+            "LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD": str(int(contract.continuation_constraints)),
+            "LEKAI_DISABLE_FALLBACK": "1",
             "LEKAI_RT_LOG_DIR": str((server_dir / "generation").resolve()),
         }
     )
@@ -711,6 +725,9 @@ def runtime_contract_errors(
         "prompt_context_beats": PROMPT_CONTEXT_BEATS,
         "history_retention_ticks": HISTORY_MAX_TICKS,
         "time_signature_index": time_signature_index,
+        "tonal_constraint_enabled": contract.continuation_constraints,
+        "empty_token_guard_enabled": contract.continuation_constraints,
+        "boundary_generation_order": "synchronous" if contract.deterministic_boundary_generation else "single_executor_then_request",
         **contract.continuation_sampling.as_dict(),
     }
     if require_session_runtime_contract:
@@ -1025,7 +1042,15 @@ def build_cli_command(
         "--run-stop-tick",
         str(contract.window_end_tick),
         "--count-in-beats",
-        "0",
+        str(contract.count_in_beats),
+        "--temperature",
+        str(contract.continuation_sampling.temperature),
+        "--top-p",
+        str(contract.continuation_sampling.top_p),
+        "--top-k",
+        str(contract.continuation_sampling.top_k),
+        "--repetition-penalty",
+        str(contract.continuation_sampling.repetition_penalty),
         "--continuation-mode",
         continuation_mode,
     ]
@@ -1041,14 +1066,6 @@ def build_cli_command(
                 prompt_selection_mode,
                 "--prompt-batch-candidates",
                 str(effective_candidates),
-                "--temperature",
-                str(contract.prompt_sampling.temperature),
-                "--top-p",
-                str(contract.prompt_sampling.top_p),
-                "--top-k",
-                str(contract.prompt_sampling.top_k),
-                "--repetition-penalty",
-                str(contract.prompt_sampling.repetition_penalty),
             ]
         )
         if midi_file_source_tick_mode:
@@ -1148,7 +1165,7 @@ def validate_session(
         "continuation_mode": expected_mode,
         "generation_interval_ticks": contract.generation_interval_ticks,
         "generation_length_frames": contract.generation_length_frames,
-        "count_in_beats": 0,
+        "count_in_beats": contract.count_in_beats,
     }
     if system_id == "streammuse_v2_prompt_continuation":
         expected_config.update(
@@ -1270,17 +1287,21 @@ def _contract_record(
         "prompt_length_ticks": contract.prompt_length_ticks,
         "generation_interval_ticks": contract.generation_interval_ticks,
         "generation_length_frames": contract.generation_length_frames,
+        "count_in_beats": contract.count_in_beats,
+        "continuation_constraints": contract.continuation_constraints,
+        "deterministic_boundary_generation": contract.deterministic_boundary_generation,
         "midi_file_source_tick_mode": bool(
             midi_file_source_tick_mode
             and system_id == "streammuse_v2_prompt_continuation"
         ),
+        "prompt_model_used": system_id == "streammuse_v2_prompt_continuation",
         "prompt_selection": {
             "mode": prompt_selection_mode,
             "candidate_count": effective_prompt_candidate_count(
                 prompt_selection_mode, prompt_batch_candidates
             ),
-        },
-        "prompt_sampling": contract.prompt_sampling.as_dict(),
+        } if system_id == "streammuse_v2_prompt_continuation" else None,
+        "prompt_sampling": contract.prompt_sampling.as_dict() if system_id == "streammuse_v2_prompt_continuation" else None,
         "continuation_sampling": contract.continuation_sampling.as_dict(),
     }
 

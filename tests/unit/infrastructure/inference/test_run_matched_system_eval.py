@@ -261,6 +261,9 @@ def test_single_prompt_selection_uses_effective_n1_env_and_runtime_contract(
         "generation_length_frames": 4,
         "prompt_length_ticks": 32,
         "prompt_effective_bpm": script.BPM,
+        "tonal_constraint_enabled": False,
+        "empty_token_guard_enabled": False,
+        "boundary_generation_order": "single_executor_then_request",
         # Cleared when the client session ends; this is not a contract failure.
         "continuation_effective_bpm": None,
         **script.SAMPLING,
