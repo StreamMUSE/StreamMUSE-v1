@@ -163,6 +163,72 @@ def test_slow_continuation_does_not_consume_future_windows():
         scheduler.shutdown()
 
 
+@pytest.mark.parametrize("block_prompt", [False, True])
+def test_late_previous_tick_events_follow_admission_boundary_without_loss(block_prompt):
+    prompt = _BlockingPromptEngine() if block_prompt else _ImmediatePromptEngine()
+    continuation = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt, continuation_engine=continuation
+    )
+    early = _note_on(65, 35)
+    late_off = {"type": "note_off", "pitch": 65, "tick": 35, "velocity": 0}
+    late_on = _note_on(67, 35)
+    try:
+        scheduler.start(
+            melody_events=[_note_on(60, 0)], prompt_length_ticks=32,
+            generation_interval_ticks=4, inference_mode="sliding_window",
+            model_name="lekai_prompt_continuation", checkpoint_path=None,
+            bpm=80, observed_until_tick=32,
+        )
+        if block_prompt:
+            assert prompt.started.wait(2)
+        else:
+            scheduler.wait(2)
+        scheduler.append_melody([early], observed_until_tick=36)
+        if not block_prompt:
+            scheduler.wait(2)
+        scheduler.append_melody([late_off, late_on], observed_until_tick=40)
+        if block_prompt:
+            prompt.release.set()
+        scheduler.wait(2)
+        calls = continuation.generate_calls
+        assert [call["generation_start_tick"] for call in calls] == [32, 36, 40]
+        assert [call["melody_events"] for call in calls] == [[], [early], [late_off, late_on]]
+        scheduler.append_melody([], observed_until_tick=44)
+        scheduler.wait(2)
+        assert continuation.generate_calls[-1]["melody_events"] == []
+    finally:
+        if block_prompt:
+            prompt.release.set()
+        scheduler.shutdown()
+
+
+def test_late_prompt_region_event_is_not_injected_retroactively():
+    prompt = _BlockingPromptEngine()
+    continuation = _RecordingContinuationEngine()
+    scheduler = LekaiPromptContinuationScheduler(
+        prompt_engine=prompt, continuation_engine=continuation
+    )
+    initial = _note_on(60, 0)
+    late = _note_on(62, 31)
+    try:
+        scheduler.start(
+            melody_events=[initial], prompt_length_ticks=32,
+            generation_interval_ticks=4, inference_mode="sliding_window",
+            model_name="lekai_prompt_continuation", checkpoint_path=None,
+            bpm=80, observed_until_tick=32,
+        )
+        assert prompt.started.wait(2)
+        scheduler.append_melody([late], observed_until_tick=36)
+        prompt.release.set()
+        scheduler.wait(2)
+        assert continuation.inject_calls[0]["melody_events"] == [initial]
+        assert [call["melody_events"] for call in continuation.generate_calls] == [[], [late]]
+    finally:
+        prompt.release.set()
+        scheduler.shutdown()
+
+
 def test_scheduler_accepts_melody_while_prompt_is_running_then_catches_up():
     prompt_engine = _BlockingPromptEngine()
     continuation_engine = _RecordingContinuationEngine()
