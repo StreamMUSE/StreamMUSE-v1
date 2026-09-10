@@ -739,6 +739,10 @@ def test_runtime_session_captures_replay_audit_before_history_clear(tmp_path) ->
     }
 
     class _PromptClient:
+        def wait_until_idle(self):
+            calls.append("wait_until_idle")
+            return {"is_running": False}
+
         def replay_audit(self):
             calls.append("replay_audit")
             return model_snapshot
@@ -808,7 +812,8 @@ def test_runtime_session_captures_replay_audit_before_history_clear(tmp_path) ->
     session.cleanup()
     session.cleanup()
 
-    assert calls == ["replay_audit", "write_audit", "clear_history"]
+    assert calls == ["wait_until_idle", "replay_audit", "write_audit", "clear_history"]
+    assert session.metadata["prompt_continuation_stop_status"] == {"is_running": False}
     model_trace = json.loads(
         (session_dir / "prompt_continuation_model_trace.json").read_text(
             encoding="utf-8"

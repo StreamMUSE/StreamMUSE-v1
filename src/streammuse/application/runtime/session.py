@@ -173,6 +173,12 @@ class RuntimeSession:
     def _cleanup_once(self) -> None:
         history_payload: object = {}
         if self.prompt_client is not None:
+            wait_until_idle = getattr(self.prompt_client, "wait_until_idle", None)
+            if callable(wait_until_idle):
+                try:
+                    self.metadata["prompt_continuation_stop_status"] = wait_until_idle()
+                except Exception as exc:
+                    self._record_cleanup_warning("prompt_continuation_stop_drain", exc)
             self._capture_prompt_continuation_replay_audit(self.prompt_client)
             try:
                 self._save_prompt_continuation_history_logs(self.prompt_client)

@@ -217,6 +217,23 @@ class PromptContinuationHttpClient:
                 raise TimeoutError(f"prompt-continuation did not finish within {max_wait_s}s; last_status={status}")
             time.sleep(float(poll_interval_s))
 
+    def wait_until_idle(
+        self, *, poll_interval_s: float = 0.05, max_wait_s: float = 60.0
+    ) -> dict[str, Any]:
+        """Wait for admitted generation to finish before capturing Stop logs."""
+        deadline = time.monotonic() + float(max_wait_s)
+        while True:
+            status = self.status()
+            if status.get("is_failed"):
+                raise RuntimeError(f"prompt-continuation failed while stopping: {status.get('error')}")
+            if not isinstance(status.get("is_running"), bool):
+                raise RuntimeError("prompt-continuation status is missing is_running")
+            if not status["is_running"]:
+                return status
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"prompt-continuation still running after {max_wait_s}s; last_status={status}")
+            time.sleep(float(poll_interval_s))
+
 
 def normalize_prompt_continuation_base_url(server_url: str) -> str:
     """Return a server base URL from either a base URL or a known endpoint URL."""

@@ -224,3 +224,36 @@ def test_prompt_continuation_http_client_rejects_non_positive_bpm():
             observed_until_tick=32,
             bpm=0,
         )
+
+
+def test_wait_until_idle_waits_even_when_playback_is_ready(monkeypatch):
+    client = PromptContinuationHttpClient(
+        PromptContinuationHttpClientConfig(base_url="http://x:8000")
+    )
+    statuses = iter([
+        {"is_running": True, "is_playback_ready": True},
+        {"is_running": False, "is_playback_ready": True},
+    ])
+    sleeps = []
+    monkeypatch.setattr(client, "status", lambda: next(statuses))
+    monkeypatch.setattr(
+        "streammuse.infrastructure.inference.prompt_continuation_http_client.time.sleep",
+        sleeps.append,
+    )
+
+    assert client.wait_until_idle(poll_interval_s=0.01)["is_running"] is False
+    assert sleeps == [0.01]
+
+
+@pytest.mark.parametrize("status,error,match", [
+    ({"is_failed": True, "error": "decode failed"}, RuntimeError, "decode failed"),
+    ({"is_playback_ready": True}, RuntimeError, "missing is_running"),
+    ({"is_running": True}, TimeoutError, "still running"),
+])
+def test_wait_until_idle_rejects_failed_incomplete_or_timed_out_status(monkeypatch, status, error, match):
+    client = PromptContinuationHttpClient(
+        PromptContinuationHttpClientConfig(base_url="http://x:8000")
+    )
+    monkeypatch.setattr(client, "status", lambda: status)
+    with pytest.raises(error, match=match):
+        client.wait_until_idle(max_wait_s=0)
