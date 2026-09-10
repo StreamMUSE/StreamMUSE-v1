@@ -13,6 +13,11 @@ Branch: `codex/fix-pc-beat-tail-delivery`, based on the formal runner at
   arrives after one snapshot remains eligible for the next request. Already
   delivered events are not duplicated. A slow worker cannot retroactively use
   events from later requests in an earlier generation.
+- Stop: both input paths exclude requests whose generation starts at or after
+  the run's stop tick. Already-admitted requests finish after playback stops;
+  raw/model logs are captured only after the backend becomes idle. Playback
+  is not extended to include this cleanup. Failed or timed-out drains remain
+  visible in cleanup warnings and incomplete traces.
 - Unchanged: quantization and snap-forward, model/checkpoints, sampling,
   Rule If-Else and constraints, generation target/chunk size, playback late
   policy, and generic Late Recovery (off).
@@ -44,6 +49,11 @@ Before formal execution, smoke workers each run one user10 and one test40
 piece twice with seed 0, stopping at tick 128. Inspect native model input/raw
 logs and deadline delivery, then write a commit-linked acceptance record.
 Smoke outputs are diagnostic only and excluded from formal results.
+
+The full-song fixed-event versus normal MIDI-file audit remains a strict
+gate: compare all recorded calls and raw histories after a complete capture.
+Do not discard calls at Stop to turn a failed audit into an accepted result.
+The prior attempt and its Stop-boundary diagnostic are retained separately.
 
 `combined.mid` is actual playback. Native raw and Prompt histories remain
 in each session directory for separate reconstruction and diagnosis.

@@ -15,8 +15,10 @@ import run_matched_system_eval as matched
 BASE = "69ff9fa0"
 CONDITION = "pc_rule_if_else_n10"
 PRODUCTION_FILES = {
+    "src/streammuse/application/runtime/session.py",
     "src/streammuse/application/services/prompt_continuation_realtime_service.py",
     "src/streammuse/infrastructure/inference/lekai_prompt_continuation/scheduler.py",
+    "src/streammuse/infrastructure/inference/prompt_continuation_http_client.py",
 }
 
 
@@ -49,6 +51,7 @@ def prepare(args):
     plan["checkpoints"] = {k: baseline["checkpoints"][k] for k in ("prompt", "continuation")}
     plan["modern"]["boundary_order"] = "beat_tail_snapshot_after_existing_input_buffer"
     plan["modern"]["backend_visibility"] = "request_admission_boundary_and_unsent_event_indices"
+    plan["modern"]["stop_policy"] = "exclude_generation_start_at_stop_and_drain_before_capture"
     for name, cohort in plan["cohorts"].items():
         assert matched.file_sha256(Path(cohort["manifest"])) == cohort["manifest_sha256"]
         assert len(cohort["pieces"]) == (10 if name == "user10" else 40)
