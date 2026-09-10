@@ -1067,22 +1067,20 @@ class RealTimeMusicService:
                 continue
 
             if on_tick < int(current_tick):
-                plan.clamped_onset_count += 1
-                self._append_scheduled_model_event(
+                plan.dropped_past_note_count += 1
+                self._append_dropped_model_event(
                     plan,
                     note_on,
-                    scheduled_tick=int(current_tick),
                     logical_tick=on_tick,
-                    policy="clamped_partial_note",
+                    policy="dropped_late_note_on",
                     generation_start_tick=generation_start_tick,
                     current_tick=current_tick,
                 )
-                self._append_scheduled_model_event(
+                self._append_dropped_model_event(
                     plan,
                     note_off,
-                    scheduled_tick=off_tick,
                     logical_tick=off_tick,
-                    policy="clamped_partial_note_off",
+                    policy="dropped_late_note_on",
                     generation_start_tick=generation_start_tick,
                     current_tick=current_tick,
                 )
@@ -1110,18 +1108,22 @@ class RealTimeMusicService:
         for note_on in open_note_ons:
             on_tick = int(note_on.tick)
             if on_tick < int(current_tick):
-                plan.clamped_onset_count += 1
-                scheduled_tick = int(current_tick)
-                policy = "clamped_open_note"
-            else:
-                scheduled_tick = on_tick
-                policy = "future_open_note"
+                plan.dropped_past_note_count += 1
+                self._append_dropped_model_event(
+                    plan,
+                    note_on,
+                    logical_tick=on_tick,
+                    policy="dropped_late_note_on",
+                    generation_start_tick=generation_start_tick,
+                    current_tick=current_tick,
+                )
+                continue
             self._append_scheduled_model_event(
                 plan,
                 note_on,
-                scheduled_tick=scheduled_tick,
+                scheduled_tick=on_tick,
                 logical_tick=on_tick,
-                policy=policy,
+                policy="future_open_note",
                 generation_start_tick=generation_start_tick,
                 current_tick=current_tick,
             )
@@ -1142,6 +1144,7 @@ class RealTimeMusicService:
                 continue
 
             if off_tick < int(current_tick):
+                # Closing an already sounding note is safety cleanup, not onset recovery.
                 scheduled_tick = int(current_tick)
                 policy = "late_isolated_note_off"
             elif off_tick == int(current_tick):

@@ -49,6 +49,7 @@ LATE_SCHEDULE_POLICIES = {
     "clamped_partial_note_off",
     "clamped_open_note",
     "dropped_past_note",
+    "dropped_late_note_on",
     "dropped_past_placeholder",
     "late_isolated_note_off",
     "late_placeholder",

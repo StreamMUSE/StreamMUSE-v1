@@ -903,7 +903,7 @@ def test_standard_pop_future_replacement_clears_stale_system_trace_hit() -> None
     assert row["explicit_rest"] is False
 
 
-def test_plan_model_events_partial_note_clamps_onset_and_keeps_note_off() -> None:
+def test_plan_model_events_drops_late_onset_even_when_note_has_not_ended() -> None:
     svc = _make_service()
 
     plan = svc._plan_model_events_for_playback(
@@ -916,12 +916,14 @@ def test_plan_model_events_partial_note_clamps_onset_and_keeps_note_off() -> Non
         active_model_keys=set(),
     )
 
-    assert [(e.event.event_type, e.event.tick, e.logical_tick, e.policy) for e in plan.scheduled_events] == [
-        (EventType.NOTE_ON, 4, 2, "clamped_partial_note"),
-        (EventType.NOTE_OFF, 6, 6, "clamped_partial_note_off"),
+    assert plan.scheduled_events == []
+    assert plan.clamped_onset_count == 0
+    assert plan.dropped_past_note_count == 1
+    assert [row["policy"] for row in plan.trace_rows] == [
+        "dropped_late_note_on", "dropped_late_note_on",
     ]
-    assert plan.clamped_onset_count == 1
-    assert any(row["logical_tick"] == 2 and row["scheduled_tick"] == 4 for row in plan.trace_rows)
+    assert [row["logical_tick"] for row in plan.trace_rows] == [2, 6]
+    assert all(row["scheduled_tick"] is None and row["action"] == "dropped" for row in plan.trace_rows)
 
 
 def test_plan_model_events_drops_fully_past_note() -> None:
@@ -942,12 +944,13 @@ def test_plan_model_events_drops_fully_past_note() -> None:
     assert [row["policy"] for row in plan.trace_rows] == ["dropped_past_note", "dropped_past_note"]
 
 
-def test_plan_model_events_keeps_future_note_unchanged() -> None:
+@pytest.mark.parametrize("on_tick", [4, 5])
+def test_plan_model_events_keeps_current_and_future_note_unchanged(on_tick) -> None:
     svc = _make_service()
 
     plan = svc._plan_model_events_for_playback(
         [
-            _model_event(48, 5, EventType.NOTE_ON),
+            _model_event(48, on_tick, EventType.NOTE_ON),
             _model_event(48, 8, EventType.NOTE_OFF),
         ],
         current_tick=4,
@@ -956,12 +959,12 @@ def test_plan_model_events_keeps_future_note_unchanged() -> None:
     )
 
     assert [(e.event.event_type, e.event.tick, e.logical_tick, e.policy) for e in plan.scheduled_events] == [
-        (EventType.NOTE_ON, 5, 5, "future_note"),
+        (EventType.NOTE_ON, on_tick, on_tick, "future_note"),
         (EventType.NOTE_OFF, 8, 8, "future_note"),
     ]
 
 
-def test_plan_model_events_supports_open_note_and_active_isolated_note_off() -> None:
+def test_plan_model_events_drops_late_open_note_but_closes_active_isolated_note_off() -> None:
     svc = _make_service()
     key = (48, 0, 0)
 
@@ -971,9 +974,10 @@ def test_plan_model_events_supports_open_note_and_active_isolated_note_off() -> 
         generation_start_tick=0,
         active_model_keys=set(),
     )
-    assert [(e.event.event_type, e.event.tick, e.policy) for e in open_plan.scheduled_events] == [
-        (EventType.NOTE_ON, 4, "clamped_open_note"),
-    ]
+    assert open_plan.scheduled_events == []
+    assert open_plan.clamped_onset_count == 0
+    assert open_plan.dropped_past_note_count == 1
+    assert open_plan.trace_rows[0]["policy"] == "dropped_late_note_on"
 
     late_off_plan = svc._plan_model_events_for_playback(
         [_model_event(48, 3, EventType.NOTE_OFF)],
@@ -1001,7 +1005,7 @@ def test_plan_model_events_drops_orphan_note_off_and_does_not_cross_pair_channel
 
     plan = svc._plan_model_events_for_playback(
         [
-            _model_event(48, 2, EventType.NOTE_ON, channel=0),
+            _model_event(48, 4, EventType.NOTE_ON, channel=0),
             _model_event(48, 5, EventType.NOTE_OFF, channel=1),
         ],
         current_tick=4,
@@ -1010,10 +1014,65 @@ def test_plan_model_events_drops_orphan_note_off_and_does_not_cross_pair_channel
     )
 
     assert [(e.event.event_type, e.event.channel, e.event.tick, e.policy) for e in plan.scheduled_events] == [
-        (EventType.NOTE_ON, 0, 4, "clamped_open_note"),
+        (EventType.NOTE_ON, 0, 4, "future_open_note"),
     ]
     assert plan.orphan_note_off_count == 1
     assert any(row["policy"] == "orphan_note_off" for row in plan.trace_rows)
+
+
+@pytest.mark.parametrize("on_tick, pitches, closed", [(40, [43, 48, 52, 55], False), (88, [62], True)])
+def test_plan_model_events_drops_observed_test40_late_onsets_without_mutating_raw(on_tick, pitches, closed):
+    svc = _make_service()
+    raw = [_model_event(pitch, on_tick, EventType.NOTE_ON) for pitch in pitches]
+    if closed:
+        raw.extend(_model_event(pitch, on_tick + 2, EventType.NOTE_OFF) for pitch in pitches)
+    original = [(e.tick, e.pitch, e.event_type, e.velocity) for e in raw]
+
+    plan = svc._plan_model_events_for_playback(
+        raw, current_tick=on_tick + 1, generation_start_tick=on_tick, active_model_keys=set(),
+    )
+
+    assert plan.scheduled_events == []
+    assert plan.dropped_past_note_count == len(pitches)
+    assert plan.clamped_onset_count == 0
+    assert [(e.tick, e.pitch, e.event_type, e.velocity) for e in raw] == original
+
+
+def test_late_drop_preserves_active_closure_and_current_same_pitch_retrigger():
+    svc = _make_service()
+    plan = svc._plan_model_events_for_playback(
+        [
+            _model_event(48, 3, EventType.NOTE_OFF),
+            _model_event(48, 4, EventType.NOTE_ON),
+            _model_event(48, 6, EventType.NOTE_OFF),
+            _model_event(52, 2, EventType.NOTE_ON),
+            _model_event(52, 6, EventType.NOTE_OFF),
+        ],
+        current_tick=4, generation_start_tick=0, active_model_keys={(48, 0, 0)},
+    )
+
+    assert [(e.event.event_type, e.event.pitch, e.scheduled_tick) for e in plan.scheduled_events] == [
+        (EventType.NOTE_OFF, 48, 4),
+        (EventType.NOTE_ON, 48, 4),
+        (EventType.NOTE_OFF, 48, 6),
+    ]
+    assert plan.dropped_past_note_count == 1
+    assert plan.clamped_onset_count == 0
+
+
+def test_dropped_open_note_does_not_make_later_note_off_playable():
+    svc = _make_service()
+    dropped = svc._plan_model_events_for_playback(
+        [_model_event(48, 2, EventType.NOTE_ON)],
+        current_tick=4, generation_start_tick=0, active_model_keys=set(),
+    )
+    assert dropped.scheduled_events == []
+    later = svc._plan_model_events_for_playback(
+        [_model_event(48, 6, EventType.NOTE_OFF)],
+        current_tick=5, generation_start_tick=4, active_model_keys=set(),
+    )
+    assert later.scheduled_events == []
+    assert later.orphan_note_off_count == 1
 
 
 def test_tick_loop_forces_note_off_when_clear_removes_active_future_off() -> None:

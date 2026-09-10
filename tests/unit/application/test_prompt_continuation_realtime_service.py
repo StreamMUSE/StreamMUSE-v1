@@ -1285,6 +1285,34 @@ def test_prompt_continuation_without_recovery_still_drops_late_note_on(monkeypat
     assert service._model_event_key(_note(60, 6)) not in service._active_model_note_keys
 
 
+@pytest.mark.parametrize("on_tick", [39, 40, 41])
+@pytest.mark.parametrize("paired", [False, True])
+def test_prompt_default_drop_policy_preserves_original_onset_boundary(monkeypatch, on_tick, paired):
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS", raising=False)
+    monkeypatch.delenv("LEKAI_PROMPT_CONTINUATION_REHYDRATE_ACTIVE_NOTES", raising=False)
+    service = _make_service()
+    assert not service._recover_late_events
+    assert not service._rehydrate_active_notes
+    raw = [_note(60, on_tick)]
+    if paired:
+        raw.append(_note_off(60, 44))
+    original = [(e.tick, e.event_type) for e in raw]
+
+    service._schedule_playable(raw, current_tick=40)
+
+    for tick in range(40, 45):
+        for event in service._scheduler.get_events_at_tick(tick):
+            service._output_model_event(event)
+    emitted = [event for event, _source in service._output.events]
+    expected = [] if on_tick < 40 else [(on_tick, EventType.NOTE_ON)]
+    assert [(e.tick, e.event_type) for e in emitted if e.event_type == EventType.NOTE_ON] == expected
+    if paired and on_tick >= 40:
+        assert [(e.tick, e.event_type) for e in emitted if e.event_type == EventType.NOTE_OFF] == [
+            (44, EventType.NOTE_OFF),
+        ]
+    assert [(e.tick, e.event_type) for e in raw] == original
+
+
 def test_prompt_continuation_emits_same_tick_note_off_before_note_on(monkeypatch):
     monkeypatch.setenv("LEKAI_PROMPT_CONTINUATION_RECOVER_LATE_EVENTS", "0")
     service = _make_service()
