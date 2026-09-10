@@ -996,6 +996,60 @@ def test_snapshot_invalid_boundary_does_not_consume_pending_events():
     assert service._input_window_events == [_note(60, 34)]
 
 
+@pytest.mark.parametrize("stop_tick", [32, 33, 40, 44, 45, 128])
+def test_bounded_run_does_not_request_generation_at_or_after_stop(stop_tick):
+    service = _make_service()
+    now_value = [0.0]
+    service._now = lambda: now_value[0]
+    service._sleep = lambda seconds: now_value.__setitem__(0, now_value[0] + seconds)
+    service._running = True
+
+    service._tick_loop(max_ticks=stop_tick)
+
+    requests = []
+    while not service._control_q.empty():
+        requests.append(service._control_q.get_nowait().observed_until_tick)
+    assert requests == list(range(32, stop_tick, 4))
+    assert [tick[0] for tick in service._output.ticks] == list(range(stop_tick))
+    assert now_value[0] == pytest.approx((stop_tick - 0.9) * service._tempo.seconds_per_tick)
+
+
+def test_stop_boundary_does_not_consume_unsubmitted_input():
+    service = _make_service()
+    service._running = True
+    service._start_enqueued = True
+    service._run_stop_tick = 44
+    service._input_window_events = [_note(60, 43)]
+
+    assert not service._snapshot_input_for_request(44)
+    assert not service._snapshot_input_for_request(48)
+    assert service._input_window_events == [_note(60, 43)]
+    assert service._control_q.empty()
+
+
+def test_protocol_drains_admitted_requests_after_stop_without_playback():
+    service = _make_service()
+    service._control_q.put(_ControlAction("start", [], 32))
+    service._control_q.put(_ControlAction("append", [_note(60, 34)], 36))
+    service._running = False
+
+    service._protocol_worker()
+
+    assert service._control_q.empty()
+    assert service._client.start_calls == 1
+    assert service._client.append_calls == 1
+    assert service._output.ticks == []
+    assert service._output.events == []
+    assert not service._snapshot_input_for_request(40)
+
+
+def test_protocol_does_not_start_backend_when_stopped_without_admitted_requests():
+    service = _make_service()
+    service._protocol_worker()
+    assert service._client.clear_history_calls == 0
+    assert service._client.start_calls == 0
+
+
 def test_prompt_continuation_append_keeps_empty_rest_chunks():
     service = _make_service()
     service._start_enqueued = True

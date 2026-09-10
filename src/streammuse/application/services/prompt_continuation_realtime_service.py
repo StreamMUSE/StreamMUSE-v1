@@ -143,6 +143,7 @@ class PromptContinuationRealtimeService:
         # A protocol worker can be blocked in one backend request when Stop is
         # pressed. Bound the wait by that request timeout plus a small margin.
         self._worker_join_timeout_s = max(1.0, request_timeout_s + 1.0)
+        self._run_stop_tick: int | None = None
 
         self._running = False
         self._runtime: PromptContinuationRuntime | None = None
@@ -404,14 +405,15 @@ class PromptContinuationRealtimeService:
     def _protocol_worker(self) -> None:
         assert self._runtime is not None
         self._sleep_until(self._runtime.timeline_start_time)
-        if not self._running:
+        if not self._running and self._control_q.empty():
             return
         try:
             self._client.clear_history()
         except Exception as exc:
             self._output.output_status("error", f"Prompt-continuation clear_history failed: {exc}")
 
-        while self._running:
+        # Finish already-admitted requests after the playback clock stops.
+        while self._running or not self._control_q.empty():
             try:
                 action = self._control_q.get(timeout=self._protocol_poll_interval_s)
             except queue.Empty:
@@ -571,6 +573,8 @@ class PromptContinuationRealtimeService:
         """Submit received events, not a promise that the last tick is closed."""
         with self._input_window_lock:
             if not self._running or end_tick <= self._input_submitted_until_tick:
+                return False
+            if self._run_stop_tick is not None and end_tick >= self._run_stop_tick:
                 return False
             if end_tick < self._prompt_length_ticks:
                 return False
@@ -1462,6 +1466,7 @@ class PromptContinuationRealtimeService:
 
     def _tick_loop(self, *, max_ticks: int | None) -> None:
         assert self._runtime is not None
+        self._run_stop_tick = max_ticks
         self._run_count_in()
         start = self._runtime.timeline_start_time
         tick = 0
@@ -1521,6 +1526,7 @@ class PromptContinuationRealtimeService:
     def start(self, *, max_ticks: int | None = None) -> None:
         if self._running:
             return
+        self._run_stop_tick = max_ticks
         self._running = True
         session_start_time = self._now()
         count_in_seconds = self._tempo.tick_to_seconds(self._count_in_ticks)
@@ -1547,7 +1553,10 @@ class PromptContinuationRealtimeService:
         )
         if not self._running and all(worker is None for worker in workers):
             return
-        self._running = False
+        # Serialize Stop with admission so a queued request cannot appear after
+        # the protocol worker has observed a stopped, empty queue.
+        with self._input_window_lock:
+            self._running = False
         try:
             self._input.close()
         except Exception:
