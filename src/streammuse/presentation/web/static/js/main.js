@@ -169,13 +169,14 @@
         if (generationConfig === null) return;
         updateServiceState({is_running: false, state: 'starting'});
         // Reset the old display before the new runtime can publish events.
-        if (window.PianoVisualizer && PianoVisualizer.clearNotes) {
+        // Classic-script const bindings are not properties of window.
+        if (typeof PianoVisualizer !== 'undefined' && PianoVisualizer.clearNotes) {
             PianoVisualizer.clearNotes();
         }
-        if (window.PianoVisualizer && PianoVisualizer.setCurrentTick) {
+        if (typeof PianoVisualizer !== 'undefined' && PianoVisualizer.setCurrentTick) {
             PianoVisualizer.setCurrentTick(0);
         }
-        if (window.Stats && Stats.reset) {
+        if (typeof Stats !== 'undefined' && Stats.reset) {
             Stats.reset();
         }
         try {
