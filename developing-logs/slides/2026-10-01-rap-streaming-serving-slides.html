@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  /* Standalone base: mirrors what the artifact viewer provides. */
+  :root { color-scheme: light; }
+  body { margin: 0; font-size: 14px; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>RAP 实时人声 Serving</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style>
+/* Layout: 16:9 slide frames stacked as a reading deck; press P to present one slide at a time. */
+:root {
+  --bg: #e9ecf2;
+  --slide: #fbfcfe;
+  --fg: #141722;
+  --muted: #586074;
+  --line: #d3d8e3;
+  --accent: #2e3ec9;
+  --accent-soft: #e2e6fb;
+  --on-accent: #ffffff;
+  --c-qwen: #1f8a86;
+  --c-slate: #7d8599;
+  --c-light: #c3c9d6;
+  --gain: #11785a;
+  --warn: #b35309;
+  --display: "Barlow Condensed", "Noto Sans SC", "Arial Narrow", sans-serif;
+  --body: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c0e14; --slide: #151822; --fg: #e6e8f0; --muted: #9aa2b6; --line: #2a3040;
+    --accent: #8f9cff; --accent-soft: #232a57; --on-accent: #0c0e14;
+    --c-qwen: #4cc2bc; --c-slate: #a3abbd; --c-light: #4a5266; --gain: #4fcc9d; --warn: #f2a15f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c0e14; --slide: #151822; --fg: #e6e8f0; --muted: #9aa2b6; --line: #2a3040;
+  --accent: #8f9cff; --accent-soft: #232a57; --on-accent: #0c0e14;
+  --c-qwen: #4cc2bc; --c-slate: #a3abbd; --c-light: #4a5266; --gain: #4fcc9d; --warn: #f2a15f;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--body); }
+.top {
+  max-width: 1240px; margin: 0 auto; padding-block: 20px 0; padding-inline: 16px;
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+}
+.top .name { font: 600 15px/1.3 var(--body); color: var(--muted); letter-spacing: .02em; }
+.top .hint { font: 13px/1.4 var(--body); color: var(--muted); }
+button {
+  font: 500 14px/1 var(--body); color: var(--fg); background: var(--slide);
+  border: 1px solid var(--line); border-radius: 4px; padding: 9px 14px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.deck {
+  max-width: 1240px; margin: 0 auto; padding-block: 18px 72px; padding-inline: 16px;
+  display: grid; gap: 28px;
+}
+.frame { container-type: inline-size; scroll-margin-top: 16px; min-width: 0; }
+.slide {
+  aspect-ratio: 16 / 9; background: var(--slide); border: 1px solid var(--line); border-radius: 4px;
+  padding: 3.4cqw 4.2cqw 3cqw; display: flex; flex-direction: column; gap: 1.6cqw;
+  font-size: clamp(11px, 1.5cqw, 19px); line-height: 1.5; position: relative; min-width: 0;
+}
+.part {
+  font: 500 .78em/1 var(--mono); color: var(--accent); letter-spacing: .08em; text-transform: uppercase;
+  display: flex; gap: .8em; align-items: center;
+}
+.part::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+h1, h2 { margin: 0; text-wrap: balance; font-family: var(--body); font-weight: 700; letter-spacing: -.005em; }
+h2 { font-size: 2.05em; line-height: 1.2; }
+h1 { font-size: 2.9em; line-height: 1.15; max-width: 22ch; }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 62ch; font-size: 1.05em; }
+.pno {
+  position: absolute; right: 2.2cqw; bottom: 1.6cqw; font: 500 .72em/1 var(--mono); color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cols { display: grid; grid-template-columns: 1.25fr 1fr; gap: 3cqw; align-items: start; min-height: 0; }
+.cols.even { grid-template-columns: 1fr 1fr; }
+.cols > * { min-width: 0; }
+.row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2.4cqw; }
+.row3 > * { min-width: 0; }
+.fig { margin: 0; min-width: 0; }
+.fig svg { width: 100%; height: auto; display: block; overflow: visible; }
+.fig figcaption { color: var(--muted); font-size: .86em; margin-top: .5em; }
+ul.pts { margin: 0; padding: 0; list-style: none; display: grid; gap: .55em; }
+ul.pts li { padding-left: 1.1em; position: relative; }
+ul.pts li::before { content: ""; position: absolute; left: 0; top: .62em; width: .45em; height: .45em; background: var(--accent); }
+.note { border-left: 2px solid var(--line); padding-left: .9em; }
+.note h3, .box h3 { margin: 0 0 .3em; font-size: .95em; font-weight: 700; }
+.note p { color: var(--muted); }
+.box { border: 1px solid var(--line); border-radius: 4px; padding: 1em 1.1em; display: grid; gap: .5em; }
+.box.acc { border-color: var(--accent); background: var(--accent-soft); }
+.stat { display: grid; gap: .25em; }
+.stat .num { font: 600 4.2em/1 var(--display); letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.stat .num small { font-size: .45em; font-weight: 500; color: var(--muted); margin-left: .15em; }
+.stat .lab { color: var(--muted); font-size: .92em; }
+.stats { display: grid; gap: 1.6em; }
+.chip {
+  display: inline-block; font: 500 .68em/1.4 var(--mono); padding: .05em .45em; border-radius: 3px;
+  vertical-align: .15em; margin-left: .35em; white-space: nowrap;
+}
+.chip.m { color: var(--gain); border: 1px solid var(--gain); }
+.chip.e { color: var(--muted); border: 1px dashed var(--muted); }
+.chip.p { color: var(--accent); border: 1px solid var(--accent); }
+.src { color: var(--muted); font-size: .78em; }
+.src a { color: inherit; }
+table.t { width: 100%; border-collapse: collapse; font-size: .9em; }
+table.t th, table.t td { padding: .42em .6em; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.t th { color: var(--muted); font-weight: 500; font-size: .92em; }
+table.t td.n, table.t th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.t tr.sep td { color: var(--muted); font: 500 .8em/1 var(--mono); letter-spacing: .06em; padding-top: 1em; border-bottom: none; }
+table.t .fix td:first-child { color: var(--warn); font-weight: 600; }
+.gain { color: var(--gain); font-weight: 600; }
+.warnt { color: var(--warn); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: .4em 1.2em; font-size: .82em; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: .4em; }
+.legend i { width: .9em; height: .9em; display: inline-block; border-radius: 2px; }
+.cover { justify-content: space-between; }
+.cover .stats { grid-template-columns: repeat(3, 1fr); }
+.kbd { font: 500 .85em var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 .35em; }
+
+/* SVG diagram vocabulary */
+svg text { font-family: var(--body); }
+.d-frame { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 6 5; }
+.d-proc { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+.d-box { fill: var(--slide); stroke: var(--fg); stroke-width: 1.3; }
+.d-box.hl { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.d-box.mute { stroke: var(--c-slate); }
+.d-t { fill: var(--fg); font-size: 15px; font-weight: 600; }
+.d-s { fill: var(--muted); font-size: 12.5px; }
+.d-acc { fill: var(--accent); font-size: 13px; font-weight: 600; }
+.d-lab { fill: var(--muted); font-size: 12px; font-family: var(--mono); }
+.d-a { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.d-a.acc { stroke: var(--accent); stroke-width: 2; }
+.d-a.dash { stroke-dasharray: 5 4; }
+.d-play { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+.d-prep { fill: var(--c-qwen); fill-opacity: .22; stroke: var(--c-qwen); stroke-width: 1.4; }
+.d-grid { stroke: var(--line); stroke-width: 1; }
+#arr path { fill: var(--muted); }
+#arr-acc path { fill: var(--accent); }
+.cell { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
+.cell.first { fill: var(--accent); }
+.cell.pad { fill: none; stroke: var(--line); stroke-dasharray: 3 3; }
+.cell-t { fill: var(--fg); font-size: 11.5px; font-family: var(--mono); }
+.cell-t.inv { fill: var(--on-accent); }
+.tailband { fill: var(--warn); fill-opacity: .1; }
+.chunk { fill: var(--accent); }
+
+/* Chart segments */
+.s-moss { fill: var(--accent); }
+.s-qwen { fill: var(--c-qwen); }
+.s-opus { fill: var(--c-slate); }
+.s-small { fill: var(--c-light); }
+.s-idle { fill: var(--warn); }
+.s-gain { fill: var(--gain); }
+.s-old { fill: var(--c-light); }
+.s-new { fill: var(--accent); }
+.s-route { fill: var(--c-light); }
+.est rect.seg { fill-opacity: .5; stroke: var(--muted); stroke-dasharray: 4 3; stroke-width: 1; }
+.seg-t { fill: var(--on-accent); font-size: 12.5px; font-weight: 600; }
+.seg-t.dk { fill: var(--fg); }
+.ax { stroke: var(--line); stroke-width: 1; }
+.ax-t { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.row-t { fill: var(--fg); font-size: 13.5px; font-weight: 600; }
+.row-s { fill: var(--muted); font-size: 11.5px; }
+.tot-t { fill: var(--fg); font-size: 13px; font-weight: 600; font-family: var(--mono); }
+.mark { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 5 3; }
+.mark-t { fill: var(--warn); font-size: 12px; font-weight: 600; }
+
+/* Present mode */
+.pbar {
+  position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 10;
+  display: flex; gap: 8px; align-items: center;
+}
+.pbar .count { font: 500 13px/1 var(--mono); color: var(--muted); min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
+body.presenting { overflow: hidden; }
+body.presenting .top, body.presenting .frame:not(.current) { display: none; }
+body.presenting .frame.current {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5;
+  width: min(calc(100vw - 24px), calc((100vh - 24px) * 16 / 9));
+}
+body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
+
+@media (max-width: 720px) {
+  .slide { aspect-ratio: auto; font-size: 15px; padding: 20px 18px 34px; gap: 14px; }
+  h1 { font-size: 30px; } h2 { font-size: 22px; }
+  .cols, .cols.even, .row3, .cover .stats { grid-template-columns: 1fr; }
+  .stat .num { font-size: 40px; }
+  .fig { overflow-x: auto; }
+  .fig svg { min-width: 560px; }
+  .pno { right: 14px; bottom: 12px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  button { transition: color .15s, border-color .15s; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="arr-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+</svg>
+
+<header class="top">
+  <div class="name">StreamMUSE · 组会 2026-10-02</div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <span class="hint">按 <span class="kbd">P</span> 演示，<span class="kbd">←</span> <span class="kbd">→</span> 翻页，<span class="kbd">Esc</span> 退出</span>
+    <button id="btn-present" type="button">开始演示</button>
+  </div>
+</header>
+
+<main class="deck" id="deck">
+
+<!-- 1 -->
+<section class="frame" id="s1"><div class="slide cover">
+  <div class="part">Streaming Serving</div>
+  <div style="display:grid;gap:1.1em">
+    <h1>把 MOSS 人声推理搬到 SGLang-Omni</h1>
+    <p class="lede">StreamMUSE 实时 RAP 的人声后端：整体流程、旧后端、omni serving 的思路、MOSS 的结构、新后端的改动、实测提升和下一步。</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="num">3.25<small>×</small></div><div class="lab">MOSS 合成一段人声：2640 → 812 ms<span class="chip m">实测</span></div></div>
+    <div class="stat"><div class="num">1.49<small>s</small></div><div class="lab">服务器准备一个 chunk，原来约 3.3 s<span class="chip m">实测</span><span class="chip e">旧值估算</span></div></div>
+    <div class="stat"><div class="num">≈1.15<small>s</small></div><div class="lab">完成下一步改动后的目标<span class="chip e">估算</span></div></div>
+  </div>
+  <div class="pno">1 / 16</div>
+</div></section>
+
+<!-- 2 -->
+<section class="frame" id="s2"><div class="slide">
+  <div class="part">整体流程</div>
+  <h2>“实时”指准备速度追得上播放速度</h2>
+  <p class="lede">Mac 播放第 N 段时，H200 在准备第 N+1 段。每段是两小节人声，必须在下一段开始前准备好。</p>
+  <figure class="fig">
+    <svg viewBox="0 0 960 245" role="img" aria-label="时间线：Mac 连续播放 chunk 0、1、2，每段 5.333 秒；H200 在播放上一段时准备下一段，约 3 秒完成，必须在 5.0 秒超时和下一段开始前 1 tick 的冻结点之前完成。">
+      <text class="d-t" x="16" y="75">Mac 播放</text>
+      <text class="d-t" x="16" y="147">H200 准备</text>
+      <text class="d-s" x="16" y="165">下一段</text>
+      <rect class="d-play" x="150" y="52" width="240" height="36" rx="3"/>
+      <rect class="d-play" x="390" y="52" width="240" height="36" rx="3"/>
+      <rect class="d-play" x="630" y="52" width="240" height="36" rx="3"/>
+      <text class="d-t" x="270" y="75" text-anchor="middle">chunk 0 · 小节 0–1</text>
+      <text class="d-t" x="510" y="75" text-anchor="middle">chunk 1 · 小节 2–3</text>
+      <text class="d-t" x="750" y="75" text-anchor="middle">chunk 2 · 小节 4–5</text>
+      <rect class="d-prep" x="150" y="128" width="135" height="30" rx="3"/>
+      <rect class="d-prep" x="390" y="128" width="135" height="30" rx="3"/>
+      <rect class="d-prep" x="630" y="128" width="135" height="30" rx="3"/>
+      <text class="d-s" x="217" y="148" text-anchor="middle">准备 chunk 1</text>
+      <text class="d-s" x="457" y="148" text-anchor="middle">准备 chunk 2</text>
+      <text class="d-s" x="697" y="148" text-anchor="middle">准备 chunk 3</text>
+      <path class="d-a dash" d="M285 128 C 330 110, 360 100, 388 90" marker-end="url(#arr)"/>
+      <text class="d-lab" x="300" y="112">排入队列</text>
+      <line class="mark" x1="382.5" y1="36" x2="382.5" y2="172"/>
+      <text class="mark-t" x="376" y="30" text-anchor="end">冻结选择：下一段前 1 tick（0.167 s）</text>
+      <line class="d-a" x1="150" y1="184" x2="375" y2="184"/>
+      <line class="d-a" x1="150" y1="178" x2="150" y2="190"/>
+      <line class="d-a" x1="375" y1="178" x2="375" y2="190"/>
+      <text class="d-s" x="262" y="202" text-anchor="middle">远端请求最多等 5.0 s</text>
+      <line class="ax" x1="150" y1="222" x2="870" y2="222"/>
+      <line class="ax" x1="150" y1="216" x2="150" y2="228"/><line class="ax" x1="390" y1="216" x2="390" y2="228"/><line class="ax" x1="630" y1="216" x2="630" y2="228"/><line class="ax" x1="870" y1="216" x2="870" y2="228"/>
+      <text class="ax-t" x="150" y="242" text-anchor="middle">0 s</text>
+      <text class="ax-t" x="390" y="242" text-anchor="middle">5.333 s</text>
+      <text class="ax-t" x="630" y="242" text-anchor="middle">10.667 s</text>
+      <text class="ax-t" x="870" y="242" text-anchor="middle">16 s</text>
+    </svg>
+  </figure>
+  <div class="row3">
+    <div class="note"><h3>节拍单位</h3><p>90 BPM 时一小节 2.667 s；一个 chunk 是两小节，5.333 s，输出 24 kHz 下正好 128000 帧。</p></div>
+    <div class="note"><h3>截止时间</h3><p>远端请求最多等 5.0 s，而且要在下一段开始前 1 tick 冻结选择，所以服务器拿不到完整的 5.333 s。</p></div>
+    <div class="note"><h3>兜底</h3><p>远端迟到或失败，就用 Mac 上提前备好的 eSpeak 人声，音乐时钟不等人。</p></div>
+  </div>
+  <div class="pno">2 / 16</div>
+</div></section>
+
+<!-- 3 -->
+<section class="frame" id="s3"><div class="slide">
+  <div class="part">整体流程</div>
+  <h2>一个 chunk 在系统里走过的路</h2>
+  <figure class="fig">
+    <svg viewBox="0 0 1000 350" role="img" aria-label="架构图：Mac 客户端通过 SSH tunnel 向 H200 render server 发 chunk 请求；服务器依次执行 Qwen 写词、选两句、MOSS-TTS 合成、MMS 对齐、R3 拉伸、打包，再把人声和 manifest 送回 Mac。MOSS-TTS 是本次替换的部分。">
+      <rect class="d-box" x="16" y="56" width="196" height="250" rx="5"/>
+      <text class="d-t" x="114" y="86" text-anchor="middle">Mac 客户端</text>
+      <text class="d-s" x="32" y="122">选主题和 flow 模板</text>
+      <text class="d-s" x="32" y="154">提前备好 eSpeak 兜底</text>
+      <text class="d-s" x="32" y="186">Opus 解码，加鼓混音</text>
+      <text class="d-s" x="32" y="218">按音乐时钟播放</text>
+      <text class="d-s" x="32" y="250">迟到就用兜底</text>
+      <rect class="d-frame" x="280" y="16" width="704" height="318" rx="8"/>
+      <text class="d-lab" x="298" y="42">H200 · render server :8020</text>
+      <text class="d-lab" x="246" y="140" text-anchor="middle">SSH</text>
+      <text class="d-lab" x="246" y="154" text-anchor="middle">tunnel</text>
+      <line class="d-a" x1="212" y1="176" x2="302" y2="176" marker-end="url(#arr)"/>
+      <text class="d-lab" x="246" y="196" text-anchor="middle">请求</text>
+      <text class="d-acc" x="576" y="116" text-anchor="middle">本次替换</text>
+      <rect class="d-box" x="304" y="132" width="96" height="84" rx="4"/>
+      <rect class="d-box" x="416" y="132" width="96" height="84" rx="4"/>
+      <rect class="d-box hl" x="528" y="132" width="96" height="84" rx="4"/>
+      <rect class="d-box" x="640" y="132" width="96" height="84" rx="4"/>
+      <rect class="d-box" x="752" y="132" width="96" height="84" rx="4"/>
+      <rect class="d-box" x="864" y="132" width="96" height="84" rx="4"/>
+      <text class="d-t" x="352" y="168" text-anchor="middle">Qwen 写词</text><text class="d-s" x="352" y="190" text-anchor="middle">vLLM · GPU 1</text>
+      <text class="d-t" x="464" y="168" text-anchor="middle">选两句</text><text class="d-s" x="464" y="190" text-anchor="middle">音节、重音、打分</text>
+      <text class="d-t" x="576" y="168" text-anchor="middle">MOSS-TTS</text><text class="d-s" x="576" y="190" text-anchor="middle">GPU 0</text>
+      <text class="d-t" x="688" y="168" text-anchor="middle">MMS 对齐</text><text class="d-s" x="688" y="190" text-anchor="middle">GPU 0</text>
+      <text class="d-t" x="800" y="168" text-anchor="middle">R3 拉伸</text><text class="d-s" x="800" y="190" text-anchor="middle">Rubber Band</text>
+      <text class="d-t" x="912" y="168" text-anchor="middle">打包</text><text class="d-s" x="912" y="190" text-anchor="middle">manifest + Opus</text>
+      <line class="d-a" x1="400" y1="174" x2="414" y2="174" marker-end="url(#arr)"/>
+      <line class="d-a" x1="512" y1="174" x2="526" y2="174" marker-end="url(#arr)"/>
+      <line class="d-a" x1="624" y1="174" x2="638" y2="174" marker-end="url(#arr)"/>
+      <line class="d-a" x1="736" y1="174" x2="750" y2="174" marker-end="url(#arr)"/>
+      <line class="d-a" x1="848" y1="174" x2="862" y2="174" marker-end="url(#arr)"/>
+      <text class="d-lab" x="352" y="240" text-anchor="middle">每 bar 16 条</text>
+      <text class="d-lab" x="464" y="240" text-anchor="middle">两句 + 目标时间</text>
+      <text class="d-lab" x="576" y="240" text-anchor="middle">source 5.44 s</text>
+      <text class="d-lab" x="688" y="240" text-anchor="middle">实际发音时间</text>
+      <text class="d-lab" x="800" y="240" text-anchor="middle">精确 5.333 s</text>
+      <text class="d-lab" x="912" y="240" text-anchor="middle">约 32 KB</text>
+      <path class="d-a" d="M912 250 V296 H214" marker-end="url(#arr)"/>
+      <text class="d-lab" x="600" y="288" text-anchor="middle">24 kHz 人声 + manifest</text>
+    </svg>
+    <figcaption>Qwen 写词，MOSS 把词说出来，MMS 找到实际发音位置，R3 把人声拉到精确的节拍，Mac 加鼓播放。这次换的是 MOSS 的推理方式，前后环节不变。</figcaption>
+  </figure>
+  <div class="pno">3 / 16</div>
+</div></section>
+
+<!-- 4 -->
+<section class="frame" id="s4"><div class="slide">
+  <div class="part">旧后端</div>
+  <h2>之前：MOSS 直接跑在 render server 进程里</h2>
+  <div class="cols">
+    <figure class="fig">
+      <svg viewBox="0 0 640 320" role="img" aria-label="旧后端：选词、MOSS、MMS 和 R3 都在同一个 render server 进程和同一张 GPU 上。MOSS 使用 Transformers model.generate，SDPA attention，BF16 主干，FP32 codec，并且每次请求重新编码参考音频。">
+        <rect class="d-frame" x="8" y="16" width="624" height="296" rx="8"/>
+        <text class="d-lab" x="26" y="42">render server 进程 · 同一张 GPU</text>
+        <rect class="d-box" x="26" y="130" width="104" height="64" rx="4"/>
+        <text class="d-t" x="78" y="167" text-anchor="middle">选词</text>
+        <rect class="d-box hl" x="160" y="66" width="262" height="192" rx="4"/>
+        <text class="d-t" x="291" y="98" text-anchor="middle">MOSS · HF Transformers</text>
+        <text class="d-s" x="180" y="136">model.generate() 逐步 eager 执行</text>
+        <text class="d-s" x="180" y="166">SDPA attention</text>
+        <text class="d-s" x="180" y="196">BF16 主干，FP32 codec</text>
+        <text class="d-s" x="180" y="226">每次请求重新编码参考音频</text>
+        <rect class="d-box" x="456" y="92" width="156" height="56" rx="4"/>
+        <text class="d-t" x="534" y="126" text-anchor="middle">MMS 对齐</text>
+        <rect class="d-box" x="456" y="184" width="156" height="56" rx="4"/>
+        <text class="d-t" x="534" y="218" text-anchor="middle">R3 拉伸</text>
+        <line class="d-a" x1="130" y1="162" x2="158" y2="162" marker-end="url(#arr)"/>
+        <line class="d-a" x1="422" y1="120" x2="454" y2="120" marker-end="url(#arr)"/>
+        <line class="d-a" x1="534" y1="148" x2="534" y2="182" marker-end="url(#arr)"/>
+      </svg>
+    </figure>
+    <div class="stats">
+      <div class="stat"><div class="num">2640<small>ms</small></div><div class="lab">MOSS 合成一段 5.33 s 人声的中位数<span class="chip m">实测</span></div></div>
+      <div class="stat"><div class="num">≈3.3<small>s</small></div><div class="lab">服务器准备一个完整 chunk<span class="chip e">估算</span><br>8 月单次实测 3.41 s</div></div>
+      <ul class="pts">
+        <li>模型和服务同进程，生成过程中无法中断</li>
+        <li>MOSS 一项就吃掉了 5 s 预算的一半以上</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pno">4 / 16</div>
+</div></section>
+
+<!-- 5 -->
+<section class="frame" id="s5"><div class="slide">
+  <div class="part">Omni serving</div>
+  <h2>Omni 模型天然是一条多阶段流水线</h2>
+  <p class="lede">以 Qwen2.5-Omni 为例：Thinker 负责理解和生成文本，Talker 把 Thinker 的隐状态变成语音 token，再由 sliding-window DiT 流式解码成波形。</p>
+  <figure class="fig">
+    <svg viewBox="0 0 960 230" role="img" aria-label="Qwen2.5-Omni 的阶段：音频和视觉编码器，Thinker，Talker，sliding-window DiT 解码器，输出语音；Thinker 同时输出文本。各阶段计算方式不同。">
+      <rect class="d-box" x="16" y="100" width="160" height="80" rx="4"/>
+      <rect class="d-box" x="216" y="100" width="170" height="80" rx="4"/>
+      <rect class="d-box" x="426" y="100" width="180" height="80" rx="4"/>
+      <rect class="d-box" x="646" y="100" width="180" height="80" rx="4"/>
+      <text class="d-t" x="96" y="134" text-anchor="middle">音频 / 视觉编码器</text><text class="d-s" x="96" y="158" text-anchor="middle">按块编码输入</text>
+      <text class="d-t" x="301" y="134" text-anchor="middle">Thinker</text><text class="d-s" x="301" y="158" text-anchor="middle">LLM · 自回归出文本</text>
+      <text class="d-t" x="516" y="134" text-anchor="middle">Talker</text><text class="d-s" x="516" y="158" text-anchor="middle">双轨自回归 · 出语音 token</text>
+      <text class="d-t" x="736" y="134" text-anchor="middle">token → 波形</text><text class="d-s" x="736" y="158" text-anchor="middle">sliding-window DiT</text>
+      <line class="d-a" x1="176" y1="140" x2="214" y2="140" marker-end="url(#arr)"/>
+      <line class="d-a" x1="386" y1="140" x2="424" y2="140" marker-end="url(#arr)"/>
+      <text class="d-lab" x="405" y="200" text-anchor="middle">隐状态</text>
+      <line class="d-a" x1="606" y1="140" x2="644" y2="140" marker-end="url(#arr)"/>
+      <line class="d-a" x1="826" y1="140" x2="868" y2="140" marker-end="url(#arr)"/>
+      <text class="d-t" x="876" y="146">语音</text>
+      <line class="d-a" x1="301" y1="100" x2="301" y2="52" marker-end="url(#arr)"/>
+      <text class="d-t" x="312" y="50">文本</text>
+      <text class="d-lab" x="96" y="84" text-anchor="middle">一次前向</text>
+      <text class="d-lab" x="516" y="84" text-anchor="middle">逐 token 生成</text>
+      <text class="d-lab" x="736" y="84" text-anchor="middle">按窗口扩散解码</text>
+    </svg>
+  </figure>
+  <div class="cols even">
+    <ul class="pts">
+      <li>各阶段的计算方式差别很大：编码器一次前向，Thinker 和 Talker 逐 token 自回归，解码器按窗口做 DiT。</li>
+      <li>塞进一个引擎统一调度，batch 大小、显存和 GPU 分配很难同时照顾好。</li>
+    </ul>
+    <p class="src">来源：Qwen2.5-Omni Technical Report，<a href="https://arxiv.org/abs/2503.20215">arXiv 2503.20215</a></p>
+  </div>
+  <div class="pno">5 / 16</div>
+</div></section>
+
+<!-- 6 -->
+<section class="frame" id="s6"><div class="slide">
+  <div class="part">Omni serving</div>
+  <h2>vLLM-Omni / SGLang-Omni：按阶段图来 serve</h2>
+  <figure class="fig">
+    <svg viewBox="0 0 960 190" role="img" aria-label="阶段图：编码器、Thinker、Talker、Vocoder 四个 stage，每个有独立引擎；stage 之间通过 connector 按 chunk 传数据；瓶颈的 Thinker 开两个实例；Thinker 可以提前把文本直接返回。">
+      <rect class="d-box" x="16" y="70" width="170" height="80" rx="4"/>
+      <rect class="d-box" x="276" y="62" width="190" height="80" rx="4"/>
+      <rect class="d-box hl" x="268" y="70" width="190" height="80" rx="4"/>
+      <rect class="d-box" x="548" y="70" width="170" height="80" rx="4"/>
+      <rect class="d-box" x="788" y="70" width="156" height="80" rx="4"/>
+      <text class="d-t" x="101" y="104" text-anchor="middle">编码器 stage</text><text class="d-s" x="101" y="128" text-anchor="middle">独立引擎和 batching</text>
+      <text class="d-t" x="363" y="104" text-anchor="middle">Thinker stage ×2</text><text class="d-s" x="363" y="128" text-anchor="middle">瓶颈阶段多开实例</text>
+      <text class="d-t" x="633" y="104" text-anchor="middle">Talker stage</text><text class="d-s" x="633" y="128" text-anchor="middle">独立 GPU 分配</text>
+      <text class="d-t" x="866" y="104" text-anchor="middle">Vocoder stage</text><text class="d-s" x="866" y="128" text-anchor="middle">按块出波形</text>
+      <line class="d-a acc" x1="186" y1="110" x2="266" y2="110" marker-end="url(#arr-acc)"/>
+      <line class="d-a acc" x1="466" y1="110" x2="546" y2="110" marker-end="url(#arr-acc)"/>
+      <line class="d-a acc" x1="718" y1="110" x2="786" y2="110" marker-end="url(#arr-acc)"/>
+      <rect x="208" y="100" width="9" height="9" class="chunk"/><rect x="224" y="100" width="9" height="9" class="chunk"/>
+      <rect x="490" y="100" width="9" height="9" class="chunk"/><rect x="506" y="100" width="9" height="9" class="chunk"/>
+      <rect x="738" y="100" width="9" height="9" class="chunk"/><rect x="754" y="100" width="9" height="9" class="chunk"/>
+      <text class="d-lab" x="226" y="176" text-anchor="middle">connector</text>
+      <text class="d-lab" x="506" y="176" text-anchor="middle">按 chunk 传</text>
+      <text class="d-lab" x="752" y="176" text-anchor="middle">不等上游结束</text>
+      <path class="d-a dash" d="M363 62 V30 H690" marker-end="url(#arr)"/>
+      <text class="d-lab" x="698" y="35">提前结束：文本直接返回</text>
+    </svg>
+  </figure>
+  <div class="cols">
+    <ul class="pts">
+      <li><b>阶段图：</b>每个组件是一个 stage，有自己的引擎、batching 和 GPU 分配；用 YAML 配路由，支持提前结束、回环和一对多输出。</li>
+      <li><b>分离部署：</b>瓶颈阶段可以多开实例，思路是 LLM 里 prefill / decode 分离的推广。</li>
+      <li><b>阶段间流式：</b>下游拿到一个 chunk 就开工，主要压低首包延迟。vLLM-Omni 论文报告 JCT 最多降低 91.4%。<span class="chip p">论文数据</span></li>
+    </ul>
+    <div class="box">
+      <h3>Streaming 的三种含义</h3>
+      <p><b>Output：</b>输入一次给齐，输出边生成边返回。</p>
+      <p><b>Sequential：</b>输入流式进入，读完再生成。</p>
+      <p><b>Concurrent：</b>边收边出，全双工。</p>
+      <p class="src">这些 serving 框架做的是系统层面的 output streaming。“边听边想边说”属于模型层面的 concurrent streaming。分类来自综述 <a href="https://arxiv.org/abs/2603.04592">arXiv 2603.04592</a>。</p>
+    </div>
+  </div>
+  <p class="src">来源：vLLM-Omni，<a href="https://arxiv.org/abs/2602.02204">arXiv 2602.02204</a>；SGLang-Omni 设计 RFC，<a href="https://github.com/sgl-project/sglang/issues/16546">sgl-project/sglang#16546</a></p>
+  <div class="pno">6 / 16</div>
+</div></section>
+
+<!-- 7 -->
+<section class="frame" id="s7"><div class="slide">
+  <div class="part">MOSS</div>
+  <h2>MOSS-TTS：每一步同时出 33 个 token</h2>
+  <p class="lede">一个 8B 的自回归语言模型。每一步输入一行 33 个 token，输出下一行：1 个文本控制 token 加 32 个音频码本 token。</p>
+  <figure class="fig">
+    <svg viewBox="0 0 960 290" role="img" aria-label="MOSS-TTS 结构：一行 33 个 token（1 个文本加 32 个音频码本）分别查 33 张 embedding 表后求和，送入 36 层 Qwen3-8B 主干，再经过 33 个输出头（文本头 155648 词表，音频头 32 个乘 1024），采样出下一行作为下一步输入。">
+      <rect class="d-box" x="16" y="56" width="74" height="30" rx="3"/><text class="d-s" x="53" y="76" text-anchor="middle">文本</text>
+      <rect class="d-box hl" x="16" y="92" width="74" height="30" rx="3"/><text class="d-s" x="53" y="112" text-anchor="middle">码本 0</text>
+      <rect class="d-box hl" x="16" y="128" width="74" height="30" rx="3"/><text class="d-s" x="53" y="148" text-anchor="middle">码本 1</text>
+      <text class="d-s" x="53" y="178" text-anchor="middle">⋮</text>
+      <rect class="d-box hl" x="16" y="190" width="74" height="30" rx="3"/><text class="d-s" x="53" y="210" text-anchor="middle">码本 31</text>
+      <text class="d-lab" x="53" y="40" text-anchor="middle">一行输入</text>
+      <rect class="d-box" x="130" y="88" width="160" height="104" rx="4"/>
+      <text class="d-t" x="210" y="126" text-anchor="middle">33 张 embedding 表</text>
+      <text class="d-s" x="210" y="152" text-anchor="middle">逐个查表后相加</text>
+      <text class="d-s" x="210" y="174" text-anchor="middle">得到 1 个 4096 维向量</text>
+      <rect class="d-box hl" x="330" y="60" width="250" height="160" rx="4"/>
+      <text class="d-t" x="455" y="98" text-anchor="middle">Qwen3-8B 主干</text>
+      <text class="d-s" x="455" y="128" text-anchor="middle">36 层，d = 4096</text>
+      <text class="d-s" x="455" y="152" text-anchor="middle">GQA：32 个 Q 头，8 个 KV 头</text>
+      <text class="d-s" x="455" y="176" text-anchor="middle">上下文里含参考音频 codes</text>
+      <rect class="d-box" x="620" y="60" width="180" height="160" rx="4"/>
+      <text class="d-t" x="710" y="98" text-anchor="middle">33 个输出头</text>
+      <text class="d-s" x="710" y="132" text-anchor="middle">文本头：155,648 词表</text>
+      <text class="d-s" x="710" y="158" text-anchor="middle">音频头：32 × 1024</text>
+      <text class="d-s" x="710" y="184" text-anchor="middle">合并成一个大矩阵</text>
+      <rect class="d-box" x="840" y="104" width="104" height="72" rx="4"/>
+      <text class="d-t" x="892" y="136" text-anchor="middle">采样</text>
+      <text class="d-s" x="892" y="158" text-anchor="middle">下一行</text>
+      <line class="d-a" x1="90" y1="140" x2="128" y2="140" marker-end="url(#arr)"/>
+      <line class="d-a" x1="290" y1="140" x2="328" y2="140" marker-end="url(#arr)"/>
+      <line class="d-a" x1="580" y1="140" x2="618" y2="140" marker-end="url(#arr)"/>
+      <line class="d-a" x1="800" y1="140" x2="838" y2="140" marker-end="url(#arr)"/>
+      <path class="d-a acc" d="M892 176 V262 H53 V224" marker-end="url(#arr-acc)"/>
+      <text class="d-acc" x="470" y="254" text-anchor="middle">自回归：采样出的一行作为下一步的输入</text>
+    </svg>
+  </figure>
+  <div class="row3">
+    <div class="note"><h3>音频 codec</h3><p>MOSS-Audio-Tokenizer：24 kHz 波形对应每秒 12.5 帧，每帧 32 个码本。</p></div>
+    <div class="note"><h3>Prompt</h3><p>参考音频 codes、风格指令、目标 token 数、歌词文本。</p></div>
+    <div class="note"><h3>长度控制</h3><p>两小节 5.33 s 对应目标 67 个 token，实际输出 68 帧，也就是 5.44 s。</p></div>
+  </div>
+  <div class="pno">7 / 16</div>
+</div></section>
+
+<!-- 8 -->
+<section class="frame" id="s8"><div class="slide">
+  <div class="part">MOSS</div>
+  <h2>Delay pattern：68 帧为什么要跑约 101 步</h2>
+  <div class="cols">
+    <figure class="fig">
+      <svg id="delay-grid" viewBox="0 0 620 330" role="img" aria-label="示意图：6 个码本、8 帧。码本 k 比码本 0 晚 k 步开始，所以 8 帧需要 13 步；第 1 帧在第 6 步才完整，最后 5 步只是在补齐后面的码本。"></svg>
+      <figcaption>示意：6 个码本、8 帧。码本 k 比码本 0 晚 k 步，同一帧的 token 沿对角线分布，深色是第 1 帧。</figcaption>
+    </figure>
+    <div class="stats">
+      <p>总步数 = 帧数 + 码本数 − 1。每一帧都要等最后一个码本生成完才完整。</p>
+      <div class="stat"><div class="num">68 → 101</div><div class="lab">MOSS 实际：32 个码本、68 帧，trace 中是 101 次 decode<span class="chip m">实测</span></div></div>
+      <div class="stat"><div class="num">≈240<small>ms</small></div><div class="lab">约 33 步不产生新帧的时间。这是模型结构决定的，serving 层去不掉。</div></div>
+    </div>
+  </div>
+  <div class="pno">8 / 16</div>
+</div></section>
+
+<!-- 9 -->
+<section class="frame" id="s9"><div class="slide">
+  <div class="part">MOSS on SGLang-Omni</div>
+  <h2>MOSS 在 SGLang-Omni 里分成三个 stage</h2>
+  <figure class="fig">
+    <svg viewBox="0 0 960 300" role="img" aria-label="SGLang-Omni 中的 MOSS：HTTP 请求进入 coordinator API 进程，再交给一个 pipeline worker 进程；它在同一张 GPU 上依次运行 preprocessing、tts_engine、vocoder 三个 stage，最后返回完整 WAV。">
+      <rect class="d-box" x="10" y="110" width="124" height="70" rx="4"/>
+      <text class="d-t" x="72" y="140" text-anchor="middle">HTTP 请求</text><text class="d-s" x="72" y="162" text-anchor="middle">/v1/audio/speech</text>
+      <rect class="d-box" x="164" y="110" width="146" height="70" rx="4"/>
+      <text class="d-t" x="237" y="140" text-anchor="middle">coordinator</text><text class="d-s" x="237" y="162" text-anchor="middle">API 进程</text>
+      <rect class="d-frame" x="340" y="34" width="610" height="226" rx="8"/>
+      <text class="d-lab" x="358" y="60">pipeline worker 进程 · 同一张 GPU</text>
+      <rect class="d-box" x="358" y="84" width="176" height="150" rx="4"/>
+      <text class="d-t" x="446" y="114" text-anchor="middle">preprocessing</text>
+      <text class="d-s" x="446" y="144" text-anchor="middle">参考音频编码缓存</text>
+      <text class="d-s" x="446" y="166" text-anchor="middle">构造 prompt</text>
+      <text class="d-acc" x="446" y="214" text-anchor="middle">13 ms</text>
+      <rect class="d-box hl" x="552" y="84" width="220" height="150" rx="4"/>
+      <text class="d-t" x="662" y="114" text-anchor="middle">tts_engine</text>
+      <text class="d-s" x="662" y="140" text-anchor="middle">SGLang 调度 + radix 前缀缓存</text>
+      <text class="d-s" x="662" y="162" text-anchor="middle">FA3，decode CUDA graph</text>
+      <text class="d-s" x="662" y="184" text-anchor="middle">采样 CUDA graph，合并音频头</text>
+      <text class="d-acc" x="662" y="214" text-anchor="middle">prefill 21 ms · decode 731 ms</text>
+      <rect class="d-box" x="790" y="84" width="144" height="150" rx="4"/>
+      <text class="d-t" x="862" y="114" text-anchor="middle">vocoder</text>
+      <text class="d-s" x="862" y="144" text-anchor="middle">BF16 codec 解码</text>
+      <text class="d-s" x="862" y="166" text-anchor="middle">codes → 波形</text>
+      <text class="d-acc" x="862" y="214" text-anchor="middle">30 ms</text>
+      <line class="d-a" x1="134" y1="145" x2="162" y2="145" marker-end="url(#arr)"/>
+      <line class="d-a" x1="310" y1="145" x2="356" y2="145" marker-end="url(#arr)"/>
+      <line class="d-a" x1="534" y1="159" x2="550" y2="159" marker-end="url(#arr)"/>
+      <line class="d-a" x1="772" y1="159" x2="788" y2="159" marker-end="url(#arr)"/>
+      <path class="d-a" d="M862 234 V286 H72 V182" marker-end="url(#arr)"/>
+      <text class="d-lab" x="470" y="280" text-anchor="middle">完整 WAV · stream=false</text>
+    </svg>
+  </figure>
+  <div class="row3">
+    <div class="note"><h3>收益主要在 tts_engine</h3><p>FA3、decode 和采样都用 CUDA graph，33 个输出头合并成一次矩阵乘。</p></div>
+    <div class="note"><h3>三个 stage 放在一起</h3><p>同一进程、同一张 GPU，stage 之间直接传进程内对象，hop 只要约 0.1 ms。</p></div>
+    <div class="note"><h3>没用到的能力</h3><p>分离部署和跨 stage 流式都还没用上：我们一次只跑一个请求，下游也需要完整音频。</p></div>
+  </div>
+  <div class="pno">9 / 16</div>
+</div></section>
+
+<!-- 10 -->
+<section class="frame" id="s10"><div class="slide">
+  <div class="part">新后端</div>
+  <h2>新后端：MOSS 拆成独立服务，其余环节不变</h2>
+  <div class="cols">
+    <figure class="fig">
+      <svg viewBox="0 0 640 380" role="img" aria-label="对比图：之前 MOSS 在 render server 进程内；现在 render server 通过 HTTP adapter 经 loopback HTTP 调用独立的 SGLang-Omni 服务，拿回 WAV 后继续做 MMS 和 R3。">
+        <text class="d-lab" x="8" y="20">之前</text>
+        <rect class="d-proc" x="8" y="30" width="624" height="96" rx="6"/>
+        <rect class="d-box mute" x="24" y="58" width="96" height="46" rx="4"/><text class="d-s" x="72" y="86" text-anchor="middle">选词</text>
+        <rect class="d-box mute" x="144" y="58" width="220" height="46" rx="4"/><text class="d-s" x="254" y="86" text-anchor="middle">MOSS · HF generate</text>
+        <rect class="d-box mute" x="388" y="58" width="104" height="46" rx="4"/><text class="d-s" x="440" y="86" text-anchor="middle">MMS</text>
+        <rect class="d-box mute" x="516" y="58" width="100" height="46" rx="4"/><text class="d-s" x="566" y="86" text-anchor="middle">R3</text>
+        <line class="d-a" x1="120" y1="81" x2="142" y2="81" marker-end="url(#arr)"/>
+        <line class="d-a" x1="364" y1="81" x2="386" y2="81" marker-end="url(#arr)"/>
+        <line class="d-a" x1="492" y1="81" x2="514" y2="81" marker-end="url(#arr)"/>
+        <text class="d-lab" x="8" y="168">现在</text>
+        <rect class="d-proc" x="8" y="178" width="624" height="96" rx="6"/>
+        <rect class="d-box" x="24" y="206" width="96" height="46" rx="4"/><text class="d-s" x="72" y="234" text-anchor="middle">选词</text>
+        <rect class="d-box hl" x="144" y="206" width="170" height="46" rx="4"/><text class="d-acc" x="229" y="234" text-anchor="middle">HTTP adapter</text>
+        <rect class="d-box" x="388" y="206" width="104" height="46" rx="4"/><text class="d-s" x="440" y="234" text-anchor="middle">MMS</text>
+        <rect class="d-box" x="516" y="206" width="100" height="46" rx="4"/><text class="d-s" x="566" y="234" text-anchor="middle">R3</text>
+        <line class="d-a" x1="120" y1="229" x2="142" y2="229" marker-end="url(#arr)"/>
+        <line class="d-a" x1="314" y1="229" x2="386" y2="229" marker-end="url(#arr)"/>
+        <text class="d-lab" x="350" y="220" text-anchor="middle">source</text>
+        <line class="d-a" x1="492" y1="229" x2="514" y2="229" marker-end="url(#arr)"/>
+        <rect class="d-box hl" x="100" y="306" width="440" height="66" rx="6"/>
+        <text class="d-acc" x="116" y="334">SGLang-Omni :8030</text>
+        <text class="d-s" x="116" y="356">preprocessing → tts_engine → vocoder</text>
+        <line class="d-a acc" x1="200" y1="252" x2="200" y2="304" marker-end="url(#arr-acc)"/>
+        <line class="d-a acc" x1="262" y1="304" x2="262" y2="254" marker-end="url(#arr-acc)"/>
+        <text class="d-lab" x="194" y="286" text-anchor="end">POST</text>
+        <text class="d-lab" x="270" y="286">WAV</text>
+        <text class="d-lab" x="330" y="296">loopback HTTP</text>
+      </svg>
+    </figure>
+    <ul class="pts">
+      <li><b>独立服务：</b>版本固定为 SGLang-Omni 0.1.4、SGLang 0.5.18，启动前用 preflight 检查环境。</li>
+      <li><b>HTTP adapter：</b>同一个 deadline 贯穿全流程，请求可取消，下载有上限，收到后校验完整 WAV。</li>
+      <li><b>配置按单请求低延迟调：</b>一次只跑一个请求，CUDA graph batch 为 1，打开参考音频编码缓存。</li>
+      <li><b>仍用 stream=false：</b>MMS 和 R3 需要完整的 source 才能对齐和拉伸。</li>
+      <li><b>缓存按 producer 指纹隔离：</b>换后端不会误用旧 WAV；健康检查要求真实 WAV 预热通过。</li>
+      <li><b>默认仍是旧后端，</b>新后端要显式开启。</li>
+    </ul>
+  </div>
+  <div class="pno">10 / 16</div>
+</div></section>
+
+<!-- 11 -->
+<section class="frame" id="s11"><div class="slide">
+  <div class="part">结果</div>
+  <h2>MOSS 合成快 3.25 倍，整个渲染器快 2.98 倍</h2>
+  <div class="cols">
+    <div style="display:grid;gap:.8em">
+      <figure class="fig"><svg id="chart-bench" role="img" aria-label="p50 延迟对比：MOSS 合成从 2640 毫秒降到 812 毫秒；MOSS 加 MMS 加 R3 的渲染器从 2767 毫秒降到 928 毫秒。"></svg></figure>
+      <div class="legend"><span><i class="s-old" style="background:var(--c-light)"></i>旧后端</span><span><i style="background:var(--accent)"></i>SGLang-Omni</span></div>
+    </div>
+    <div style="display:grid;gap:1em">
+      <table class="t">
+        <thead><tr><th>指标</th><th class="n">旧后端</th><th class="n">SGLang-Omni</th></tr></thead>
+        <tbody>
+          <tr><td>渲染器 p95</td><td class="n">2928 ms</td><td class="n">1035 ms</td></tr>
+          <tr><td>source ASR WER</td><td class="n">2.06%</td><td class="n">0.69%</td></tr>
+          <tr><td>final ASR WER</td><td class="n">2.41%</td><td class="n">2.75%</td></tr>
+          <tr><td>MMS 置信度中位数</td><td class="n">0.967</td><td class="n">0.960</td></tr>
+          <tr><td>请求成功</td><td class="n">40 / 40</td><td class="n">40 / 40</td></tr>
+        </tbody>
+      </table>
+      <p class="src">H200 单卡，热运行，单请求串行；20 条两小节歌词，每个后端测 40 次，ABBA 顺序。这是部署方案的对比，不是单个 kernel 的消融。WER 只是自动诊断，还没有做盲听。</p>
+    </div>
+  </div>
+  <div class="pno">11 / 16</div>
+</div></section>
+
+<!-- 12 -->
+<section class="frame" id="s12"><div class="slide">
+  <div class="part">结果</div>
+  <h2>整条流程：服务器准备一个 chunk 约 1.49 s</h2>
+  <figure class="fig"><svg id="chart-pipe" role="img" aria-label="服务器准备一个 chunk 的时间分布：旧后端估算约 3318 毫秒，其中 MOSS 2640；SGLang-Omni 实测约 1493 毫秒，其中 Qwen 299、MOSS 815、Opus 编码和发布 187，其余环节较小。"></svg></figure>
+  <div class="legend">
+    <span><i style="background:var(--c-qwen)"></i>Qwen 写词</span>
+    <span><i style="background:var(--accent)"></i>MOSS</span>
+    <span><i style="background:var(--c-slate)"></i>Opus 编码和发布</span>
+    <span><i style="background:var(--c-light)"></i>打分、MMS、R3、打包、其他</span>
+  </div>
+  <div class="row3">
+    <div class="note"><h3>MOSS 仍是大头</h3><p>815 ms，占 55%。Qwen 写词占 20%，Opus 编码和发布占 13%。</p></div>
+    <div class="note"><h3>旧后端是估算</h3><p>没有在同条件下测旧后端的完整流程，按 MOSS 替换估算约 3.3 s；8 月单次实测 3.41 s。</p></div>
+    <div class="note"><h3>测量方式</h3><p>用真实 render server 连续请求 24 个 chunk，客户端在 H200 本机，不含 Mac 到 H200 的路由。</p></div>
+  </div>
+  <div class="pno">12 / 16</div>
+</div></section>
+
+<!-- 13 -->
+<section class="frame" id="s13"><div class="slide">
+  <div class="part">结果</div>
+  <h2>MOSS 内部：90% 的时间花在 decode</h2>
+  <div class="cols">
+    <div style="display:grid;gap:1.2em">
+      <figure class="fig"><svg id="chart-moss" role="img" aria-label="一次 MOSS 请求约 809 毫秒：HTTP 11，preprocessing 13，调度 3，prefill 21，decode 731，vocoder 30。"></svg><figcaption>一次请求的拆分，服务端事件计时<span class="chip m">实测</span></figcaption></figure>
+      <figure class="fig"><svg id="chart-step" role="img" aria-label="每个 decode step 约 7.2 毫秒：36 层主干 5.2，全词表文本头 0.31，音频头采样等小 kernel 0.43，GPU 等待 CPU 1.3。"></svg><figcaption>每个 decode step 的构成，torch trace 和长度扫描<span class="chip m">实测</span></figcaption></figure>
+    </div>
+    <ul class="pts">
+      <li><b>主干受显存带宽限制：</b>每步读约 13.9 GB 权重，GEMM 约达到 H200 峰值带宽的 66%。</li>
+      <li><b>每步约 1.3 ms GPU 在等 CPU：</b>采样后处理、逐个查 33 张 embedding 表、调度记账，都在两次前向之间串行执行。</li>
+      <li><b>文本头有浪费：</b>每步算完整的 15.5 万词表，实际只用其中 2 列控制 token。</li>
+      <li><b>delay 尾部约 240 ms</b> 是模型结构决定的。</li>
+    </ul>
+  </div>
+  <div class="pno">13 / 16</div>
+</div></section>
+
+<!-- 14 -->
+<section class="frame" id="s14"><div class="slide">
+  <div class="part">下一步</div>
+  <h2>还能改进的地方</h2>
+  <table class="t">
+    <thead><tr><th>改动</th><th class="n">每个 chunk 省多少</th><th>证据</th><th>代价</th></tr></thead>
+    <tbody>
+      <tr class="fix"><td>修复 Mac 拒收 gentle_sparse chunk</td><td class="n warnt">正确性</td><td>48 / 48 被拒，all_onsets 8 / 8 通过</td><td>必须先修，否则远端人声全被兜底替换</td></tr>
+      <tr><td>vLLM 并发序列上限 8 → 32</td><td class="n gain">−140 ms</td><td>实测 317 → 175 ms</td><td>只改启动参数</td></tr>
+      <tr><td>两个 bar 各用一个客户端并发写词</td><td class="n gain">−70 ms</td><td>实测 175 → 104 ms</td><td>planner 小改</td></tr>
+      <tr><td>MOSS：embedding 一次查表，文本头只算 2 列</td><td class="n gain">−77 ms</td><td>实测，输出 60 / 60 逐字节相同</td><td>给 SGLang-Omni 打补丁</td></tr>
+      <tr><td>Opus 压缩级别 10 → 5</td><td class="n gain">−64 ms</td><td>实测编码 125 → 61 ms</td><td>音质待评估</td></tr>
+      <tr><td>R3 时长不对时不再整段重跑</td><td class="n">尾部 −77 至 −230 ms</td><td>20 条里 5 条重跑 2 到 4 次</td><td>先看偏差数据再定</td></tr>
+      <tr><td>SGLang-Omni 取消检测任务后不等待</td><td class="n">p95 −100 ms</td><td>约 5% 请求多等 0.1 s</td><td>上游代码</td></tr>
+      <tr class="sep"><td colspan="4">更深的方向</td></tr>
+      <tr><td>decode 的 CPU 工作与 GPU 重叠</td><td class="n">约 −90 ms</td><td>估算</td><td>要改 SGLang-Omni 调度</td></tr>
+      <tr><td>MOSS 主干改用 FP8 权重</td><td class="n">最多约 −200 ms</td><td>估算</td><td>需要音质验收</td></tr>
+    </tbody>
+  </table>
+  <div class="pno">14 / 16</div>
+</div></section>
+
+<!-- 15 -->
+<section class="frame" id="s15"><div class="slide">
+  <div class="part">下一步</div>
+  <h2>预计：服务器端从 1.49 s 降到约 1.15 s</h2>
+  <div class="cols even">
+    <figure class="fig"><svg id="chart-fall" role="img" aria-label="瀑布图：当前 1493 毫秒，Qwen 省 194，MOSS 补丁省 77，Opus 省 64，优化后约 1158 毫秒。"></svg><figcaption>中位数，按已实测的单项收益叠加<span class="chip e">估算</span></figcaption></figure>
+    <figure class="fig"><svg id="chart-budget" role="img" aria-label="端到端预算：服务器约 1.16 秒，Mac 到 H200 路由约 1.5 秒，Mac 端处理约 0.05 秒，合计约 2.7 秒，低于 5.0 秒超时和 5.333 秒的 chunk 时长。"></svg><figcaption>放进 5 s 预算：路由按 8 月的测量值，本次没有测<span class="chip e">估算</span></figcaption></figure>
+  </div>
+  <ul class="pts">
+    <li>改动之后，余量主要取决于 Mac 到 H200 的网络路由，而不是服务器。</li>
+    <li>R3 重跑和 HTTP 取消等待两项修的是尾部，对 p90 和 p95 的帮助比中位数更明显。</li>
+  </ul>
+  <div class="pno">15 / 16</div>
+</div></section>
+
+<!-- 16 -->
+<section class="frame" id="s16"><div class="slide">
+  <div class="part">小结</div>
+  <h2>小结与讨论</h2>
+  <div class="cols even">
+    <div class="box acc">
+      <h3>这段时间做了什么</h3>
+      <ul class="pts">
+        <li>MOSS 换到 SGLang-Omni：单段合成快 3.25 倍，服务器准备一个 chunk 从约 3.3 s 降到 1.49 s。</li>
+        <li>对全流程和 MOSS 内部做了 profiling：瓶颈是 decode 的权重带宽、每步的 CPU 空闲和 delay 尾部。</li>
+        <li>下一步先修锚点兼容问题，再做 6 项改动，目标约 1.15 s。</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>想讨论的问题</h3>
+      <ul class="pts">
+        <li>要不要做真正的流式：MOSS 边生成，MMS 和 R3 边对齐拉伸？</li>
+        <li>多个会话同时请求时，要不要用 SGLang-Omni 的分离部署？</li>
+        <li>“边听边想边说”是模型层面的 concurrent streaming，和 serving 优化是两条线，优先做哪条？</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pno">16 / 16</div>
+</div></section>
+
+</main>
+
+<div class="pbar" id="pbar" hidden>
+  <button type="button" id="p-prev" aria-label="上一页">←</button>
+  <span class="count" id="p-count">1 / 16</span>
+  <button type="button" id="p-next" aria-label="下一页">→</button>
+  <button type="button" id="p-exit">退出</button>
+</div>
+
+<script>
+(function () {
+  const NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, text) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // Horizontal bar chart. Every x position comes from one linear scale.
+  function hbars(svg, cfg) {
+    const W = cfg.width || 640, labelW = cfg.labelW || 150, right = cfg.right || 70;
+    const rowH = cfg.rowH || 30, gap = cfg.gap || 16, top = cfg.top || 8;
+    const plotW = W - labelW - right;
+    const x = v => labelW + (v / cfg.max) * plotW;
+    const rowsH = cfg.rows.length * rowH + (cfg.rows.length - 1) * gap;
+    const H = top + rowsH + 34;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    (cfg.ticks || []).forEach(t => {
+      svg.appendChild(el("line", { class: "ax", x1: x(t), x2: x(t), y1: top - 4, y2: top + rowsH + 6 }));
+      svg.appendChild(el("text", { class: "ax-t", x: x(t), y: top + rowsH + 24, "text-anchor": "middle" }, t + (cfg.tickUnit || "")));
+    });
+    (cfg.marks || []).forEach(m => {
+      svg.appendChild(el("line", { class: "mark", x1: x(m.v), x2: x(m.v), y1: top - 6, y2: top + rowsH + 8 }));
+      svg.appendChild(el("text", { class: "mark-t", x: x(m.v) - 4, y: top + rowsH + 24, "text-anchor": "end" }, m.label));
+    });
+    cfg.rows.forEach((r, i) => {
+      const y = top + i * (rowH + gap);
+      const g = el("g", r.est ? { class: "est" } : {});
+      g.appendChild(el("text", { class: "row-t", x: labelW - 10, y: y + rowH / 2 + (r.sub ? -1 : 5), "text-anchor": "end" }, r.label));
+      if (r.sub) g.appendChild(el("text", { class: "row-s", x: labelW - 10, y: y + rowH / 2 + 13, "text-anchor": "end" }, r.sub));
+      let acc = 0;
+      r.segs.forEach(s => {
+        const start = s.start !== undefined ? s.start : acc;
+        const x0 = x(start), w = Math.max(1, x(start + s.v) - x0);
+        g.appendChild(el("rect", { class: "seg " + s.cls, x: x0, y: y, width: w, height: rowH, rx: 2 }));
+        if (s.label && w > s.label.length * 7.2 + 10) {
+          g.appendChild(el("text", { class: "seg-t" + (s.dark ? " dk" : ""), x: x0 + w / 2, y: y + rowH / 2 + 4.5, "text-anchor": "middle" }, s.label));
+        }
+        acc = start + s.v;
+      });
+      if (r.total !== undefined) {
+        g.appendChild(el("text", { class: "tot-t", x: x(acc) + 8, y: y + rowH / 2 + 4.5 }, r.total));
+      }
+      svg.appendChild(g);
+    });
+  }
+
+  hbars(document.getElementById("chart-bench"), {
+    width: 640, labelW: 150, right: 78, rowH: 26, gap: 10, max: 3000,
+    ticks: [0, 1000, 2000, 3000], tickUnit: "",
+    rows: [
+      { label: "MOSS 合成", sub: "旧后端", segs: [{ v: 2640, cls: "s-old" }], total: "2640 ms" },
+      { label: "", sub: "SGLang-Omni", segs: [{ v: 812, cls: "s-new" }], total: "812 ms" },
+      { label: "整个渲染器", sub: "旧后端", segs: [{ v: 2767, cls: "s-old" }], total: "2767 ms" },
+      { label: "", sub: "SGLang-Omni", segs: [{ v: 928, cls: "s-new" }], total: "928 ms" }
+    ]
+  });
+
+  const other = (v) => ({ v, cls: "s-small" });
+  hbars(document.getElementById("chart-pipe"), {
+    width: 960, labelW: 170, right: 86, rowH: 40, gap: 22, max: 3500,
+    ticks: [0, 500, 1000, 1500, 2000, 2500, 3000, 3500], tickUnit: "",
+    rows: [
+      { label: "旧后端", sub: "估算", est: true, total: "≈3318 ms", segs: [
+        { v: 299, cls: "s-qwen", label: "Qwen" }, other(6), { v: 2640, cls: "s-moss", label: "MOSS 2640" },
+        other(20), other(87), other(42), { v: 187, cls: "s-opus" }, other(37) ] },
+      { label: "SGLang-Omni", sub: "实测中位数", total: "1493 ms", segs: [
+        { v: 299, cls: "s-qwen", label: "Qwen" }, other(6), { v: 815, cls: "s-moss", label: "MOSS 815" },
+        other(20), other(87), other(42), { v: 187, cls: "s-opus", label: "Opus" }, other(37) ] }
+    ]
+  });
+
+  hbars(document.getElementById("chart-moss"), {
+    width: 640, labelW: 96, right: 70, rowH: 34, gap: 0, max: 820,
+    ticks: [0, 200, 400, 600, 800], tickUnit: "",
+    rows: [{ label: "一次请求", total: "809 ms", segs: [
+      { v: 11, cls: "s-small" }, { v: 13, cls: "s-small" }, { v: 3, cls: "s-small" }, { v: 21, cls: "s-opus" },
+      { v: 731, cls: "s-moss", label: "decode 731 ms" }, { v: 30, cls: "s-small" } ] }]
+  });
+
+  hbars(document.getElementById("chart-step"), {
+    width: 640, labelW: 96, right: 70, rowH: 34, gap: 0, max: 7.5,
+    ticks: [0, 2, 4, 6], tickUnit: " ms",
+    rows: [{ label: "每步", total: "7.2 ms", segs: [
+      { v: 5.2, cls: "s-moss", label: "36 层主干 5.2" }, { v: 0.31, cls: "s-opus" }, { v: 0.43, cls: "s-small" },
+      { v: 1.3, cls: "s-idle", label: "空闲 1.3" } ] }]
+  });
+
+  hbars(document.getElementById("chart-fall"), {
+    width: 560, labelW: 118, right: 74, rowH: 26, gap: 10, max: 1600,
+    ticks: [0, 400, 800, 1200, 1600], tickUnit: "",
+    rows: [
+      { label: "现在", segs: [{ v: 1493, cls: "s-new" }], total: "1493" },
+      { label: "Qwen", segs: [{ start: 1299, v: 194, cls: "s-gain" }], total: "−194" },
+      { label: "MOSS 补丁", segs: [{ start: 1222, v: 77, cls: "s-gain" }], total: "−77" },
+      { label: "Opus", segs: [{ start: 1158, v: 64, cls: "s-gain" }], total: "−64" },
+      { label: "改动后", est: true, segs: [{ v: 1158, cls: "s-new" }], total: "≈1158" }
+    ]
+  });
+
+  hbars(document.getElementById("chart-budget"), {
+    width: 560, labelW: 92, right: 40, rowH: 34, gap: 0, max: 5.5,
+    ticks: [0, 1, 2, 3, 4, 5], tickUnit: " s",
+    marks: [{ v: 5.0, label: "超时 5.0 s" }],
+    rows: [{ label: "端到端", est: true, segs: [
+      { v: 1.16, cls: "s-new", label: "服务器" }, { v: 1.5, cls: "s-route", label: "路由", dark: true }, { v: 0.05, cls: "s-small" } ],
+      total: "≈2.7 s" }]
+  });
+
+  // Delay pattern grid: 6 codebooks, 8 frames, codebook k starts k steps late.
+  (function delayGrid() {
+    const svg = document.getElementById("delay-grid");
+    const n = 6, F = 8, cols = F + n - 1, c = 34, x0 = 84, y0 = 44;
+    for (let t = 0; t < cols; t++) {
+      svg.appendChild(el("text", { class: "ax-t", x: x0 + t * c + c / 2, y: y0 - 12, "text-anchor": "middle" }, String(t + 1)));
+    }
+    svg.appendChild(el("text", { class: "d-lab", x: x0 + cols * c / 2, y: 16, "text-anchor": "middle" }, "decode 步"));
+    for (let k = 0; k < n; k++) {
+      const y = y0 + k * c;
+      svg.appendChild(el("text", { class: "d-s", x: x0 - 10, y: y + c / 2 + 4, "text-anchor": "end" }, "码本 " + k));
+      for (let t = 0; t < cols; t++) {
+        const f = t - k;
+        const inFrame = f >= 0 && f < F;
+        const cls = inFrame ? (f === 0 ? "cell first" : "cell") : "cell pad";
+        svg.appendChild(el("rect", { class: cls, x: x0 + t * c + 2, y: y + 2, width: c - 4, height: c - 4, rx: 2 }));
+        if (inFrame) {
+          svg.appendChild(el("text", { class: "cell-t" + (f === 0 ? " inv" : ""), x: x0 + t * c + c / 2, y: y + c / 2 + 4, "text-anchor": "middle" }, String(f + 1)));
+        }
+      }
+    }
+    const gy = y0 + n * c;
+    // Tail band: steps after the last frame started, which only complete later codebooks.
+    svg.insertBefore(el("rect", { class: "tailband", x: x0 + F * c, y: y0 - 4, width: (cols - F) * c, height: n * c + 8 }), svg.firstChild);
+    svg.appendChild(el("line", { class: "d-a", x1: x0 + F * c + 2, x2: x0 + cols * c - 2, y1: gy + 16, y2: gy + 16 }));
+    svg.appendChild(el("text", { class: "mark-t", x: x0 + (F + cols) * c / 2, y: gy + 36, "text-anchor": "middle" }, "尾部 5 步：不产生新帧"));
+    svg.appendChild(el("line", { class: "d-a", x1: x0 + 2, x2: x0 + n * c - 2, y1: gy + 60, y2: gy + 60 }));
+    svg.appendChild(el("text", { class: "d-s", x: x0 + n * c / 2, y: gy + 80, "text-anchor": "middle" }, "第 1 帧在第 6 步才完整"));
+    svg.setAttribute("viewBox", `0 0 ${x0 + cols * c + 12} ${gy + 92}`);
+  })();
+
+  // Present mode
+  const frames = Array.from(document.querySelectorAll(".frame"));
+  const pbar = document.getElementById("pbar");
+  const count = document.getElementById("p-count");
+  let cur = 0;
+  function show(i) {
+    cur = Math.max(0, Math.min(frames.length - 1, i));
+    frames.forEach((f, k) => f.classList.toggle("current", k === cur));
+    count.textContent = (cur + 1) + " / " + frames.length;
+  }
+  function nearest() {
+    let best = 0, bestD = Infinity;
+    frames.forEach((f, k) => { const d = Math.abs(f.getBoundingClientRect().top); if (d < bestD) { bestD = d; best = k; } });
+    return best;
+  }
+  function enter() {
+    document.body.classList.add("presenting");
+    pbar.hidden = false;
+    show(nearest());
+    const r = document.documentElement.requestFullscreen;
+    if (r) { try { const p = document.documentElement.requestFullscreen(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
+  }
+  function exit() {
+    const target = frames[cur];
+    document.body.classList.remove("presenting");
+    frames.forEach(f => f.classList.remove("current"));
+    pbar.hidden = true;
+    if (document.fullscreenElement && document.exitFullscreen) { try { document.exitFullscreen().catch(() => {}); } catch (e) {} }
+    if (target) target.scrollIntoView({ block: "start" });
+  }
+  const presenting = () => document.body.classList.contains("presenting");
+  document.getElementById("btn-present").addEventListener("click", enter);
+  document.getElementById("p-exit").addEventListener("click", exit);
+  document.getElementById("p-prev").addEventListener("click", () => show(cur - 1));
+  document.getElementById("p-next").addEventListener("click", () => show(cur + 1));
+  document.addEventListener("keydown", (e) => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (!presenting()) {
+      if (e.key === "p" || e.key === "P") { e.preventDefault(); enter(); }
+      return;
+    }
+    if (["ArrowRight", "PageDown", " ", "ArrowDown"].includes(e.key)) { e.preventDefault(); show(cur + 1); }
+    else if (["ArrowLeft", "PageUp", "ArrowUp"].includes(e.key)) { e.preventDefault(); show(cur - 1); }
+    else if (e.key === "Home") { e.preventDefault(); show(0); }
+    else if (e.key === "End") { e.preventDefault(); show(frames.length - 1); }
+    else if (e.key === "Escape" || e.key === "p" || e.key === "P") { e.preventDefault(); exit(); }
+  });
+  document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement && presenting()) { /* stay in present mode without fullscreen */ } });
+  if (location.hash && /^#s\d+$/.test(location.hash)) {
+    const i = frames.findIndex(f => "#" + f.id === location.hash);
+    if (i >= 0) frames[i].scrollIntoView({ block: "start" });
+  }
+})();
+</script>
+</body>
+</html>
