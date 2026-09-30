@@ -12,6 +12,7 @@ Desktop.ini
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 
 # Envs
 .env

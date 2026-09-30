@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 
+import httpx
 import numpy as np
 import pytest
 from scipy.io import wavfile
@@ -46,6 +47,10 @@ from streammuse.infrastructure.rap.moss_aligned_phrase import (
     MossAlignedPhraseRenderer,
 )
 from streammuse.infrastructure.rap.moss_tts import MossPhraseResult
+from streammuse.infrastructure.rap.sglang_moss_tts import (
+    SglangMossConfig,
+    SglangMossSynthesizer,
+)
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 
 
@@ -122,6 +127,8 @@ class _FakeSynthesizer:
         self,
         request: TwoBarRenderRequest,
         output_wav: Path,
+        *,
+        execution=None,
     ) -> MossPhraseResult:
         self.calls.append((request, output_wav))
         samples = np.sin(np.linspace(0.0, 80.0, 24_000, dtype=np.float32)) * 0.25
@@ -195,6 +202,8 @@ class _NearTargetDurationSynthesizer(_FakeSynthesizer):
         self,
         request: TwoBarRenderRequest,
         output_wav: Path,
+        *,
+        execution=None,
     ) -> MossPhraseResult:
         self.calls.append((request, output_wav))
         samples = (
@@ -333,6 +342,68 @@ def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
             },
         },
     )
+
+
+def test_sglang_http_adapter_flows_through_alignment_and_r3_to_final_artifact(
+    tmp_path: Path,
+) -> None:
+    samples = (
+        np.sin(np.linspace(0.0, 80.0, 24_000, dtype=np.float32))
+        * np.float32(0.25)
+    )
+    wav_buffer = io.BytesIO()
+    wavfile.write(wav_buffer, 24_000, samples)
+    response_wav = wav_buffer.getvalue()
+    reference_wav = tmp_path / "reference.wav"
+    reference_wav.write_bytes(response_wav)
+    reference_text = tmp_path / "reference.txt"
+    reference_text.write_text("reference words", encoding="utf-8")
+    speech_calls: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/audio/speech"
+        speech_calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "audio/wav", "server": "sglang-omni/0.1.4"},
+            content=response_wav,
+        )
+
+    synthesizer = SglangMossSynthesizer(
+        SglangMossConfig.from_files(
+            base_url="http://127.0.0.1:30000",
+            model_id="OpenMOSS-Team/MOSS-TTS-v1.5",
+            model_revision="revision-1",
+            reference_audio_uri="file:///models/streammuse/reference.wav",
+            reference_audio_file=reference_wav,
+            reference_text_file=reference_text,
+            runtime_config_sha256="3" * 64,
+        ),
+        client=httpx.Client(
+            base_url="http://127.0.0.1:30000",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    stretcher = _FakeFullChunkStretcher()
+    renderer = MossAlignedPhraseRenderer(
+        synthesizer=synthesizer,
+        aligner=_FakeAligner(),
+        stretcher_factory=lambda **_: stretcher,
+        rubberband_version="rubberband 3.3.0 R3",
+    )
+
+    try:
+        result = renderer.render(_request(), tmp_path / "sglang-render")
+    finally:
+        synthesizer.close()
+
+    assert len(speech_calls) == 1
+    assert speech_calls[0]["stream"] is False
+    assert (tmp_path / "sglang-render" / "source.wav").read_bytes() == response_wav
+    assert (tmp_path / "sglang-render" / "vocal.wav").read_bytes() == result.vocal_wav
+    assert result.audio_diagnostics["frame_count"] == 128_000
+    assert result.moss_serving_metadata["moss_backend"] == "sglang-omni"
+    assert result.moss_serving_metadata["moss_response_bytes"] == len(response_wav)
 
 
 def test_default_policy_uses_gentle_sparse_salient_onsets(tmp_path: Path) -> None:
@@ -963,13 +1034,19 @@ def test_concurrent_calls_serialize_resident_model_state(tmp_path: Path) -> None
             self,
             request: TwoBarRenderRequest,
             output_wav: Path,
+            *,
+            execution=None,
         ) -> MossPhraseResult:
             if self.active:
                 self.overlap_detected = True
             self.active = True
             try:
                 time.sleep(0.03)
-                return super().synthesize(request, output_wav)
+                return super().synthesize(
+                    request,
+                    output_wav,
+                    execution=execution,
+                )
             finally:
                 self.active = False
 

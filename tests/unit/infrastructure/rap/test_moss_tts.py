@@ -10,12 +10,18 @@ import pytest
 from scipy.io import wavfile
 
 from scripts.rap_audio_backends import moss_backend
+from streammuse.application.rap.execution import (
+    ExecutionCancelled,
+    ExecutionDeadlineExceeded,
+    SynthesisExecutionContext,
+)
 from streammuse.experiments.rap_audio_protocols.contracts import (
     SyllableTarget,
     TwoBarRenderRequest,
 )
 from streammuse.experiments.rap_audio_protocols.timing import moss_token_target
 from streammuse.infrastructure.rap.moss_tts import (
+    MossServingMetadata,
     MossSynthesisFailed,
     PersistentMossSynthesizer,
 )
@@ -170,6 +176,46 @@ def test_loads_moss_once_and_reuses_exact_offline_settings_for_two_phrases(
     }
     with pytest.raises(TypeError):
         first.resolved_generation_settings["language"] = "changed"  # type: ignore[index]
+
+
+def test_partial_initialization_closes_runtime_and_close_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    reference_wav = tmp_path / "reference.wav"
+    reference_wav.write_bytes(b"reference")
+    partial_close_calls: list[str] = []
+    partial_runtime = SimpleNamespace(
+        torch_module=object(),
+        close=lambda: partial_close_calls.append("partial"),
+    )
+
+    with pytest.raises(MossSynthesisFailed, match="manual_seed"):
+        PersistentMossSynthesizer.load(
+            model_id=moss_backend.MODEL_ID,
+            device="cuda:0",
+            reference_wav=reference_wav,
+            runtime_loader=lambda **_: partial_runtime,
+        )
+
+    assert partial_close_calls == ["partial"]
+
+    close_calls: list[str] = []
+    runtime = SimpleNamespace(
+        model=object(),
+        torch_module=_FakeTorchSeeder(),
+        close=lambda: close_calls.append("closed"),
+    )
+    synthesizer = PersistentMossSynthesizer.load(
+        model_id=moss_backend.MODEL_ID,
+        device="cuda:0",
+        reference_wav=reference_wav,
+        runtime_loader=lambda **_: runtime,
+    )
+
+    synthesizer.close()
+    synthesizer.close()
+
+    assert close_calls == ["closed"]
 
 
 def test_failed_synthesis_removes_stale_and_partial_outputs(tmp_path: Path) -> None:
@@ -376,3 +422,118 @@ def test_reseeds_each_request_with_offline_attempt_policy_after_warmup(
     )
     assert first.resolved_generation_settings["attempt"] == 1
     assert moss_backend.DETERMINISTIC_SEED_CAVEAT in first.warnings
+
+
+def test_cancel_during_generate_never_commits_and_reports_uninterruptible(
+    tmp_path: Path,
+) -> None:
+    reference_wav = tmp_path / "reference.wav"
+    reference_wav.write_bytes(b"reference")
+    execution = SynthesisExecutionContext.from_timeout(
+        10.0, correlation_id="cancel-during-generate"
+    )
+
+    def generate_phrase(*, output_path: Path, **_: object) -> None:
+        execution.cancel("last waiter detached")
+        wavfile.write(
+            output_path,
+            24_000,
+            np.linspace(-0.1, 0.1, 64, dtype=np.float32),
+        )
+
+    synthesizer = PersistentMossSynthesizer.load(
+        model_id=moss_backend.MODEL_ID,
+        device="cuda:0",
+        reference_wav=reference_wav,
+        runtime_loader=lambda **_: SimpleNamespace(
+            model=object(), torch_module=_FakeTorchSeeder()
+        ),
+        phrase_generator=generate_phrase,
+    )
+    output = tmp_path / "render" / "source.wav"
+
+    with pytest.raises(ExecutionCancelled):
+        synthesizer.synthesize(_request(), output, execution=execution)
+
+    assert not output.exists()
+    assert not (output.parent / ".source.partial.wav").exists()
+    assert (
+        execution.cancellation_outcome
+        == "cancel_requested_but_not_interruptible"
+    )
+
+
+def test_deadline_elapsed_during_generate_never_commits(tmp_path: Path) -> None:
+    reference_wav = tmp_path / "reference.wav"
+    reference_wav.write_bytes(b"reference")
+    now = [10.0]
+    execution = SynthesisExecutionContext(
+        deadline_monotonic=11.0,
+        correlation_id="deadline-during-generate",
+        clock=lambda: now[0],
+    )
+
+    def generate_phrase(*, output_path: Path, **_: object) -> None:
+        wavfile.write(
+            output_path,
+            24_000,
+            np.linspace(-0.1, 0.1, 64, dtype=np.float32),
+        )
+        now[0] = 11.0
+
+    synthesizer = PersistentMossSynthesizer.load(
+        model_id=moss_backend.MODEL_ID,
+        device="cuda:0",
+        reference_wav=reference_wav,
+        runtime_loader=lambda **_: SimpleNamespace(
+            model=object(), torch_module=_FakeTorchSeeder()
+        ),
+        phrase_generator=generate_phrase,
+    )
+    output = tmp_path / "render" / "source.wav"
+
+    with pytest.raises(ExecutionDeadlineExceeded):
+        synthesizer.synthesize(_request(), output, execution=execution)
+
+    assert not output.exists()
+    assert not (output.parent / ".source.partial.wav").exists()
+
+
+def test_serving_metadata_defaults_remain_backward_compatible_and_immutable() -> None:
+    metadata = MossServingMetadata()
+
+    assert metadata.backend == "inprocess"
+    assert metadata.to_payload()["internal_stage_timings"] == {
+        "status": "unavailable",
+        "unavailable_reason": "backend_did_not_report_stage_timings",
+    }
+    assert metadata.to_payload()["recovery_outcome"] == "not_required"
+    with pytest.raises(TypeError):
+        metadata.internal_stage_timings["status"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("cancellation_outcome", "aborted"),
+        ("deadline_outcome", "late"),
+        ("recovery_outcome", "recovered-somehow"),
+        ("reference_audio_sha256", "/private/reference.wav"),
+    ),
+)
+def test_serving_metadata_rejects_untrusted_contract_values(
+    field: str, value: str
+) -> None:
+    with pytest.raises(ValueError):
+        MossServingMetadata(**{field: value})
+
+
+def test_serving_metadata_rejects_inconsistent_cancellation_evidence() -> None:
+    with pytest.raises(ValueError, match="inconsistent"):
+        MossServingMetadata(upstream_abort_confirmed=True)
+    with pytest.raises(ValueError, match="inconsistent"):
+        MossServingMetadata(
+            cancellation_outcome="cancel_requested",
+            cancellation_grace_exceeded=True,
+            recovery_outcome="abort_unconfirmed",
+        )

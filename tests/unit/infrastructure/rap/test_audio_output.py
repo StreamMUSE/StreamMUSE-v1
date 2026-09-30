@@ -277,7 +277,11 @@ def test_sounddevice_callback_fills_silence_and_reports_status_underrun() -> Non
 
 def test_stop_request_finishes_current_bar_without_dequeuing_next() -> None:
     stream_factory = FakeOutputStreamFactory(block_frames=5)
-    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    sink = SoundDeviceAudioSink(
+        audio_format=stereo_format(),
+        stream_factory=stream_factory,
+        callback_stop_factory=CallbackTerminated,
+    )
     sink.enqueue(prepared_bar(bar=0, frames=16))
     sink.enqueue(prepared_bar(bar=1, frames=16))
     sink.start()
@@ -336,7 +340,11 @@ def test_sounddevice_queue_underrun_is_reported_once_per_starvation_episode() ->
 
 def test_stop_during_bar_acquisition_treats_that_bar_as_current() -> None:
     stream_factory = FakeOutputStreamFactory(block_frames=4)
-    sink = StopDuringAcquisitionSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    sink = StopDuringAcquisitionSink(
+        audio_format=stereo_format(),
+        stream_factory=stream_factory,
+        callback_stop_factory=CallbackTerminated,
+    )
     sink.enqueue(prepared_bar(bar=0, frames=4, value=0.25))
     sink.start()
 
@@ -389,7 +397,11 @@ def test_float32_wav_is_header_patched_and_flushed_after_each_completed_bar(tmp_
 
 def test_composite_commits_only_completed_bar_bytes_on_stop(tmp_path: Path) -> None:
     stream_factory = FakeOutputStreamFactory(block_frames=8)
-    live = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    live = SoundDeviceAudioSink(
+        audio_format=stereo_format(),
+        stream_factory=stream_factory,
+        callback_stop_factory=CallbackTerminated,
+    )
     recorder = Float32WavAudioSink(tmp_path / "session.wav", stereo_format())
     composite = CompositeAudioSink(live, recorder)
     first = prepared_bar(bar=0, frames=8, value=0.25)
@@ -410,7 +422,11 @@ def test_composite_commits_only_completed_bar_bytes_on_stop(tmp_path: Path) -> N
 def test_composite_stop_start_continuation_preserves_completed_wav_prefix(tmp_path: Path) -> None:
     path = tmp_path / "continued.wav"
     stream_factory = FakeOutputStreamFactory(block_frames=4)
-    live = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=stream_factory)
+    live = SoundDeviceAudioSink(
+        audio_format=stereo_format(),
+        stream_factory=stream_factory,
+        callback_stop_factory=CallbackTerminated,
+    )
     composite = CompositeAudioSink(live, Float32WavAudioSink(path, stereo_format()))
     first = prepared_bar(bar=0, frames=4, value=0.25)
     second = prepared_bar(bar=1, frames=4, value=0.5)

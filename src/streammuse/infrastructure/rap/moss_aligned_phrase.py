@@ -22,6 +22,12 @@ from streammuse.application.rap.chunk_orchestration import (
     PhraseRenderFailed,
     PhraseRenderResult,
     PhraseVocalRenderer,
+    RenderBudgetExpired,
+)
+from streammuse.application.rap.execution import (
+    ExecutionCancelled,
+    ExecutionDeadlineExceeded,
+    SynthesisExecutionContext,
 )
 from streammuse.domain.rap.remote_chunk import (
     REMOTE_CHUNK_MONITORING_SCHEMA_VERSION,
@@ -65,6 +71,8 @@ class _Synthesizer(Protocol):
         self,
         request: TwoBarRenderRequest,
         output_wav: Path,
+        *,
+        execution: SynthesisExecutionContext,
     ) -> MossPhraseResult: ...
 
 
@@ -133,15 +141,33 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         self,
         request: TwoBarRenderRequest,
         workspace: Path,
+        *,
+        execution: SynthesisExecutionContext | None = None,
     ) -> PhraseRenderResult:
-        with self._lock:
-            return self._render_locked(request, Path(workspace))
+        active_execution = execution or SynthesisExecutionContext.from_timeout(
+            3600.0, correlation_id=f"moss-render-{getattr(request, 'chunk_index', 0)}"
+        )
+        while True:
+            _renderer_checkpoint(active_execution)
+            if self._lock.acquire(
+                timeout=max(0.001, min(0.05, active_execution.remaining_seconds()))
+            ):
+                break
+        try:
+            return self._render_locked(
+                request, Path(workspace), execution=active_execution
+            )
+        finally:
+            self._lock.release()
 
     def _render_locked(
         self,
         request: TwoBarRenderRequest,
         workspace: Path,
+        *,
+        execution: SynthesisExecutionContext,
     ) -> PhraseRenderResult:
+        _renderer_checkpoint(execution)
         try:
             workspace.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -181,11 +207,15 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         moss_result: MossPhraseResult | None = None
         try:
             _validate_request_transcript(request)
+            _renderer_checkpoint(execution)
 
             stage = "moss"
             started = self._clock()
-            moss_result = self._synthesizer.synthesize(request, source_path)
+            moss_result = self._synthesizer.synthesize(
+                request, source_path, execution=execution
+            )
             stage_timings["moss"] = _elapsed_ms(self._clock, started)
+            _renderer_checkpoint(execution)
             source_sample_rate_hz, source_samples = _load_source_audio(
                 source_path,
                 moss_result,
@@ -196,8 +226,11 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 )
 
             stage = "aligner"
+            _renderer_checkpoint(execution)
             started = self._clock()
-            alignment = self._aligner.align(source_path, request.text)
+            with execution.uninterruptible():
+                alignment = self._aligner.align(source_path, request.text)
+            _renderer_checkpoint(execution)
             mapped = self._onset_mapper(
                 alignment,
                 request.syllables,
@@ -207,6 +240,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             stage_timings["aligner"] = _elapsed_ms(self._clock, started)
 
             stage = "warp"
+            _renderer_checkpoint(execution)
             started = self._clock()
             target_frame_count = RemoteRapChunkRequest.frame_count_for(
                 request.tempo_bpm,
@@ -249,14 +283,16 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                     warp_status="pending",
                 ),
             )
-            warped = continuous_pitch_preserving_warp(
-                warp_input.samples,
-                sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
-                anchors=warp_plan.anchors,
-                target_frame_count=target_frame_count,
-                stretch_full_chunk=self._stretcher,
-                source_sha256=warp_input.source_sha256,
-            )
+            with execution.uninterruptible():
+                warped = continuous_pitch_preserving_warp(
+                    warp_input.samples,
+                    sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
+                    anchors=warp_plan.anchors,
+                    target_frame_count=target_frame_count,
+                    stretch_full_chunk=self._stretcher,
+                    source_sha256=warp_input.source_sha256,
+                )
+            _renderer_checkpoint(execution)
             output_samples = _validate_output_samples(
                 warped.samples,
                 expected_frame_count=target_frame_count,
@@ -271,6 +307,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 expected_frame_count=target_frame_count,
                 expected_sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
             )
+            _renderer_checkpoint(execution)
             stage_timings["warp"] = _elapsed_ms(self._clock, started)
 
             stretch_ratios = tuple(
@@ -341,14 +378,43 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                     "alignment_confidence": alignment.confidence,
                     "source_wav_sha256": moss_result.source_wav_sha256,
                 },
+                moss_serving_metadata=moss_result.serving_metadata.to_payload(),
             )
+            _renderer_checkpoint(execution)
             _write_json_atomic(alignment_path, full_alignment_artifact)
+            _renderer_checkpoint(execution)
             os.replace(vocal_partial_path, vocal_path)
             return result
         except BaseException as exc:
             _best_effort_unlink(vocal_partial_path, vocal_path)
             if not isinstance(exc, Exception):
                 raise
+            if isinstance(exc, ExecutionDeadlineExceeded):
+                failure = RenderBudgetExpired("accepted render request budget expired")
+                _write_failure_diagnostics(
+                    failure_path,
+                    request=request,
+                    stage=stage,
+                    error=failure,
+                    source_path=source_path,
+                    alignment=alignment,
+                    mapped=mapped,
+                    stage_timings=stage_timings,
+                )
+                raise failure from exc
+            if isinstance(exc, ExecutionCancelled):
+                failure = PhraseRenderFailed("render execution was cancelled")
+                _write_failure_diagnostics(
+                    failure_path,
+                    request=request,
+                    stage=stage,
+                    error=failure,
+                    source_path=source_path,
+                    alignment=alignment,
+                    mapped=mapped,
+                    stage_timings=stage_timings,
+                )
+                raise failure from exc
             failure = (
                 exc
                 if isinstance(exc, PhraseRenderFailed)
@@ -367,6 +433,10 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             if failure is exc:
                 raise
             raise failure from exc
+
+
+def _renderer_checkpoint(execution: SynthesisExecutionContext) -> None:
+    execution.checkpoint()
 
 
 def _validate_request_transcript(request: TwoBarRenderRequest) -> None:

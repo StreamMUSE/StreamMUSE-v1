@@ -763,7 +763,13 @@ class FakeRenderer:
         self.result = result
         self.calls: list[tuple[object, Path]] = []
 
-    def render(self, request, workspace: Path) -> PhraseRenderResult:
+    def render(
+        self,
+        request,
+        workspace: Path,
+        *,
+        execution=None,
+    ) -> PhraseRenderResult:
         self.calls.append((request, workspace))
         if isinstance(self.result, BaseException):
             raise self.result

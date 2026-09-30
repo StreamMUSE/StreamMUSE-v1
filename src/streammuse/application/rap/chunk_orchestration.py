@@ -18,6 +18,11 @@ from streammuse.application.rap.scoring import (
     rank_candidates,
     rhyme_quality,
 )
+from streammuse.application.rap.execution import (
+    ExecutionCancelled,
+    ExecutionDeadlineExceeded,
+    SynthesisExecutionContext,
+)
 from streammuse.application.rap.service import CandidateGenerator, ProsodyAnalyzer
 from streammuse.domain.rap import (
     CandidateBatch,
@@ -180,6 +185,7 @@ class PhraseRenderResult:
     warnings: tuple[str, ...]
     stage_timings_ms: Mapping[str, float]
     monitoring_summary: Mapping[str, object]
+    moss_serving_metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.vocal_wav, bytes):
@@ -190,6 +196,7 @@ class PhraseRenderResult:
             ("model_tool_versions", self.model_tool_versions),
             ("stage_timings_ms", self.stage_timings_ms),
             ("monitoring_summary", self.monitoring_summary),
+            ("moss_serving_metadata", self.moss_serving_metadata),
         ):
             if not isinstance(value, Mapping):
                 raise ValueError(f"phrase {name} must be a mapping")
@@ -223,13 +230,22 @@ class PhraseRenderResult:
         object.__setattr__(
             self, "monitoring_summary", _frozen_mapping(self.monitoring_summary)
         )
+        object.__setattr__(
+            self,
+            "moss_serving_metadata",
+            _frozen_mapping(self.moss_serving_metadata),
+        )
 
 
 class PhraseVocalRenderer(Protocol):
     """Replaceable phrase renderer implemented by the persistent H200 worker."""
 
     def render(
-        self, request: TwoBarRenderRequest, workspace: Path
+        self,
+        request: TwoBarRenderRequest,
+        workspace: Path,
+        *,
+        execution: SynthesisExecutionContext,
     ) -> PhraseRenderResult:
         """Render one connected two-bar vocal phrase."""
 
@@ -242,6 +258,7 @@ class RemoteChunkRenderArtifact:
     vocal_wav: bytes
     candidate_ledger: tuple[Mapping[str, object], ...]
     workspace: Path
+    moss_serving_metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.manifest, RemoteRapChunkManifest):
@@ -254,6 +271,11 @@ class RemoteChunkRenderArtifact:
             self,
             "candidate_ledger",
             tuple(_frozen_mapping(item) for item in self.candidate_ledger),
+        )
+        object.__setattr__(
+            self,
+            "moss_serving_metadata",
+            _frozen_mapping(self.moss_serving_metadata),
         )
 
 
@@ -314,15 +336,23 @@ class ChunkCandidatePlanner:
         self._weights = weights
         self._monotonic = monotonic
 
-    def plan(self, request: RemoteRapChunkRequest) -> ChunkLyricPlan:
+    def plan(
+        self,
+        request: RemoteRapChunkRequest,
+        *,
+        execution: SynthesisExecutionContext | None = None,
+    ) -> ChunkLyricPlan:
         if not isinstance(request, RemoteRapChunkRequest):
             raise ValueError("chunk planning requires a RemoteRapChunkRequest")
         started_at = self._monotonic()
-        generation_seconds = (
-            request.remaining_budget_ms - request.policy.render_reserve_ms
-        ) / 1000.0
-        cutoff = started_at + generation_seconds
-        if generation_seconds <= 0 or self._monotonic() >= cutoff:
+        active_execution = execution or SynthesisExecutionContext(
+            deadline_monotonic=started_at + request.remaining_budget_ms / 1000.0,
+            correlation_id=request.request_id,
+            clock=self._monotonic,
+            validation_time_monotonic=started_at,
+        )
+        render_reserve_seconds = request.policy.render_reserve_ms / 1000.0
+        if _execution_remaining_seconds(active_execution) <= render_reserve_seconds:
             raise RenderBudgetExpired(
                 "render reserve consumes the complete accepted request budget"
             )
@@ -339,14 +369,19 @@ class ChunkCandidatePlanner:
             )
             if wave_size <= 0:
                 continue
-            if self._monotonic() >= cutoff:
+            if (
+                _execution_remaining_seconds(active_execution)
+                <= render_reserve_seconds
+            ):
                 if waves_started == 0:
                     raise RenderBudgetExpired(
                         "generation cutoff expired before the first candidate wave"
                     )
                 break
             waves_started += 1
-            generated, evaluated = self._run_wave(request, state, wave_size, ledger)
+            generated, evaluated = self._run_wave(
+                request, state, wave_size, ledger, active_execution
+            )
             generation_ms += generated
             evaluation_ms += evaluated
 
@@ -360,7 +395,10 @@ class ChunkCandidatePlanner:
                 wave_size = min(request.policy.rescue_candidates, remaining)
                 if wave_size <= 0:
                     continue
-                if self._monotonic() >= cutoff:
+                if (
+                    _execution_remaining_seconds(active_execution)
+                    <= render_reserve_seconds
+                ):
                     if waves_started == 0:
                         raise RenderBudgetExpired(
                             "generation cutoff expired before the first candidate wave"
@@ -368,7 +406,9 @@ class ChunkCandidatePlanner:
                     cutoff_reached = True
                     break
                 waves_started += 1
-                generated, evaluated = self._run_wave(request, state, wave_size, ledger)
+                generated, evaluated = self._run_wave(
+                    request, state, wave_size, ledger, active_execution
+                )
                 generation_ms += generated
                 evaluation_ms += evaluated
                 progressed = True
@@ -434,7 +474,9 @@ class ChunkCandidatePlanner:
         state: _BarState,
         wave_size: int,
         ledger: list[dict[str, object]],
+        execution: SynthesisExecutionContext,
     ) -> tuple[float, float]:
+        _execution_checkpoint(execution)
         bar = request.bars[state.position]
         wave = state.wave_index
         candidate_request = CandidateRequest(
@@ -450,11 +492,14 @@ class ChunkCandidatePlanner:
         state.attempted_count += wave_size
         generation_started = self._monotonic()
         try:
-            batch = self._generator.generate(candidate_request)
+            with execution.uninterruptible():
+                batch = self._generator.generate(candidate_request)
             if not isinstance(batch, CandidateBatch):
                 raise ValueError("candidate generator returned a malformed batch")
             if batch.request_id != candidate_request.request_id:
                 raise ValueError("candidate generator returned a mismatched request_id")
+        except (RenderBudgetExpired, PhraseRenderFailed):
+            raise
         except Exception as exc:
             generation_ms = max(0.0, (self._monotonic() - generation_started) * 1000.0)
             evaluation_started = self._monotonic()
@@ -470,6 +515,8 @@ class ChunkCandidatePlanner:
             self._rerank(request, state, ledger)
             evaluation_ms = max(0.0, (self._monotonic() - evaluation_started) * 1000.0)
             return generation_ms, evaluation_ms
+
+        _execution_checkpoint(execution)
 
         generation_ms = max(0.0, (self._monotonic() - generation_started) * 1000.0)
         evaluation_started = self._monotonic()
@@ -585,6 +632,7 @@ class ChunkCandidatePlanner:
             )
         self._rerank(request, state, ledger)
         evaluation_ms = max(0.0, (self._monotonic() - evaluation_started) * 1000.0)
+        _execution_checkpoint(execution)
         return generation_ms, evaluation_ms
 
     def _rerank(
@@ -871,9 +919,22 @@ class RapChunkOrchestrator:
         self._workspace_root = Path(workspace_root)
         self._monotonic = monotonic
 
-    def render(self, request: RemoteRapChunkRequest) -> RemoteChunkRenderArtifact:
+    def render(
+        self,
+        request: RemoteRapChunkRequest,
+        *,
+        execution: SynthesisExecutionContext | None = None,
+    ) -> RemoteChunkRenderArtifact:
         started_at = self._monotonic()
-        lyric_plan = self._planner.plan(request)
+        active_execution = execution or SynthesisExecutionContext(
+            deadline_monotonic=started_at + request.remaining_budget_ms / 1000.0,
+            correlation_id=request.request_id,
+            clock=self._monotonic,
+            validation_time_monotonic=started_at,
+        )
+        _execution_checkpoint(active_execution)
+        lyric_plan = self._planner.plan(request, execution=active_execution)
+        _execution_checkpoint(active_execution)
         if lyric_plan.request.canonical_json_bytes() != request.canonical_json_bytes():
             raise PhraseRenderFailed("planner returned a mismatched request identity")
         workspace = self._workspace_root / request.request_id
@@ -884,7 +945,11 @@ class RapChunkOrchestrator:
                 f"workspace preparation failed: {_bounded_exception_text(exc)}"
             ) from exc
         try:
-            phrase = self._renderer.render(lyric_plan.render_request, workspace)
+            phrase = self._renderer.render(
+                lyric_plan.render_request,
+                workspace,
+                execution=active_execution,
+            )
         except PhraseRenderFailed:
             raise
         except Exception as exc:
@@ -893,6 +958,7 @@ class RapChunkOrchestrator:
             ) from exc
         if not isinstance(phrase, PhraseRenderResult):
             raise PhraseRenderFailed("phrase renderer returned a malformed result")
+        _execution_checkpoint(active_execution)
 
         stage_timings = {
             "generation": float(lyric_plan.stage_timings_ms.get("generation", 0.0)),
@@ -947,7 +1013,9 @@ class RapChunkOrchestrator:
             )
             # Task 4 owns measured packaging. Encoding here is solely the shared
             # contract validator for format, duration, silence, and hash.
+            _execution_checkpoint(active_execution)
             encode_chunk_package(manifest, phrase.vocal_wav)
+            _execution_checkpoint(active_execution)
         except (TypeError, ValueError) as exc:
             raise PhraseRenderFailed(
                 f"rendered phrase failed package validation: {exc}"
@@ -957,4 +1025,25 @@ class RapChunkOrchestrator:
             vocal_wav=phrase.vocal_wav,
             candidate_ledger=lyric_plan.candidate_ledger,
             workspace=workspace,
+            moss_serving_metadata=phrase.moss_serving_metadata,
         )
+
+
+def _execution_checkpoint(execution: SynthesisExecutionContext) -> None:
+    try:
+        execution.checkpoint()
+    except ExecutionDeadlineExceeded as exc:
+        raise RenderBudgetExpired("accepted render request budget expired") from exc
+    except ExecutionCancelled as exc:
+        raise PhraseRenderFailed("render execution was cancelled") from exc
+
+
+def _execution_remaining_seconds(execution: SynthesisExecutionContext) -> float:
+    try:
+        execution.raise_if_cancelled()
+        remaining = execution.remaining_seconds()
+    except ExecutionCancelled as exc:
+        raise PhraseRenderFailed("render execution was cancelled") from exc
+    if remaining <= 0:
+        raise RenderBudgetExpired("accepted render request budget expired")
+    return remaining

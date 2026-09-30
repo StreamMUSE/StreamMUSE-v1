@@ -5,16 +5,19 @@ import hashlib
 import io
 import json
 import struct
+import time
 import wave
+import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from streammuse.application.rap.execution import SynthesisExecutionContext
 from streammuse.application.rap.chunk_orchestration import (
     NoValidCandidates,
     PhraseRenderFailed,
@@ -41,6 +44,7 @@ from streammuse.infrastructure.rap.chunk_package import (
     RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
     decode_chunk_package,
 )
+from streammuse.infrastructure.rap.producer_manifest import ProducerManifestV1
 from streammuse.presentation import rap_render_server
 from streammuse.presentation.rap_render_server import (
     build_parser,
@@ -56,6 +60,40 @@ _FULL_MMS_ALIGNMENT_BYTES = (
     b'"warnings":[],"word_spans":[{"end_seconds":0.5,"score":0.93,'
     b'"start_seconds":0.0,"word":"orbit"}]}\n'
 )
+
+
+def _producer_manifest(*, backend: str = "inprocess") -> ProducerManifestV1:
+    return ProducerManifestV1(
+        backend=backend,
+        backend_implementation_revision="test-adapter.v1",
+        streammuse_revision={"commit": "test-commit", "patch_sha256": "1" * 64},
+        model={"id": "test-moss", "revision": "test-model-revision"},
+        runtime={
+            "identity": "test-runtime",
+            "version": "1.0",
+            "revision": "test-runtime-revision",
+            "config_sha256": "2" * 64,
+        },
+        generation={
+            "seed_policy_version": "streammuse.moss_seed.v1",
+            "settings": {"audio_top_k": 25},
+        },
+        reference={"audio_sha256": "3" * 64, "text_sha256": None},
+        alignment={
+            "identity": "MMS_FA",
+            "version": "test",
+            "warp_policy": "gentle_sparse_r3",
+        },
+        output={
+            "sample_rate_hz": 24_000,
+            "wire_audio_codec": "pcm",
+            "public_schema_version": "streammuse.rap_chunk.v1",
+        },
+    )
+
+
+def _namespace(root: Path) -> Path:
+    return root / _producer_manifest().fingerprint
 
 
 class _PublicationInterrupted(BaseException):
@@ -180,7 +218,12 @@ class FakeOrchestrator:
         self.started = Event()
         self.release: Event | None = None
 
-    def render(self, request: RemoteRapChunkRequest) -> RemoteChunkRenderArtifact:
+    def render(
+        self,
+        request: RemoteRapChunkRequest,
+        *,
+        execution=None,
+    ) -> RemoteChunkRenderArtifact:
         self.calls += 1
         self.started.set()
         if self.release is not None:
@@ -218,6 +261,7 @@ def _client(tmp_path: Path, orchestrator: FakeOrchestrator) -> TestClient:
                 "candidate_profile": "realtime",
                 "warmup": {"complete": True},
             },
+            producer_manifest=_producer_manifest(),
             artifact_root=tmp_path / "artifacts",
         )
     )
@@ -232,6 +276,45 @@ def _post(client: TestClient, request: RemoteRapChunkRequest):
             "Idempotency-Key": request.request_id,
         },
     )
+
+
+def _sglang_cli_args(tmp_path: Path) -> list[str]:
+    return [
+        "--artifact-root",
+        str(tmp_path / "artifacts"),
+        "--vllm-model",
+        "Qwen-test",
+        "--moss-model",
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "--moss-reference-wav",
+        str(tmp_path / "reference.wav"),
+        "--moss-serving-backend",
+        "sglang-omni",
+        "--moss-sglang-url",
+        "http://127.0.0.1:8030",
+        "--moss-reference-text-file",
+        str(tmp_path / "reference.txt"),
+        "--moss-sglang-reference-uri",
+        "file:///models/streammuse/reference.wav",
+        "--moss-sglang-reference-sha256",
+        "1" * 64,
+        "--moss-model-revision",
+        "moss-snapshot-20260903",
+        "--moss-runtime-version",
+        "sglang-omni-0.1.4",
+        "--moss-runtime-revision",
+        "omni-commit-a1",
+        "--moss-sglang-version",
+        "sglang-0.5.2",
+        "--moss-sglang-revision",
+        "sglang-commit-b2",
+        "--moss-runtime-environment-sha256",
+        "2" * 64,
+        "--moss-runtime-config",
+        str(tmp_path / "moss_tts.yaml"),
+        "--moss-runtime-config-sha256",
+        "3" * 64,
+    ]
 
 
 def test_health_exposes_compatible_readiness_fields(tmp_path: Path) -> None:
@@ -253,6 +336,7 @@ def test_health_retains_required_defaults_when_optional_summaries_are_absent(
     app = create_rap_render_app(
         FakeOrchestrator(tmp_path / "worker"),
         {"ready": True},
+        producer_manifest=_producer_manifest(),
         artifact_root=tmp_path / "artifacts",
     )
 
@@ -263,6 +347,7 @@ def test_health_retains_required_defaults_when_optional_summaries_are_absent(
         "protocol_version": "remote-rap-chunk/v1",
         "schema_version": "streammuse.rap_chunk.v1",
         "ready": True,
+        "state": "ready",
     }
 
 
@@ -274,6 +359,7 @@ def test_health_uses_recursive_allowlists_for_public_scalar_summaries(
         "protocol_version": "remote-rap-chunk/v1",
         "schema_version": "streammuse.rap_chunk.v1",
         "ready": True,
+        "state": "ready",
         "vllm": {
             "ready": True,
             "status": "serving",
@@ -322,6 +408,7 @@ def test_health_uses_recursive_allowlists_for_public_scalar_summaries(
     app = create_rap_render_app(
         FakeOrchestrator(tmp_path / "worker"),
         health,
+        producer_manifest=_producer_manifest(),
         artifact_root=tmp_path / "artifacts",
     )
 
@@ -332,6 +419,7 @@ def test_health_uses_recursive_allowlists_for_public_scalar_summaries(
         "protocol_version": "remote-rap-chunk/v1",
         "schema_version": "streammuse.rap_chunk.v1",
         "ready": True,
+        "state": "ready",
         "vllm": {
             "ready": True,
             "status": "serving",
@@ -378,6 +466,7 @@ def test_health_bounds_types_and_never_exposes_private_model_paths(
             "rubberband": {"ready": "true", "version": "3.3.0"},
             "warmup": {"ready": True, "status": "complete", "elapsed": 1.0},
         },
+        producer_manifest=_producer_manifest(),
         artifact_root=tmp_path / "artifacts",
     )
 
@@ -388,6 +477,7 @@ def test_health_bounds_types_and_never_exposes_private_model_paths(
         "protocol_version": "remote-rap-chunk/v1",
         "schema_version": "streammuse.rap_chunk.v1",
         "ready": False,
+        "state": "ready",
         "candidate_profile": "realtime",
         "vllm": {"ready": True, "model": "Qwen/test-model"},
         "moss": {
@@ -414,7 +504,7 @@ def test_render_returns_canonical_binary_package_and_atomic_artifacts(
 
     response = _post(client, request)
 
-    workspace = tmp_path / "artifacts" / request.request_id
+    workspace = _namespace(tmp_path / "artifacts") / request.request_id
     assert response.status_code == 200
     assert response.headers["content-type"] == RAP_CHUNK_PACKAGE_MEDIA_TYPE
     assert response.headers["x-streammuse-request-id"] == request.request_id
@@ -469,6 +559,7 @@ def test_opus_enabled_server_returns_separate_variant_without_changing_canonical
     app = create_rap_render_app(
         FakeOrchestrator(tmp_path / "worker"),
         {"ready": True},
+        producer_manifest=_producer_manifest(),
         artifact_root=tmp_path / "artifacts",
         wire_audio_codec="opus",
         opus_codec=Codec(),
@@ -487,7 +578,7 @@ def test_opus_enabled_server_returns_separate_variant_without_changing_canonical
         },
     )
 
-    workspace = tmp_path / "artifacts" / request.request_id
+    workspace = _namespace(tmp_path / "artifacts") / request.request_id
     assert pcm_response.status_code == 200
     assert pcm_response.headers["content-type"] == RAP_CHUNK_PACKAGE_MEDIA_TYPE
     assert response.status_code == 200
@@ -510,6 +601,7 @@ def test_opus_accept_zero_or_malformed_quality_falls_back_to_pcm(
     app = create_rap_render_app(
         FakeOrchestrator(tmp_path / "worker"),
         {"ready": True},
+        producer_manifest=_producer_manifest(),
         artifact_root=tmp_path / "artifacts",
         wire_audio_codec="opus",
         opus_codec=Codec(),
@@ -550,6 +642,7 @@ def test_opus_variant_encoding_uses_threadpool_and_sanitizes_failure(
     app = create_rap_render_app(
         FakeOrchestrator(tmp_path / "worker"),
         {"ready": True},
+        producer_manifest=_producer_manifest(),
         artifact_root=tmp_path / "artifacts",
         wire_audio_codec="opus",
         opus_codec=Codec(),
@@ -565,7 +658,7 @@ def test_opus_variant_encoding_uses_threadpool_and_sanitizes_failure(
         },
     )
 
-    assert calls == ["render_or_load", "load_or_create_opus"]
+    assert calls == ["load_or_create_opus"]
     assert response.status_code == 500
     assert "secret" not in response.text
 
@@ -592,6 +685,7 @@ def test_first_opus_encodes_for_unrelated_requests_do_not_share_global_lock(
     store = rap_render_server._ArtifactStore(
         tmp_path / "artifacts",
         FakeOrchestrator(tmp_path / "worker"),
+        _producer_manifest(),
         opus_codec=Codec(),
     )
     first_request = _request(session_id="first")
@@ -642,12 +736,16 @@ def test_canonical_regeneration_invalidates_stale_opus_derivative(tmp_path: Path
     request = _request()
     orchestrator = FakeOrchestrator(tmp_path / "worker")
     store = rap_render_server._ArtifactStore(
-        tmp_path / "artifacts", orchestrator, opus_codec=Codec()
+        tmp_path / "artifacts",
+        orchestrator,
+        _producer_manifest(),
+        opus_codec=Codec(),
     )
     stored = store.render_or_load(request, request.canonical_json_bytes())
     store.load_or_create_opus(request, stored)
-    workspace = tmp_path / "artifacts" / request.request_id
+    workspace = store.namespace_root / request.request_id
     (workspace / "response.zip").unlink()
+    (workspace / "complete.v1.json").unlink()
 
     store.render_or_load(request, request.canonical_json_bytes())
 
@@ -679,10 +777,13 @@ def test_overlapping_old_opus_encode_cannot_replace_new_canonical_derivative(
     request = _request()
     orchestrator = FakeOrchestrator(tmp_path / "worker")
     store = rap_render_server._ArtifactStore(
-        tmp_path / "artifacts", orchestrator, opus_codec=Codec()
+        tmp_path / "artifacts",
+        orchestrator,
+        _producer_manifest(),
+        opus_codec=Codec(),
     )
     old_stored = store.render_or_load(request, request.canonical_json_bytes())
-    workspace = tmp_path / "artifacts" / request.request_id
+    workspace = store.namespace_root / request.request_id
     old_results: list[bytes] = []
     new_results: list[bytes] = []
     errors: list[BaseException] = []
@@ -711,6 +812,7 @@ def test_overlapping_old_opus_encode_cannot_replace_new_canonical_derivative(
     )
     orchestrator.result = new_artifact
     (workspace / "response.zip").unlink()
+    (workspace / "complete.v1.json").unlink()
     new_stored = store.render_or_load(request, request.canonical_json_bytes())
 
     new_thread = Thread(target=encode, args=(new_stored, new_results))
@@ -744,12 +846,12 @@ def test_packaging_timing_uses_measured_final_publication_equivalent(
         return value
 
     store = rap_render_server._ArtifactStore(
-        tmp_path / "artifacts", orchestrator, clock=clock
+        tmp_path / "artifacts", orchestrator, _producer_manifest(), clock=clock
     )
 
     stored = store.render_or_load(request, request.canonical_json_bytes())
 
-    workspace = tmp_path / "artifacts" / request.request_id
+    workspace = store.namespace_root / request.request_id
     decoded = decode_chunk_package(
         stored.package, expected_request_id=request.request_id
     )
@@ -790,7 +892,7 @@ def test_render_rejects_legacy_task_3_artifact_names(
 
     response = _post(client, request)
 
-    workspace = tmp_path / "artifacts" / request.request_id
+    workspace = _namespace(tmp_path / "artifacts") / request.request_id
     assert response.status_code == 503
     assert response.json() == {
         "error": {
@@ -850,7 +952,7 @@ def test_shared_renderer_workspace_fsyncs_canonical_task3_artifacts(
 ) -> None:
     request = _request()
     artifact_root = tmp_path / "artifacts"
-    orchestrator = FakeOrchestrator(artifact_root)
+    orchestrator = FakeOrchestrator(_namespace(artifact_root))
     opened_paths: dict[int, Path] = {}
     fsynced_paths: list[Path] = []
     original_open = rap_render_server.os.open
@@ -868,11 +970,13 @@ def test_shared_renderer_workspace_fsyncs_canonical_task3_artifacts(
 
     monkeypatch.setattr(rap_render_server.os, "open", tracked_open)
     monkeypatch.setattr(rap_render_server.os, "fsync", tracked_fsync)
-    store = rap_render_server._ArtifactStore(artifact_root, orchestrator)
+    store = rap_render_server._ArtifactStore(
+        artifact_root, orchestrator, _producer_manifest()
+    )
 
     store.render_or_load(request, request.canonical_json_bytes())
 
-    workspace = artifact_root / request.request_id
+    workspace = store.namespace_root / request.request_id
     assert {
         workspace / "source.wav",
         workspace / "mms_alignment.json",
@@ -902,10 +1006,16 @@ def test_post_rename_publication_failure_unpublishes_and_retries_for_all_waiters
     original_fsync_directory = rap_render_server._ArtifactStore._fsync_directory
     failed_once = False
     rollback_fsync_states: list[bool] = []
+    result_calls = 0
+    result_calls_lock = Lock()
 
     class ObservedFuture(Future):
         def result(self, timeout=None):
-            waiter_started.set()
+            nonlocal result_calls
+            with result_calls_lock:
+                result_calls += 1
+                if result_calls == 2:
+                    waiter_started.set()
             return super().result(timeout=5)
 
     def replace_then_fail(source, destination):
@@ -930,7 +1040,9 @@ def test_post_rename_publication_failure_unpublishes_and_retries_for_all_waiters
         "_fsync_directory",
         staticmethod(tracked_fsync_directory),
     )
-    store = rap_render_server._ArtifactStore(tmp_path / "artifacts", orchestrator)
+    store = rap_render_server._ArtifactStore(
+        tmp_path / "artifacts", orchestrator, _producer_manifest()
+    )
     failures: dict[str, BaseException] = {}
 
     def invoke(name: str) -> None:
@@ -949,7 +1061,7 @@ def test_post_rename_publication_failure_unpublishes_and_retries_for_all_waiters
     owner.join(timeout=5)
     waiter.join(timeout=5)
 
-    workspace = tmp_path / "artifacts" / request.request_id
+    workspace = store.namespace_root / request.request_id
     assert not owner.is_alive()
     assert not waiter.is_alive()
     assert failures["owner"] is failure
@@ -984,7 +1096,9 @@ def test_known_render_failures_return_bounded_error_payloads(
     assert response.json() == {
         "error": {"code": code, "message": "rap chunk render could not be completed"}
     }
-    assert not (tmp_path / "artifacts" / request.request_id / "response.zip").exists()
+    assert not (
+        _namespace(tmp_path / "artifacts") / request.request_id / "response.zip"
+    ).exists()
 
 
 def test_malformed_request_and_unexpected_failure_are_sanitized(tmp_path: Path) -> None:
@@ -1109,10 +1223,12 @@ def test_cache_io_for_one_request_does_not_hold_global_idempotency_lock(
     first_request = _request(session_id="session-a")
     second_request = _request(session_id="session-b")
     orchestrator = FakeOrchestrator(tmp_path / "worker")
-    store = rap_render_server._ArtifactStore(tmp_path / "artifacts", orchestrator)
+    store = rap_render_server._ArtifactStore(
+        tmp_path / "artifacts", orchestrator, _producer_manifest()
+    )
     store.render_or_load(first_request, first_request.canonical_json_bytes())
     store.render_or_load(second_request, second_request.canonical_json_bytes())
-    blocked_path = tmp_path / "artifacts" / first_request.request_id / "response.zip"
+    blocked_path = store.namespace_root / first_request.request_id / "response.zip"
     cache_read_started = Event()
     release_cache_read = Event()
     second_finished = Event()
@@ -1157,10 +1273,16 @@ def test_overlapping_failure_survives_diagnostic_write_failure_for_all_waiters(
     orchestrator = FakeOrchestrator(tmp_path / "worker", render_failure)
     orchestrator.release = Event()
     waiter_started = Event()
+    result_calls = 0
+    result_calls_lock = Lock()
 
     class ObservedFuture(Future):
         def result(self, timeout=None):
-            waiter_started.set()
+            nonlocal result_calls
+            with result_calls_lock:
+                result_calls += 1
+                if result_calls == 2:
+                    waiter_started.set()
             return super().result(timeout=1)
 
     def fail_diagnostic_write(self, request_id, error):
@@ -1172,7 +1294,9 @@ def test_overlapping_failure_survives_diagnostic_write_failure_for_all_waiters(
         "_persist_failure",
         fail_diagnostic_write,
     )
-    store = rap_render_server._ArtifactStore(tmp_path / "artifacts", orchestrator)
+    store = rap_render_server._ArtifactStore(
+        tmp_path / "artifacts", orchestrator, _producer_manifest()
+    )
     failures: dict[str, BaseException] = {}
 
     def invoke(name: str) -> None:
@@ -1210,6 +1334,289 @@ def test_completed_request_returns_byte_identical_cached_package(
     assert first.status_code == second.status_code == 200
     assert second.content == first.content
     assert orchestrator.calls == 1
+
+
+def test_private_moss_sidecar_is_strict_and_never_enters_public_package(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+    orchestrator = FakeOrchestrator(tmp_path / "worker")
+    client = _client(tmp_path, orchestrator)
+
+    first = _post(client, request)
+
+    workspace = _namespace(tmp_path / "artifacts") / request.request_id
+    sidecar_path = workspace / "internal" / "moss_synthesis.v1.json"
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar["schema_version"] == "streammuse.moss_synthesis.v1"
+    assert sidecar["producer_fingerprint"] == _producer_manifest().fingerprint
+    assert sidecar["moss_backend"] == "inprocess"
+    assert sidecar["cache_hit"] is False
+    assert sidecar["synthesis_outcome"] == "success"
+    assert sidecar["upstream_abort_confirmed"] is False
+    assert sidecar["cancellation_grace_exceeded"] is False
+    assert sidecar["recovery_outcome"] == "not_required"
+    with zipfile.ZipFile(io.BytesIO(first.content)) as package:
+        assert all(not name.startswith("internal/") for name in package.namelist())
+
+    sidecar["moss_backend"] = "sglang-omni"
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    second = _post(client, request)
+
+    assert second.status_code == 500
+    assert second.json() == {
+        "error": {
+            "code": "internal_error",
+            "message": "rap chunk render failed",
+        }
+    }
+    assert orchestrator.calls == 1
+
+
+def test_same_request_is_isolated_across_producer_namespaces(tmp_path: Path) -> None:
+    request = _request()
+    artifact_root = tmp_path / "artifacts"
+    first_orchestrator = FakeOrchestrator(tmp_path / "worker-a")
+    second_orchestrator = FakeOrchestrator(tmp_path / "worker-b")
+    first_manifest = _producer_manifest(backend="inprocess")
+    second_manifest = replace(
+        _producer_manifest(backend="sglang-omni"),
+        backend_implementation_revision="test-sglang-adapter.v1",
+    )
+    first_client = TestClient(
+        create_rap_render_app(
+            first_orchestrator,
+            {"ready": True},
+            producer_manifest=first_manifest,
+            artifact_root=artifact_root,
+        )
+    )
+    second_client = TestClient(
+        create_rap_render_app(
+            second_orchestrator,
+            {"ready": True},
+            producer_manifest=second_manifest,
+            artifact_root=artifact_root,
+        )
+    )
+
+    assert _post(first_client, request).status_code == 200
+    assert _post(second_client, request).status_code == 200
+
+    assert first_orchestrator.calls == 1
+    assert second_orchestrator.calls == 1
+    assert (
+        artifact_root / first_manifest.fingerprint / request.request_id
+    ).is_dir()
+    assert (
+        artifact_root / second_manifest.fingerprint / request.request_id
+    ).is_dir()
+
+
+def test_one_waiter_can_leave_without_cancelling_shared_owner(tmp_path: Path) -> None:
+    request = _request()
+    orchestrator = FakeOrchestrator(tmp_path / "worker")
+    orchestrator.release = Event()
+    app = create_rap_render_app(
+        orchestrator,
+        {"ready": True},
+        producer_manifest=_producer_manifest(),
+        artifact_root=tmp_path / "artifacts",
+    )
+    store = app.state.rap_artifact_store
+    first_execution = SynthesisExecutionContext.from_timeout(
+        5.0, correlation_id=request.request_id
+    )
+    second_execution = SynthesisExecutionContext.from_timeout(
+        5.0, correlation_id=request.request_id
+    )
+
+    first = store.join(
+        request,
+        request.canonical_json_bytes(),
+        execution=first_execution,
+    )
+    assert orchestrator.started.wait(timeout=5)
+    second = store.join(
+        request,
+        request.canonical_json_bytes(),
+        execution=second_execution,
+    )
+    first_execution.cancel("client_disconnected")
+    first.detach("client_disconnected")
+
+    assert first.state.owner_execution.cancelled is False
+    orchestrator.release.set()
+    assert second.future.result(timeout=5).package
+    second.detach()
+    assert orchestrator.calls == 1
+    store.close()
+
+
+def test_last_waiter_cancel_degrades_when_owner_ignores_grace(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+    orchestrator = FakeOrchestrator(tmp_path / "worker")
+    orchestrator.release = Event()
+    app = create_rap_render_app(
+        orchestrator,
+        {"ready": True},
+        producer_manifest=_producer_manifest(),
+        artifact_root=tmp_path / "artifacts",
+        cancellation_grace_seconds=0.02,
+    )
+    store = app.state.rap_artifact_store
+    execution = SynthesisExecutionContext.from_timeout(
+        5.0, correlation_id=request.request_id
+    )
+    waiter = store.join(
+        request,
+        request.canonical_json_bytes(),
+        execution=execution,
+    )
+    assert orchestrator.started.wait(timeout=5)
+
+    execution.cancel("client_disconnected")
+    waiter.detach("client_disconnected")
+    deadline = time.monotonic() + 1.0
+    while (
+        app.state.rap_runtime_state.snapshot()["state"] != "degraded"
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.005)
+
+    health = app.state.rap_runtime_state.snapshot()
+    assert health["ready"] is False
+    assert health["state"] == "degraded"
+    assert health["restart_required"] is True
+    with pytest.raises(rap_render_server._ServiceDegraded):
+        store.join(
+            request,
+            request.canonical_json_bytes(),
+            execution=SynthesisExecutionContext.from_timeout(
+                5.0, correlation_id=request.request_id
+            ),
+        )
+
+    orchestrator.release.set()
+    with pytest.raises(Exception):
+        waiter.future.result(timeout=5)
+    workspace = _namespace(tmp_path / "artifacts") / request.request_id
+    sidecar = json.loads(
+        (workspace / "internal" / "moss_synthesis.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sidecar["upstream_abort_confirmed"] is False
+    assert sidecar["cancellation_grace_exceeded"] is True
+    assert sidecar["recovery_outcome"] == "restart_required"
+    store.close()
+
+
+def test_unconfirmed_transport_close_degrades_after_local_owner_exits(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+
+    class AbortUnconfirmedOrchestrator(FakeOrchestrator):
+        def render(self, request, *, execution=None):
+            assert execution is not None
+            self.calls += 1
+            self.started.set()
+            execution.add_cancel_callback(
+                lambda: execution.record_cancellation_outcome(
+                    "transport_closed_abort_unconfirmed"
+                )
+            )
+            while not execution.cancelled:
+                time.sleep(0.001)
+            execution.checkpoint()
+
+    orchestrator = AbortUnconfirmedOrchestrator(tmp_path / "worker")
+    manifest = _producer_manifest(backend="sglang-omni")
+    app = create_rap_render_app(
+        orchestrator,
+        {"ready": True},
+        producer_manifest=manifest,
+        artifact_root=tmp_path / "artifacts",
+        cancellation_grace_seconds=0.03,
+    )
+    store = app.state.rap_artifact_store
+    execution = SynthesisExecutionContext.from_timeout(
+        5.0, correlation_id=request.request_id
+    )
+    waiter = store.join(
+        request,
+        request.canonical_json_bytes(),
+        execution=execution,
+    )
+    assert orchestrator.started.wait(timeout=5)
+
+    execution.cancel("client_disconnected")
+    waiter.detach("client_disconnected")
+    with pytest.raises(Exception):
+        waiter.future.result(timeout=5)
+    deadline = time.monotonic() + 1.0
+    while (
+        app.state.rap_runtime_state.snapshot()["state"] != "degraded"
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.005)
+
+    assert app.state.rap_runtime_state.snapshot()["state"] == "degraded"
+    sidecar = json.loads(
+        (
+            tmp_path
+            / "artifacts"
+            / manifest.fingerprint
+            / request.request_id
+            / "internal"
+            / "moss_synthesis.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert sidecar["cancellation_outcome"] == (
+        "transport_closed_abort_unconfirmed"
+    )
+    assert sidecar["cancellation_grace_exceeded"] is True
+    assert sidecar["recovery_outcome"] == "restart_required"
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        {
+            "cancellation_outcome": "not_requested",
+            "recovery_outcome": "abort_unconfirmed",
+        },
+        {
+            "cancellation_outcome": "cancel_requested",
+            "recovery_outcome": "not_required",
+        },
+        {
+            "cancellation_outcome": "upstream_abort_confirmed",
+            "upstream_abort_confirmed": True,
+            "recovery_outcome": "abort_unconfirmed",
+        },
+    ),
+)
+def test_private_sidecar_rejects_inconsistent_recovery_evidence(
+    evidence: dict[str, object],
+) -> None:
+    with pytest.raises(
+        rap_render_server._CacheIntegrityError,
+        match="recovery evidence is inconsistent",
+    ):
+        rap_render_server._private_moss_metadata(
+            evidence,
+            backend="sglang-omni",
+            correlation_id="request-id",
+            model_revision="model-revision",
+            reference_audio_sha256="1" * 64,
+            reference_text_sha256="2" * 64,
+            config_sha256="3" * 64,
+        )
 
 
 def test_same_id_with_different_canonical_body_is_rejected(tmp_path: Path) -> None:
@@ -1283,6 +1690,70 @@ def test_cli_defaults_to_loopback_and_refuses_public_bind_without_opt_in() -> No
     assert status == 2
 
 
+def test_sglang_cli_requires_and_preserves_complete_pinned_identity(
+    tmp_path: Path,
+) -> None:
+    args = build_parser().parse_args(_sglang_cli_args(tmp_path))
+
+    config = rap_render_server._server_config_from_args(args)
+
+    assert config.moss_serving_backend == "sglang-omni"
+    assert config.moss_device == "external"
+    assert config.moss_sglang_url == "http://127.0.0.1:8030"
+    assert config.moss_runtime_version == "sglang-omni-0.1.4"
+    assert config.moss_runtime_revision == "omni-commit-a1"
+    assert config.moss_sglang_version == "sglang-0.5.2"
+    assert config.moss_sglang_revision == "sglang-commit-b2"
+    assert config.moss_runtime_environment_sha256 == "2" * 64
+
+
+def test_sglang_cli_rejects_missing_pin_public_endpoint_and_remote_reference(
+    tmp_path: Path,
+) -> None:
+    complete = _sglang_cli_args(tmp_path)
+    missing_environment = complete[:]
+    index = missing_environment.index("--moss-runtime-environment-sha256")
+    del missing_environment[index : index + 2]
+    with pytest.raises(ValueError, match="requires"):
+        rap_render_server._server_config_from_args(
+            build_parser().parse_args(missing_environment)
+        )
+
+    public_endpoint = complete[:]
+    index = public_endpoint.index("--moss-sglang-url")
+    public_endpoint[index + 1] = "https://moss.example.test"
+    with pytest.raises(ValueError, match="HTTP origin"):
+        rap_render_server._server_config_from_args(
+            build_parser().parse_args(public_endpoint)
+        )
+
+    remote_reference = complete[:]
+    index = remote_reference.index("--moss-sglang-reference-uri")
+    remote_reference[index + 1] = "https://example.test/reference.wav"
+    with pytest.raises(ValueError, match="local file URI"):
+        rap_render_server._server_config_from_args(
+            build_parser().parse_args(remote_reference)
+        )
+
+
+def test_inprocess_cli_rejects_sglang_only_flags(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "--vllm-model",
+            "Qwen-test",
+            "--moss-model",
+            "MOSS-test",
+            "--moss-reference-wav",
+            str(tmp_path / "reference.wav"),
+            "--moss-runtime-version",
+            "should-not-be-here",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="only be used with sglang-omni"):
+        rap_render_server._server_config_from_args(args)
+
+
 def test_cli_resolves_default_server_before_composing_resident_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1322,6 +1793,7 @@ def test_cli_composes_through_injected_factory_without_model_imports(
     composition = SimpleNamespace(
         orchestrator=FakeOrchestrator(tmp_path / "worker"),
         health={"ready": True},
+        producer_manifest=_producer_manifest(),
         close=lambda: close_calls.append("close"),
     )
 
@@ -1359,6 +1831,7 @@ def test_cli_closes_composed_worker_when_server_raises(tmp_path: Path) -> None:
     composition = SimpleNamespace(
         orchestrator=FakeOrchestrator(tmp_path / "worker"),
         health={"ready": True},
+        producer_manifest=_producer_manifest(),
         close=lambda: close_calls.append("close"),
     )
 
@@ -1388,6 +1861,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: dict[str, object] = {}
+    reference_bytes = _wav(_request())
 
     class FakeClientConfig:
         def __init__(self, **kwargs):
@@ -1417,21 +1891,18 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
             calls["planner"] = (self, generator, analyzer, weights)
 
     class FakeMossInstance:
-        def synthesize(self, request, output_wav):
+        def synthesize(self, request, output_wav, *, execution):
             calls["moss_warmup"] = (request, output_wav)
-            output_wav.write_bytes(b"warm MOSS WAV")
-            return SimpleNamespace(model_revision="moss-revision")
+            output_wav.write_bytes(reference_bytes)
+            return SimpleNamespace(
+                model_revision="moss-revision",
+                reference_voice_sha256=hashlib.sha256(reference_bytes).hexdigest(),
+            )
 
         def close(self):
             calls["moss_close"] = int(calls.get("moss_close", 0)) + 1
 
     moss = FakeMossInstance()
-
-    class FakeMoss:
-        @classmethod
-        def load(cls, **kwargs):
-            calls["moss_load"] = kwargs
-            return moss
 
     class FakeAlignerInstance:
         def warmup(self, source_wav, transcript):
@@ -1464,7 +1935,6 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         CmuProsodyAnalyzer=FakeAnalyzer,
         ScoreWeights=FakeWeights,
         ChunkCandidatePlanner=FakePlanner,
-        PersistentMossSynthesizer=FakeMoss,
         MmsForcedAligner=FakeAligner,
         MossAlignedPhraseRenderer=FakeRenderer,
         RapChunkOrchestrator=ComposedOrchestrator,
@@ -1473,6 +1943,20 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         rap_render_server,
         "_load_worker_dependencies",
         lambda: dependencies,
+        raising=False,
+    )
+    def load_inprocess(config):
+        calls["moss_load"] = {
+            "model_id": config.moss_model,
+            "device": config.moss_device,
+            "reference_wav": config.moss_reference_wav,
+        }
+        return moss
+
+    monkeypatch.setattr(
+        rap_render_server,
+        "_load_inprocess_moss_synthesizer",
+        load_inprocess,
         raising=False,
     )
     monkeypatch.setattr(
@@ -1504,6 +1988,8 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         lambda path: calls.setdefault("aligner_cache", path),
         raising=False,
     )
+    reference_wav = tmp_path / "reference.wav"
+    reference_wav.write_bytes(reference_bytes)
     config = rap_render_server.RapRenderServerConfig(
         host="127.0.0.1",
         port=8020,
@@ -1512,7 +1998,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         vllm_model="Qwen-test",
         moss_model=str(tmp_path / "private-models" / "MOSS-test"),
         moss_device="cuda:1",
-        moss_reference_wav=tmp_path / "reference.wav",
+        moss_reference_wav=reference_wav,
         aligner_device="cuda:2",
         aligner_cache=tmp_path / "mms-cache",
         candidate_profile="realtime",
@@ -1538,7 +2024,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
     assert calls["aligner_load"] == {"device": "cuda:2"}
     warmup_request, _warmup_path = calls["moss_warmup"]  # type: ignore[misc]
     assert warmup_request.text == "warm voice"
-    assert calls["aligner_warmup"] == (b"warm MOSS WAV", "warm voice")
+    assert calls["aligner_warmup"] == (reference_bytes, "warm voice")
     renderer, renderer_kwargs = calls["renderer"]  # type: ignore[misc]
     assert renderer_kwargs == {
         "synthesizer": moss,
@@ -1549,41 +2035,38 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
     orchestrator, planner, wired_renderer, workspace_root = calls["orchestrator"]  # type: ignore[misc]
     assert composition.orchestrator is orchestrator
     assert wired_renderer is renderer
-    assert workspace_root == tmp_path / "artifacts"
-    assert composition.health == {
-        "protocol_version": "remote-rap-chunk/v1",
-        "schema_version": "streammuse.rap_chunk.v1",
+    assert workspace_root == tmp_path / "artifacts" / composition.producer_manifest.fingerprint
+    assert composition.health["ready"] is True
+    assert composition.health["state"] == "ready"
+    assert composition.health["backend"] == "inprocess"
+    assert composition.health["producer_fingerprint"] == composition.producer_manifest.fingerprint
+    assert composition.health["vllm"] == {
         "ready": True,
-        "vllm": {
-            "ready": True,
-            "status": "serving",
-            "identity": "vLLM",
-            "version": "vllm-version",
-            "model": "Qwen-test",
-        },
-        "moss": {
-            "ready": True,
-            "status": "warmed",
-            "identity": "PersistentMossSynthesizer",
-            "version": "moss-revision",
-            "model": "MOSS-test",
-            "warmup": "complete",
-        },
-        "aligner": {
-            "ready": True,
-            "status": "warmed",
-            "identity": "MMS_FA",
-            "version": "mms-version",
-            "warmup": "complete",
-        },
-        "rubberband": {
-            "ready": True,
-            "status": "available",
-            "identity": "Rubber Band",
-            "version": "rubberband-version",
-        },
-        "candidate_profile": "realtime",
-        "warmup": {"ready": True, "status": "complete"},
+        "status": "serving",
+        "identity": "vLLM",
+        "version": "vllm-version",
+        "model": "Qwen-test",
+    }
+    moss_health = composition.health["moss"]
+    assert moss_health["identity"] == "PersistentMossSynthesizer"
+    assert moss_health["model"] == "MOSS-test"
+    assert moss_health["model_revision"] == "moss-revision"
+    assert moss_health["reference_audio_sha256"] == hashlib.sha256(
+        reference_bytes
+    ).hexdigest()
+    assert moss_health["warmup"] == "complete"
+    assert composition.health["aligner"] == {
+        "ready": True,
+        "status": "warmed",
+        "identity": "MMS_FA",
+        "version": "mms-version",
+        "warmup": "complete",
+    }
+    assert composition.health["rubberband"] == {
+        "ready": True,
+        "status": "available",
+        "identity": "Rubber Band",
+        "version": "rubberband-version",
     }
 
     composition.close()
@@ -1592,3 +2075,249 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
     assert calls["client_close"] == 1
     assert calls["moss_close"] == 1
     assert calls["aligner_close"] == 1
+
+
+@pytest.mark.parametrize(
+    ("valid_warmup", "probe_failure"),
+    ((True, False), (False, False), (True, True)),
+)
+def test_sglang_composition_is_lazy_ordered_and_validates_warmup_audio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    valid_warmup: bool,
+    probe_failure: bool,
+) -> None:
+    events: list[str] = []
+    reference_bytes = _wav(_request())
+    reference_wav = tmp_path / "reference.wav"
+    reference_wav.write_bytes(reference_bytes)
+    reference_text = tmp_path / "reference.txt"
+    reference_text.write_text("reference words", encoding="utf-8")
+    runtime_config = tmp_path / "moss_tts.yaml"
+    runtime_config.write_text("model: pinned\n", encoding="utf-8")
+
+    class Closable:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            events.append(f"close:{self.name}")
+
+    client = Closable("client")
+
+    class FakeSynthesizer(Closable):
+        def __init__(self) -> None:
+            super().__init__("sglang")
+
+        def probe(self):
+            events.append("sglang_probe")
+            if probe_failure:
+                raise RuntimeError("probe failed")
+            return {
+                "identity": "SGLang-Omni/MOSS-TTS",
+                "version": "omni-server-1",
+                "model_revision": "moss-snapshot-1",
+            }
+
+        def synthesize(self, request, output_wav, *, execution):
+            events.append("moss_warmup")
+            output_wav.write_bytes(reference_bytes if valid_warmup else b"invalid")
+            return SimpleNamespace(
+                model_revision="moss-snapshot-1",
+                reference_voice_sha256=hashlib.sha256(reference_bytes).hexdigest(),
+            )
+
+    synthesizer = FakeSynthesizer()
+
+    class FakeAligner(Closable):
+        def __init__(self) -> None:
+            super().__init__("aligner")
+
+        def warmup(self, source_wav, transcript):
+            events.append("aligner_warmup")
+            assert source_wav.read_bytes() == reference_bytes
+            assert transcript == "warm voice"
+            return {"aligner": "MMS_FA", "version": "mms-1"}
+
+    aligner = FakeAligner()
+
+    def load_aligner(**kwargs):
+        assert kwargs == {"device": "cuda:2"}
+        events.append("aligner_load")
+        return aligner
+
+    class FakeRenderer(Closable):
+        def __init__(self, **kwargs) -> None:
+            super().__init__("renderer")
+            assert kwargs["synthesizer"] is synthesizer
+            assert kwargs["aligner"] is aligner
+
+    class FakeOrchestrator:
+        def __init__(self, planner, renderer, *, workspace_root) -> None:
+            self.workspace_root = workspace_root
+
+    dependencies = SimpleNamespace(
+        LocalChatModelClientConfig=lambda **kwargs: kwargs,
+        LocalChatModelClient=lambda _config: client,
+        IndependentChoiceCandidateGenerator=lambda *_args, **_kwargs: object(),
+        CmuProsodyAnalyzer=lambda: object(),
+        ScoreWeights=lambda: object(),
+        ChunkCandidatePlanner=lambda *_args: object(),
+        MmsForcedAligner=SimpleNamespace(load=load_aligner),
+        MossAlignedPhraseRenderer=FakeRenderer,
+        RapChunkOrchestrator=FakeOrchestrator,
+    )
+    monkeypatch.setattr(
+        rap_render_server,
+        "_load_worker_dependencies",
+        lambda: dependencies,
+    )
+
+    def load_sglang(config, **kwargs):
+        events.append("sglang_load")
+        assert kwargs["reference_audio_sha256"] == hashlib.sha256(
+            reference_bytes
+        ).hexdigest()
+        assert kwargs["reference_text"] == "reference words"
+        return synthesizer
+
+    monkeypatch.setattr(
+        rap_render_server,
+        "_load_sglang_moss_synthesizer",
+        load_sglang,
+    )
+    monkeypatch.setattr(
+        rap_render_server,
+        "_load_inprocess_moss_synthesizer",
+        lambda _config: pytest.fail("in-process MOSS must remain lazy"),
+    )
+
+    def probe_vllm(_url, _model):
+        events.append("vllm_probe")
+        return {"ready": True, "identity": "vLLM", "version": "vllm-1"}
+
+    def probe_rubberband():
+        events.append("r3_probe")
+        return {
+            "ready": True,
+            "identity": "Rubber Band",
+            "version": "3.3.0",
+        }
+
+    monkeypatch.setattr(rap_render_server, "_probe_vllm", probe_vllm)
+    monkeypatch.setattr(rap_render_server, "_probe_rubberband", probe_rubberband)
+    config = rap_render_server.RapRenderServerConfig(
+        host="127.0.0.1",
+        port=8020,
+        artifact_root=tmp_path / "artifacts",
+        vllm_url="http://127.0.0.1:8000/v1",
+        vllm_model="Qwen-test",
+        moss_model="OpenMOSS-Team/MOSS-TTS-v1.5",
+        moss_device="external",
+        moss_reference_wav=reference_wav,
+        aligner_device="cuda:2",
+        aligner_cache=None,
+        candidate_profile="realtime",
+        moss_serving_backend="sglang-omni",
+        moss_sglang_url="http://127.0.0.1:8030",
+        moss_reference_text_file=reference_text,
+        moss_sglang_reference_uri="file:///models/streammuse/reference.wav",
+        moss_sglang_reference_sha256=hashlib.sha256(reference_bytes).hexdigest(),
+        moss_model_revision="moss-snapshot-1",
+        moss_runtime_version="sglang-omni-0.1.4",
+        moss_runtime_revision="omni-commit-a1",
+        moss_sglang_version="sglang-0.5.2",
+        moss_sglang_revision="sglang-commit-b2",
+        moss_runtime_environment_sha256="4" * 64,
+        moss_runtime_config=runtime_config,
+        moss_runtime_config_sha256=hashlib.sha256(
+            runtime_config.read_bytes()
+        ).hexdigest(),
+    )
+
+    if probe_failure:
+        with pytest.raises(RuntimeError, match="probe failed"):
+            rap_render_server._compose_real_worker(config)
+        assert "moss_warmup" not in events
+        assert events[-2:] == ["close:sglang", "close:client"]
+        return
+
+    if not valid_warmup:
+        with pytest.raises(RuntimeError, match="invalid audio"):
+            rap_render_server._compose_real_worker(config)
+        assert "aligner_load" not in events
+        assert events[-2:] == ["close:sglang", "close:client"]
+        return
+
+    composition = rap_render_server._compose_real_worker(config)
+
+    assert events[:6] == [
+        "vllm_probe",
+        "sglang_load",
+        "sglang_probe",
+        "moss_warmup",
+        "aligner_load",
+        "aligner_warmup",
+    ]
+    assert events[6] == "r3_probe"
+    assert composition.health["backend"] == "sglang-omni"
+    assert composition.health["moss"]["model_revision"] == "moss-snapshot-1"
+    assert composition.producer_manifest.runtime == {
+        "identity": "SGLang-Omni/SGLang",
+        "version": "sglang-omni-0.1.4",
+        "revision": "omni-commit-a1",
+        "sglang_version": "sglang-0.5.2",
+        "sglang_revision": "sglang-commit-b2",
+        "environment_sha256": "4" * 64,
+        "config_sha256": hashlib.sha256(runtime_config.read_bytes()).hexdigest(),
+    }
+    composition.close()
+    composition.close()
+    assert events.count("close:sglang") == 1
+    assert events.count("close:aligner") == 1
+    assert events.count("close:client") == 1
+
+
+def test_rubberband_probe_runs_a_real_time_map_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    def run(argv, **kwargs):
+        calls["argv"] = argv
+        calls["run_kwargs"] = kwargs
+        return SimpleNamespace(stdout="rubberband 3.3.0\n", stderr="")
+
+    class FakeStretcher:
+        def __init__(self, *, timeout_seconds):
+            calls["timeout_seconds"] = timeout_seconds
+
+        def stretch(self, source, target_frames, time_map):
+            calls["source_frames"] = source.frame_count
+            calls["target_frames"] = target_frames
+            calls["time_map"] = time_map
+            size = target_frames * source.format.channels * source.format.sample_width_bytes
+            data = (source.data * ((size // len(source.data)) + 1))[:size]
+            return replace(source, frame_count=target_frames, data=data)
+
+    from streammuse.infrastructure.rap import time_stretch
+
+    monkeypatch.setattr(rap_render_server.subprocess, "run", run)
+    monkeypatch.setattr(
+        time_stretch,
+        "RubberBandTimeMapStretcher",
+        FakeStretcher,
+    )
+
+    health = rap_render_server._probe_rubberband()
+
+    assert calls["argv"] == ["rubberband", "--version"]
+    assert calls["source_frames"] == 2_400
+    assert calls["target_frames"] == 2_520
+    assert calls["time_map"] == ((0, 0), (2_399, 2_519))
+    assert health == {
+        "ready": True,
+        "status": "available",
+        "identity": "Rubber Band",
+        "version": "rubberband 3.3.0",
+    }

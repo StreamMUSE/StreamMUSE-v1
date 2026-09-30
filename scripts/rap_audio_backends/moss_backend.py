@@ -30,15 +30,20 @@ from streammuse.experiments.rap_audio_protocols.contracts import (
     canonical_json_dumps,
 )
 from streammuse.experiments.rap_audio_protocols.timing import moss_token_target
+from streammuse.infrastructure.rap.moss_generation import (
+    DEFAULT_BASE_SEED,
+    DETERMINISTIC_SEED_CAVEAT,
+    GENERATION_MODE,
+    LANGUAGE,
+    MAX_NEW_TOKENS,
+    MODEL_ID,
+    RAP_INSTRUCTION,
+    STYLE_INSTRUCTION_CAVEAT,
+    seed_for_attempt,
+)
 
 
-MODEL_ID = "OpenMOSS-Team/MOSS-TTS-v1.5"
-LANGUAGE = "English"
-RAP_INSTRUCTION = "clear, rhythmically spoken rap with restrained pitch"
-GENERATION_MODE = "generation"
-MAX_NEW_TOKENS = 256
 DEFAULT_MAX_RETRIES = 3
-DEFAULT_BASE_SEED = 20260816
 CAMPAIGN_MANIFEST_SCHEMA_VERSION = 1
 DEFAULT_CAMPAIGN_MANIFEST_NAME = "campaign_manifest.json"
 GENERATION_KWARGS = {
@@ -48,14 +53,6 @@ GENERATION_KWARGS = {
     "audio_top_k": 25,
     "audio_repetition_penalty": 1.0,
 }
-STYLE_INSTRUCTION_CAVEAT = (
-    "The shared MOSS processor accepts an instruction field, but MOSS-TTS-v1.5 does not document "
-    "style-following as a guaranteed model capability."
-)
-DETERMINISTIC_SEED_CAVEAT = (
-    "Official deterministic seeding is unsupported by the documented MOSS-TTS-v1.5 API; this backend "
-    "uses best-effort PyTorch seeding on each attempt."
-)
 
 
 @dataclass(frozen=True)
@@ -592,7 +589,7 @@ def _replace_chunk_record(path: Path, record: ChunkRenderRecord) -> None:
 
 
 def _seed_for_attempt(*, base_seed: int, request: TwoBarRenderRequest, attempt: int) -> int:
-    return base_seed + request.chunk_index * 1000 + (attempt - 1)
+    return seed_for_attempt(base_seed=base_seed, request=request, attempt=attempt)
 
 
 def _seed_torch_best_effort(torch_module: Any, *, seed: int) -> None:

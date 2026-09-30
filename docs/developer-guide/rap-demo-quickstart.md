@@ -23,6 +23,12 @@ It preserves the robotic source voice but now uses local Rubber Band R3 for
 pitch-preserving syllable compression. It does not change the clock, website
 controls, or artifact layout.
 
+The remote commands below intentionally keep the accepted `inprocess` MOSS
+backend as the default. The SGLang-Omni candidate has a separate pinned launch,
+qualification, recovery, A/B, and rollback runbook in
+[`sglang-omni-moss-serving.md`](sglang-omni-moss-serving.md). Do not change the
+recommended backend until its H200, Mac, and canary gates are signed off.
+
 ## Choose The Renderer And Transport
 
 Renderer and wire transport are independent startup choices:
@@ -54,8 +60,10 @@ two unused physical GPUs immediately before launch. Do not stop or reuse GPUs
 with existing compute processes.
 
 ```bash
-ssh Andrew.Yang@masdar
-cd /data/home/Andrew.Yang/StreamMUSE/real_rap
+ssh user@h200-host
+cd /absolute/path/to/StreamMUSE-v1
+export REPO_ROOT=$PWD
+export STREAMMUSE_ENV=/absolute/path/to/streammuse-env
 git rev-parse HEAD
 nvidia-smi --query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu \
   --format=csv,noheader
@@ -67,9 +75,9 @@ In H200 terminal A, start the private vLLM dependency on one unused GPU. It
 remains behind the chunk orchestrator and is not forwarded to the Mac.
 
 ```bash
-PATH=/data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron/bin:$PATH \
+PATH="$STREAMMUSE_ENV/bin:$PATH" \
 CUDA_VISIBLE_DEVICES=<UNUSED_VLLM_GPU_ID> \
-vllm serve Qwen/Qwen2.5-7B-Instruct \
+"$STREAMMUSE_ENV/bin/vllm" serve Qwen/Qwen2.5-7B-Instruct \
   --host 127.0.0.1 \
   --port 8001 \
   --served-model-name qwen-rap \
@@ -83,16 +91,16 @@ private render service on the second unused GPU. `CUDA_VISIBLE_DEVICES` maps
 that physical GPU to logical `cuda:0` for MOSS and the resident MMS aligner.
 
 ```bash
-cd /data/home/Andrew.Yang/StreamMUSE/real_rap
+cd /absolute/path/to/StreamMUSE-v1
 export REPO_ROOT=$PWD
-export ENV_ROOT=/data/home/Andrew.Yang/StreamMUSE/envs/rap-audio-protocols
-export ASSET_ROOT=/data/home/Andrew.Yang/StreamMUSE/assets/rap-audio-protocols
+export ENV_ROOT=/absolute/path/to/rap-audio-protocol-envs
+export ASSET_ROOT=/absolute/path/to/rap-audio-protocol-assets
 export MOSS_ENV="$ENV_ROOT/moss"
 export ALIGN_ENV="$ENV_ROOT/align"
 export FFMPEG7_ENV="$ENV_ROOT/ffmpeg7"
 export RUBBERBAND_ROOT="$ASSET_ROOT/rubberband/rootfs"
-export MOSS_REFERENCE=/data/home/Andrew.Yang/StreamMUSE/audio-protocol-downloads/TED-TTS/datasets/Ref/0011_000001.wav
-export MOSS_SNAPSHOT=/data/home/Andrew.Yang/.cache/huggingface/hub/models--OpenMOSS-Team--MOSS-TTS-v1.5/snapshots/cdd3b911b1585e3f2dbc7775ef10f9926f58850a
+export MOSS_REFERENCE=/absolute/path/to/reference.wav
+export MOSS_SNAPSHOT=/absolute/path/to/immutable/moss-snapshot
 export RAP_ARTIFACT_ROOT="$REPO_ROOT/logs/rap/remote_moss_server"
 mkdir -p "$RAP_ARTIFACT_ROOT"
 
@@ -120,6 +128,7 @@ CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
   --vllm-url http://127.0.0.1:8001/v1 \
   --vllm-model qwen-rap \
   --moss-model "$MOSS_SNAPSHOT" \
+  --moss-serving-backend inprocess \
   --moss-device cuda:0 \
   --moss-reference-wav "$MOSS_REFERENCE" \
   --aligner-device cuda:0 \
@@ -129,9 +138,9 @@ CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
   --wire-audio-codec opus
 ```
 
-The snapshot and reference above are the paths verified on the current H200.
-For another host, replace those two exports with that host's installed snapshot
-and reference WAV; no environment-manifest file is required.
+The snapshot and reference must be user-supplied absolute paths on the selected
+H200. Record their immutable revision and SHA-256 with the session evidence.
+The in-process baseline does not require an SGLang environment manifest.
 
 Wait for model loading and warmup to complete. From the H200, verify that the
 orchestrator reports `ready: true` and the expected schema before opening a
@@ -160,7 +169,7 @@ In Mac terminal A, forward only the chunk service:
 ```bash
 ssh -o ExitOnForwardFailure=yes -N \
   -L 8020:127.0.0.1:8020 \
-  Andrew.Yang@masdar
+  user@h200-host
 ```
 
 Verify the same private health endpoint through the tunnel:
@@ -215,12 +224,13 @@ Mac session artifacts are under `logs/rap/<session-id>/`. A successful H200
 request retains `request.json`, `manifest.json`, `candidate_ledger.json`,
 `alignment.json`, `mms_alignment.json`, `source.wav`, `aligned.wav`,
 `vocal.wav`, `server_timing.json`, and `response.zip` under
-`$RAP_ARTIFACT_ROOT/<request-id>/`. A failed request retains `request.json` and
-`failure.json`, plus `candidate_ledger.json` when candidate selection produced
-a rejection ledger.
+`$RAP_ARTIFACT_ROOT/<producer-fingerprint>/<request-id>/`. A failed request
+retains `request.json` and `failure.json`, plus `candidate_ledger.json` when
+candidate selection produced a rejection ledger.
 
 Live events identify those files by stable request-relative names; combine the
-event request ID with `RAP_ARTIFACT_ROOT` to inspect them on H200. The live
+health producer fingerprint and event request ID with `RAP_ARTIFACT_ROOT` to
+inspect them on H200. The live
 projection is capped at 24,000 serialized bytes and never contains WAV bytes,
 full ledgers, source/target anchors, or full character spans. Its generation
 input text is a deterministic summary of the exact request topics, template
@@ -309,7 +319,7 @@ Connect to the H200 and choose a GPU with zero used memory. Do not select a GPU
 with an existing compute process.
 
 ```bash
-ssh Andrew.Yang@masdar
+ssh user@h200-host
 nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu \
   --format=csv,noheader
 nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
@@ -321,9 +331,10 @@ directory is intentionally first in `PATH`: vLLM/FlashInfer may need its
 existing `ninja` executable during startup.
 
 ```bash
-PATH=/data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron/bin:$PATH \
+export STREAMMUSE_ENV=/absolute/path/to/streammuse-env
+PATH="$STREAMMUSE_ENV/bin:$PATH" \
 CUDA_VISIBLE_DEVICES=<UNUSED_GPU_ID> \
-vllm serve Qwen/Qwen2.5-7B-Instruct \
+"$STREAMMUSE_ENV/bin/vllm" serve Qwen/Qwen2.5-7B-Instruct \
   --host 127.0.0.1 \
   --port 8001 \
   --served-model-name qwen-rap \
@@ -355,7 +366,7 @@ diagnostic path:
 ```bash
 ssh -o ExitOnForwardFailure=yes -N \
   -L 8001:127.0.0.1:8001 \
-  Andrew.Yang@masdar
+  user@h200-host
 ```
 
 Keep that tunnel open only while running the direct diagnostic or legacy
@@ -462,8 +473,9 @@ both its text process and website, while the Mac only views the forwarded page.
 On the H200:
 
 ```bash
-cd /data/home/Andrew.Yang/StreamMUSE/real_rap
-conda activate /data/home/Andrew.Yang/StreamMUSE/envs/streammuse-isochron
+cd /absolute/path/to/StreamMUSE-v1
+export STREAMMUSE_ENV=/absolute/path/to/streammuse-env
+PATH="$STREAMMUSE_ENV/bin:$PATH" \
 streammuse-rap-demo \
   --generator phrase_bank \
   --audio-output none \
@@ -479,7 +491,7 @@ the matching local URL:
 ```bash
 ssh -o ExitOnForwardFailure=yes -N \
   -L <UNUSED_LOCAL_PORT>:127.0.0.1:8012 \
-  Andrew.Yang@masdar
+  user@h200-host
 ```
 
 Visit `http://127.0.0.1:<UNUSED_LOCAL_PORT>/`. Stop the tunnel with `Ctrl-C`;
