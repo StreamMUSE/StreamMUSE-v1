@@ -40,7 +40,7 @@
 
 所有"改了多少"的结论都按同一协议取得：
 
-- **完整流程：** 用 `scripts/profile_rap_chunk_e2e.py`，24 个 chunk 加 2 个热身，Opus 传输，记录服务器各阶段、传输、解码和混音。第 0 阶段完成后，统一用默认的 `gentle_sparse_r3` 测，并要求 Mac 端验收 24 / 24 通过。
+- **完整流程：** 用 `scripts/client_simulation.py`，24 个 chunk 加 2 个热身，Opus 传输，记录服务器各阶段、传输、解码和混音。第 0 阶段完成后，统一用默认的 `gentle_sparse_r3` 测，并要求 Mac 端验收 24 / 24 通过。
 - **MOSS 单项：** 用 `scripts/profile_sglang_moss.py` 和 20 条固定语料。
 - **比较方式：** 同一实例内配对比较。确实需要重启时，按 ABBA 顺序，每组至少重启两次，因为实例之间有约 20 ms 的稳定偏差。
 - **禁止：** 在要测延迟的服务上开过 torch profiler 而不重启。停止后会残留 60 到 80 ms 的开销。

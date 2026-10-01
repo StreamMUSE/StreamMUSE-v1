@@ -222,7 +222,7 @@ planner 先对 bar 0 发出 n=16 的请求，完成后再发 bar 1 的请求。�
   - `render` 跑 MOSS、MMS、R3，带子步骤计时和服务端事件；
   - `torch` 抓 kernel trace；
   - `sweep` 做长度扫描。
-- [profile_rap_chunk_e2e.py](../../scripts/profile_rap_chunk_e2e.py)：按 Mac controller 的方式连续请求 render server，记录各阶段、传输、解码、混音耗时和 vLLM token 计数。
+- [client_simulation.py](../../scripts/client_simulation.py)：按 Mac controller 的方式连续请求 render server，记录各阶段、传输、解码、混音耗时和 vLLM token 计数。
 
 全部原始数据在 `logs/profiling_20260925/`，该目录被 git 忽略：
 

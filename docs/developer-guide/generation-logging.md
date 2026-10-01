@@ -26,7 +26,6 @@ The logging system captures complete token sequences and event timelines for bot
 
 4. **Comparison Tools**
    - `compare_generation_logs.py`: Compare two logs or directories
-   - `test_logging_system.py`: Test logging functionality
 
 ## Usage
 
@@ -216,16 +215,10 @@ SUMMARY
 
 ## Testing
 
-Run the test suite:
+The logger and `compare_logs` are covered by unit tests:
 
 ```bash
-# Test all components
-uv run python scripts/test_logging_system.py --mode all
-
-# Test specific component
-uv run python scripts/test_logging_system.py --mode logger
-uv run python scripts/test_logging_system.py --mode compare
-uv run python scripts/test_logging_system.py --mode env
+uv run pytest tests/unit/infrastructure/inference/test_generation_logger.py -q
 ```
 
 ## Future Improvements

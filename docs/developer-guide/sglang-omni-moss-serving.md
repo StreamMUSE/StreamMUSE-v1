@@ -373,7 +373,7 @@ No token, transcript text, hostname, or personal path is accepted in pins.
 Freeze before running candidate samples:
 
 ```bash
-uv run python scripts/freeze_sglang_moss_experiment.py \
+uv run python scripts/sglang_moss_ab.py freeze \
   --experiment-id sglang-moss-h200-v1 \
   --implementation-id "$IMPLEMENTATION_ID" \
   --created-at-utc 2026-09-04T00:00:00Z \
@@ -396,7 +396,7 @@ root to that exact experiment coordinate. For example:
 
 ```bash
 AB_ROOT="$EVIDENCE_ROOT/artifacts/production-candidate/qualification/candidate"
-uv run python scripts/prepare_sglang_moss_ab_root.py \
+uv run python scripts/sglang_moss_ab.py prepare-root \
   --manifest "$EVIDENCE_ROOT/experiment.json" \
   --root "$AB_ROOT" \
   --cohort production-candidate \
@@ -435,7 +435,7 @@ are documented by `_validate_row` in
 Evaluate without Mac evidence first:
 
 ```bash
-uv run python scripts/evaluate_sglang_moss_ab.py \
+uv run python scripts/sglang_moss_ab.py evaluate \
   --manifest "$EVIDENCE_ROOT/experiment.json" \
   --rows "$EVIDENCE_ROOT/rows.jsonl" \
   --artifact-roots "$EVIDENCE_ROOT/artifact-roots.jsonl" \

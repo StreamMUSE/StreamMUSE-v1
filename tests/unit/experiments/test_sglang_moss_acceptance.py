@@ -7,9 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.evaluate_sglang_moss_ab import main as evaluate_main
-from scripts.freeze_sglang_moss_experiment import main as freeze_main
-from scripts.prepare_sglang_moss_ab_root import main as prepare_root_main
+from scripts.sglang_moss_ab import main as ab_main
 from streammuse.experiments.sglang_moss_acceptance import (
     AcceptanceDataError,
     ARTIFACT_ROOT_MANIFEST_FILENAME,
@@ -539,8 +537,8 @@ def test_prepare_artifact_root_cli_is_idempotent_only_while_unused(
         "candidate",
     ]
 
-    assert prepare_root_main(args) == 0
-    assert prepare_root_main(args) == 0
+    assert ab_main(["prepare-root", *args]) == 0
+    assert ab_main(["prepare-root", *args]) == 0
     marker = json.loads(
         (root / ARTIFACT_ROOT_MANIFEST_FILENAME).read_text(encoding="utf-8")
     )
@@ -553,9 +551,9 @@ def test_prepare_artifact_root_cli_is_idempotent_only_while_unused(
     )
 
     mismatched = [*args[:-1], "baseline"]
-    assert prepare_root_main(mismatched) == 2
+    assert ab_main(["prepare-root", *mismatched]) == 2
     (root / "unexpected-complete-artifact").mkdir()
-    assert prepare_root_main(args) == 2
+    assert ab_main(["prepare-root", *args]) == 2
 
 
 def test_immutable_writer_allows_identical_replay_only(tmp_path: Path) -> None:
@@ -596,8 +594,8 @@ def test_freeze_and_evaluate_cli_round_trip(tmp_path: Path, capsys: pytest.Captu
         "--output",
         str(manifest_path),
     ]
-    assert freeze_main(freeze_args) == 0
-    assert freeze_main(freeze_args) == 0
+    assert ab_main(["freeze", *freeze_args]) == 0
+    assert ab_main(["freeze", *freeze_args]) == 0
     frozen = json.loads(manifest_path.read_text(encoding="utf-8"))
     rows, probes, scores = evidence(frozen)
     rows_path = tmp_path / "rows.jsonl"
@@ -615,8 +613,9 @@ def test_freeze_and_evaluate_cli_round_trip(tmp_path: Path, capsys: pytest.Captu
             "".join(json.dumps(item) + "\n" for item in values),
             encoding="utf-8",
         )
-    result = evaluate_main(
+    result = ab_main(
         [
+            "evaluate",
             "--manifest",
             str(manifest_path),
             "--rows",

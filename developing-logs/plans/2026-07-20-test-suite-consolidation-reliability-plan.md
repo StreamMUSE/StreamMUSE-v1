@@ -192,11 +192,11 @@ tests/unit/scripts/conftest.py 的 robustness_fixture 一次构造 campaign、at
 
 ### Phase 3：修复伪测试和旧测试脚本
 
-- [ ] 将 scripts/test_logging_system.py 中 logger 落盘和 compare_logs 场景迁到 tests/unit/infrastructure/inference/test_generation_logger.py，并改用 assert。
-- [ ] 删除永远返回 True 的 environment-variable 伪测试及原 scripts/test_logging_system.py。
+- [x] 将 scripts/test_logging_system.py 中 logger 落盘和 compare_logs 场景迁到 tests/unit/infrastructure/inference/test_generation_logger.py，并改用 assert。（2026-09-30 完成）
+- [x] 删除永远返回 True 的 environment-variable 伪测试及原 scripts/test_logging_system.py。（2026-09-30 完成）
 - [ ] 统一 generation_logger.py 与 compare_generation_logs.py 的 token diff 实现；目录模式按明确 identity 配对并拒绝两侧数量/identity 不一致。
-- [ ] 从活跃 scripts/ 删除 run_all_tests.sh、compare_all.sh、run_debug_round2.sh；历史背景留在 developing-logs，不保留会被误认为权威 gate 的入口。
-- [ ] 删除或归档 import 时读取固定日志的 analyze_token_diff.py 和 compare_melody_tokens.py；保留一个参数化、无硬编码路径的 token forensic CLI。
+- [x] 从活跃 scripts/ 删除 run_all_tests.sh、compare_all.sh、run_debug_round2.sh；历史背景留在 developing-logs，不保留会被误认为权威 gate 的入口。（2026-09-30 完成）
+- [x] 删除或归档 import 时读取固定日志的 analyze_token_diff.py 和 compare_melody_tokens.py；保留一个参数化、无硬编码路径的 token forensic CLI。（2026-09-30 完成，保留 compare_generation_logs.py）
 - [ ] 将 run_lekai_fake_realtime.py 和 raw-event debug comparator 明确标记为 forensic/debug 工具，不再称为生产 Realtime equivalence test。
 - [ ] 更新 docs/developer-guide/generation-logging.md 和相关命令。
 

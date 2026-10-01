@@ -2,8 +2,10 @@
 set -euo pipefail
 
 # Parallel ZipZapZop memory matrix wrapper.
-# It preserves scripts/run_zzz_full_matrix.sh's experiment cells, but schedules
-# independent model jobs across GPU waves.
+# It runs the full experiment matrix (every model, APC on/off, and the gpt-oss
+# ngram cells), scheduling independent model jobs across GPU waves. It replaces
+# the former sequential run_zzz_full_matrix.sh, which ran the same cells one
+# vLLM server at a time.
 
 ROOT_DIR=${ROOT_DIR:-"task_runs/zzz_memory_full_matrix_parallel_$(date +%Y%m%d-%H%M%S)"}
 HOST=${HOST:-"127.0.0.1"}

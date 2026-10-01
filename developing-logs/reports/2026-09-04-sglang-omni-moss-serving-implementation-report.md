@@ -193,6 +193,8 @@ settings、seed policy、language、instruction 和已知 caveat，减少 baseli
 - `evaluate_sglang_moss_ab.py`
 - `preflight_sglang_omni_moss.py`
 
+（2026-09-30 更新：前三个 CLI 已合并为 `scripts/sglang_moss_ab.py` 的 `freeze`、`prepare-root`、`evaluate` 子命令，参数和退出码不变。）
+
 实验工具实现：
 
 - 冻结至少 100 条 corpus、pins、qualification/blind subset、counterbalanced blocks、随机种子和
@@ -423,9 +425,9 @@ evaluator 要求独立空 root、完整 provenance、cache miss、service call c
 | server composition/API | `src/streammuse/presentation/rap_render_server.py` |
 | experiment contract | `src/streammuse/experiments/sglang_moss_acceptance.py` |
 | preflight | `scripts/preflight_sglang_omni_moss.py` |
-| freeze | `scripts/freeze_sglang_moss_experiment.py` |
-| A/B root preparation | `scripts/prepare_sglang_moss_ab_root.py` |
-| evaluator CLI | `scripts/evaluate_sglang_moss_ab.py` |
+| freeze | `scripts/sglang_moss_ab.py freeze` |
+| A/B root preparation | `scripts/sglang_moss_ab.py prepare-root` |
+| evaluator CLI | `scripts/sglang_moss_ab.py evaluate` |
 | runbook | `docs/developer-guide/sglang-omni-moss-serving.md` |
 | quickstart | `docs/developer-guide/rap-demo-quickstart.md` |
 | implementation plan/TODO | `developing-logs/plans/2026-09-03-sglang-omni-moss-serving-plan.md` |
