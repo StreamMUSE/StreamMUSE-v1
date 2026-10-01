@@ -2,7 +2,14 @@
 
 更新日期：2026-09-11。依据：当前工作区的实现，以及当天已经完成的 H200 性能实测。
 
-> **2026-10-01 更新：R3 已经移到 Mac（协议 v2，默认）。** 现在服务器做完 MOSS 和 MMS 就返回：原始 MOSS 人声（PCM16），加上每个音节测到的发音起点。Mac 用同一份代码重建渲染请求，在本机跑 Rubber Band R3（默认 `gentle_sparse_r3`），然后加鼓、播放。输入相同时，Mac 上的 R3 和服务器上的 R3 输出逐字节一致。下文凡是写“R3 在 H200 / 服务器做”的地方，都只适用于 `--rap-protocol v1`；v1 仍然保留，用来回退。细节见 [2026-10-01 的优化计划](../plans/2026-10-01-rap-server-latency-optimization-plan.md)。
+> **2026-10-01 更新：R3 已经移到 Mac（协议 v2，默认）。** 现在服务器做完 MOSS 和 MMS 就返回：原始 MOSS 人声（PCM16），加上每个音节测到的发音起点。Mac 用同一份代码重建渲染请求，在本机跑 Rubber Band R3（默认 `gentle_sparse_r3`），然后加鼓、播放。输入相同时，Mac 上的 R3 和服务器上的 R3 输出逐字节一致。下文凡是写“R3 在 H200 / 服务器做”的地方，都只适用于 `--rap-protocol v1`；v1 仍然保留，用来回退。细节见 [2026-10-01 的优化计划](../plans/2026-10-01-rap-server-latency-optimization-plan.md)。同一天还做了以下改动：
+>
+> - 两个 bar 的 Qwen 候选改为并发生成（`--concurrent-bar-generation`），补救 wave 也是并发的；vLLM 改为 `--max-num-seqs 32`。
+> - R3 的输出长度误差在 20 ms 以内时，直接补零或截断，不再整段重跑，最多跑两次。
+> - MOSS 打了一个延迟补丁（`patches/`）。
+> - Opus 压缩级别改为 5。
+>
+> 服务器到首字节的中位数约从 1.37 秒降到 1.09 秒，见 profiling 报告第 10 节。
 
 本文讲的是项目的 **remote MOSS RAP demo**，不是仓库里所有历史音频实验。这里的“旧后端”指 `inprocess` 常驻 MOSS 后端；“新后端”指可选的 `sglang-omni` 后端。Mac 上的本地 eSpeak 是另一条兜底路径，不要把它和这里的旧后端混为一谈。
 
