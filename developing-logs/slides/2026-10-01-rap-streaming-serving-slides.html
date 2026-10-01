@@ -130,6 +130,7 @@ table.t .fix td:first-child { color: var(--warn); font-weight: 600; }
 .legend i { width: .9em; height: .9em; display: inline-block; border-radius: 2px; }
 .cover { justify-content: space-between; }
 .cover .stats { grid-template-columns: repeat(3, 1fr); }
+code { font: .88em var(--mono); }
 .kbd { font: 500 .85em var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 .35em; }
 
 /* SVG diagram vocabulary */
@@ -231,14 +232,14 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
   <div class="part">Streaming Serving</div>
   <div style="display:grid;gap:1.1em">
     <h1>把 MOSS 人声推理搬到 SGLang-Omni</h1>
-    <p class="lede">StreamMUSE 实时 RAP 的人声后端：整体流程、旧后端、omni serving 的思路、MOSS 的结构、新后端的改动、实测提升和下一步。</p>
+    <p class="lede">StreamMUSE 实时 RAP 的人声后端：整体流程、旧后端、omni serving 的思路、MOSS 的结构、新后端的改动、优化落地的实测结果，以及在 Mac 本地运行的适配。</p>
   </div>
   <div class="stats">
     <div class="stat"><div class="num">3.25<small>×</small></div><div class="lab">MOSS 合成一段人声：2640 → 812 ms<span class="chip m">实测</span></div></div>
-    <div class="stat"><div class="num">1.49<small>s</small></div><div class="lab">服务器准备一个 chunk，原来约 3.3 s<span class="chip m">实测</span><span class="chip e">旧值估算</span></div></div>
-    <div class="stat"><div class="num">≈1.15<small>s</small></div><div class="lab">完成下一步改动后的目标<span class="chip e">估算</span></div></div>
+    <div class="stat"><div class="num">1.09<small>s</small></div><div class="lab">服务器准备一个 chunk：旧后端约 3.3 s，换 SGLang-Omni 后 1.49 s，再优化到 1.09 s<span class="chip m">实测</span></div></div>
+    <div class="stat"><div class="num">3.3<small>s</small></div><div class="lab">在 Mac Studio 本地跑全流程，端到端 p50<span class="chip m">实测</span></div></div>
   </div>
-  <div class="pno">1 / 16</div>
+  <div class="pno">1 / 21</div>
 </div></section>
 
 <!-- 2 -->
@@ -284,7 +285,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
     <div class="note"><h3>截止时间</h3><p>远端请求最多等 5.0 s，而且要在下一段开始前 1 tick 冻结选择，所以服务器拿不到完整的 5.333 s。</p></div>
     <div class="note"><h3>兜底</h3><p>远端迟到或失败，就用 Mac 上提前备好的 eSpeak 人声，音乐时钟不等人。</p></div>
   </div>
-  <div class="pno">2 / 16</div>
+  <div class="pno">2 / 21</div>
 </div></section>
 
 <!-- 3 -->
@@ -335,7 +336,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
     </svg>
     <figcaption>Qwen 写词，MOSS 把词说出来，MMS 找到实际发音位置，R3 把人声拉到精确的节拍，Mac 加鼓播放。这次换的是 MOSS 的推理方式，前后环节不变。</figcaption>
   </figure>
-  <div class="pno">3 / 16</div>
+  <div class="pno">3 / 21</div>
 </div></section>
 
 <!-- 4 -->
@@ -373,7 +374,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
       </ul>
     </div>
   </div>
-  <div class="pno">4 / 16</div>
+  <div class="pno">4 / 21</div>
 </div></section>
 
 <!-- 5 -->
@@ -411,7 +412,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
     </ul>
     <p class="src">来源：Qwen2.5-Omni Technical Report，<a href="https://arxiv.org/abs/2503.20215">arXiv 2503.20215</a></p>
   </div>
-  <div class="pno">5 / 16</div>
+  <div class="pno">5 / 21</div>
 </div></section>
 
 <!-- 6 -->
@@ -457,7 +458,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
     </div>
   </div>
   <p class="src">来源：vLLM-Omni，<a href="https://arxiv.org/abs/2602.02204">arXiv 2602.02204</a>；SGLang-Omni 设计 RFC，<a href="https://github.com/sgl-project/sglang/issues/16546">sgl-project/sglang#16546</a></p>
-  <div class="pno">6 / 16</div>
+  <div class="pno">6 / 21</div>
 </div></section>
 
 <!-- 7 -->
@@ -503,7 +504,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
     <div class="note"><h3>Prompt</h3><p>参考音频 codes、风格指令、目标 token 数、歌词文本。</p></div>
     <div class="note"><h3>长度控制</h3><p>两小节 5.33 s 对应目标 67 个 token，实际输出 68 帧，也就是 5.44 s。</p></div>
   </div>
-  <div class="pno">7 / 16</div>
+  <div class="pno">7 / 21</div>
 </div></section>
 
 <!-- 8 -->
@@ -521,7 +522,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
       <div class="stat"><div class="num">≈240<small>ms</small></div><div class="lab">约 33 步不产生新帧的时间。这是模型结构决定的，serving 层去不掉。</div></div>
     </div>
   </div>
-  <div class="pno">8 / 16</div>
+  <div class="pno">8 / 21</div>
 </div></section>
 
 <!-- 9 -->
@@ -565,7 +566,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
     <div class="note"><h3>三个 stage 放在一起</h3><p>同一进程、同一张 GPU，stage 之间直接传进程内对象，hop 只要约 0.1 ms。</p></div>
     <div class="note"><h3>没用到的能力</h3><p>分离部署和跨 stage 流式都还没用上：我们一次只跑一个请求，下游也需要完整音频。</p></div>
   </div>
-  <div class="pno">9 / 16</div>
+  <div class="pno">9 / 21</div>
 </div></section>
 
 <!-- 10 -->
@@ -613,7 +614,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
       <li><b>默认仍是旧后端，</b>新后端要显式开启。</li>
     </ul>
   </div>
-  <div class="pno">10 / 16</div>
+  <div class="pno">10 / 21</div>
 </div></section>
 
 <!-- 11 -->
@@ -639,7 +640,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
       <p class="src">H200 单卡，热运行，单请求串行；20 条两小节歌词，每个后端测 40 次，ABBA 顺序。这是部署方案的对比，不是单个 kernel 的消融。WER 只是自动诊断，还没有做盲听。</p>
     </div>
   </div>
-  <div class="pno">11 / 16</div>
+  <div class="pno">11 / 21</div>
 </div></section>
 
 <!-- 12 -->
@@ -658,7 +659,7 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
     <div class="note"><h3>旧后端是估算</h3><p>没有在同条件下测旧后端的完整流程，按 MOSS 替换估算约 3.3 s；8 月单次实测 3.41 s。</p></div>
     <div class="note"><h3>测量方式</h3><p>用真实 render server 连续请求 24 个 chunk，客户端在 H200 本机，不含 Mac 到 H200 的路由。</p></div>
   </div>
-  <div class="pno">12 / 16</div>
+  <div class="pno">12 / 21</div>
 </div></section>
 
 <!-- 13 -->
@@ -677,76 +678,218 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
       <li><b>delay 尾部约 240 ms</b> 是模型结构决定的。</li>
     </ul>
   </div>
-  <div class="pno">13 / 16</div>
+  <div class="pno">13 / 21</div>
 </div></section>
 
 <!-- 14 -->
 <section class="frame" id="s14"><div class="slide">
-  <div class="part">下一步</div>
-  <h2>还能改进的地方</h2>
+  <div class="part">落地结果</div>
+  <h2>六项改动都已上线，逐项实测</h2>
   <table class="t">
-    <thead><tr><th>改动</th><th class="n">每个 chunk 省多少</th><th>证据</th><th>代价</th></tr></thead>
+    <thead><tr><th>改动</th><th class="n">原来预估</th><th>H200 / Mac 实测</th><th>备注</th></tr></thead>
     <tbody>
-      <tr class="fix"><td>修复 Mac 拒收 gentle_sparse chunk</td><td class="n warnt">正确性</td><td>48 / 48 被拒，all_onsets 8 / 8 通过</td><td>必须先修，否则远端人声全被兜底替换</td></tr>
-      <tr><td>vLLM 并发序列上限 8 → 32</td><td class="n gain">−140 ms</td><td>实测 317 → 175 ms</td><td>只改启动参数</td></tr>
-      <tr><td>两个 bar 各用一个客户端并发写词</td><td class="n gain">−70 ms</td><td>实测 175 → 104 ms</td><td>planner 小改</td></tr>
-      <tr><td>MOSS：embedding 一次查表，文本头只算 2 列</td><td class="n gain">−77 ms</td><td>实测，输出 60 / 60 逐字节相同</td><td>给 SGLang-Omni 打补丁</td></tr>
-      <tr><td>Opus 压缩级别 10 → 5</td><td class="n gain">−64 ms</td><td>实测编码 125 → 61 ms</td><td>音质待评估</td></tr>
-      <tr><td>R3 时长不对时不再整段重跑</td><td class="n">尾部 −77 至 −230 ms</td><td>20 条里 5 条重跑 2 到 4 次</td><td>先看偏差数据再定</td></tr>
-      <tr><td>SGLang-Omni 取消检测任务后不等待</td><td class="n">p95 −100 ms</td><td>约 5% 请求多等 0.1 s</td><td>上游代码</td></tr>
-      <tr class="sep"><td colspan="4">更深的方向</td></tr>
-      <tr><td>decode 的 CPU 工作与 GPU 重叠</td><td class="n">约 −90 ms</td><td>估算</td><td>要改 SGLang-Omni 调度</td></tr>
-      <tr><td>MOSS 主干改用 FP8 权重</td><td class="n">最多约 −200 ms</td><td>估算</td><td>需要音质验收</td></tr>
+      <tr class="fix"><td>R3 拉伸移到 Mac（协议 v2）</td><td class="n warnt">正确性</td><td>gentle_sparse 24 / 24 被接受，原来 48 / 48 被拒</td><td>Mac 与服务器拉伸结果逐字节相同；Mac 上 R3 p95 89 ms</td></tr>
+      <tr><td>vLLM 并发上限 8 → 32，两个 bar 并发写词</td><td class="n">−210 ms</td><td class="gain">Qwen 309 → 147 ms，−162 ms</td><td>没到 104 ms；补救 wave 也并发，错误批次 0</td></tr>
+      <tr><td>MOSS 补丁：embedding 一次查表，文本头只算 2 列</td><td class="n">−77 ms</td><td class="gain">MOSS 826 → 769 ms，ABBA −67 ms</td><td>WAV 60 / 60 逐字节相同，显存不增加</td></tr>
+      <tr><td>Opus 压缩级别 10 → 5</td><td class="n">−64 ms</td><td class="gain">编码 129 → 60 ms，−69 ms</td><td>SNR 反而高 1.7 dB，包大 23%；盲听待做</td></tr>
+      <tr><td>R3 时长误差 ≤ 20 ms 时补齐，不再重跑</td><td class="n">尾部</td><td class="gain">最多 5 次 → 2 次，最长 221 → 89 ms</td><td>误差全是偏短，补的都是静音段</td></tr>
+      <tr><td>取消断开检测任务后不再等待</td><td class="n">尾部</td><td class="gain">尖峰 3 / 400 → 0 / 400</td><td>未打补丁时只有约 0.75%，比预估的 5% 少</td></tr>
     </tbody>
   </table>
-  <div class="pno">14 / 16</div>
+  <p class="src">H200：同一张 GPU，ABBA 重启或基线 / 优化两组对比，24 个 chunk 加 2 个热身。Mac：M5 Max 本地栈。MOSS 补丁打在固定版本 SGLang-Omni 0.1.4 上，补丁哈希写进运行时身份。</p>
+  <div class="pno">14 / 21</div>
 </div></section>
 
 <!-- 15 -->
 <section class="frame" id="s15"><div class="slide">
-  <div class="part">下一步</div>
-  <h2>预计：服务器端从 1.49 s 降到约 1.15 s</h2>
+  <div class="part">落地结果</div>
+  <h2>实测：服务器准备一个 chunk 从 1.37 s 降到 1.09 s</h2>
   <div class="cols even">
-    <figure class="fig"><svg id="chart-fall" role="img" aria-label="瀑布图：当前 1493 毫秒，Qwen 省 194，MOSS 补丁省 77，Opus 省 64，优化后约 1158 毫秒。"></svg><figcaption>中位数，按已实测的单项收益叠加<span class="chip e">估算</span></figcaption></figure>
-    <figure class="fig"><svg id="chart-budget" role="img" aria-label="端到端预算：服务器约 1.16 秒，Mac 到 H200 路由约 1.5 秒，Mac 端处理约 0.05 秒，合计约 2.7 秒，低于 5.0 秒超时和 5.333 秒的 chunk 时长。"></svg><figcaption>放进 5 s 预算：路由按 8 月的测量值，本次没有测<span class="chip e">估算</span></figcaption></figure>
+    <figure class="fig"><svg id="chart-server" role="img" aria-label="服务器到首字节的中位数：改动前约 1365 毫秒，其中 Qwen 309、MOSS 826、其余 101、Opus 编码 129；改动后约 1085 毫秒，其中 Qwen 147、MOSS 769、其余 109、Opus 编码 60。"></svg><figcaption>服务器各阶段中位数加 Opus 编码，同一张 H200 卡。“改动前”是同一天的基线，R3 已经移到 Mac，所以比第 12 页的 1.49 s 少<span class="chip m">实测</span></figcaption></figure>
+    <figure class="fig"><svg id="chart-e2e" role="img" aria-label="Mac 看到的准备时间中位数：改动前 2.16 秒，改动后 1.90 秒，其中网络约 0.67 秒没有变化，都在 5.0 秒超时以内。"></svg><figcaption>Mac 端看到的准备时间：服务器、网络、Mac 端处理<span class="chip m">实测</span></figcaption></figure>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--c-qwen)"></i>Qwen</span><span><i style="background:var(--accent)"></i>MOSS / 服务器</span>
+    <span><i style="background:var(--c-slate)"></i>Opus 编码</span><span><i style="background:var(--c-light)"></i>其余 / 网络 / Mac 端</span>
   </div>
   <ul class="pts">
-    <li>改动之后，余量主要取决于 Mac 到 H200 的网络路由，而不是服务器。</li>
-    <li>R3 重跑和 HTTP 取消等待两项修的是尾部，对 p90 和 p95 的帮助比中位数更明显。</li>
+    <li>目标约 1.07 s，基本达到。p90 与中位数的差距从 94 ms 缩小到 52 ms，尾部也更稳了。</li>
+    <li>当天学校 VPN 很慢，网络部分约 0.67 s，比所有服务器改动加起来的收益还大。Mac 端解码、R3 和混音合计约 0.12 s。</li>
   </ul>
-  <div class="pno">15 / 16</div>
+  <div class="pno">15 / 21</div>
 </div></section>
 
 <!-- 16 -->
 <section class="frame" id="s16"><div class="slide">
+  <div class="part">下一步</div>
+  <h2>还能改进的地方</h2>
+  <table class="t">
+    <thead><tr><th>方向</th><th>现状（实测）</th><th class="n">可能的收益</th><th>代价</th></tr></thead>
+    <tbody>
+      <tr class="fix"><td>Mac 到 H200 的网络</td><td>当天约 0.67 s，一次 <code>/health</code> 往返要 1.3 到 1.8 s</td><td class="n warnt">最大的一块</td><td>学校 VPN 改不了，所以有了后面的 Mac 本地方案</td></tr>
+      <tr class="fix"><td>歌词无合格候选（<code>no_valid_candidates</code>）</td><td>4% 到 8% 的 chunk，是现在 fallback 的主要来源</td><td class="n warnt">质量</td><td>要查 flow 约束和 prompt</td></tr>
+      <tr><td>Qwen n=16 解码</td><td>147 ms，预估是 104 ms</td><td class="n">几十 ms</td><td>减小 n 或 max_tokens 会影响候选质量</td></tr>
+      <tr><td>decode 的 CPU 工作与 GPU 重叠</td><td>每步约 1.3 ms GPU 在等 CPU</td><td class="n">约 −90 ms</td><td>要改 SGLang-Omni 调度</td></tr>
+      <tr><td>MOSS 主干改用 FP8 权重</td><td>主干受显存带宽限制</td><td class="n">最多约 −200 ms</td><td>需要音质验收</td></tr>
+      <tr><td>v2 下的 Opus 码率</td><td>Opus 在 R3 之前，48 kbps 时 LSD 2.73 dB，v1 是 2.04 dB</td><td class="n">音质</td><td>96 kbps 追平，包从 30 KB 变成 74 KB</td></tr>
+      <tr class="sep"><td colspan="4">serving 层去不掉的</td></tr>
+      <tr><td>delay pattern 的尾部</td><td>约 33 步不产生新帧</td><td class="n">约 240 ms</td><td>模型结构决定</td></tr>
+    </tbody>
+  </table>
+  <div class="pno">16 / 21</div>
+</div></section>
+
+<!-- 17 -->
+<section class="frame" id="s17"><div class="slide">
+  <div class="part">Mac 适配</div>
+  <h2>把整条流程搬到 Mac Studio 上</h2>
+  <figure class="fig">
+    <svg viewBox="0 0 1000 292" role="img" aria-label="Mac 本地架构：在一台 Mac Studio 上，demo 客户端负责播放、混音和 R3 拉伸；render server 在 8020 端口负责选词和 MMS 对齐；MLX chat 服务在 8001 端口跑 Qwen2.5-7B 4-bit；MLX MOSS 服务在 8030 端口跑 MOSS 8-bit。所有连接都走 loopback，没有 SSH 隧道。">
+      <rect class="d-frame" x="10" y="16" width="980" height="270" rx="8"/>
+      <text class="d-lab" x="28" y="42">Mac Studio（M5 Max）· 全部 127.0.0.1</text>
+      <rect class="d-box" x="30" y="72" width="210" height="190" rx="5"/>
+      <text class="d-t" x="135" y="102" text-anchor="middle">demo 客户端</text>
+      <text class="d-s" x="48" y="136">音乐时钟、eSpeak 兜底</text>
+      <text class="d-s" x="48" y="164">R3 拉伸（Rubber Band）</text>
+      <text class="d-s" x="48" y="192">加鼓混音、播放</text>
+      <text class="d-acc" x="48" y="236">PCM 传输，不用 Opus</text>
+      <rect class="d-box" x="300" y="72" width="230" height="190" rx="5"/>
+      <text class="d-t" x="415" y="102" text-anchor="middle">render server :8020</text>
+      <text class="d-s" x="318" y="136">选词、打分、打包</text>
+      <text class="d-s" x="318" y="164">MMS 对齐：声学模型 MPS</text>
+      <text class="d-s" x="318" y="192">forced_align 在 CPU</text>
+      <text class="d-acc" x="318" y="236">主环境 · Python 3.12</text>
+      <rect class="d-box hl" x="600" y="60" width="370" height="96" rx="5"/>
+      <text class="d-t" x="616" y="88">MLX chat :8001 · Qwen2.5-7B 4-bit</text>
+      <text class="d-s" x="616" y="114">自写服务：共享 prefill，合并同时到达的请求</text>
+      <text class="d-s" x="616" y="138">envs/rap-mlx-chat</text>
+      <rect class="d-box hl" x="600" y="172" width="370" height="96" rx="5"/>
+      <text class="d-t" x="616" y="200">MLX MOSS :8030 · MOSS-TTS 8-bit</text>
+      <text class="d-s" x="616" y="226">mlx-audio，自行从上游 cdd3b911 转换</text>
+      <text class="d-s" x="616" y="250">envs/rap-mlx-moss</text>
+      <line class="d-a" x1="240" y1="150" x2="298" y2="150" marker-end="url(#arr)"/>
+      <line class="d-a" x1="298" y1="184" x2="242" y2="184" marker-end="url(#arr)"/>
+      <text class="d-lab" x="270" y="140" text-anchor="middle">请求</text>
+      <text class="d-lab" x="270" y="202" text-anchor="middle">source + 起点</text>
+      <line class="d-a acc" x1="530" y1="108" x2="598" y2="108" marker-end="url(#arr-acc)"/>
+      <line class="d-a acc" x1="530" y1="220" x2="598" y2="220" marker-end="url(#arr-acc)"/>
+    </svg>
+  </figure>
+  <div class="row3">
+    <div class="note"><h3>为什么</h3><p>H200 只能走学校 VPN，网络不可控；也想验证边缘设备能不能撑住实时 RAP。</p></div>
+    <div class="note"><h3>环境与可追溯</h3><p>每个服务一个 uv 项目，权重放外接 SSD；MLX 版本和权重 sha256 写进 producer 指纹。</p></div>
+    <div class="note"><h3>一键启动</h3><p><code>scripts/run_rap_local_mac.sh</code> 检查 SSD 后启动三个服务，加 <code>--demo</code> 直接进 demo。</p></div>
+  </div>
+  <div class="pno">17 / 21</div>
+</div></section>
+
+<!-- 18 -->
+<section class="frame" id="s18"><div class="slide">
+  <div class="part">Mac 适配</div>
+  <h2>移植时遇到的问题和对应改动</h2>
+  <table class="t">
+    <thead><tr><th>问题</th><th>实测现象</th><th>做法</th></tr></thead>
+    <tbody>
+      <tr><td>vllm-metal 几乎没有批量加速</td><td>n=1 537 ms，n=16 2139 ms，几乎随 n 线性增长</td><td>自写 <code>mlx_chat_server.py</code>：共享 prefill，合并请求。两个 bar 32 条只要 1809 ms，不共享时要 6097 ms</td></tr>
+      <tr><td>PyTorch MPS 跑不了 MOSS</td><td>上游 remote code 在 MPS 上触发 INTERNAL ASSERT</td><td>改用 mlx-audio，自行转换 q8 / q4 / bf16 权重</td></tr>
+      <tr><td><code>forced_align</code> 不支持 MPS</td><td>MMS 声学模型 MPS 37 ms，CPU 200 ms</td><td>声学模型放 MPS，对齐这一步放 CPU，合计约 50 ms</td></tr>
+      <tr><td>MLX 缓存只增不减</td><td>chat 服务的内存涨到 48 GB，系统换页，每个 chunk 越来越慢</td><td>缓存上限：chat 2 GB，每个 batch 后清空；MOSS 4 GB</td></tr>
+      <tr><td>3000 ms 的渲染预留太紧</td><td>24 个 chunk 中有 1 个撞上 deadline，服务进入需要重启的状态</td><td>Mac 启动脚本把预留改成 3500 ms；默认值不变，H200 不受影响</td></tr>
+      <tr><td>Python 3.10 下 scipy 加载失败</td><td>macOS 27 拒绝加载 <code>__thread_bss</code> 段</td><td>整个项目改用 Python 3.12</td></tr>
+      <tr><td>MLX 生成过程中途不能中断</td><td>客户端断开后，服务端仍把这一次生成做完</td><td>还没解决，结果直接丢弃</td></tr>
+    </tbody>
+  </table>
+  <div class="pno">18 / 21</div>
+</div></section>
+
+<!-- 19 -->
+<section class="frame" id="s19"><div class="slide">
+  <div class="part">Mac 适配</div>
+  <h2>Mac 本地实测：p50 3.3 s，24 / 24，underrun 为 0</h2>
+  <div class="cols">
+    <div style="display:grid;gap:.8em">
+      <figure class="fig"><svg id="chart-mac" role="img" aria-label="准备时间中位数对比：H200 走隧道 1.90 秒，其中服务器 1.09、网络 0.67、Mac 端 0.12；Mac 本地 3.30 秒，其中 Qwen 0.92、MOSS 2.11、其他 0.18。都在 5.0 秒超时以内。"></svg><figcaption>Mac 端看到的准备时间中位数，24 个 chunk，gentle_sparse<span class="chip m">实测</span></figcaption></figure>
+      <div class="legend"><span><i style="background:var(--c-qwen)"></i>Qwen</span><span><i style="background:var(--accent)"></i>MOSS / 服务器</span><span><i style="background:var(--c-light)"></i>网络 / 其他</span></div>
+    </div>
+    <div style="display:grid;gap:1em;align-content:start">
+      <table class="t">
+        <thead><tr><th>MOSS 精度</th><th class="n">2 小节耗时</th><th class="n">峰值内存</th></tr></thead>
+        <tbody>
+          <tr><td>4-bit</td><td class="n">1.42 s</td><td class="n">12.7 GB</td></tr>
+          <tr><td><b>8-bit（采用）</b></td><td class="n">2.13 s</td><td class="n">16.8 GB</td></tr>
+          <tr><td>bf16</td><td class="n">3.37 s</td><td class="n">24.7 GB</td></tr>
+        </tbody>
+      </table>
+      <ul class="pts">
+        <li><b>可懂度：</b>固定的 20 条语料，Mac 上 8-bit 拉伸后的 WER 是 1.72%，H200 是 2.41% 到 2.75%。</li>
+        <li><b>真实会话：</b>24 小节中 22 小节用了远端人声，另外 2 小节是因为没有合格的歌词候选。</li>
+        <li><b>余量：</b>p95 是 4.14 s，仍在 5.0 s 超时以内。前后 8 个 chunk 之间没有漂移。</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pno">19 / 21</div>
+</div></section>
+
+<!-- 20 -->
+<section class="frame" id="s20"><div class="slide">
+  <div class="part">Mac 适配</div>
+  <h2>Mac 路线：比 H200 慢，但够用，而且稳定</h2>
+  <div class="cols even">
+    <div class="box">
+      <h3>和 H200 比</h3>
+      <ul class="pts">
+        <li>MOSS 2.11 s，是 H200（0.77 s）的 2.7 倍，占 Mac 准备时间的 64%。</li>
+        <li>Qwen 0.92 s，H200 是 0.15 s。不共享 prefill 时，两个 bar 32 条要 6.1 s。</li>
+        <li>但没有网络这一段，结果不受 VPN 影响；也不用 Opus，人声直接走 PCM。</li>
+        <li>WER 不比 H200 差。</li>
+      </ul>
+    </div>
+    <div class="box acc">
+      <h3>还能做的</h3>
+      <ul class="pts">
+        <li><b>MOSS 4-bit：</b>约快 0.7 s，要先通过音质门槛（WER 和盲听）。</li>
+        <li><b>MLX 生成支持中途取消：</b>迟到的请求不用再占着 GPU。</li>
+        <li><b>渲染预留：</b>现在是 3500 ms。如果想让 fallback 降到 0，可以再调大，代价是基本不会再做补充生成。</li>
+        <li><b>多会话：</b>一台 Mac 同时只服务一个 demo，还没测并发。</li>
+      </ul>
+    </div>
+  </div>
+  <p class="src">数据：<code>developing-logs/plans/2026-09-30-rap-mac-local-server-plan.md</code> 的实施记录，以及 2026-10-01 的 v2 验收（<code>output/rap_local_mac_v2_accept/</code>）。</p>
+  <div class="pno">20 / 21</div>
+</div></section>
+
+<!-- 21 -->
+<section class="frame" id="s21"><div class="slide">
   <div class="part">小结</div>
   <h2>小结与讨论</h2>
   <div class="cols even">
     <div class="box acc">
       <h3>这段时间做了什么</h3>
       <ul class="pts">
-        <li>MOSS 换到 SGLang-Omni：单段合成快 3.25 倍，服务器准备一个 chunk 从约 3.3 s 降到 1.49 s。</li>
-        <li>对全流程和 MOSS 内部做了 profiling：瓶颈是 decode 的权重带宽、每步的 CPU 空闲和 delay 尾部。</li>
-        <li>下一步先修锚点兼容问题，再做 6 项改动，目标约 1.15 s。</li>
+        <li>MOSS 换到 SGLang-Omni：单段合成快 3.25 倍。</li>
+        <li>按 profiling 落地了六项改动：服务器准备一个 chunk 实测从 1.37 s 降到 1.09 s，MOSS 输出逐字节不变。</li>
+        <li>R3 移到 Mac，修好了 gentle_sparse chunk 被全部拒收的问题。</li>
+        <li>整条流程能在 Mac Studio 本地跑：端到端 p50 3.3 s，24 / 24 被接受，underrun 为 0。</li>
       </ul>
     </div>
     <div class="box">
       <h3>想讨论的问题</h3>
       <ul class="pts">
+        <li>demo 用 H200 还是 Mac 本地？H200 快，但受 VPN 影响；Mac 慢一些，但没有网络开销。</li>
         <li>要不要做真正的流式：MOSS 边生成，MMS 和 R3 边对齐拉伸？</li>
-        <li>多个会话同时请求时，要不要用 SGLang-Omni 的分离部署？</li>
-        <li>“边听边想边说”是模型层面的 concurrent streaming，和 serving 优化是两条线，优先做哪条？</li>
+        <li>MOSS 补丁要不要提给上游 SGLang-Omni？</li>
+        <li>“边听边想边说”的 concurrent streaming 和 serving 优化是两条线，先做哪条？</li>
       </ul>
     </div>
   </div>
-  <div class="pno">16 / 16</div>
+  <div class="pno">21 / 21</div>
 </div></section>
 
 </main>
 
 <div class="pbar" id="pbar" hidden>
   <button type="button" id="p-prev" aria-label="上一页">←</button>
-  <span class="count" id="p-count">1 / 16</span>
+  <span class="count" id="p-count">1 / 21</span>
   <button type="button" id="p-next" aria-label="下一页">→</button>
   <button type="button" id="p-exit">退出</button>
 </div>
@@ -841,25 +984,39 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
       { v: 1.3, cls: "s-idle", label: "空闲 1.3" } ] }]
   });
 
-  hbars(document.getElementById("chart-fall"), {
-    width: 560, labelW: 118, right: 74, rowH: 26, gap: 10, max: 1600,
-    ticks: [0, 400, 800, 1200, 1600], tickUnit: "",
+  hbars(document.getElementById("chart-server"), {
+    width: 560, labelW: 92, right: 70, rowH: 46, gap: 22, max: 1500,
+    ticks: [0, 500, 1000, 1500], tickUnit: "",
     rows: [
-      { label: "现在", segs: [{ v: 1493, cls: "s-new" }], total: "1493" },
-      { label: "Qwen", segs: [{ start: 1299, v: 194, cls: "s-gain" }], total: "−194" },
-      { label: "MOSS 补丁", segs: [{ start: 1222, v: 77, cls: "s-gain" }], total: "−77" },
-      { label: "Opus", segs: [{ start: 1158, v: 64, cls: "s-gain" }], total: "−64" },
-      { label: "改动后", est: true, segs: [{ v: 1158, cls: "s-new" }], total: "≈1158" }
+      { label: "改动前", segs: [{ v: 309, cls: "s-qwen", label: "Qwen" }, { v: 826, cls: "s-moss", label: "MOSS 826" },
+        { v: 101, cls: "s-small" }, { v: 129, cls: "s-opus" }], total: "1365" },
+      { label: "改动后", segs: [{ v: 147, cls: "s-qwen" }, { v: 769, cls: "s-moss", label: "MOSS 769" },
+        { v: 109, cls: "s-small" }, { v: 60, cls: "s-opus" }], total: "1085" }
     ]
   });
 
-  hbars(document.getElementById("chart-budget"), {
-    width: 560, labelW: 92, right: 40, rowH: 34, gap: 0, max: 5.5,
-    ticks: [0, 1, 2, 3, 4, 5], tickUnit: " s",
+  hbars(document.getElementById("chart-e2e"), {
+    width: 560, labelW: 92, right: 52, rowH: 46, gap: 22, max: 5.5,
+    ticks: [0, 1, 2, 3, 4], tickUnit: " s",
     marks: [{ v: 5.0, label: "超时 5.0 s" }],
-    rows: [{ label: "端到端", est: true, segs: [
-      { v: 1.16, cls: "s-new", label: "服务器" }, { v: 1.5, cls: "s-route", label: "路由", dark: true }, { v: 0.05, cls: "s-small" } ],
-      total: "≈2.7 s" }]
+    rows: [
+      { label: "改动前", segs: [{ v: 1.37, cls: "s-new", label: "服务器" }, { v: 0.67, cls: "s-route", label: "网络", dark: true },
+        { v: 0.12, cls: "s-small" }], total: "2.16 s" },
+      { label: "改动后", segs: [{ v: 1.09, cls: "s-new", label: "服务器" }, { v: 0.67, cls: "s-route", label: "网络", dark: true },
+        { v: 0.12, cls: "s-small" }], total: "1.90 s" }
+    ]
+  });
+
+  hbars(document.getElementById("chart-mac"), {
+    width: 640, labelW: 110, right: 56, rowH: 54, gap: 30, max: 5.5,
+    ticks: [0, 1, 2, 3, 4], tickUnit: " s",
+    marks: [{ v: 5.0, label: "超时 5.0 s" }],
+    rows: [
+      { label: "H200", sub: "SSH 隧道", segs: [{ v: 1.09, cls: "s-new", label: "服务器" }, { v: 0.67, cls: "s-route", label: "网络", dark: true },
+        { v: 0.12, cls: "s-small" }], total: "1.90 s" },
+      { label: "Mac 本地", sub: "loopback", segs: [{ v: 0.92, cls: "s-qwen", label: "Qwen" }, { v: 2.11, cls: "s-moss", label: "MOSS 2.11" },
+        { v: 0.18, cls: "s-small" }], total: "3.30 s" }
+    ]
   });
 
   // Delay pattern grid: 6 codebooks, 8 frames, codebook k starts k steps late.
