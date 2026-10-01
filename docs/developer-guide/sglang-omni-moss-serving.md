@@ -144,6 +144,26 @@ uv run python scripts/preflight_sglang_omni_moss.py \
   --dry-run
 ```
 
+### Optional: MOSS latency patch
+
+`patches/sglang-omni-0.1.4-af3ab61-moss-latency.patch` saves about 77 ms per
+two-bar MOSS phrase and removes an occasional 100 ms response delay; see
+`patches/README.md` for what it changes and why the audio is unchanged. Apply it
+to a copy of the installed package and let preflight verify and record it:
+
+```bash
+export MOSS_PATCH="$REPO_ROOT/patches/sglang-omni-0.1.4-af3ab61-moss-latency.patch"
+export MOSS_PATCH_ROOT=/absolute/path/to/sglang-omni-patched   # new, empty directory
+mkdir "$MOSS_PATCH_ROOT"
+cp -a "$SGLANG_ENV/lib/python3.12/site-packages/sglang_omni" "$MOSS_PATCH_ROOT/"
+git -C "$MOSS_PATCH_ROOT" apply -p1 "$MOSS_PATCH"
+export MOSS_PATCH_SHA256="$(sha256sum "$MOSS_PATCH" | cut -d' ' -f1)"
+PREFLIGHT_ARGS+=(--runtime-patch-file "$MOSS_PATCH" --runtime-patch-root "$MOSS_PATCH_ROOT")
+```
+
+Then add `--moss-runtime-patch-sha256 "$MOSS_PATCH_SHA256"` to the render server
+command below. Rollback: skip this section and drop that flag.
+
 Evidence files are immutable. An identical replay is allowed; a replay with
 different bytes fails. Use a new implementation/experiment id and a new output
 path when any pin changes. Never reuse the dry-run path for a validated launch.
@@ -251,6 +271,8 @@ CUDA_VISIBLE_DEVICES="$MOSS_GPU" \
   --moss-warp-policy gentle_sparse_r3 \
   --wire-audio-codec opus
 ```
+
+With the latency patch, also pass `--moss-runtime-patch-sha256 "$MOSS_PATCH_SHA256"`.
 
 If MMS or Rubber Band requires host-specific library paths, prepend the already
 qualified paths to `PATH` and `LD_LIBRARY_PATH`; record those values in the

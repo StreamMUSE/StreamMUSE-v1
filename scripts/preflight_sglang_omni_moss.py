@@ -54,6 +54,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ninja-bin", default="ninja")
     parser.add_argument("--cxx-bin", default="c++")
     parser.add_argument("--nvcc-bin", default="nvcc")
+    parser.add_argument("--git-bin", default="git")
+    parser.add_argument(
+        "--runtime-patch-file",
+        help="patch applied to the pinned sglang_omni package (paths a/sglang_omni/...)",
+    )
+    parser.add_argument(
+        "--runtime-patch-root",
+        help="directory holding the patched sglang_omni package; it is put first on "
+        "PYTHONPATH for the launched service",
+    )
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--model-revision", required=True)
@@ -94,6 +104,12 @@ def main(
             if args.dry_run
             else qualify_tools(args, which=which, run=run)
         )
+        if inputs["runtime_patch_sha256"] is not None:
+            tools["runtime-patch"] = (
+                {"status": "not_executed"}
+                if args.dry_run
+                else qualify_runtime_patch(args, which=which, run=run)
+            )
         launch_argv = build_launch_argv(args, tools["sgl-omni"]["path"])
         manifest = build_manifest(
             args,
@@ -110,6 +126,12 @@ def main(
     if args.launch:
         environment = dict(os.environ)
         environment["CUDA_VISIBLE_DEVICES"] = args.gpu
+        if inputs["runtime_patch_root"] is not None:
+            environment["PYTHONPATH"] = os.pathsep.join(
+                item
+                for item in (inputs["runtime_patch_root"], environment.get("PYTHONPATH"))
+                if item
+            )
         execvpe(launch_argv[0], launch_argv, environment)
     return 0
 
@@ -193,6 +215,18 @@ def validate_inputs(args: argparse.Namespace) -> dict[str, object]:
         16 * 1024 * 1024,
         "runtime environment evidence",
     )
+    if (args.runtime_patch_file is None) != (args.runtime_patch_root is None):
+        raise PreflightError(
+            "--runtime-patch-file and --runtime-patch-root must be given together"
+        )
+    patch_sha256 = patch_path = patch_root = None
+    if args.runtime_patch_file is not None:
+        patch_file = _absolute_file(args.runtime_patch_file, "runtime patch")
+        patch_sha256 = _sha256(_bounded_read(patch_file, 1024 * 1024, "runtime patch"))
+        root = _absolute_directory(args.runtime_patch_root, "runtime patch root")
+        if not (root / "sglang_omni" / "__init__.py").is_file():
+            raise PreflightError("runtime patch root does not hold a sglang_omni package")
+        patch_path, patch_root = str(patch_file), str(root)
     return {
         "model_path": str(model_path),
         "config_path": str(config_path),
@@ -204,6 +238,9 @@ def validate_inputs(args: argparse.Namespace) -> dict[str, object]:
         "reference_sample_rate_hz": sample_rate_hz,
         "reference_frame_count": int(samples.shape[0]),
         "reference_duration_seconds": duration_seconds,
+        "runtime_patch_path": patch_path,
+        "runtime_patch_sha256": patch_sha256,
+        "runtime_patch_root": patch_root,
     }
 
 
@@ -249,6 +286,37 @@ def qualify_tools(
     evidence["sgl-omni"]["serve_help_sha256"] = _sha256(help_output)
     evidence["sgl-omni"]["required_serve_flags"] = list(_REQUIRED_SERVE_FLAGS)
     return evidence
+
+
+def qualify_runtime_patch(
+    args: argparse.Namespace,
+    *,
+    which: Callable[[str], str | None],
+    run: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> dict[str, object]:
+    """Prove the patch is applied in the root the service will import from."""
+    git = which(args.git_bin)
+    if git is None:
+        raise PreflightError("required executable is missing: git")
+    try:
+        _run_bounded(
+            [
+                git,
+                "-C",
+                str(Path(args.runtime_patch_root)),
+                "apply",
+                "--reverse",
+                "--check",
+                "-p1",
+                str(Path(args.runtime_patch_file)),
+            ],
+            run=run,
+        )
+    except PreflightError as exc:
+        raise PreflightError(
+            "runtime patch is not applied under --runtime-patch-root"
+        ) from exc
+    return {"status": "applied", "git": git}
 
 
 def dry_run_tool_evidence(args: argparse.Namespace) -> dict[str, dict[str, object]]:
@@ -305,6 +373,15 @@ def build_manifest(
             "environment_sha256": inputs["runtime_environment_sha256"],
             "config_path": inputs["config_path"],
             "config_sha256": inputs["config_sha256"],
+            **(
+                {
+                    "patch_path": inputs["runtime_patch_path"],
+                    "patch_sha256": inputs["runtime_patch_sha256"],
+                    "patch_root": inputs["runtime_patch_root"],
+                }
+                if inputs["runtime_patch_sha256"] is not None
+                else {}
+            ),
         },
         "reference": {
             "audio_sha256": inputs["reference_audio_sha256"],

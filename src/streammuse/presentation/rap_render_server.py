@@ -259,6 +259,7 @@ class RapRenderServerConfig:
     moss_sglang_version: str | None = None
     moss_sglang_revision: str | None = None
     moss_runtime_environment_sha256: str | None = None
+    moss_runtime_patch_sha256: str | None = None
     moss_runtime_config: Path | None = None
     moss_runtime_config_sha256: str | None = None
     moss_mlx_url: str | None = None
@@ -1704,6 +1705,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--moss-sglang-version")
     parser.add_argument("--moss-sglang-revision")
     parser.add_argument("--moss-runtime-environment-sha256")
+    parser.add_argument(
+        "--moss-runtime-patch-sha256",
+        help="SHA-256 of the patch applied to the pinned SGLang-Omni runtime "
+        "(the launch manifest's runtime.patch_sha256); omit for an unpatched runtime",
+    )
     parser.add_argument("--moss-runtime-config")
     parser.add_argument("--moss-runtime-config-sha256")
     parser.add_argument("--moss-mlx-url")
@@ -1819,6 +1825,9 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         "--mlx-moss-audio-tokenizer-revision": args.mlx_moss_audio_tokenizer_revision,
     }
     sglang_conflicts = [name for name, value in sglang_only.items() if value is not None]
+    if args.moss_runtime_patch_sha256 is not None:
+        # Optional (an unpatched runtime omits it), so it is not in sglang_only.
+        sglang_conflicts.append("--moss-runtime-patch-sha256")
     mlx_conflicts = [name for name, value in mlx_only.items() if value is not None]
     if backend != "sglang-omni" and sglang_conflicts:
         raise ValueError(
@@ -1882,6 +1891,11 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
             args.moss_runtime_environment_sha256,
             "--moss-runtime-environment-sha256",
         )
+        if args.moss_runtime_patch_sha256 is not None:
+            _validate_sha256(
+                args.moss_runtime_patch_sha256,
+                "--moss-runtime-patch-sha256",
+            )
         for value, name in (
             (args.moss_reference_wav, "--moss-reference-wav"),
             (args.moss_reference_text_file, "--moss-reference-text-file"),
@@ -1938,6 +1952,7 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         moss_sglang_version=args.moss_sglang_version,
         moss_sglang_revision=args.moss_sglang_revision,
         moss_runtime_environment_sha256=args.moss_runtime_environment_sha256,
+        moss_runtime_patch_sha256=args.moss_runtime_patch_sha256,
         moss_runtime_config=(
             Path(args.moss_runtime_config) if args.moss_runtime_config else None
         ),
@@ -2285,6 +2300,7 @@ def _validate_composition_inputs(
             config.moss_sglang_version,
             config.moss_sglang_revision,
             config.moss_runtime_environment_sha256,
+            config.moss_runtime_patch_sha256,
             config.moss_runtime_config,
             config.moss_runtime_config_sha256,
         )
@@ -2303,6 +2319,7 @@ def _validate_composition_inputs(
             config.moss_sglang_version,
             config.moss_sglang_revision,
             config.moss_runtime_environment_sha256,
+            config.moss_runtime_patch_sha256,
             config.moss_runtime_config,
             config.moss_runtime_config_sha256,
         )
@@ -2348,6 +2365,8 @@ def _validate_composition_inputs(
         config.moss_sglang_reference_sha256,
         "SGLang service reference hash",
     )
+    if config.moss_runtime_patch_sha256 is not None:
+        _validate_sha256(config.moss_runtime_patch_sha256, "SGLang runtime patch hash")
     reference_audio_sha256 = hashlib.sha256(reference_audio).hexdigest()
     if reference_audio_sha256 != config.moss_sglang_reference_sha256:
         raise ValueError(
@@ -2505,6 +2524,13 @@ def _build_producer_manifest(
                 config.moss_runtime_environment_sha256
             ),
             "config_sha256": str(config.moss_runtime_config_sha256),
+            # The pip lock cannot see a source patch, so it is named here; an
+            # unpatched runtime keeps its original fingerprint.
+            **(
+                {"patch_sha256": config.moss_runtime_patch_sha256}
+                if config.moss_runtime_patch_sha256 is not None
+                else {}
+            ),
         }
     else:
         from streammuse.infrastructure.rap.moss_tts import (

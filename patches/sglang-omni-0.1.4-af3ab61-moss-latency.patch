@@ -1,0 +1,285 @@
+--- a/sglang_omni/models/moss_tts/sglang_model.py
++++ b/sglang_omni/models/moss_tts/sglang_model.py
+@@ -14,6 +14,7 @@
+     LogitsMetadata,
+     LogitsProcessor,
+     LogitsProcessorOutput,
++    should_apply_lm_head_quant_method,
+ )
+ from sglang.srt.layers.quantization.base_config import QuantizationConfig
+ from sglang.srt.layers.utils import PPMissingLayer, get_layer_id
+@@ -29,6 +30,8 @@
+ from sglang.srt.model_loader.weight_utils import default_weight_loader
+ from sglang.srt.models.qwen3 import Qwen3Model
+ from sglang.srt.utils import add_prefix
++from sglang.srt.utils.async_probe import maybe_detect_oob
++from sglang.srt.utils.common import use_intel_amx_backend
+ 
+ from sglang_omni.models.moss_tts.payload_types import moss_tts_special_token_defaults
+ from sglang_omni.models.moss_tts.sampler import (
+@@ -44,7 +47,12 @@
+ 
+ logger = logging.getLogger(__name__)
+ 
++# StreamMUSE latency patch: decode batches up to this many rows gather the 32
++# audio embeddings at once; larger (prefill) batches keep per-table lookups so
++# the [rows, 32, hidden] intermediate stays small.
++_STACKED_AUDIO_EMBED_MAX_ROWS = 8
+ 
++
+ class ChannelLogitsList(list):
+     """Per-channel logits; ``fused_audio`` carries the [B, n_vq, vocab] fp32
+     tensor the audio entries are views of, so consumers can skip re-stacking."""
+@@ -144,6 +152,13 @@
+         self._audio_head_padded_vocab = 0
+         self._audio_head_expected_ptrs: list[int] = []
+         self._fused_audio_heads_enabled: bool | None = None
++        # StreamMUSE latency patch: one stacked gather for the audio embeddings
++        # and a two-row text control head in audio decode.
++        self._stacked_audio_embed_weight: torch.Tensor | None = None
++        self._stacked_audio_embed_offsets: torch.Tensor | None = None
++        self._audio_embed_expected_ptrs: list[int] = []
++        self._text_control_head_weight: torch.Tensor | None = None
++        self._text_control_head_source_ptr = 0
+         self.register_buffer(
+             "_text_control_token_ids",
+             torch.tensor(
+@@ -274,10 +289,100 @@
+             device=input_ids_2d.device,
+             dtype=weight.dtype,
+         )
++        if (
++            int(input_ids_2d.shape[0]) <= _STACKED_AUDIO_EMBED_MAX_ROWS
++            and self._stacked_audio_embeddings_ready()
++        ):
++            # Note (StreamMUSE): one gather replaces 32 per-table lookups; the
++            # rows are exact copies and are added in the original channel
++            # order (text first), so the sum is bit-identical.
++            embeds = embeds + self.embedding_list[0](input_ids_2d[:, 0])
++            audio_ids = input_ids_2d[:, 1:].long()
++            maybe_detect_oob(
++                audio_ids,
++                0,
++                int(self.embedding_list[1].num_embeddings),
++                "MOSS-TTS stacked audio embedding input id",
++            )
++            gathered = torch.nn.functional.embedding(
++                audio_ids + self._stacked_audio_embed_offsets,
++                self._stacked_audio_embed_weight,
++            )
++            for idx in range(int(gathered.shape[1])):
++                embeds = embeds + gathered[:, idx]
++            return embeds
+         for idx, embed_layer in enumerate(self.embedding_list):
+             embeds = embeds + embed_layer(input_ids_2d[:, idx])
+         return embeds
++
++    @staticmethod
++    def _stacked_audio_embeddings_eligible(layers: list[Any]) -> bool:
++        weights = [getattr(layer, "weight", None) for layer in layers]
++        if not layers or any(not isinstance(w, torch.Tensor) or w.dim() != 2 for w in weights):
++            return False
++        first = weights[0]
++        return all(
++            isinstance(layer, VocabParallelEmbedding)
++            and int(getattr(layer, "tp_size", 1)) == 1
++            and type(getattr(layer, "quant_method", None)).__name__
++            == "UnquantizedEmbeddingMethod"
++            and weight.shape == first.shape
++            and weight.dtype == first.dtype
++            and weight.device == first.device
++            for layer, weight in zip(layers, weights)
++        )
++
++    def _ensure_stacked_audio_embeddings(self, *, allow_copy: bool) -> None:
++        """Back the 32 audio embedding tables with one stacked buffer.
++
++        Like the fused audio heads, each table is re-pointed at a slice of the
++        stacked buffer, so this adds no steady-state memory. A weight-share
++        follower (``allow_copy=False``) only views the leader's storage and
++        falls back to per-table lookups when it is not one block, which gives
++        the same bits either way.
++        """
++        self._stacked_audio_embed_weight = None
++        self._stacked_audio_embed_offsets = None
++        self._audio_embed_expected_ptrs = []
++        layers = list(self.embedding_list[1:])
++        if not self._stacked_audio_embeddings_eligible(layers):
++            logger.info("MOSS-TTS stacked audio embeddings disabled (unsupported configuration)")
++            return
++        weights = [layer.weight for layer in layers]
++        rows = int(weights[0].shape[0])
++        stacked = self._stacked_view_over_heads(weights)
++        if stacked is None:
++            if not allow_copy:
++                logger.info("MOSS-TTS stacked audio embeddings disabled (shared storage not one block)")
++                return
++            stacked = torch.cat([w.data for w in weights], dim=0).contiguous()
++            for index, layer in enumerate(layers):
++                layer.weight.data = stacked[index * rows : (index + 1) * rows]
++        self._stacked_audio_embed_weight = stacked
++        self._stacked_audio_embed_offsets = torch.arange(
++            len(layers), device=stacked.device, dtype=torch.long
++        ) * rows
++        self._audio_embed_expected_ptrs = [
++            layer.weight.data_ptr() for layer in layers
++        ]
++        logger.info(
++            "MOSS-TTS stacked audio embeddings enabled (stacked %s)", tuple(stacked.shape)
++        )
+ 
++    def _stacked_audio_embeddings_ready(self) -> bool:
++        if self._stacked_audio_embed_weight is None:
++            return False
++        for index, layer in enumerate(self.embedding_list[1:]):
++            weight = getattr(layer, "weight", None)
++            if weight is None or weight.data_ptr() != self._audio_embed_expected_ptrs[index]:
++                logger.warning(
++                    "MOSS-TTS stacked audio embeddings disabled: table %d was replaced",
++                    index + 1,
++                )
++                self._stacked_audio_embed_weight = None
++                return False
++        return True
++
+     @torch.no_grad()
+     def forward(
+         self,
+@@ -503,6 +608,8 @@
+         self._stacked_audio_head_weight = None
+         self._audio_head_expected_ptrs = []
+         self._fused_audio_heads_enabled = None
++        self._text_control_head_weight = None
++        self._ensure_stacked_audio_embeddings(allow_copy=False)
+         weights = [getattr(head, "weight", None) for head in self.lm_heads[1:]]
+         if not self._fused_audio_heads_requested() or not (
+             self._fused_audio_heads_eligible(weights)
+@@ -571,6 +678,15 @@
+         is_audio: bool = False,
+     ) -> list[torch.Tensor]:
+         if self._fused_audio_heads_ready():
++            control_text = (
++                self._compute_control_text_logits(hidden_states) if is_audio else None
++            )
++            if control_text is not None:
++                # Audio decode only reads the two control-token columns.
++                fused = self._compute_fused_audio_logits(hidden_states)
++                logits = ChannelLogitsList([control_text, *fused.unbind(dim=1)])
++                logits.fused_audio = fused
++                return logits
+             logits_metadata = LogitsMetadata.from_forward_batch(forward_batch)
+             logits_metadata.next_token_logits_buffer = None
+             logits_metadata.forward_mode = ForwardMode.DECODE
+@@ -592,6 +708,55 @@
+             token_ids = self._text_control_token_ids.to(device=logits[0].device)
+             logits[0] = logits[0].index_select(-1, token_ids)
+         return logits
++
++    def _compute_control_text_logits(
++        self, hidden_states: torch.Tensor
++    ) -> torch.Tensor | None:
++        """Text logits for the two control tokens only, or ``None`` to fall back.
++
++        StreamMUSE latency patch: mirrors ``LogitsProcessor._get_logits`` for a
++        plain unquantized single-GPU text head (same lm-head dtype path, in-place
++        ``logit_scale`` and float32 result) but multiplies only the two control
++        rows instead of the 155k-row vocabulary before ``index_select``.
++        """
++        processor = self.logits_processors[0]
++        head = self.lm_heads[0]
++        weight = getattr(head, "weight", None)
++        if (
++            not isinstance(weight, torch.Tensor)
++            or processor.final_logit_softcapping
++            or getattr(processor, "do_tensor_parallel_all_gather", False)
++            or getattr(processor, "do_tensor_parallel_all_gather_dp_attn", False)
++            or getattr(processor, "rl_on_policy_target", None) is not None
++            or (hasattr(head, "set_lora") and hasattr(head, "apply_lora"))
++            or should_apply_lm_head_quant_method(head, getattr(head, "quant_method", None))
++            or use_intel_amx_backend(head)
++        ):
++            return None
++        if (
++            self._text_control_head_weight is None
++            or self._text_control_head_source_ptr != weight.data_ptr()
++        ):
++            token_ids = self._text_control_token_ids.to(device=weight.device)
++            self._text_control_head_weight = weight.index_select(0, token_ids).contiguous()
++            self._text_control_head_source_ptr = weight.data_ptr()
++        control = self._text_control_head_weight
++        if processor.use_fp32_lm_head:
++            if (
++                hidden_states.is_cuda
++                and hidden_states.dtype == control.dtype
++                and hidden_states.dtype in (torch.float16, torch.bfloat16)
++            ):
++                logits = torch.mm(hidden_states, control.T, out_dtype=torch.float32)
++            else:
++                logits = torch.matmul(
++                    hidden_states.to(torch.float32), control.to(torch.float32).T
++                )
++        else:
++            logits = torch.matmul(hidden_states.to(control.dtype), control.T)
++        if processor.logit_scale is not None:
++            logits.mul_(processor.logit_scale)
++        return logits.float()
+ 
+     @property
+     def text_control_token_ids(self) -> torch.Tensor:
+@@ -802,6 +967,7 @@
+         # weight-share IPC export and KV profiling both run after load, so
+         # they must see the final head storage layout and the transient copy.
+         self._ensure_stacked_audio_heads()
++        self._ensure_stacked_audio_embeddings(allow_copy=True)
+ 
+     @staticmethod
+     def _map_audio_embedding_name(name: str) -> str | None:
+--- a/sglang_omni/serve/openai_api.py
++++ b/sglang_omni/serve/openai_api.py
+@@ -1371,7 +1371,7 @@
+         raise asyncio.CancelledError
+     finally:
+         if not disconnect_task.done():
+-            await _cancel_task_bounded(disconnect_task)
++            _cancel_watcher_task(disconnect_task)
+ 
+ 
+ def _register_speech_ws(app: FastAPI) -> None:
+@@ -1474,7 +1474,7 @@
+         if next_chunk_task is not None and not next_chunk_task.done():
+             await _cancel_task_bounded(next_chunk_task)
+         if not disconnect_task.done():
+-            await _cancel_task_bounded(disconnect_task)
++            _cancel_watcher_task(disconnect_task)
+ 
+     async def _body():
+         nonlocal emitted_samples
+@@ -1557,7 +1557,7 @@
+         if not speech_task.done():
+             await _cancel_task_bounded(speech_task)
+         if not disconnect_task.done():
+-            await _cancel_task_bounded(disconnect_task)
++            _cancel_watcher_task(disconnect_task)
+ 
+ 
+ async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
+@@ -1569,6 +1569,19 @@
+         task.add_done_callback(_discard_cancelled_task_result)
+ 
+ 
++def _cancel_watcher_task(task: asyncio.Task[Any]) -> None:
++    """Cancel a disconnect watcher without waiting for it to finish.
++
++    StreamMUSE latency patch: the watcher only polls ``request.is_disconnected()``
++    and owns no engine or GPU state, so the response need not wait (up to
++    ``HTTP_DISCONNECT_CANCEL_TIMEOUT_S``) for its cancellation to land; an
++    occasional slow cancel otherwise delays a finished response by 100 ms.
++    Generation tasks keep the bounded wait in ``_cancel_task_bounded``.
++    """
++    task.cancel()
++    task.add_done_callback(_discard_cancelled_task_result)
++
++
+ def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
+     try:
+         task.result()

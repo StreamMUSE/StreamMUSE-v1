@@ -1707,6 +1707,40 @@ def test_sglang_cli_requires_and_preserves_complete_pinned_identity(
     assert config.moss_runtime_environment_sha256 == "2" * 64
 
 
+def test_sglang_runtime_patch_hash_is_optional_validated_and_part_of_identity(
+    tmp_path: Path,
+) -> None:
+    common = dict(
+        model_revision="cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
+        reference_audio_sha256="1" * 64,
+        reference_text_sha256="2" * 64,
+        aligner_identity="MMS_FA",
+        aligner_version="mms-version",
+    )
+
+    def manifest(*extra: str):
+        config = rap_render_server._server_config_from_args(
+            build_parser().parse_args([*_sglang_cli_args(tmp_path), *extra])
+        )
+        return rap_render_server._build_producer_manifest(config, **common)
+
+    unpatched = manifest()
+    patched = manifest("--moss-runtime-patch-sha256", "7" * 64)
+    other_patch = manifest("--moss-runtime-patch-sha256", "8" * 64)
+
+    assert "patch_sha256" not in unpatched.to_payload()["runtime"]
+    assert patched.to_payload()["runtime"]["patch_sha256"] == "7" * 64
+    assert len({unpatched.fingerprint, patched.fingerprint, other_patch.fingerprint}) == 3
+    with pytest.raises(ValueError, match="patch-sha256"):
+        manifest("--moss-runtime-patch-sha256", "not-a-hash")
+    with pytest.raises(ValueError, match="may only be used with sglang-omni"):
+        rap_render_server._server_config_from_args(
+            build_parser().parse_args(
+                [*_mlx_cli_args(tmp_path), "--moss-runtime-patch-sha256", "7" * 64]
+            )
+        )
+
+
 def test_sglang_cli_rejects_missing_pin_public_endpoint_and_remote_reference(
     tmp_path: Path,
 ) -> None:

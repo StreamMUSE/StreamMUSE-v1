@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import struct
 import subprocess
 import wave
 from pathlib import Path
+
+import pytest
 
 from scripts import preflight_sglang_omni_moss as preflight
 
@@ -199,3 +202,95 @@ def test_validated_launch_uses_exact_argv_and_exec_environment(
         "--host",
         "--port",
     ]
+
+
+def _patched_root(tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path / "patched-site"
+    (root / "sglang_omni").mkdir(parents=True)
+    (root / "sglang_omni" / "__init__.py").write_text("", encoding="utf-8")
+    patch = tmp_path / "runtime.patch"
+    patch.write_text("--- a/sglang_omni/x.py\n+++ b/sglang_omni/x.py\n", encoding="utf-8")
+    return root, patch
+
+
+def _validated_run(git_returncode: int, git_calls: list[list[str]]):
+    def run(command, **_kwargs):
+        if "apply" in command:
+            git_calls.append(list(command))
+            return subprocess.CompletedProcess(command, git_returncode, stdout=b"", stderr=b"")
+        output = b"tool version 1\n"
+        if command[-2:] == ["serve", "--help"]:
+            output = b"--model-path --config --allowed-local-media-path --host --port\n"
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr=b"")
+
+    return run
+
+
+def test_runtime_patch_is_verified_recorded_and_put_first_on_pythonpath(
+    tmp_path: Path, monkeypatch
+) -> None:
+    argv, manifest_path = _inputs(tmp_path)
+    root, patch = _patched_root(tmp_path)
+    git_calls: list[list[str]] = []
+    exec_calls: list[dict[str, str]] = []
+    monkeypatch.setenv("PYTHONPATH", "/existing")
+
+    status = preflight.main(
+        [*argv, "--runtime-patch-file", str(patch), "--runtime-patch-root", str(root), "--launch"],
+        which=lambda command: f"/tools/{command}",
+        run=_validated_run(0, git_calls),
+        execvpe=lambda _executable, _command, environment: exec_calls.append(dict(environment)),
+    )
+
+    assert status == 0
+    assert git_calls == [
+        ["/tools/git", "-C", str(root), "apply", "--reverse", "--check", "-p1", str(patch)]
+    ]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["runtime"]["patch_sha256"] == hashlib.sha256(patch.read_bytes()).hexdigest()
+    assert manifest["runtime"]["patch_root"] == str(root)
+    assert manifest["tools"]["runtime-patch"]["status"] == "applied"
+    assert exec_calls[0]["PYTHONPATH"] == f"{root}:/existing"
+
+
+def test_runtime_patch_that_is_not_applied_fails_preflight(tmp_path: Path) -> None:
+    argv, manifest_path = _inputs(tmp_path)
+    root, patch = _patched_root(tmp_path)
+
+    status = preflight.main(
+        [*argv, "--runtime-patch-file", str(patch), "--runtime-patch-root", str(root)],
+        which=lambda command: f"/tools/{command}",
+        run=_validated_run(1, []),
+    )
+
+    assert status == 2
+    assert not manifest_path.exists()
+
+
+def test_runtime_patch_flags_must_come_together_and_absent_keeps_manifest(
+    tmp_path: Path,
+) -> None:
+    argv, manifest_path = _inputs(tmp_path)
+    _, patch = _patched_root(tmp_path)
+
+    assert preflight.main([*argv, "--runtime-patch-file", str(patch), "--dry-run"]) == 2
+    assert preflight.main([*argv, "--dry-run"]) == 0
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "patch_sha256" not in manifest["runtime"]
+    assert "runtime-patch" not in manifest["tools"]
+
+
+def test_repository_patch_fails_the_check_on_an_unpatched_tree(tmp_path: Path) -> None:
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is unavailable")
+    patch = Path(preflight.__file__).resolve().parents[1] / "patches" / (
+        "sglang-omni-0.1.4-af3ab61-moss-latency.patch"
+    )
+    root = tmp_path / "site"
+    (root / "sglang_omni").mkdir(parents=True)
+    completed = subprocess.run(
+        [git, "-C", str(root), "apply", "--reverse", "--check", "-p1", str(patch)],
+        capture_output=True,
+    )
+    assert completed.returncode != 0
