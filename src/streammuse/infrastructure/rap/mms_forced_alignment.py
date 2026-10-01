@@ -22,6 +22,7 @@ from scipy.signal import resample_poly
 from streammuse.application.rap.chunk_orchestration import PhraseRenderFailed
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget
 from streammuse.experiments.rap_audio_protocols.warp import VowelAnchor
+from streammuse.infrastructure.rap.phrase_warp import syllable_onset_anchor
 
 
 _ASCII_WORDS = re.compile(r"[a-z]+(?:'[a-z]+)*")
@@ -206,21 +207,11 @@ def map_syllable_onsets(
                 if character_span is not None
                 else "MMS:word_duration"
             )
-            anchor = VowelAnchor(
-                word=target.word,
-                index_in_word=target.index_in_word,
-                planned_phone=_planned_nucleus(target.phonemes),
-                aligned_phone=aligned_evidence,
-                requested_source_seconds=source_seconds,
+            anchor = syllable_onset_anchor(
+                target,
                 source_seconds=source_seconds,
-                requested_target_seconds=target_seconds,
-                target_seconds=target_seconds,
-                requested_source_sample=source_sample,
-                source_sample=source_sample,
-                target_sample=target_sample,
-                source_boundary_adjusted=False,
-                boundary_adjusted=False,
-                anchor_kind="syllable_onset",
+                aligned_phone=aligned_evidence,
+                sample_rate_hz=source_sample_rate_hz,
             )
             anchors.append(anchor)
             diagnostics.append(
@@ -403,13 +394,6 @@ def _phoneme_weighted_indices(
             return None
         indices.append(index)
     return tuple(indices)
-
-
-def _planned_nucleus(phonemes: Sequence[str]) -> str:
-    for phoneme in phonemes:
-        if phoneme[-1:].isdigit():
-            return phoneme
-    return phonemes[0] if phonemes else "unknown"
 
 
 def normalize_mms_transcript(transcript: str) -> tuple[str, ...]:

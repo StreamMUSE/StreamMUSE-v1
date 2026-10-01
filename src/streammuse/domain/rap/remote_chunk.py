@@ -15,6 +15,12 @@ from streammuse.domain.rap.models import BeatSlot, ScheduledSyllable, Syllable
 
 
 REMOTE_CHUNK_SCHEMA_VERSION = "streammuse.rap_chunk.v1"
+# v2: the server returns the raw MOSS phrase plus measured syllable onsets and the
+# Mac plans and applies the R3 warp itself, so the Mac stays the timing authority.
+REMOTE_CHUNK_SCHEMA_VERSION_V2 = "streammuse.rap_chunk.v2"
+REMOTE_CHUNK_SCHEMA_VERSIONS = (REMOTE_CHUNK_SCHEMA_VERSION, REMOTE_CHUNK_SCHEMA_VERSION_V2)
+# Longest MOSS source phrase a v2 chunk may carry (matches the MOSS adapters).
+MAX_REMOTE_SOURCE_SECONDS = 30.0
 REMOTE_CHUNK_MONITORING_SCHEMA_VERSION = "streammuse.rap_chunk_monitor.v1"
 REMOTE_CHUNK_SAMPLE_RATE_HZ = 24_000
 # The ZIP package is capped at 4 MiB; a mono PCM16 payload can never use more
@@ -321,7 +327,9 @@ def _validate_rejection(value: Mapping[str, object]) -> Mapping[str, object]:
 
 
 _REQUIRED_STAGE_TIMINGS = {"generation", "evaluation", "moss", "aligner", "warp", "packaging", "total"}
+_REQUIRED_STAGE_TIMINGS_V2 = _REQUIRED_STAGE_TIMINGS - {"warp"}
 _REQUIRED_ALIGNMENT_DIAGNOSTICS = {"fallback_counts", "source_anchors", "target_anchors", "local_warp_ratios"}
+_REQUIRED_ALIGNMENT_DIAGNOSTICS_V2 = {"fallback_counts", "source_onsets", "onset_confidence"}
 _REQUIRED_AUDIO_DIAGNOSTICS = {"sample_rate_hz", "frame_count", "duration_seconds", "peak"}
 _REQUIRED_MONITORING_SUMMARY = {
     "schema_version",
@@ -377,40 +385,59 @@ class RemoteRapChunkDiagnostics:
     model_tool_versions: Mapping[str, str]
     warnings: tuple[str, ...]
     monitoring_summary: Mapping[str, object] | None = None
+    # Which contract the fields follow; not serialized (the manifest carries it).
+    schema_version: str = REMOTE_CHUNK_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        if self.schema_version not in REMOTE_CHUNK_SCHEMA_VERSIONS:
+            raise ValueError("unsupported remote chunk diagnostics schema version")
+        v2 = self.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2
         if not _is_int(self.accepted_request_budget_ms) or self.accepted_request_budget_ms <= 0:
             raise ValueError("accepted_request_budget_ms must be a positive integer")
         if not isinstance(self.resolved_policy, RemoteCandidatePolicy):
             raise ValueError("resolved_policy must be a RemoteCandidatePolicy")
         if not isinstance(self.candidate_stats, RemoteCandidateStats):
             raise ValueError("candidate_stats must be RemoteCandidateStats")
-        if not isinstance(self.stage_timings_ms, Mapping) or set(self.stage_timings_ms) != _REQUIRED_STAGE_TIMINGS:
+        required_stages = _REQUIRED_STAGE_TIMINGS_V2 if v2 else _REQUIRED_STAGE_TIMINGS
+        if not isinstance(self.stage_timings_ms, Mapping) or set(self.stage_timings_ms) != required_stages:
             raise ValueError("stage_timings_ms must contain every required stage")
         if any(not _is_real(value) or value < 0 for value in self.stage_timings_ms.values()):
             raise ValueError("stage timings must be finite non-negative numbers")
         if any(self.stage_timings_ms["total"] < value for key, value in self.stage_timings_ms.items() if key != "total"):
             raise ValueError("total stage timing must cover every component stage")
         alignment = _mapping(self.alignment_diagnostics, "alignment_diagnostics")
-        if set(alignment) != _REQUIRED_ALIGNMENT_DIAGNOSTICS:
+        if set(alignment) != (_REQUIRED_ALIGNMENT_DIAGNOSTICS_V2 if v2 else _REQUIRED_ALIGNMENT_DIAGNOSTICS):
             raise ValueError("alignment_diagnostics must contain every required field")
         fallback_counts = _mapping(alignment["fallback_counts"], "alignment fallback_counts")
-        source_anchors = alignment["source_anchors"]
-        target_anchors = alignment["target_anchors"]
-        ratios = alignment["local_warp_ratios"]
         if not all(_nonblank(key) and _is_int(value) and value >= 0 for key, value in fallback_counts.items()):
             raise ValueError("alignment fallback counts must be non-negative integers")
-        if (
-            not isinstance(source_anchors, (list, tuple))
-            or not isinstance(target_anchors, (list, tuple))
-            or not source_anchors
-            or len(source_anchors) != len(target_anchors)
-            or any(not _is_real(item) for item in source_anchors)
-            or any(not _is_real(item) for item in target_anchors)
-            or not isinstance(ratios, (list, tuple))
-            or any(not _is_real(item) or item <= 0 for item in ratios)
-        ):
-            raise ValueError("alignment anchors and ratios must be finite consistent arrays")
+        if v2:
+            onsets = alignment["source_onsets"]
+            confidence = alignment["onset_confidence"]
+            if (
+                not isinstance(onsets, (list, tuple))
+                or not isinstance(confidence, (list, tuple))
+                or not onsets
+                or len(onsets) != len(confidence)
+                or any(not _is_real(item) or item < 0 for item in onsets)
+                or any(not _is_real(item) or not 0 <= item <= 1 for item in confidence)
+            ):
+                raise ValueError("source onsets and their confidences must be finite consistent arrays")
+        else:
+            source_anchors = alignment["source_anchors"]
+            target_anchors = alignment["target_anchors"]
+            ratios = alignment["local_warp_ratios"]
+            if (
+                not isinstance(source_anchors, (list, tuple))
+                or not isinstance(target_anchors, (list, tuple))
+                or not source_anchors
+                or len(source_anchors) != len(target_anchors)
+                or any(not _is_real(item) for item in source_anchors)
+                or any(not _is_real(item) for item in target_anchors)
+                or not isinstance(ratios, (list, tuple))
+                or any(not _is_real(item) or item <= 0 for item in ratios)
+            ):
+                raise ValueError("alignment anchors and ratios must be finite consistent arrays")
         audio = _mapping(self.audio_diagnostics, "audio_diagnostics")
         if set(audio) != _REQUIRED_AUDIO_DIAGNOSTICS:
             raise ValueError("audio_diagnostics must contain every required field")
@@ -421,9 +448,10 @@ class RemoteRapChunkDiagnostics:
         sample_tolerance = 1 / audio["sample_rate_hz"]
         if abs(audio["duration_seconds"] - audio["frame_count"] / audio["sample_rate_hz"]) > sample_tolerance:
             raise ValueError("audio duration must match frame count within one sample")
-        required_versions = {"moss", "aligner", "rubberband"}
+        # v2 servers do not run Rubber Band; the Mac records its own build.
+        required_versions = {"moss", "aligner"} if v2 else {"moss", "aligner", "rubberband"}
         if not isinstance(self.model_tool_versions, Mapping) or not required_versions.issubset(self.model_tool_versions) or not all(_nonblank(key) and _nonblank(value) for key, value in self.model_tool_versions.items()):
-            raise ValueError("model_tool_versions must include non-empty moss, aligner, and rubberband versions")
+            raise ValueError(f"model_tool_versions must include non-empty {', '.join(sorted(required_versions))} versions")
         if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) for item in self.warnings):
             raise ValueError("warnings must be a tuple of strings")
         monitoring_summary = (
@@ -453,7 +481,9 @@ class RemoteRapChunkDiagnostics:
         }
 
     @classmethod
-    def from_payload(cls, value: object) -> RemoteRapChunkDiagnostics:
+    def from_payload(
+        cls, value: object, *, schema_version: str = REMOTE_CHUNK_SCHEMA_VERSION
+    ) -> RemoteRapChunkDiagnostics:
         payload = _mapping(value, "remote chunk diagnostics")
         _keys(payload, {"accepted_request_budget_ms", "resolved_policy", "candidate_stats", "stage_timings_ms", "alignment_diagnostics", "audio_diagnostics", "model_tool_versions", "warnings", "monitoring_summary"}, "remote chunk diagnostics")
         warnings = payload["warnings"]
@@ -469,6 +499,7 @@ class RemoteRapChunkDiagnostics:
             _mapping(payload["model_tool_versions"], "model_tool_versions"),  # type: ignore[arg-type]
             tuple(warnings),  # type: ignore[arg-type]
             _mapping(payload["monitoring_summary"], "monitoring_summary"),
+            schema_version,
         )
 
 
@@ -518,7 +549,7 @@ class RemoteRapChunkRequest:
     seed: int
 
     def __post_init__(self) -> None:
-        if self.schema_version != REMOTE_CHUNK_SCHEMA_VERSION:
+        if self.schema_version not in REMOTE_CHUNK_SCHEMA_VERSIONS:
             raise ValueError("unsupported remote chunk schema version")
         if not isinstance(self.session_id, str) or not self.session_id:
             raise ValueError("session_id must be a non-empty string")
@@ -579,12 +610,13 @@ class RemoteRapChunkRequest:
         context_lines: tuple[str, ...],
         seed: int,
         output_sample_rate_hz: int = REMOTE_CHUNK_SAMPLE_RATE_HZ,
+        schema_version: str = REMOTE_CHUNK_SCHEMA_VERSION,
     ) -> RemoteRapChunkRequest:
         if not _is_real(tempo_bpm) or tempo_bpm <= 0:
             raise ValueError("tempo_bpm must be positive and finite")
         expected_frame_count = cls.frame_count_for(tempo_bpm, output_sample_rate_hz)
         identity = {
-            "schema_version": REMOTE_CHUNK_SCHEMA_VERSION,
+            "schema_version": schema_version,
             "session_id": session_id,
             "chunk_index": chunk_index,
             "bars": [item.to_payload() for item in bars],
@@ -596,7 +628,7 @@ class RemoteRapChunkRequest:
             "seed": seed,
         }
         return cls(
-            REMOTE_CHUNK_SCHEMA_VERSION, session_id, cls.request_id_for(identity), chunk_index, bars, tempo_bpm,
+            schema_version, session_id, cls.request_id_for(identity), chunk_index, bars, tempo_bpm,
             output_sample_rate_hz, expected_frame_count, remaining_budget_ms, policy, context_lines, seed,
         )
 
@@ -809,7 +841,7 @@ class RemoteRapChunkManifest:
     schema_version: str = REMOTE_CHUNK_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != REMOTE_CHUNK_SCHEMA_VERSION or not isinstance(self.request_id, str) or not self.request_id:
+        if self.schema_version not in REMOTE_CHUNK_SCHEMA_VERSIONS or not isinstance(self.request_id, str) or not self.request_id:
             raise ValueError("manifest schema_version and request_id must be valid")
         if not _is_int(self.chunk_index) or self.chunk_index < 0 or not _is_real(self.tempo_bpm) or self.tempo_bpm <= 0:
             raise ValueError("manifest chunk_index and tempo_bpm must be valid")
@@ -824,13 +856,31 @@ class RemoteRapChunkManifest:
             raise ValueError("manifest requires two consecutive selected bars")
         if not isinstance(self.diagnostics, RemoteRapChunkDiagnostics):
             raise ValueError("manifest diagnostics must be RemoteRapChunkDiagnostics")
-        if self.diagnostics.audio_diagnostics["sample_rate_hz"] != self.output_sample_rate_hz or self.diagnostics.audio_diagnostics["frame_count"] != self.expected_frame_count:
+        if self.diagnostics.schema_version != self.schema_version:
+            raise ValueError("manifest diagnostics must follow the manifest schema version")
+        audio = self.diagnostics.audio_diagnostics
+        if audio["sample_rate_hz"] != self.output_sample_rate_hz:
+            raise ValueError("manifest audio diagnostics must match the declared audio format")
+        if self.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2:
+            # v2 carries the raw MOSS phrase, whose length differs from the chunk.
+            if audio["frame_count"] > round(MAX_REMOTE_SOURCE_SECONDS * self.output_sample_rate_hz):
+                raise ValueError("manifest source phrase exceeds the maximum source duration")
+        elif audio["frame_count"] != self.expected_frame_count:
             raise ValueError("manifest audio diagnostics must match the declared audio format")
         if not isinstance(self.vocal_sha256, str) or len(self.vocal_sha256) != 64 or any(item not in "0123456789abcdef" for item in self.vocal_sha256):
             raise ValueError("manifest vocal_sha256 must be a lowercase SHA-256 hex digest")
 
+    @property
+    def audio_frame_count(self) -> int:
+        """Frames of the packaged audio: the exact chunk in v1, the raw MOSS phrase in v2."""
+        return int(self.diagnostics.audio_diagnostics["frame_count"])
+
+    @property
+    def _audio_hash_key(self) -> str:
+        return "source_sha256" if self.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2 else "vocal_sha256"
+
     def to_payload(self) -> dict[str, object]:
-        return {"schema_version": self.schema_version, "request_id": self.request_id, "chunk_index": self.chunk_index, "tempo_bpm": self.tempo_bpm, "output_sample_rate_hz": self.output_sample_rate_hz, "expected_frame_count": self.expected_frame_count, "selected_bars": [item.to_payload() for item in self.selected_bars], "diagnostics": self.diagnostics.to_payload(), "vocal_sha256": self.vocal_sha256}
+        return {"schema_version": self.schema_version, "request_id": self.request_id, "chunk_index": self.chunk_index, "tempo_bpm": self.tempo_bpm, "output_sample_rate_hz": self.output_sample_rate_hz, "expected_frame_count": self.expected_frame_count, "selected_bars": [item.to_payload() for item in self.selected_bars], "diagnostics": self.diagnostics.to_payload(), self._audio_hash_key: self.vocal_sha256}
 
     def canonical_json_bytes(self) -> bytes:
         return _canonical_json_bytes(self.to_payload())
@@ -838,11 +888,15 @@ class RemoteRapChunkManifest:
     @classmethod
     def from_payload(cls, value: object) -> RemoteRapChunkManifest:
         payload = _mapping(value, "remote chunk manifest")
-        _keys(payload, {"schema_version", "request_id", "chunk_index", "tempo_bpm", "output_sample_rate_hz", "expected_frame_count", "selected_bars", "diagnostics", "vocal_sha256"}, "remote chunk manifest")
+        schema_version = payload.get("schema_version")
+        if schema_version not in REMOTE_CHUNK_SCHEMA_VERSIONS:
+            raise ValueError("unsupported remote chunk manifest schema version")
+        hash_key = "source_sha256" if schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2 else "vocal_sha256"
+        _keys(payload, {"schema_version", "request_id", "chunk_index", "tempo_bpm", "output_sample_rate_hz", "expected_frame_count", "selected_bars", "diagnostics", hash_key}, "remote chunk manifest")
         bars = payload["selected_bars"]
         if not isinstance(bars, list) or len(bars) != 2:
             raise ValueError("manifest selected_bars must be a two-item array")
-        return cls(payload["request_id"], payload["chunk_index"], payload["tempo_bpm"], payload["output_sample_rate_hz"], payload["expected_frame_count"], (RemoteSelectedBar.from_payload(bars[0]), RemoteSelectedBar.from_payload(bars[1])), RemoteRapChunkDiagnostics.from_payload(payload["diagnostics"]), payload["vocal_sha256"], payload["schema_version"])  # type: ignore[arg-type]
+        return cls(payload["request_id"], payload["chunk_index"], payload["tempo_bpm"], payload["output_sample_rate_hz"], payload["expected_frame_count"], (RemoteSelectedBar.from_payload(bars[0]), RemoteSelectedBar.from_payload(bars[1])), RemoteRapChunkDiagnostics.from_payload(payload["diagnostics"], schema_version=schema_version), payload[hash_key], schema_version)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

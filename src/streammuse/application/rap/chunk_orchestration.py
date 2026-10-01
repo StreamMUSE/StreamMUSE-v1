@@ -36,6 +36,7 @@ from streammuse.domain.rap import (
     RemoteRapChunkRequest,
     RemoteSelectedBar,
     REMOTE_CHUNK_ARTIFACT_IDS,
+    REMOTE_CHUNK_SCHEMA_VERSION_V2,
     ScoreWeights,
     normalize_text,
 )
@@ -238,6 +239,55 @@ class PhraseRenderResult:
         )
 
 
+@dataclass(frozen=True)
+class PhraseSourceResult:
+    """Raw MOSS phrase and measured syllable onsets for a v2 chunk (no warp)."""
+
+    source_wav: bytes
+    alignment_diagnostics: Mapping[str, object]
+    audio_diagnostics: Mapping[str, object]
+    model_tool_versions: Mapping[str, str]
+    warnings: tuple[str, ...]
+    stage_timings_ms: Mapping[str, float]
+    monitoring_summary: Mapping[str, object]
+    moss_serving_metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_wav, bytes):
+            raise ValueError("phrase source_wav must be bytes")
+        for name, value in (
+            ("alignment_diagnostics", self.alignment_diagnostics),
+            ("audio_diagnostics", self.audio_diagnostics),
+            ("model_tool_versions", self.model_tool_versions),
+            ("stage_timings_ms", self.stage_timings_ms),
+            ("monitoring_summary", self.monitoring_summary),
+            ("moss_serving_metadata", self.moss_serving_metadata),
+        ):
+            if not isinstance(value, Mapping):
+                raise ValueError(f"phrase {name} must be a mapping")
+        if not {"moss", "aligner"}.issubset(self.stage_timings_ms) or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(value)
+            or value < 0
+            for value in self.stage_timings_ms.values()
+        ):
+            raise ValueError("phrase stage timings must include finite moss and aligner values")
+        if not isinstance(self.warnings, tuple) or not all(
+            isinstance(item, str) for item in self.warnings
+        ):
+            raise ValueError("phrase warnings must be a tuple of strings")
+        for name in (
+            "alignment_diagnostics",
+            "audio_diagnostics",
+            "model_tool_versions",
+            "stage_timings_ms",
+            "monitoring_summary",
+            "moss_serving_metadata",
+        ):
+            object.__setattr__(self, name, _frozen_mapping(getattr(self, name)))
+
+
 class PhraseVocalRenderer(Protocol):
     """Replaceable phrase renderer implemented by the persistent H200 worker."""
 
@@ -248,7 +298,16 @@ class PhraseVocalRenderer(Protocol):
         *,
         execution: SynthesisExecutionContext,
     ) -> PhraseRenderResult:
-        """Render one connected two-bar vocal phrase."""
+        """Render one connected two-bar vocal phrase (v1: synthesized and warped)."""
+
+    def render_source(
+        self,
+        request: TwoBarRenderRequest,
+        workspace: Path,
+        *,
+        execution: SynthesisExecutionContext,
+    ) -> PhraseSourceResult:
+        """Synthesize and align one phrase without warping it (v2)."""
 
 
 @dataclass(frozen=True)
@@ -995,33 +1054,46 @@ class ChunkCandidatePlanner:
         request: RemoteRapChunkRequest,
         selected_bars: tuple[RemoteSelectedBar, RemoteSelectedBar],
     ) -> TwoBarRenderRequest:
-        chunk_start_tick = selected_bars[0].bar * 16
-        seconds_per_tick = 60.0 / request.tempo_bpm / 4.0
-        syllables = tuple(
-            SyllableTarget(
-                word=scheduled.syllable.word,
-                index_in_word=scheduled.syllable.index_in_word,
-                phonemes=scheduled.syllable.phonemes,
-                lexical_stress=scheduled.syllable.stress,
-                target_stress=scheduled.slot.accent,
-                boundary_strength=scheduled.slot.boundary_strength,
-                absolute_tick=scheduled.slot.tick,
-                tick_in_chunk=scheduled.slot.tick - chunk_start_tick,
-                target_seconds=(scheduled.slot.tick - chunk_start_tick)
-                * seconds_per_tick,
-            )
-            for selected in selected_bars
-            for scheduled in selected.scheduled
+        return chunk_render_request(request, selected_bars)
+
+
+def chunk_render_request(
+    request: RemoteRapChunkRequest,
+    selected_bars: tuple[RemoteSelectedBar, RemoteSelectedBar],
+) -> TwoBarRenderRequest:
+    """The phrase render request for two selected bars.
+
+    Shared by the server (which renders it) and the Mac v2 client (which warps
+    the returned source phrase onto the same targets), so both sides compute
+    bit-identical target times.
+    """
+    chunk_start_tick = selected_bars[0].bar * 16
+    seconds_per_tick = 60.0 / request.tempo_bpm / 4.0
+    syllables = tuple(
+        SyllableTarget(
+            word=scheduled.syllable.word,
+            index_in_word=scheduled.syllable.index_in_word,
+            phonemes=scheduled.syllable.phonemes,
+            lexical_stress=scheduled.syllable.stress,
+            target_stress=scheduled.slot.accent,
+            boundary_strength=scheduled.slot.boundary_strength,
+            absolute_tick=scheduled.slot.tick,
+            tick_in_chunk=scheduled.slot.tick - chunk_start_tick,
+            target_seconds=(scheduled.slot.tick - chunk_start_tick)
+            * seconds_per_tick,
         )
-        return TwoBarRenderRequest(
-            song_id=request.session_id,
-            chunk_index=request.chunk_index,
-            start_bar=selected_bars[0].bar,
-            end_bar=selected_bars[1].bar + 1,
-            text="\n".join(item.text for item in selected_bars),
-            syllables=syllables,
-            tempo_bpm=request.tempo_bpm,
-        )
+        for selected in selected_bars
+        for scheduled in selected.scheduled
+    )
+    return TwoBarRenderRequest(
+        song_id=request.session_id,
+        chunk_index=request.chunk_index,
+        start_bar=selected_bars[0].bar,
+        end_bar=selected_bars[1].bar + 1,
+        text="\n".join(item.text for item in selected_bars),
+        syllables=syllables,
+        tempo_bpm=request.tempo_bpm,
+    )
 
 
 class RapChunkOrchestrator:
@@ -1065,30 +1137,47 @@ class RapChunkOrchestrator:
             raise PhraseRenderFailed(
                 f"workspace preparation failed: {_bounded_exception_text(exc)}"
             ) from exc
+        # v2 returns the raw phrase and its onsets; the Mac plans and applies R3.
+        source_only = request.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2
         try:
-            phrase = self._renderer.render(
-                lyric_plan.render_request,
-                workspace,
-                execution=active_execution,
-            )
+            if source_only:
+                render_source = getattr(self._renderer, "render_source", None)
+                if not callable(render_source):
+                    raise PhraseRenderFailed(
+                        "phrase renderer does not support v2 source-phrase chunks"
+                    )
+                phrase = render_source(
+                    lyric_plan.render_request,
+                    workspace,
+                    execution=active_execution,
+                )
+            else:
+                phrase = self._renderer.render(
+                    lyric_plan.render_request,
+                    workspace,
+                    execution=active_execution,
+                )
         except PhraseRenderFailed:
             raise
         except Exception as exc:
             raise PhraseRenderFailed(
                 f"phrase renderer failed: {_bounded_exception_text(exc)}"
             ) from exc
-        if not isinstance(phrase, PhraseRenderResult):
+        expected_type = PhraseSourceResult if source_only else PhraseRenderResult
+        if not isinstance(phrase, expected_type):
             raise PhraseRenderFailed("phrase renderer returned a malformed result")
         _execution_checkpoint(active_execution)
+        packaged_audio = phrase.source_wav if source_only else phrase.vocal_wav
 
         stage_timings = {
             "generation": float(lyric_plan.stage_timings_ms.get("generation", 0.0)),
             "evaluation": float(lyric_plan.stage_timings_ms.get("evaluation", 0.0)),
             "moss": float(phrase.stage_timings_ms["moss"]),
             "aligner": float(phrase.stage_timings_ms["aligner"]),
-            "warp": float(phrase.stage_timings_ms["warp"]),
             "packaging": 0.0,
         }
+        if not source_only:
+            stage_timings["warp"] = float(phrase.stage_timings_ms["warp"])
         planning_overhead = float(lyric_plan.stage_timings_ms.get("overhead", 0.0))
         measured_total = max(0.0, (self._monotonic() - started_at) * 1000.0)
         stage_timings["total"] = max(
@@ -1121,6 +1210,7 @@ class RapChunkOrchestrator:
                     **phrase.monitoring_summary,
                     "artifact_ids": dict(REMOTE_CHUNK_ARTIFACT_IDS),
                 },
+                schema_version=request.schema_version,
             )
             manifest = RemoteRapChunkManifest(
                 request_id=request.request_id,
@@ -1130,12 +1220,13 @@ class RapChunkOrchestrator:
                 expected_frame_count=request.expected_frame_count,
                 selected_bars=lyric_plan.selected_bars,
                 diagnostics=diagnostics,
-                vocal_sha256=hashlib.sha256(phrase.vocal_wav).hexdigest(),
+                vocal_sha256=hashlib.sha256(packaged_audio).hexdigest(),
+                schema_version=request.schema_version,
             )
             # Task 4 owns measured packaging. Encoding here is solely the shared
             # contract validator for format, duration, silence, and hash.
             _execution_checkpoint(active_execution)
-            encode_chunk_package(manifest, phrase.vocal_wav)
+            encode_chunk_package(manifest, packaged_audio)
             _execution_checkpoint(active_execution)
         except (TypeError, ValueError) as exc:
             raise PhraseRenderFailed(
@@ -1143,7 +1234,7 @@ class RapChunkOrchestrator:
             ) from exc
         return RemoteChunkRenderArtifact(
             manifest=manifest,
-            vocal_wav=phrase.vocal_wav,
+            vocal_wav=packaged_audio,
             candidate_ledger=lyric_plan.candidate_ledger,
             workspace=workspace,
             moss_serving_metadata=phrase.moss_serving_metadata,

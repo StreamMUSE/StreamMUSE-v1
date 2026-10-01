@@ -28,6 +28,8 @@ from fastapi.responses import JSONResponse, Response
 
 from streammuse.domain.rap import (
     REMOTE_CHUNK_SCHEMA_VERSION,
+    REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    REMOTE_CHUNK_SCHEMA_VERSIONS,
     RemoteRapChunkManifest,
     RemoteRapChunkRequest,
 )
@@ -100,7 +102,11 @@ _HEALTH_TOP_KEYS = {
     "restart_required",
     "schema_version",
     "state",
+    "supported_schema_versions",
 }
+# Health keeps reporting the v1 envelope for older clients; chunk contracts the
+# server accepts are advertised separately (comma-separated).
+_SUPPORTED_SCHEMA_VERSIONS_TEXT = ",".join(REMOTE_CHUNK_SCHEMA_VERSIONS)
 _INVALID_HEALTH_VALUE = object()
 _CANDIDATE_PROFILES = {
     "realtime": {"max_tokens_per_choice": 32, "temperature": 1.0},
@@ -615,19 +621,23 @@ class _ArtifactStore:
             _MMS_ALIGNMENT_FILE,
             "render artifact is missing MMS alignment JSON",
         )
-        self._preserve_renderer_artifact(
-            artifact.workspace,
-            workspace,
-            _VOCAL_WAV_FILE,
-            "render artifact is missing vocal WAV",
-        )
+        source_only = artifact.manifest.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2
+        if not source_only:
+            # v2 servers stop after MMS; the warped vocal is produced on the Mac.
+            self._preserve_renderer_artifact(
+                artifact.workspace,
+                workspace,
+                _VOCAL_WAV_FILE,
+                "render artifact is missing vocal WAV",
+            )
 
         self._write_json(workspace / _CANDIDATE_LEDGER_FILE, artifact.candidate_ledger)
         self._write_json(
             workspace / _ALIGNMENT_FILE,
             artifact.manifest.diagnostics.alignment_diagnostics,
         )
-        self._atomic_write(workspace / _ALIGNED_WAV_FILE, artifact.vocal_wav)
+        if not source_only:
+            self._atomic_write(workspace / _ALIGNED_WAV_FILE, artifact.vocal_wav)
         self._write_moss_sidecar(
             request,
             artifact,
@@ -2158,6 +2168,7 @@ def _compose_real_worker(
         health = {
             "protocol_version": "remote-rap-chunk/v1",
             "schema_version": REMOTE_CHUNK_SCHEMA_VERSION,
+            "supported_schema_versions": _SUPPORTED_SCHEMA_VERSIONS_TEXT,
             "ready": True,
             "state": "ready",
             "backend": config.moss_serving_backend,
@@ -2534,7 +2545,7 @@ def _build_producer_manifest(
         output={
             "sample_rate_hz": 24_000,
             "wire_audio_codec": config.wire_audio_codec,
-            "public_schema_version": REMOTE_CHUNK_SCHEMA_VERSION,
+            "public_schema_version": _SUPPORTED_SCHEMA_VERSIONS_TEXT,
         },
     )
 

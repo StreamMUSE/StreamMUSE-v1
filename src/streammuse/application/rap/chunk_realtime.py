@@ -28,6 +28,8 @@ from streammuse.domain.rap import (
     PreparedRapChunk,
     RapEventType,
     RapScenario,
+    REMOTE_CHUNK_SCHEMA_VERSION,
+    REMOTE_CHUNK_SCHEMA_VERSIONS,
     RemoteCandidatePolicy,
     RemoteRapBarRequest,
     RemoteRapChunkRequest,
@@ -116,7 +118,11 @@ class RollingRapChunkController:
         preparation_executor: Executor | None = None,
         cancellation_executor: Executor | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        schema_version: str = REMOTE_CHUNK_SCHEMA_VERSION,
     ) -> None:
+        if schema_version not in REMOTE_CHUNK_SCHEMA_VERSIONS:
+            raise ValueError("unsupported remote chunk schema version")
+        self._schema_version = schema_version
         if tempo.ticks_per_beat != 4 or tempo.beats_per_bar != 4:
             raise ValueError("remote rap chunks require four ticks per beat and four beats per bar")
         if not isinstance(session_id, str) or not session_id:
@@ -550,6 +556,7 @@ class RollingRapChunkController:
             policy=self._policy,
             context_lines=staged.context_lines,
             seed=self._seed + staged.start_bar // 2,
+            schema_version=self._schema_version,
         )
         return _ChunkWork(
             staged.epoch,

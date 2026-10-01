@@ -663,3 +663,137 @@ def test_prepared_chunk_requires_exactly_two_consecutive_bars() -> None:
             bars=(prepared_bar, prepared_bar),
             diagnostics={},
         )
+
+
+def _v2_diagnostics(flow: FlowTemplate, **overrides) -> RemoteRapChunkDiagnostics:
+    from dataclasses import replace
+
+    from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION_V2
+
+    base = diagnostics(flow)
+    fields = {
+        "stage_timings_ms": {key: value for key, value in base.stage_timings_ms.items() if key != "warp"},
+        "alignment_diagnostics": {
+            "fallback_counts": {"word": 0},
+            "source_onsets": [0.1, 0.4],
+            "onset_confidence": [0.9, 0.8],
+        },
+        "model_tool_versions": {"moss": "test", "aligner": "test"},
+        "schema_version": REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    }
+    fields.update(overrides)
+    return replace(base, **fields)
+
+
+def _v2_manifest(flow: FlowTemplate, *, frame_count: int = 130_000) -> RemoteRapChunkManifest:
+    from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION_V2
+
+    request = RemoteRapChunkRequest.create(
+        session_id="session-1",
+        chunk_index=0,
+        bars=(bar_request(0, flow), bar_request(1, flow)),
+        tempo_bpm=90.0,
+        remaining_budget_ms=5_000,
+        policy=RemoteCandidatePolicy.realtime_default(),
+        context_lines=(),
+        seed=7,
+        schema_version=REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    )
+    selected = tuple(
+        RemoteSelectedBar.create(
+            request.bars[bar],
+            text="orbit orbit",
+            scheduled=tuple(
+                ScheduledSyllable(slot=slot, syllable=Syllable("orbit", 0, 1, 1))
+                for slot in materialize_flow(flow, bar=bar)
+            ),
+            score=0.9,
+        )
+        for bar in range(2)
+    )
+    base = _v2_diagnostics(flow)
+    audio = {**base.audio_diagnostics, "frame_count": frame_count, "duration_seconds": frame_count / 24_000}
+    return RemoteRapChunkManifest(
+        request_id=request.request_id,
+        chunk_index=0,
+        tempo_bpm=90.0,
+        output_sample_rate_hz=24_000,
+        expected_frame_count=request.expected_frame_count,
+        selected_bars=selected,
+        diagnostics=_v2_diagnostics(flow, audio_diagnostics=audio),
+        vocal_sha256="b" * 64,
+        schema_version=REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    )
+
+
+def test_v2_request_id_differs_from_v1_so_caches_never_mix(flow: FlowTemplate) -> None:
+    from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION_V2
+
+    v1 = remote_request(flow)
+    v2 = RemoteRapChunkRequest.create(
+        session_id="session-1",
+        chunk_index=0,
+        bars=(bar_request(0, flow), bar_request(1, flow)),
+        tempo_bpm=90.0,
+        remaining_budget_ms=5_000,
+        policy=RemoteCandidatePolicy.realtime_default(),
+        context_lines=("previous line",),
+        seed=7,
+        schema_version=REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    )
+
+    assert v2.request_id != v1.request_id
+    assert RemoteRapChunkRequest.from_payload(v2.to_payload()) == v2
+
+
+def test_v2_request_rejects_unknown_schema_version(flow: FlowTemplate) -> None:
+    payload = _request_payload(flow)
+    payload["schema_version"] = "streammuse.rap_chunk.v3"
+    _refresh_request_id(payload)
+
+    with pytest.raises(ValueError):
+        RemoteRapChunkRequest.from_payload(payload)
+
+
+def test_v2_manifest_round_trips_source_hash_and_raw_source_length(flow: FlowTemplate) -> None:
+    manifest = _v2_manifest(flow)
+    payload = manifest.to_payload()
+
+    assert payload["source_sha256"] == "b" * 64
+    assert "vocal_sha256" not in payload
+    assert manifest.audio_frame_count == 130_000 != manifest.expected_frame_count
+    assert RemoteRapChunkManifest.from_payload(payload) == manifest
+
+
+def test_v2_manifest_rejects_a_source_longer_than_thirty_seconds(flow: FlowTemplate) -> None:
+    with pytest.raises(ValueError):
+        _v2_manifest(flow, frame_count=30 * 24_000 + 1)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"stage_timings_ms": {"generation": 1.0, "evaluation": 1.0, "moss": 1.0, "aligner": 1.0, "warp": 1.0, "packaging": 1.0, "total": 5.0}},
+        {"alignment_diagnostics": {"fallback_counts": {}, "source_onsets": [0.1, 0.4]}},
+        {"alignment_diagnostics": {"fallback_counts": {}, "source_onsets": [0.1, nan], "onset_confidence": [0.9, 0.9]}},
+        {"alignment_diagnostics": {"fallback_counts": {}, "source_onsets": [-0.1, 0.4], "onset_confidence": [0.9, 0.9]}},
+        {"alignment_diagnostics": {"fallback_counts": {}, "source_onsets": [0.1, 0.4], "onset_confidence": [0.9]}},
+        {"alignment_diagnostics": {"fallback_counts": {}, "source_onsets": [0.1, 0.4], "onset_confidence": [0.9, 1.5]}},
+    ),
+)
+def test_v2_diagnostics_reject_an_incomplete_source_contract(flow: FlowTemplate, overrides) -> None:
+    with pytest.raises(ValueError):
+        _v2_diagnostics(flow, **overrides)
+
+
+def test_v2_diagnostics_do_not_need_a_server_rubberband(flow: FlowTemplate) -> None:
+    assert "rubberband" not in _v2_diagnostics(flow).model_tool_versions
+
+
+def test_manifest_rejects_diagnostics_from_the_other_contract_version(flow: FlowTemplate) -> None:
+    from dataclasses import replace
+
+    manifest = _v2_manifest(flow)
+
+    with pytest.raises(ValueError):
+        replace(manifest, diagnostics=diagnostics(flow))

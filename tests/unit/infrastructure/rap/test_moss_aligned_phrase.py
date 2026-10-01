@@ -1110,3 +1110,191 @@ def test_rejects_audio_that_becomes_silent_after_pcm16_quantization(
 
     assert not (workspace / "vocal.wav").exists()
     assert (workspace / "source.wav").is_file()
+
+
+class _Pcm16NearTargetDurationSynthesizer(_NearTargetDurationSynthesizer):
+    """MOSS backends (MLX, SGLang) return PCM16, so v2 transport keeps exact samples."""
+
+    def synthesize(self, request, output_wav, *, execution=None):
+        self.calls.append((request, output_wav))
+        samples = np.rint(
+            np.sin(np.linspace(0.0, 400.0, 130_560, dtype=np.float32)) * 0.25 * 32767
+        ).astype("<i2")
+        output_wav.parent.mkdir(parents=True, exist_ok=True)
+        wavfile.write(output_wav, 24_000, samples)
+        return MossPhraseResult(
+            output_wav=output_wav,
+            model_id="OpenMOSS-Team/MOSS-TTS-v1.5",
+            model_revision="revision-1",
+            reference_voice_sha256="reference-sha",
+            source_wav_sha256=hashlib.sha256(output_wav.read_bytes()).hexdigest(),
+            sample_rate_hz=24_000,
+            frame_count=len(samples),
+            generation_time_ms=111.0,
+            resolved_generation_settings=MappingProxyType({"token_target": 64}),
+            warnings=(),
+        )
+
+
+class _InputRecordingStretcher(_FakeFullChunkStretcher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.input_sha256: list[str] = []
+
+    def __call__(self, samples, target_frames, sample_rate_hz, time_map):
+        self.input_sha256.append(
+            hashlib.sha256(np.ascontiguousarray(samples, dtype="<f4").tobytes()).hexdigest()
+        )
+        return super().__call__(samples, target_frames, sample_rate_hz, time_map)
+
+
+def _server_and_mac_warps(tmp_path: Path, policy: str, server_stretcher, mac_stretcher):
+    from streammuse.infrastructure.rap.phrase_warp import RubberBandPhraseWarper
+
+    def renderer(stretcher):
+        return MossAlignedPhraseRenderer(
+            synthesizer=_Pcm16NearTargetDurationSynthesizer(),
+            aligner=_NearTargetDurationAligner(),
+            stretcher_factory=lambda **_: stretcher,
+            warp_policy=policy,
+        )
+
+    v1 = renderer(server_stretcher).render(_request(), tmp_path / "v1")
+    source = renderer(_InputRecordingStretcher()).render_source(_request(), tmp_path / "v2")
+    local = RubberBandPhraseWarper(
+        policy=policy, rubberband_version="test", stretcher=mac_stretcher
+    ).warp(
+        _request(),
+        source.source_wav,
+        source.alignment_diagnostics["source_onsets"],
+        target_frame_count=RemoteRapChunkRequest.frame_count_for(_request().tempo_bpm),
+    )
+    return v1, source, local
+
+
+@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3"))
+def test_mac_v2_warp_feeds_r3_exactly_what_the_server_v1_warp_did(
+    tmp_path: Path, policy: str
+) -> None:
+    server_stretcher, mac_stretcher = _InputRecordingStretcher(), _InputRecordingStretcher()
+
+    v1, source, local = _server_and_mac_warps(tmp_path, policy, server_stretcher, mac_stretcher)
+
+    assert mac_stretcher.calls == server_stretcher.calls
+    assert mac_stretcher.input_sha256 == server_stretcher.input_sha256
+    assert local.vocal_wav == v1.vocal_wav
+    assert local.source_anchors == tuple(v1.alignment_diagnostics["source_anchors"])
+    assert local.target_anchors == tuple(v1.alignment_diagnostics["target_anchors"])
+    assert local.policy == policy
+    # The v2 server stopped after MMS: no warped vocal, no warp stage.
+    assert set(source.stage_timings_ms) == {"moss", "aligner"}
+    assert not (tmp_path / "v2" / "vocal.wav").exists()
+    artifact = json.loads((tmp_path / "v2" / "mms_alignment.json").read_text(encoding="utf-8"))
+    assert artifact["warp"] == {"status": "deferred_to_client"}
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("rubberband") is None, reason="rubberband CLI not installed"
+)
+@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3"))
+def test_mac_v2_warp_with_real_rubberband_matches_server_v1_bytes(
+    tmp_path: Path, policy: str
+) -> None:
+    from streammuse.experiments.rap_audio_protocols.warp import RubberBandTimeMapStretcher
+
+    v1, _, local = _server_and_mac_warps(
+        tmp_path,
+        policy,
+        RubberBandTimeMapStretcher(engine="r3", smoothing=False),
+        RubberBandTimeMapStretcher(engine="r3", smoothing=False),
+    )
+
+    assert local.vocal_wav == v1.vocal_wav
+
+
+def test_source_transport_keeps_pcm16_samples_and_reports_onsets(tmp_path: Path) -> None:
+    renderer = MossAlignedPhraseRenderer(
+        synthesizer=_Pcm16NearTargetDurationSynthesizer(),
+        aligner=_NearTargetDurationAligner(),
+        stretcher_factory=lambda **_: _FakeFullChunkStretcher(),
+    )
+
+    source = renderer.render_source(_request(), tmp_path / "request")
+
+    _, original = wavfile.read(tmp_path / "request" / "source.wav")
+    _, transported = wavfile.read(io.BytesIO(source.source_wav))
+    assert transported.dtype == np.int16
+    assert np.array_equal(transported, original)
+    assert source.audio_diagnostics["frame_count"] == len(original)
+    onsets = source.alignment_diagnostics["source_onsets"]
+    assert len(onsets) == len(_request().syllables)
+    assert list(onsets) == sorted(onsets)
+    assert all(0.0 <= value <= 1.0 for value in source.alignment_diagnostics["onset_confidence"])
+    assert "rubberband" not in source.model_tool_versions
+
+
+@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3"))
+def test_v2_chunk_crosses_package_and_mac_warp_to_the_v1_server_bytes(
+    tmp_path: Path, policy: str
+) -> None:
+    from streammuse.application.rap.chunk_orchestration import chunk_render_request
+    from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION_V2
+    from streammuse.infrastructure.rap.chunk_package import (
+        decode_chunk_package,
+        encode_chunk_package,
+    )
+    from streammuse.infrastructure.rap.phrase_warp import RubberBandPhraseWarper
+
+    def remote_request(schema_version: str) -> RemoteRapChunkRequest:
+        return RemoteRapChunkRequest.create(
+            session_id="cross-boundary",
+            chunk_index=0,
+            bars=(
+                RemoteRapBarRequest(0, "pulse", BUILTIN_TEMPLATES.get("baseline_syncopated_9")),
+                RemoteRapBarRequest(1, "pulse", BUILTIN_TEMPLATES.get("baseline_staggered_9")),
+            ),
+            tempo_bpm=93.0,
+            remaining_budget_ms=5_000,
+            policy=RemoteCandidatePolicy("integration", 1, 0, 1, 1, 0.0, 500),
+            context_lines=(),
+            seed=17,
+            schema_version=schema_version,
+        )
+
+    def orchestrate(request: RemoteRapChunkRequest, stretcher, workspace: Path):
+        planner = ChunkCandidatePlanner(
+            _BuiltInFlowGenerator(),
+            _BuiltInFlowAnalyzer(),
+            ScoreWeights(1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        renderer = MossAlignedPhraseRenderer(
+            synthesizer=_Pcm16NearTargetDurationSynthesizer(),
+            aligner=_BuiltInFlowAligner(),
+            stretcher_factory=lambda **_: stretcher,
+            warp_policy=policy,
+        )
+        return RapChunkOrchestrator(planner, renderer, workspace_root=workspace).render(request)
+
+    server_stretcher, mac_stretcher = _InputRecordingStretcher(), _InputRecordingStretcher()
+    v1 = orchestrate(remote_request("streammuse.rap_chunk.v1"), server_stretcher, tmp_path / "v1")
+    request = remote_request(REMOTE_CHUNK_SCHEMA_VERSION_V2)
+    v2 = orchestrate(request, _InputRecordingStretcher(), tmp_path / "v2")
+    decoded = decode_chunk_package(
+        encode_chunk_package(v2.manifest, v2.vocal_wav),
+        expected_request_id=request.request_id,
+    )
+
+    assert v1.manifest.request_id != request.request_id
+    assert "warp" not in decoded.manifest.diagnostics.stage_timings_ms
+    assert decoded.manifest.diagnostics.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2
+    local = RubberBandPhraseWarper(
+        policy=policy, rubberband_version="test", stretcher=mac_stretcher
+    ).warp(
+        chunk_render_request(request, decoded.manifest.selected_bars),
+        decoded.vocal_wav,
+        decoded.manifest.diagnostics.alignment_diagnostics["source_onsets"],
+        target_frame_count=request.expected_frame_count,
+    )
+    assert mac_stretcher.calls == server_stretcher.calls
+    assert mac_stretcher.input_sha256 == server_stretcher.input_sha256
+    assert local.vocal_wav == v1.vocal_wav

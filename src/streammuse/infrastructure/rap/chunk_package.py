@@ -77,13 +77,13 @@ def _validate_wav(vocal_wav: bytes, manifest: RemoteRapChunkManifest) -> None:
                 raise ValueError("vocals WAV must be mono")
             if wav.getframerate() != REMOTE_CHUNK_SAMPLE_RATE_HZ:
                 raise ValueError("vocals WAV sample rate does not match the 24 kHz contract")
-            if wav.getnframes() != manifest.expected_frame_count:
+            if wav.getnframes() != manifest.audio_frame_count:
                 raise ValueError("vocals WAV frame count does not match the manifest")
             samples_bytes = wav.readframes(wav.getnframes())
     except (EOFError, wave.Error) as error:
         raise ValueError("invalid vocals WAV") from error
 
-    expected_bytes = manifest.expected_frame_count * 2
+    expected_bytes = manifest.audio_frame_count * 2
     if len(samples_bytes) != expected_bytes:
         raise ValueError("vocals WAV data payload is truncated")
 
@@ -102,7 +102,7 @@ def _pcm_from_wav(vocal_wav: bytes, manifest: RemoteRapChunkManifest) -> bytes:
 
 
 def _wav_from_pcm(pcm: bytes, manifest: RemoteRapChunkManifest) -> bytes:
-    if len(pcm) != manifest.expected_frame_count * 2:
+    if len(pcm) != manifest.audio_frame_count * 2:
         raise ValueError("decoded Opus frame count does not match the manifest")
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav:
@@ -149,7 +149,7 @@ def encode_opus_chunk_package(
     if hashlib.sha256(vocal_wav).hexdigest() != manifest.vocal_sha256:
         raise ValueError("vocals WAV SHA-256 does not match the manifest")
     pcm = _pcm_from_wav(vocal_wav, manifest)
-    encoded = codec.encode_pcm16_mono_24khz(pcm, expected_frame_count=manifest.expected_frame_count)
+    encoded = codec.encode_pcm16_mono_24khz(pcm, expected_frame_count=manifest.audio_frame_count)
     if not isinstance(encoded, bytes) or not encoded or len(encoded) > MAX_RAP_CHUNK_PACKAGE_BYTES:
         raise ValueError("Opus encoder returned invalid or oversized output")
     identity = getattr(codec, "encoder_identity", None)
@@ -161,7 +161,7 @@ def encode_opus_chunk_package(
         "container": "ogg",
         "sample_rate_hz": REMOTE_CHUNK_SAMPLE_RATE_HZ,
         "channels": 1,
-        "expected_frame_count": manifest.expected_frame_count,
+        "expected_frame_count": manifest.audio_frame_count,
         "bitrate_bps": 48_000,
         "encoder": identity,
         "encoded_sha256": hashlib.sha256(encoded).hexdigest(),
@@ -245,12 +245,12 @@ def decode_opus_chunk_package(
     try:
         if timeout_seconds is None and cancelled is None:
             pcm = codec.decode_to_pcm16_mono_24khz(
-                encoded, expected_frame_count=manifest.expected_frame_count
+                encoded, expected_frame_count=manifest.audio_frame_count
             )
         else:
             pcm = codec.decode_to_pcm16_mono_24khz(
                 encoded,
-                expected_frame_count=manifest.expected_frame_count,
+                expected_frame_count=manifest.audio_frame_count,
                 timeout_seconds=timeout_seconds,
                 cancelled=cancelled,
             )
@@ -313,7 +313,7 @@ def _validate_opus_transport(payload: object, manifest: RemoteRapChunkManifest) 
         or payload["container"] != "ogg"
         or payload["sample_rate_hz"] != REMOTE_CHUNK_SAMPLE_RATE_HZ
         or payload["channels"] != 1
-        or payload["expected_frame_count"] != manifest.expected_frame_count
+        or payload["expected_frame_count"] != manifest.audio_frame_count
         or payload["bitrate_bps"] != 48_000
     ):
         raise ValueError("Opus transport JSON does not match the manifest contract")

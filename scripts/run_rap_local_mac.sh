@@ -43,9 +43,14 @@ MLX_VERSION="${MLX_VERSION:-0.32.3}"
 MLX_AUDIO_VERSION="${MLX_AUDIO_VERSION:-0.5.7}"
 MLX_AUDIO_COMMIT="${MLX_AUDIO_COMMIT:-94c7716212b2228f178d2f9c7619a591fd1b0b78}"
 MOSS_REFERENCE_WAV="${MOSS_REFERENCE_WAV:-$SSD_ROOT/assets/rap-voices/0011_000001.wav}"
-# all_onsets_r3 until the gentle_sparse public-anchor contract is settled; the
-# Mac client rejects gentle_sparse chunks whose targets drift from its schedule.
-MOSS_WARP_POLICY="${MOSS_WARP_POLICY:-all_onsets_r3}"
+# Protocol v2 (default): the renderer returns the raw MOSS phrase plus MMS
+# onsets and the demo runs R3 locally with RAP_WARP_POLICY. MOSS_WARP_POLICY is
+# the server-side policy and only matters for a --rap-protocol v1 client.
+RAP_PROTOCOL="${RAP_PROTOCOL:-v2}"
+RAP_WARP_POLICY="${RAP_WARP_POLICY:-gentle_sparse_r3}"
+MOSS_WARP_POLICY="${MOSS_WARP_POLICY:-gentle_sparse_r3}"
+# MOSS + MMS + one rescue wave on MLX needs more than the H200's 3000 ms.
+RAP_RENDER_RESERVE_MS="${RAP_RENDER_RESERVE_MS:-3500}"
 RUN_DIR="${RUN_DIR:-$REPO_ROOT/output/rap_local_mac_run}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-$RUN_DIR/artifacts}"
 
@@ -139,6 +144,9 @@ if (( RUN_DEMO )); then
     --rap-render-profile realtime \
     --rap-render-startup-timeout 120 \
     --rap-render-rolling-timeout 5.0 \
+    --rap-render-reserve-ms "$RAP_RENDER_RESERVE_MS" \
+    --rap-protocol "$RAP_PROTOCOL" \
+    --rap-warp-policy "$RAP_WARP_POLICY" \
     --audio-output composite \
     --tempo 90 \
     --lookahead-bars 2 \

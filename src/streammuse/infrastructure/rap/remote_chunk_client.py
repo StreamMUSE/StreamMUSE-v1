@@ -67,6 +67,14 @@ class RemoteChunkHealth:
     ready: bool
     details: Mapping[str, object]
 
+    @property
+    def supported_schema_versions(self) -> tuple[str, ...]:
+        """Chunk contracts the server accepts; servers that predate v2 omit the field."""
+        value = self.details.get("supported_schema_versions")
+        if not isinstance(value, str) or not value.strip():
+            return (REMOTE_CHUNK_SCHEMA_VERSION,)
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+
 
 class _PrepareOperation:
     def __init__(self, generation: int) -> None:

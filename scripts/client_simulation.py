@@ -3,7 +3,8 @@
 Sends consecutive two-bar requests (default scenario, realtime policy, last
 four committed lines as context) through the real client-side
 RemoteMossChunkPreparationStrategy: HTTP, optional Opus decode, manifest
-validation, resample, and local drum mix. Records client wall time, transfer
+validation, (protocol v2) local Rubber Band R3 warp, resample, and local drum
+mix. Records client wall time, transfer
 timing, Mac-side validation/mix time, server stage timings from the manifest,
 candidate statistics, and vLLM token counters (when the model server exposes
 /metrics). The playback clock, audio device, and fallback substitution are not
@@ -14,6 +15,8 @@ simulated, so fallback rates and underruns need the real demo.
 unconstrained reference run. --save-audio keeps each chunk's vocal and mixed
 WAVs, and --replay-context reuses the context lines a previous run recorded,
 so per-chunk comparisons are not confounded by a diverging context trajectory.
+--protocol v2 (default) receives the raw MOSS phrase plus MMS onsets and warps
+it on this machine with --warp-policy; v1 receives the server-warped vocal.
 """
 
 from __future__ import annotations
@@ -74,10 +77,18 @@ def main() -> None:
     parser.add_argument("--transport", choices=("pcm", "opus"), default="opus")
     parser.add_argument("--seed", type=int, default=20260925)
     parser.add_argument("--render-reserve-ms", type=int, default=3_000)
+    parser.add_argument("--protocol", choices=("v1", "v2"), default="v2")
+    parser.add_argument(
+        "--warp-policy",
+        choices=("gentle_sparse_r3", "all_onsets_r3"),
+        default="gentle_sparse_r3",
+        help="local R3 policy for --protocol v2 (v1 uses the server's policy)",
+    )
     parser.add_argument(
         "--save-audio",
         action="store_true",
-        help="write chunk-NNN-vocals.wav (server PCM) and chunk-NNN-mix.wav (Mac mix) under --out",
+        help="write chunk-NNN-vocals.wav (warped vocal), chunk-NNN-source.wav (v2 raw MOSS) "
+        "and chunk-NNN-mix.wav (Mac mix) under --out",
     )
     parser.add_argument(
         "--replay-context",
@@ -90,6 +101,8 @@ def main() -> None:
     from streammuse.application.rap.chunk_audio import RemoteMossChunkPreparationStrategy
     from streammuse.domain.rap.audio import AudioFormat
     from streammuse.domain.rap.remote_chunk import (
+        REMOTE_CHUNK_SCHEMA_VERSION,
+        REMOTE_CHUNK_SCHEMA_VERSION_V2,
         RemoteCandidatePolicy,
         RemoteRapBarRequest,
         RemoteRapChunkRequest,
@@ -106,14 +119,40 @@ def main() -> None:
     tempo = Tempo(scenario.tempo_bpm, 4, 4)
     analyzer = CmuProsodyAnalyzer()
     client = RemoteChunkClient(args.render_url, audio_transport=args.transport)
-    if not client.health().ready:
+    health = client.health()
+    if not health.ready:
         raise SystemExit("render server not ready")
+    schema_version = REMOTE_CHUNK_SCHEMA_VERSION
+    phrase_warper = None
+    warped: dict[str, object] = {}
+    if args.protocol == "v2":
+        from streammuse.infrastructure.rap.phrase_warp import (
+            RubberBandPhraseWarper,
+            probe_rubberband_r3,
+        )
+
+        schema_version = REMOTE_CHUNK_SCHEMA_VERSION_V2
+        if schema_version not in health.supported_schema_versions:
+            raise SystemExit("render server does not support protocol v2; use --protocol v1")
+        local_warper = RubberBandPhraseWarper(
+            policy=args.warp_policy, rubberband_version=probe_rubberband_r3()
+        )
+
+        class _RecordingWarper:
+            def warp(self, *a, **k):
+                result = local_warper.warp(*a, **k)
+                warped["warp_ms"] = result.warp_ms
+                warped["vocal_wav"] = result.vocal_wav
+                return result
+
+        phrase_warper = _RecordingWarper()
     strategy = RemoteMossChunkPreparationStrategy(
         client=client,
         audio_format=AudioFormat(),
         drums=ProceduralBoomBapRenderer(seed=args.seed),
         prosody=analyzer,
         tempo=tempo,
+        phrase_warper=phrase_warper,
     )
     policy = RemoteCandidatePolicy.realtime_default(render_reserve_ms=args.render_reserve_ms)
     session = f"profile-{int(time.time())}"
@@ -151,11 +190,12 @@ def main() -> None:
     def mac_mix_probe(request, _transfer):
         """Time the Mac decode/resample/drum-mix steps when validation rejects."""
         package = captured.get("package")
-        if package is None:
+        vocal_wav = warped.get("vocal_wav") or getattr(package, "vocal_wav", None)
+        if vocal_wav is None or (schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2 and "vocal_wav" not in warped):
             return None
         fmt = AudioFormat()
         started = time.perf_counter()
-        vocals = ca._decode_pcm16_mono_wav(package.vocal_wav, request.expected_frame_count)
+        vocals = ca._decode_pcm16_mono_wav(vocal_wav, request.expected_frame_count)
         frame_counts = tuple(ca.bar_frame_count(b.bar, tempo, fmt) for b in request.bars)
         full = ca._resample_to_output(vocals, fmt, sum(frame_counts))
         offset = 0
@@ -190,10 +230,12 @@ def main() -> None:
                     replay_context[index] if replay_context is not None else tuple(context[-4:])
                 ),
                 seed=args.seed + index,
+                schema_version=schema_version,
             )
             before = vllm_counters(args.vllm_url)
             transfer.clear()
             captured.clear()
+            warped.clear()
             started = time.perf_counter()
             error = None
             try:
@@ -215,6 +257,7 @@ def main() -> None:
                 "seed": request.seed,
                 "context_lines": list(request.context_lines),
                 "budget_ms": args.budget_ms,
+                "protocol": args.protocol,
                 "vllm_delta": {k: after.get(k, 0) - before.get(k, 0) for k in after},
             }
             manifest = transfer.get("manifest")
@@ -236,8 +279,12 @@ def main() -> None:
                 row["selected"] = [b.get("text") for b in payload.get("selected_bars", [])]
                 context.extend(str(t) for t in row["selected"])
             row["client_package_decode_ms"] = captured.get("decode_ms")
+            if "warp_ms" in warped:
+                row["mac_local_warp_ms"] = warped["warp_ms"]
             if args.save_audio:
-                row["audio_files"] = _save_audio(args.out, index, captured.get("package"), prepared)
+                row["audio_files"] = _save_audio(
+                    args.out, index, captured.get("package"), prepared, warped.get("vocal_wav")
+                )
             if prepared is not None:
                 row["mac_prepare_ms"] = wall_ms - float(transfer.get("client_prepare_ms", 0.0))
             elif manifest is not None:
@@ -254,7 +301,7 @@ def main() -> None:
                         "eval": round(stage.get("evaluation", 0)),
                         "moss": round(stage.get("moss", 0)),
                         "mms": round(stage.get("aligner", 0)),
-                        "r3": round(stage.get("warp", 0)),
+                        "r3": round(stage.get("warp", row.get("mac_local_warp_ms", 0))),
                         "srv_total": round(stage.get("total", 0)),
                         "err": error,
                     }
@@ -283,7 +330,12 @@ def main() -> None:
         "wall_ms": dist(r["wall_ms"] for r in measured),
     }
     for key in ("generation", "evaluation", "moss", "aligner", "warp", "total"):
-        summary[f"server_{key}_ms"] = dist(r["server_stage_ms"][key] for r in measured)
+        summary[f"server_{key}_ms"] = dist(
+            r["server_stage_ms"][key] for r in measured if key in r["server_stage_ms"]
+        )
+    summary["mac_local_warp_ms"] = dist(
+        r["mac_local_warp_ms"] for r in measured if "mac_local_warp_ms" in r
+    )
     summary["server_http_minus_orchestrator_ms"] = dist(
         r["transfer"]["request_ms"] + r["transfer"]["first_byte_ms"] - r["server_stage_ms"]["total"]
         for r in measured
@@ -321,11 +373,20 @@ def _load_replay_context(path: Path) -> dict[int, tuple[str, ...]]:
     return contexts
 
 
-def _save_audio(out: Path, index: int, package: object, prepared: object) -> dict[str, str]:
+def _save_audio(
+    out: Path, index: int, package: object, prepared: object, local_vocal_wav: bytes | None
+) -> dict[str, str]:
     from scipy.io import wavfile
 
     files: dict[str, str] = {}
     vocal_wav = getattr(package, "vocal_wav", None)
+    if local_vocal_wav is not None:
+        # v2: the package carries the raw MOSS phrase; the vocal is the Mac warp.
+        if vocal_wav:
+            source = out / f"chunk-{index:03d}-source.wav"
+            source.write_bytes(vocal_wav)
+            files["source"] = source.name
+        vocal_wav = local_vocal_wav
     if vocal_wav:
         vocals = out / f"chunk-{index:03d}-vocals.wav"
         vocals.write_bytes(vocal_wav)

@@ -1047,3 +1047,74 @@ def test_orchestrator_rejects_malformed_silent_or_wrong_duration_wav(
             FakeRenderer(phrase_result(vocal_wav)),
             workspace_root=tmp_path,
         ).render(request)
+
+
+class FakeSourceRenderer(FakeRenderer):
+    def __init__(self, source) -> None:
+        super().__init__(AssertionError("v2 chunks must never use the server warp"))
+        self.source = source
+        self.source_calls: list[tuple[object, Path]] = []
+
+    def render_source(self, request, workspace: Path, *, execution=None):
+        self.source_calls.append((request, workspace))
+        return self.source
+
+
+def test_v2_orchestrator_packages_the_raw_source_phrase_without_a_warp_stage(
+    tmp_path: Path,
+) -> None:
+    from streammuse.application.rap.chunk_orchestration import (
+        PhraseSourceResult,
+        chunk_render_request,
+    )
+    from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION_V2
+
+    lyric_planner, v1_request = simple_planner_and_request()
+    request = RemoteRapChunkRequest.create(
+        session_id=v1_request.session_id,
+        chunk_index=v1_request.chunk_index,
+        bars=v1_request.bars,
+        tempo_bpm=v1_request.tempo_bpm,
+        remaining_budget_ms=v1_request.remaining_budget_ms,
+        policy=v1_request.policy,
+        context_lines=v1_request.context_lines,
+        seed=v1_request.seed,
+        schema_version=REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    )
+    v1 = phrase_result()
+    source_wav = wav_bytes(frame_count=100_000, sample=700)
+    renderer = FakeSourceRenderer(
+        PhraseSourceResult(
+            source_wav=source_wav,
+            alignment_diagnostics={
+                "fallback_counts": {"word": 0},
+                "source_onsets": [0.1, 0.9],
+                "onset_confidence": [0.9, 0.7],
+            },
+            audio_diagnostics={
+                "sample_rate_hz": 24_000,
+                "frame_count": 100_000,
+                "duration_seconds": 100_000 / 24_000,
+                "peak": 0.02,
+            },
+            model_tool_versions={"moss": "test", "aligner": "mms-test"},
+            warnings=(),
+            stage_timings_ms={"moss": 100.0, "aligner": 20.0},
+            monitoring_summary=dict(v1.monitoring_summary),
+        )
+    )
+
+    artifact = RapChunkOrchestrator(
+        lyric_planner, renderer, workspace_root=tmp_path, monotonic=FakeClock()
+    ).render(request)
+
+    assert renderer.calls == []
+    (render_request, _), = renderer.source_calls
+    assert render_request == chunk_render_request(request, artifact.manifest.selected_bars)
+    assert artifact.vocal_wav == source_wav
+    manifest = artifact.manifest
+    assert manifest.schema_version == manifest.diagnostics.schema_version == request.schema_version
+    assert manifest.audio_frame_count == 100_000
+    assert "warp" not in manifest.diagnostics.stage_timings_ms
+    assert "rubberband" not in manifest.diagnostics.model_tool_versions
+    assert manifest.diagnostics.alignment_diagnostics["source_onsets"] == (0.1, 0.9)

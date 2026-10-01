@@ -79,6 +79,15 @@ class RapAudioFactories:
 
         return RubberBandTimeMapStretcher()
 
+    def create_phrase_warper(self, *, policy: str):
+        """Local R3 for v2 chunks; probes the rubberband build before remote mode starts."""
+        from streammuse.infrastructure.rap.phrase_warp import (
+            RubberBandPhraseWarper,
+            probe_rubberband_r3,
+        )
+
+        return RubberBandPhraseWarper(policy=policy, rubberband_version=probe_rubberband_r3())
+
     def create_remote_client(self, *, base_url: str, clock: Callable[[], float], audio_transport: str):
         from streammuse.infrastructure.rap.remote_chunk_client import RemoteChunkClient
 
@@ -134,6 +143,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="espeak",
     )
     parser.add_argument("--rap-audio-transport", choices=("pcm", "opus"), default="pcm")
+    parser.add_argument(
+        "--rap-protocol",
+        choices=("v1", "v2"),
+        default="v2",
+        help="v2: the server returns the raw MOSS phrase and the Mac applies R3; v1: server-side R3",
+    )
+    parser.add_argument(
+        "--rap-warp-policy",
+        choices=("gentle_sparse_r3", "all_onsets_r3"),
+        default="gentle_sparse_r3",
+        help="local R3 anchor policy for v2 chunks",
+    )
     parser.add_argument("--rap-render-url", default="http://127.0.0.1:8020")
     parser.add_argument("--rap-render-profile", choices=("realtime",), default="realtime")
     parser.add_argument("--rap-render-startup-timeout", type=float, default=120.0)
@@ -343,7 +364,12 @@ def _build_audio_demo(
     from streammuse.application.rap.chunk_realtime import RollingRapChunkController
     from streammuse.application.rap.audio_service import RapAudioController
     from streammuse.application.rap.playback import RapPlaybackService
-    from streammuse.domain.rap import AudioFormat, RemoteCandidatePolicy
+    from streammuse.domain.rap import (
+        REMOTE_CHUNK_SCHEMA_VERSION,
+        REMOTE_CHUNK_SCHEMA_VERSION_V2,
+        AudioFormat,
+        RemoteCandidatePolicy,
+    )
 
     audio_format = AudioFormat(sample_rate_hz=args.sample_rate, channels=2, sample_width_bytes=4)
     audio_file = args.audio_file or session_dir / "mixed.wav"
@@ -373,8 +399,21 @@ def _build_audio_demo(
         "render_profile": args.rap_render_profile if args.rap_audio_renderer == "moss_aligned_remote" else None,
         "render_startup_timeout_seconds": args.rap_render_startup_timeout,
         "render_rolling_timeout_seconds": args.rap_render_rolling_timeout,
+        "remote_protocol": args.rap_protocol if args.rap_audio_renderer == "moss_aligned_remote" else None,
         "artifact_paths": {"wav": str(audio_file)} if args.audio_output in ("wav", "composite") else {},
     }
+    phrase_warper = None
+    if args.rap_audio_renderer == "moss_aligned_remote" and args.rap_protocol == "v2":
+        # v2 chunks arrive unwarped; probe the local R3 before anything starts and
+        # record the build in the session evidence.
+        try:
+            phrase_warper = audio_factories.create_phrase_warper(policy=args.rap_warp_policy)
+        except (OSError, RuntimeError) as error:
+            raise OSError(f"protocol v2 needs a working local Rubber Band R3: {error}") from error
+        manifest["audio"]["local_warp"] = {
+            "policy": phrase_warper.policy,
+            "rubberband": phrase_warper.rubberband_version,
+        }
     generator = stop_primary = close_primary = None
     if args.rap_audio_renderer in {"espeak", "espeak_adaptive"}:
         generator, stop_primary, close_primary = _build_generator(args)
@@ -481,6 +520,14 @@ def _build_audio_demo(
                 health = remote_client.health(timeout_seconds=min(5.0, args.rap_render_startup_timeout))
                 if not health.ready:
                     raise OSError("remote rap renderer is not ready")
+                schema_version = REMOTE_CHUNK_SCHEMA_VERSION
+                if phrase_warper is not None:
+                    schema_version = REMOTE_CHUNK_SCHEMA_VERSION_V2
+                    if schema_version not in health.supported_schema_versions:
+                        raise OSError(
+                            "remote rap renderer does not support protocol v2; "
+                            "upgrade it or run with --rap-protocol v1"
+                        )
                 strategy = RemoteMossChunkPreparationStrategy(
                     client=remote_client,
                     audio_format=audio_format,
@@ -488,6 +535,7 @@ def _build_audio_demo(
                     prosody=analyzer,
                     tempo=tempo,
                     clock=clock,
+                    phrase_warper=phrase_warper,
                 )
                 controller = RollingRapChunkController(
                     tempo=tempo,
@@ -508,6 +556,7 @@ def _build_audio_demo(
                     startup_timeout_seconds=args.rap_render_startup_timeout,
                     rolling_timeout_seconds=args.rap_render_rolling_timeout,
                     monotonic=clock,
+                    schema_version=schema_version,
                 )
             except BaseException:
                 remote_client.close()

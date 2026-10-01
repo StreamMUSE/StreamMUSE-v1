@@ -354,7 +354,11 @@ def test_remote_audio_build_health_checks_and_creates_no_local_chat_client(tmp_p
 
         def health(self, *, timeout_seconds: float):
             self.health_timeouts.append(timeout_seconds)
-            return SimpleNamespace(ready=True, schema_version="streammuse.rap_chunk.v1")
+            return SimpleNamespace(
+                ready=True,
+                schema_version="streammuse.rap_chunk.v1",
+                supported_schema_versions=("streammuse.rap_chunk.v1", "streammuse.rap_chunk.v2"),
+            )
 
         def abort(self) -> None:
             self.abort_calls += 1
@@ -375,6 +379,9 @@ def test_remote_audio_build_health_checks_and_creates_no_local_chat_client(tmp_p
             assert base_url == "http://render.test:9000"
             assert audio_transport == "pcm"
             return client
+
+        def create_phrase_warper(self, *, policy):
+            return SimpleNamespace(policy=policy, rubberband_version="4.0.0")
 
     monkeypatch.setattr(
         "streammuse.presentation.rap_demo.cli.LocalChatModelClient",
@@ -406,10 +413,76 @@ def test_remote_audio_build_health_checks_and_creates_no_local_chat_client(tmp_p
         assert manifest["audio"]["renderer"] == "moss_aligned_remote"
         assert manifest["audio"]["render_url"] == "http://render.test:9000"
         assert manifest["audio"]["transport"] == "pcm"
+        assert manifest["audio"]["remote_protocol"] == "v2"
+        assert manifest["audio"]["local_warp"] == {"policy": "gentle_sparse_r3", "rubberband": "4.0.0"}
         assert demo.session_metadata["audio"]["render_profile"] == "realtime"
     finally:
         demo.close()
     assert client.close_calls == 1
+
+
+def _remote_args(tmp_path: Path, *extra: str):
+    return build_parser().parse_args(
+        [
+            "--rap-audio-renderer",
+            "moss_aligned_remote",
+            "--audio-output",
+            "wav",
+            "--max-bars",
+            "2",
+            "--log-dir",
+            str(tmp_path),
+            *extra,
+        ]
+    )
+
+
+class _QuietRemoteFactories(RapAudioFactories):
+    def __init__(self, health) -> None:
+        self.client = SimpleNamespace(
+            health=lambda *, timeout_seconds: health,
+            abort=lambda: None,
+            close=lambda: None,
+        )
+        self.warper_policies: list[str] = []
+
+    def create_synthesizer(self):
+        return SimpleNamespace(synthesize=lambda request: None)
+
+    def create_sink(self, *, output, audio_format, audio_file, audio_device):
+        return NullAudioSink(audio_format=audio_format)
+
+    def create_remote_client(self, *, base_url, clock, audio_transport):
+        return self.client
+
+    def create_phrase_warper(self, *, policy):
+        self.warper_policies.append(policy)
+        return SimpleNamespace(policy=policy, rubberband_version="4.0.0")
+
+
+def test_remote_v2_build_refuses_a_server_that_only_speaks_v1(tmp_path: Path) -> None:
+    factories = _QuietRemoteFactories(
+        SimpleNamespace(ready=True, schema_version="streammuse.rap_chunk.v1", supported_schema_versions=("streammuse.rap_chunk.v1",))
+    )
+
+    with pytest.raises(OSError, match="does not support protocol v2"):
+        build_demo(_remote_args(tmp_path), audio_factories=factories)
+    # The local R3 is probed before the session starts, whatever the server says.
+    assert factories.warper_policies == ["gentle_sparse_r3"]
+
+
+def test_remote_v1_build_needs_no_local_warper(tmp_path: Path) -> None:
+    factories = _QuietRemoteFactories(
+        SimpleNamespace(ready=True, schema_version="streammuse.rap_chunk.v1", supported_schema_versions=("streammuse.rap_chunk.v1",))
+    )
+
+    demo = build_demo(_remote_args(tmp_path, "--rap-protocol", "v1"), audio_factories=factories)
+    try:
+        assert demo.session_metadata["audio"]["remote_protocol"] == "v1"
+        assert "local_warp" not in demo.session_metadata["audio"]
+    finally:
+        demo.close()
+    assert factories.warper_policies == []
 
 
 def test_remote_opus_build_preflights_codec_and_records_remote_service_metadata(
@@ -417,7 +490,11 @@ def test_remote_opus_build_preflights_codec_and_records_remote_service_metadata(
 ) -> None:
     class RemoteClient:
         def health(self, *, timeout_seconds: float):
-            return SimpleNamespace(ready=True, schema_version="streammuse.rap_chunk.v1")
+            return SimpleNamespace(
+                ready=True,
+                schema_version="streammuse.rap_chunk.v1",
+                supported_schema_versions=("streammuse.rap_chunk.v1", "streammuse.rap_chunk.v2"),
+            )
 
         def abort(self) -> None:
             return None
@@ -440,6 +517,9 @@ def test_remote_opus_build_preflights_codec_and_records_remote_service_metadata(
 
         def create_opus_codec(self):
             return codec
+
+        def create_phrase_warper(self, *, policy):
+            return SimpleNamespace(policy=policy, rubberband_version="4.0.0")
 
         def create_sink(self, *, output, audio_format, audio_file, audio_device):
             return NullAudioSink(audio_format=audio_format)
@@ -483,6 +563,9 @@ def test_remote_audio_build_rejects_unready_health_and_closes_client(tmp_path: P
     class AudioFactories(RapAudioFactories):
         def create_remote_client(self, *, base_url, clock, audio_transport):
             return client
+
+        def create_phrase_warper(self, *, policy):
+            return SimpleNamespace(policy=policy, rubberband_version="4.0.0")
 
     args = build_parser().parse_args(
         [

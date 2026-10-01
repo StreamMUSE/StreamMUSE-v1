@@ -47,11 +47,27 @@ temporarily started with `--wire-audio-codec pcm` without changing the client.
 The canonical `response.zip` and `vocal.wav` remain PCM in both modes; Opus is
 only a derived wire representation.
 
-The H200 render server defaults to `--moss-warp-policy gentle_sparse_r3`.
-Use `--moss-warp-policy all_onsets_r3` only for an explicit legacy comparison
-or rollback. When gentle regularization is mathematically infeasible for an
-outlier MOSS source duration, the server uses that legacy policy for the one
-chunk and emits a visible warning instead of dropping the vocal.
+The remote chunk protocol defaults to v2 (`--rap-protocol v2`): the render
+server stops after MOSS and MMS and returns the raw MOSS phrase (PCM16) plus one
+measured onset per syllable. The Mac rebuilds the same render request and runs
+the Rubber Band R3 time-map warp itself, with `--rap-warp-policy
+gentle_sparse_r3` (default) or `all_onsets_r3`. The Mac therefore needs the
+`rubberband` CLI (R3 engine) for v2; the demo probes it with a real stretch
+before it connects. Given the same PCM16 source and onsets, the Mac warp is
+byte-identical to the server warp, so moving R3 does not change the output.
+
+`--rap-protocol v1` keeps the old behavior for rollback: the server warps with
+its `--moss-warp-policy` (default `gentle_sparse_r3`) and the Mac requires
+every returned target anchor to match its schedule. Under v1, gentle sparse
+chunks move anchors to bound stretch ratios and are rejected by that check, so
+v1 is only usable with `all_onsets_r3`. A v2 client refuses to start against a
+server whose `/health` does not list `streammuse.rap_chunk.v2` in
+`supported_schema_versions`. v1 and v2 requests have different request IDs, so
+their server caches never mix.
+
+When gentle regularization is mathematically infeasible for an outlier MOSS
+source duration, the warp falls back to the legacy all-onsets policy for that
+one chunk and emits a visible warning instead of dropping the vocal.
 
 ## Normal Runtime: Start H200 Services
 
@@ -326,10 +342,10 @@ reconverted model needs its new hash).
 
 Mac-specific settings the script applies:
 
-- `--moss-warp-policy all_onsets_r3`: the Mac client requires every returned
-  target anchor to equal its own schedule, which gentle sparse R3 does not
-  satisfy (it moves anchors to bound stretch ratios). Until that contract is
-  settled, gentle sparse chunks are rejected and only fall back.
+- `--rap-protocol v2 --rap-warp-policy gentle_sparse_r3` on the demo: R3 runs
+  on the Mac, so gentle sparse chunks are accepted (override with
+  `RAP_PROTOCOL` / `RAP_WARP_POLICY`). `MOSS_WARP_POLICY` only matters for a
+  v1 client.
 - `--rap-render-reserve-ms 3500` on the demo: the MLX renderer (MOSS + MMS + R3)
   plus one rescue wave needs more than the H200's 3000 ms reserve.
 - `--wire-audio-codec pcm`: Opus only helped the SSH route.

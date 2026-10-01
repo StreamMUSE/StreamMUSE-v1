@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from math import gcd, isclose, isfinite
 from types import MappingProxyType
 from time import monotonic
-from typing import TYPE_CHECKING, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol, Sequence
 import wave
 
 import numpy as np
@@ -32,7 +32,14 @@ from streammuse.domain.rap.audio import (
     SyllablePlacementDiagnostic,
 )
 from streammuse.domain.rap.flow import materialize_flow
-from streammuse.domain.rap.remote_chunk import PreparedRapChunk, RemoteRapChunkManifest, RemoteRapChunkRequest
+from streammuse.domain.rap.remote_chunk import (
+    MAX_REMOTE_SOURCE_SECONDS,
+    REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    PreparedRapChunk,
+    RemoteRapChunkManifest,
+    RemoteRapChunkRequest,
+)
+from streammuse.experiments.rap_audio_protocols.contracts import TwoBarRenderRequest
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.rap.chunk_package import DecodedRapChunkPackage
 
@@ -45,7 +52,7 @@ _DRUM_GAIN = 0.55
 _FINAL_PEAK = 0.95
 _REMOTE_SAMPLE_RATE_HZ = 24_000
 # Matches the MOSS adapters' maximum_audio_seconds for one source phrase.
-_MAX_REMOTE_SOURCE_SECONDS = 30.0
+_MAX_REMOTE_SOURCE_SECONDS = MAX_REMOTE_SOURCE_SECONDS
 
 
 class RemoteChunkPreparationError(RuntimeError):
@@ -87,6 +94,32 @@ class RemoteChunkResponseRejected(RemoteChunkPreparationError):
         self.evidence = evidence
 
 
+@dataclass(frozen=True)
+class LocalPhraseWarp:
+    """A v2 source phrase warped on the Mac onto its own syllable schedule."""
+
+    vocal_wav: bytes
+    source_anchors: tuple[float, ...]
+    target_anchors: tuple[float, ...]
+    local_warp_ratios: tuple[float, ...]
+    warp_ms: float
+    rubberband_version: str
+    policy: str
+
+
+class PhraseWarper(Protocol):
+    """Plans and applies the R3 warp for v2 chunks (implemented in infrastructure)."""
+
+    def warp(
+        self,
+        render_request: TwoBarRenderRequest,
+        source_wav: bytes,
+        source_onsets: Sequence[float],
+        *,
+        target_frame_count: int,
+    ) -> LocalPhraseWarp: ...
+
+
 class _RemoteChunkTransport(Protocol):
     def prepare(
         self,
@@ -114,7 +147,9 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         tempo: Tempo | None = None,
         tempo_bpm: float | None = None,
         clock: Callable[[], float] = monotonic,
+        phrase_warper: PhraseWarper | None = None,
     ) -> None:
+        """``phrase_warper`` is required to accept v2 chunks, which arrive unwarped."""
         if tempo is None:
             if tempo_bpm is None or not isinstance(tempo_bpm, (int, float)) or not isfinite(tempo_bpm) or tempo_bpm <= 0:
                 raise ValueError("tempo or a positive finite tempo_bpm is required")
@@ -131,6 +166,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         self._drums = drums
         self._prosody = prosody
         self._clock = clock
+        self._phrase_warper = phrase_warper
         self._closed = False
 
     def prepare(self, request: RemoteRapChunkRequest, *, deadline_monotonic: float) -> PreparedRapChunk:
@@ -163,18 +199,32 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 response,
                 mac_validation_mix_ms=0.0,
             )
+        local_warp: LocalPhraseWarp | None = None
         try:
             self._validate_manifest(response.package, request)
-            vocal_samples = _decode_pcm16_mono_wav(response.package.vocal_wav, request.expected_frame_count)
+            manifest = response.package.manifest
+            if manifest.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2:
+                local_warp = self._warp_source_phrase(response.package, request)
+                vocal_wav = local_warp.vocal_wav
+                anchors = (local_warp.source_anchors, local_warp.target_anchors)
+            else:
+                vocal_wav = response.package.vocal_wav
+                alignment = manifest.diagnostics.alignment_diagnostics
+                anchors = (
+                    tuple(float(item) for item in alignment["source_anchors"]),
+                    tuple(float(item) for item in alignment["target_anchors"]),
+                )
+            vocal_samples = _decode_pcm16_mono_wav(vocal_wav, request.expected_frame_count)
             frame_counts = tuple(bar_frame_count(item.bar, self._tempo, self._audio_format) for item in request.bars)
             full_vocals = _resample_to_output(vocal_samples, self._audio_format, sum(frame_counts))
             observed_latency_ms = response.timing.request_ms + response.timing.first_byte_ms + response.timing.download_ms
             bars = self._prepare_bars(
-                response.package.manifest,
+                manifest,
                 request,
                 full_vocals,
                 frame_counts,
                 observed_latency_ms,
+                anchors,
             )
         except RemoteChunkPreparationError as error:
             failed_at = self._clock()
@@ -185,6 +235,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 mac_validation_mix_ms=max(
                     0.0, (failed_at - mac_started) * 1000.0
                 ),
+                local_warp=local_warp,
             ) from error
         except (EOFError, ValueError, wave.Error) as error:
             failed_at = self._clock()
@@ -195,6 +246,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 mac_validation_mix_ms=max(
                     0.0, (failed_at - mac_started) * 1000.0
                 ),
+                local_warp=local_warp,
             ) from error
         mac_completed = self._clock()
         monitoring_evidence = self._monitoring_evidence(
@@ -203,6 +255,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             mac_validation_mix_ms=max(
                 0.0, (mac_completed - mac_started) * 1000.0
             ),
+            local_warp=local_warp,
         )
         if mac_completed >= deadline_monotonic:
             raise RemoteChunkResponseRejected(
@@ -239,6 +292,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         response: RemoteChunkResponse,
         *,
         mac_validation_mix_ms: float,
+        local_warp: LocalPhraseWarp | None = None,
     ) -> RemoteChunkResponseRejected:
         return RemoteChunkResponseRejected(
             message,
@@ -249,6 +303,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                     request,
                     response,
                     mac_validation_mix_ms=mac_validation_mix_ms,
+                    local_warp=local_warp,
                 ),
             ),
         )
@@ -259,6 +314,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         response: RemoteChunkResponse,
         *,
         mac_validation_mix_ms: float,
+        local_warp: LocalPhraseWarp | None = None,
     ) -> dict[str, object]:
         manifest = response.package.manifest
         diagnostics = manifest.diagnostics
@@ -322,7 +378,8 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 "evaluation": stage_timings["evaluation"],
                 "moss": stage_timings["moss"],
                 "aligner": stage_timings["aligner"],
-                "r3": stage_timings["warp"],
+                # v1: server-side R3; v2: the Mac's own warp (also inside "mac").
+                "r3": local_warp.warp_ms if local_warp is not None else stage_timings.get("warp", 0.0),
                 "package": stage_timings["packaging"],
                 "transfer": transfer_ms,
                 "mac": mac_validation_mix_ms,
@@ -349,6 +406,15 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             },
         }
         bounded = bounded_chunk_event_payload(raw)
+        if local_warp is not None:
+            bounded = {
+                **bounded,
+                "local_warp": {
+                    "policy": local_warp.policy,
+                    "rubberband": local_warp.rubberband_version,
+                    "warp_ms": local_warp.warp_ms,
+                },
+            }
         return {
             **bounded,
             "transfer": {
@@ -387,13 +453,18 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             or manifest.diagnostics.resolved_policy != request.policy
         ):
             raise RemoteChunkPreparationError("remote chunk diagnostics do not match the original request")
+        if manifest.schema_version != request.schema_version:
+            raise RemoteChunkPreparationError("remote chunk contract version does not match the request")
         if package.transport_codec == "pcm" and hashlib.sha256(package.vocal_wav).hexdigest() != manifest.vocal_sha256:
             raise RemoteChunkPreparationError("remote chunk vocal hash does not match its manifest")
+        source_only = manifest.schema_version == REMOTE_CHUNK_SCHEMA_VERSION_V2
         diagnostics = manifest.diagnostics.audio_diagnostics
+        audio_frames = manifest.audio_frame_count if source_only else request.expected_frame_count
         if (
             diagnostics["sample_rate_hz"] != _REMOTE_SAMPLE_RATE_HZ
-            or diagnostics["frame_count"] != request.expected_frame_count
-            or not isclose(float(diagnostics["duration_seconds"]), request.expected_frame_count / _REMOTE_SAMPLE_RATE_HZ, abs_tol=1 / _REMOTE_SAMPLE_RATE_HZ)
+            or diagnostics["frame_count"] != audio_frames
+            or audio_frames > round(_MAX_REMOTE_SOURCE_SECONDS * _REMOTE_SAMPLE_RATE_HZ)
+            or not isclose(float(diagnostics["duration_seconds"]), audio_frames / _REMOTE_SAMPLE_RATE_HZ, abs_tol=1 / _REMOTE_SAMPLE_RATE_HZ)
         ):
             raise RemoteChunkPreparationError("remote chunk audio diagnostics do not match the original request")
         all_scheduled = []
@@ -408,6 +479,17 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 raise RemoteChunkPreparationError("remote selected schedule does not match Mac reanalysis")
             all_scheduled.extend(selected.scheduled)
         alignment = manifest.diagnostics.alignment_diagnostics
+        if source_only:
+            # v2: only measured source onsets cross the wire; the Mac owns targets.
+            onsets = tuple(float(item) for item in alignment["source_onsets"])
+            onset_frames = tuple(round(value * _REMOTE_SAMPLE_RATE_HZ) for value in onsets)
+            if len(onsets) != len(all_scheduled):
+                raise RemoteChunkPreparationError("remote source onsets do not cover every selected syllable")
+            if any(not 0.0 <= value < audio_frames / _REMOTE_SAMPLE_RATE_HZ for value in onsets) or any(
+                current <= previous for previous, current in zip(onset_frames, onset_frames[1:])
+            ):
+                raise RemoteChunkPreparationError("remote source onsets are not strictly increasing within the source phrase")
+            return
         if len(alignment["source_anchors"]) != len(all_scheduled) or len(alignment["target_anchors"]) != len(all_scheduled):
             raise RemoteChunkPreparationError("remote alignment anchors do not cover every selected syllable")
         duration_seconds = request.expected_frame_count / _REMOTE_SAMPLE_RATE_HZ
@@ -432,6 +514,35 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         if returned_target_frames != expected_target_frames:
             raise RemoteChunkPreparationError("remote target anchors do not match the Mac-selected syllable schedule")
 
+    def _warp_source_phrase(
+        self,
+        package: DecodedRapChunkPackage,
+        request: RemoteRapChunkRequest,
+    ) -> LocalPhraseWarp:
+        if self._phrase_warper is None:
+            raise RemoteChunkPreparationError("v2 remote chunks need a local phrase warper")
+        from streammuse.application.rap.chunk_orchestration import chunk_render_request
+
+        manifest = package.manifest
+        render_request = chunk_render_request(request, manifest.selected_bars)
+        onsets = tuple(float(item) for item in manifest.diagnostics.alignment_diagnostics["source_onsets"])
+        try:
+            warped = self._phrase_warper.warp(
+                render_request,
+                package.vocal_wav,
+                onsets,
+                target_frame_count=request.expected_frame_count,
+            )
+        except RemoteChunkPreparationError:
+            raise
+        except Exception as error:
+            raise RemoteChunkPreparationError(f"local R3 warp failed: {error}") from error
+        if not isinstance(warped, LocalPhraseWarp):
+            raise RemoteChunkPreparationError("local phrase warper returned a malformed result")
+        if len(warped.source_anchors) != len(onsets) or len(warped.target_anchors) != len(onsets):
+            raise RemoteChunkPreparationError("local warp anchors do not cover every selected syllable")
+        return warped
+
     def _prepare_bars(
         self,
         manifest: RemoteRapChunkManifest,
@@ -439,6 +550,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         vocals: np.ndarray,
         frame_counts: tuple[int, int],
         observed_latency_ms: float,
+        anchors: tuple[tuple[float, ...], tuple[float, ...]],
     ) -> tuple[PreparedRapBar, PreparedRapBar]:
         if vocals.shape != (sum(frame_counts), self._audio_format.channels):
             raise RemoteChunkPreparationError("resampled remote vocals do not cover both Mac bars exactly")
@@ -453,7 +565,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 raise RemoteChunkPreparationError("local drum render does not match the exact Mac bar format")
             mixed = vocal_bar * np.float32(_VOCAL_GAIN)
             mix_at(mixed, drum, 0, _DRUM_GAIN)
-            diagnostics = self._placement_diagnostics(manifest, selected.scheduled, bar_request.bar, frames, anchor_offset)
+            diagnostics = self._placement_diagnostics(manifest, anchors, selected.scheduled, bar_request.bar, frames, anchor_offset)
             warnings = tuple(
                 AudioWarning(
                     code=AudioWarningCode.PRONUNCIATION_FALLBACK,
@@ -481,10 +593,8 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             anchor_offset += len(selected.scheduled)
         return (result[0], result[1])
 
-    def _placement_diagnostics(self, manifest, scheduled, bar: int, frames: int, offset: int) -> tuple[SyllablePlacementDiagnostic, ...]:
-        alignment = manifest.diagnostics.alignment_diagnostics
-        source_anchors = tuple(float(item) for item in alignment["source_anchors"])
-        target_anchors = tuple(float(item) for item in alignment["target_anchors"])
+    def _placement_diagnostics(self, manifest, anchors, scheduled, bar: int, frames: int, offset: int) -> tuple[SyllablePlacementDiagnostic, ...]:
+        source_anchors, target_anchors = anchors
         diagnostics = []
         for index, item in enumerate(scheduled):
             absolute_index = offset + index

@@ -2225,6 +2225,9 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
     assert workspace_root == tmp_path / "artifacts" / composition.producer_manifest.fingerprint
     assert composition.health["ready"] is True
     assert composition.health["state"] == "ready"
+    assert composition.health["supported_schema_versions"] == (
+        "streammuse.rap_chunk.v1,streammuse.rap_chunk.v2"
+    )
     assert composition.health["backend"] == "inprocess"
     assert composition.health["producer_fingerprint"] == composition.producer_manifest.fingerprint
     assert composition.health["vllm"] == {
@@ -2509,3 +2512,134 @@ def test_rubberband_probe_runs_a_real_time_map_operation(
         "identity": "Rubber Band",
         "version": "rubberband 3.3.0",
     }
+
+
+def _v2_request() -> RemoteRapChunkRequest:
+    from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION_V2
+
+    v1 = _request()
+    return RemoteRapChunkRequest.create(
+        session_id="session-1",
+        chunk_index=0,
+        bars=v1.bars,
+        tempo_bpm=v1.tempo_bpm,
+        remaining_budget_ms=v1.remaining_budget_ms,
+        policy=v1.policy,
+        context_lines=v1.context_lines,
+        seed=v1.seed,
+        schema_version=REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    )
+
+
+_V2_SOURCE_FRAMES = 100_000
+
+
+def _v2_artifact(
+    request: RemoteRapChunkRequest, workspace: Path
+) -> RemoteChunkRenderArtifact:
+    v1 = _artifact(request, workspace)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24_000)
+        output.writeframes(struct.pack("<h", 700) * _V2_SOURCE_FRAMES)
+    source_wav = buffer.getvalue()
+    base = v1.manifest.diagnostics
+    diagnostics = replace(
+        base,
+        stage_timings_ms={k: v for k, v in base.stage_timings_ms.items() if k != "warp"},
+        alignment_diagnostics={
+            "fallback_counts": {"word": 0},
+            "source_onsets": [0.1, 0.6],
+            "onset_confidence": [0.9, 0.8],
+        },
+        audio_diagnostics={
+            "sample_rate_hz": 24_000,
+            "frame_count": _V2_SOURCE_FRAMES,
+            "duration_seconds": _V2_SOURCE_FRAMES / 24_000,
+            "peak": 0.02,
+        },
+        model_tool_versions={"moss": "test", "aligner": "mms-test"},
+        schema_version=request.schema_version,
+    )
+    manifest = replace(
+        v1.manifest,
+        diagnostics=diagnostics,
+        vocal_sha256=hashlib.sha256(source_wav).hexdigest(),
+        schema_version=request.schema_version,
+    )
+    return replace(v1, manifest=manifest, vocal_wav=source_wav)
+
+
+class _SourceOnlyOrchestrator(FakeOrchestrator):
+    """Mimics the v2 renderer: source + MMS evidence, never a warped vocal."""
+
+    def render(self, request, *, execution=None):
+        if request.schema_version.endswith("v1"):
+            return super().render(request, execution=execution)
+        self.calls += 1
+        workspace = self.workspace_root / request.request_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        artifact = _v2_artifact(request, workspace)
+        (workspace / self.source_name).write_bytes(artifact.vocal_wav)
+        (workspace / self.alignment_name).write_bytes(_FULL_MMS_ALIGNMENT_BYTES)
+        return artifact
+
+
+def test_v2_render_publishes_the_source_phrase_without_a_server_warp(
+    tmp_path: Path,
+) -> None:
+    request = _v2_request()
+    client = _client(tmp_path, _SourceOnlyOrchestrator(tmp_path / "worker"))
+
+    response = _post(client, request)
+
+    assert response.status_code == 200, response.text
+    workspace = _namespace(tmp_path / "artifacts") / request.request_id
+    decoded = decode_chunk_package(response.content, expected_request_id=request.request_id)
+    assert decoded.manifest.schema_version == request.schema_version
+    assert decoded.manifest.audio_frame_count == _V2_SOURCE_FRAMES
+    assert decoded.vocal_wav == (workspace / "source.wav").read_bytes()
+    assert "warp" not in decoded.manifest.diagnostics.stage_timings_ms
+    assert decoded.manifest.diagnostics.alignment_diagnostics["source_onsets"] == (0.1, 0.6)
+    assert not (workspace / "vocal.wav").exists()
+    assert not (workspace / "aligned.wav").exists()
+    manifest = json.loads((workspace / "manifest.json").read_text(encoding="utf-8"))
+    assert "source_sha256" in manifest and "vocal_sha256" not in manifest
+
+
+def test_v1_and_v2_requests_for_the_same_chunk_never_share_a_cache_entry(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _SourceOnlyOrchestrator(tmp_path / "worker")
+    client = _client(tmp_path, orchestrator)
+    v1, v2 = _request(), _v2_request()
+
+    first_v1, first_v2 = _post(client, v1), _post(client, v2)
+    second_v1, second_v2 = _post(client, v1), _post(client, v2)
+
+    assert v1.request_id != v2.request_id
+    assert orchestrator.calls == 2
+    assert first_v1.content == second_v1.content
+    assert first_v2.content == second_v2.content
+    assert decode_chunk_package(
+        first_v1.content, expected_request_id=v1.request_id
+    ).manifest.schema_version == v1.schema_version
+    assert decode_chunk_package(
+        first_v2.content, expected_request_id=v2.request_id
+    ).manifest.schema_version == v2.schema_version
+
+
+def test_public_health_passes_supported_schema_versions_through(tmp_path: Path) -> None:
+    supported = "streammuse.rap_chunk.v1,streammuse.rap_chunk.v2"
+    client = TestClient(
+        create_rap_render_app(
+            FakeOrchestrator(tmp_path / "worker"),
+            health={"ready": True, "supported_schema_versions": supported},
+            producer_manifest=_producer_manifest(),
+            artifact_root=tmp_path / "artifacts",
+        )
+    )
+
+    assert client.get("/health").json()["supported_schema_versions"] == supported

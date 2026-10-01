@@ -908,3 +908,176 @@ def test_strategy_abort_is_reusable_and_close_is_final_and_idempotent() -> None:
     assert client.closed == 1
     with pytest.raises(RemoteChunkPreparationError, match="closed"):
         strategy.prepare(request, deadline_monotonic=10.0)
+
+
+# --- protocol v2: raw source phrase + onsets, warped on the Mac ------------------
+
+_V2_SOURCE_FRAMES = 130_560
+
+
+def _v2_request() -> RemoteRapChunkRequest:
+    from streammuse.domain.rap import REMOTE_CHUNK_SCHEMA_VERSION_V2
+
+    return RemoteRapChunkRequest.create(
+        session_id="session-1",
+        chunk_index=0,
+        bars=(
+            RemoteRapBarRequest(0, "space", _flow("first-flow")),
+            RemoteRapBarRequest(1, "space", _flow("second-flow")),
+        ),
+        tempo_bpm=90.0,
+        remaining_budget_ms=5_000,
+        policy=RemoteCandidatePolicy.realtime_default(),
+        context_lines=(),
+        seed=7,
+        schema_version=REMOTE_CHUNK_SCHEMA_VERSION_V2,
+    )
+
+
+def _v2_package(
+    request: RemoteRapChunkRequest,
+    *,
+    onsets: tuple[float, ...] | None = None,
+    source_frames: int = _V2_SOURCE_FRAMES,
+) -> DecodedRapChunkPackage:
+    v1 = _package(request if request.schema_version.endswith("v1") else _request())
+    source_wav = _wav_bytes(np.full(source_frames, 1_000, dtype=np.int16))
+    syllable_count = len(_target_anchors(_request()))
+    onsets = onsets if onsets is not None else tuple(0.1 + 0.25 * index for index in range(syllable_count))
+    diagnostics = RemoteRapChunkDiagnostics(
+        accepted_request_budget_ms=request.remaining_budget_ms,
+        resolved_policy=request.policy,
+        candidate_stats=RemoteCandidateStats(2, 2, 2, 2, (), ()),
+        stage_timings_ms={
+            "generation": 1.0,
+            "evaluation": 1.0,
+            "moss": 1.0,
+            "aligner": 1.0,
+            "packaging": 1.0,
+            "total": 5.0,
+        },
+        alignment_diagnostics={
+            "fallback_counts": {"word": 0},
+            "source_onsets": onsets,
+            "onset_confidence": tuple(0.9 for _ in onsets),
+        },
+        audio_diagnostics={
+            "sample_rate_hz": 24_000,
+            "frame_count": source_frames,
+            "duration_seconds": source_frames / 24_000,
+            "peak": 0.5,
+        },
+        model_tool_versions={"moss": "test", "aligner": "test"},
+        warnings=(),
+        monitoring_summary=dict(v1.manifest.diagnostics.monitoring_summary),
+        schema_version=request.schema_version,
+    )
+    manifest = RemoteRapChunkManifest(
+        request_id=request.request_id,
+        chunk_index=request.chunk_index,
+        tempo_bpm=request.tempo_bpm,
+        output_sample_rate_hz=24_000,
+        expected_frame_count=request.expected_frame_count,
+        selected_bars=tuple(
+            replace(selected, bar=bar_request.bar)
+            for selected, bar_request in zip(v1.manifest.selected_bars, request.bars, strict=True)
+        ),
+        diagnostics=diagnostics,
+        vocal_sha256=hashlib.sha256(source_wav).hexdigest(),
+        schema_version=request.schema_version,
+    )
+    return DecodedRapChunkPackage(manifest, source_wav)
+
+
+@dataclass
+class _FakeWarper:
+    frames: int | None = None
+    error: Exception | None = None
+    calls: list = None
+
+    def warp(self, render_request, source_wav, source_onsets, *, target_frame_count):
+        from streammuse.application.rap.chunk_audio import LocalPhraseWarp
+
+        self.calls = (self.calls or []) + [(render_request, source_wav, tuple(source_onsets), target_frame_count)]
+        if self.error is not None:
+            raise self.error
+        frames = self.frames if self.frames is not None else target_frame_count
+        return LocalPhraseWarp(
+            vocal_wav=_wav_bytes(np.full(frames, 1_000, dtype=np.int16)),
+            source_anchors=tuple(source_onsets),
+            target_anchors=tuple(item.target_seconds for item in render_request.syllables),
+            local_warp_ratios=(1.0,),
+            warp_ms=42.0,
+            rubberband_version="4.0.0",
+            policy="gentle_sparse_r3",
+        )
+
+
+def _v2_strategy(package, *, warper=None, clock=lambda: 0.0):
+    return RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=clock,
+        phrase_warper=warper,
+    )
+
+
+def test_v2_chunk_is_warped_locally_onto_the_mac_schedule() -> None:
+    from streammuse.application.rap.chunk_orchestration import chunk_render_request
+
+    request = _v2_request()
+    package = _v2_package(request)
+    warper = _FakeWarper()
+
+    prepared = _v2_strategy(package, warper=warper).prepare(request, deadline_monotonic=10.0)
+
+    (render_request, source_wav, onsets, target_frames), = warper.calls
+    assert render_request == chunk_render_request(request, package.manifest.selected_bars)
+    assert source_wav == package.vocal_wav
+    assert onsets == tuple(package.manifest.diagnostics.alignment_diagnostics["source_onsets"])
+    assert target_frames == request.expected_frame_count
+    assert [bar.source for bar in prepared.bars] == ["moss_aligned_remote"] * 2
+    assert sum(len(bar.diagnostics) for bar in prepared.bars) == len(onsets)
+    assert prepared.diagnostics["stage_timings_ms"]["r3"] == 42.0
+    assert prepared.diagnostics["local_warp"]["policy"] == "gentle_sparse_r3"
+
+
+@pytest.mark.parametrize(
+    ("onsets", "warper", "message"),
+    (
+        (None, None, "need a local phrase warper"),
+        ((0.1, 0.2), _FakeWarper(), "do not cover every selected syllable"),
+        ((0.1, 0.1, 0.3, 0.4), _FakeWarper(), "not strictly increasing"),
+        ((0.1, 0.2, 0.3, 5.5), _FakeWarper(), "not strictly increasing"),
+        (None, _FakeWarper(error=RuntimeError("rubberband exploded")), "local R3 warp failed"),
+        (None, _FakeWarper(frames=1_000), "requested exact duration"),
+    ),
+)
+def test_v2_chunk_rejections(onsets, warper, message: str) -> None:
+    request = _v2_request()
+    package = _v2_package(request, onsets=onsets)
+
+    with pytest.raises(RemoteChunkPreparationError, match=message):
+        _v2_strategy(package, warper=warper).prepare(request, deadline_monotonic=10.0)
+
+
+def test_v2_manifest_for_a_v1_request_is_rejected() -> None:
+    request = _request()
+    v2 = _v2_package(_v2_request())
+    forged = DecodedRapChunkPackage(replace(v2.manifest, request_id=request.request_id), v2.vocal_wav)
+
+    with pytest.raises(RemoteChunkPreparationError, match="contract version does not match"):
+        _v2_strategy(forged, warper=_FakeWarper()).prepare(request, deadline_monotonic=10.0)
+
+
+def test_v2_local_warp_counts_against_the_deadline() -> None:
+    request = _v2_request()
+    ticks = iter((0.0, 0.0, 0.0, 11.0, 11.0, 11.0))
+
+    with pytest.raises(RemoteChunkPreparationError, match="missed its useful deadline"):
+        _v2_strategy(
+            _v2_package(request), warper=_FakeWarper(), clock=lambda: next(ticks)
+        ).prepare(request, deadline_monotonic=10.0)

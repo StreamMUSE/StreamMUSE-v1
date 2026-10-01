@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import threading
 import time
+import wave
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -17,6 +19,7 @@ from scipy.io import wavfile
 from streammuse.application.rap.chunk_orchestration import (
     PhraseRenderFailed,
     PhraseRenderResult,
+    PhraseSourceResult,
     PhraseVocalRenderer,
     RenderBudgetExpired,
 )
@@ -134,13 +137,38 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         finally:
             self._lock.release()
 
+    def render_source(
+        self,
+        request: TwoBarRenderRequest,
+        workspace: Path,
+        *,
+        execution: SynthesisExecutionContext | None = None,
+    ) -> PhraseSourceResult:
+        """Synthesize and align one phrase, leaving the R3 warp to the v2 client."""
+        active_execution = execution or SynthesisExecutionContext.from_timeout(
+            3600.0, correlation_id=f"moss-source-{getattr(request, 'chunk_index', 0)}"
+        )
+        while True:
+            _renderer_checkpoint(active_execution)
+            if self._lock.acquire(
+                timeout=max(0.001, min(0.05, active_execution.remaining_seconds()))
+            ):
+                break
+        try:
+            return self._render_locked(
+                request, Path(workspace), execution=active_execution, source_only=True
+            )
+        finally:
+            self._lock.release()
+
     def _render_locked(
         self,
         request: TwoBarRenderRequest,
         workspace: Path,
         *,
         execution: SynthesisExecutionContext,
-    ) -> PhraseRenderResult:
+        source_only: bool = False,
+    ) -> PhraseRenderResult | PhraseSourceResult:
         _renderer_checkpoint(execution)
         try:
             workspace.mkdir(parents=True, exist_ok=True)
@@ -212,6 +240,32 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 source_frame_count=len(source_samples),
             )
             stage_timings["aligner"] = _elapsed_ms(self._clock, started)
+
+            if source_only:
+                _renderer_checkpoint(execution)
+                result = _source_phrase_result(
+                    request=request,
+                    source_path=source_path,
+                    moss_result=moss_result,
+                    alignment=alignment,
+                    mapped=mapped,
+                    stage_timings={
+                        "moss": stage_timings["moss"],
+                        "aligner": stage_timings["aligner"],
+                    },
+                )
+                _write_json_atomic(
+                    alignment_path,
+                    _source_alignment_artifact(
+                        request=request,
+                        moss_result=moss_result,
+                        alignment=alignment,
+                        mapped=mapped,
+                        warnings=result.warnings,
+                    ),
+                )
+                _renderer_checkpoint(execution)
+                return result
 
             stage = "warp"
             _renderer_checkpoint(execution)
@@ -519,23 +573,9 @@ def _alignment_diagnostics(
     }
 
 
-def _complete_alignment_artifact(
-    *,
-    request: TwoBarRenderRequest,
-    moss_result: MossPhraseResult,
+def _alignment_span_payload(
     alignment: MmsAlignmentResult,
-    mapped: SyllableOnsetMap,
-    diagnostic_anchors: Sequence[VowelAnchor],
-    effective_anchors: Sequence[VowelAnchor],
-    warp_plan: _WarpPlan,
-    endpoint_policy: Mapping[str, object],
-    stretch_ratios: tuple[float, ...],
-    output_wav: bytes | None,
-    output_metrics: Mapping[str, float] | None,
-    target_frame_count: int,
-    warnings: Sequence[str],
-    warp_status: str,
-) -> Mapping[str, object]:
+) -> tuple[tuple[Mapping[str, object], ...], tuple[Mapping[str, object], ...]]:
     character_spans = tuple(
         {
             "word": span.word,
@@ -570,6 +610,191 @@ def _complete_alignment_artifact(
         }
         for span in alignment.word_spans
     )
+    return character_spans, word_spans
+
+
+def _aligner_payload(alignment: MmsAlignmentResult) -> Mapping[str, object]:
+    return {
+        "identity": alignment.aligner_identity,
+        "version": alignment.aligner_version,
+        "alignment_time_ms": alignment.alignment_time_ms,
+        "duration_seconds": alignment.duration_seconds,
+        "confidence": alignment.confidence,
+        "warnings": alignment.warnings,
+        "source_timebase": {
+            "sample_rate_hz": alignment.source_sample_rate_hz,
+            "frame_count": alignment.source_frame_count,
+            "duration_seconds": alignment.source_duration_seconds,
+        },
+        "inference_timebase": {
+            "sample_rate_hz": alignment.inference_sample_rate_hz,
+            "frame_count": alignment.inference_frame_count,
+            "duration_seconds": alignment.duration_seconds,
+        },
+        "emission_frame_count": alignment.emission_frame_count,
+    }
+
+
+def _source_payload(moss_result: MossPhraseResult) -> Mapping[str, object]:
+    return {
+        "artifact": "source.wav",
+        "sha256": moss_result.source_wav_sha256,
+        "sample_rate_hz": moss_result.sample_rate_hz,
+        "frame_count": moss_result.frame_count,
+        "duration_seconds": moss_result.duration_seconds,
+        "reference_voice_sha256": moss_result.reference_voice_sha256,
+        "model_id": moss_result.model_id,
+        "model_revision": moss_result.model_revision,
+        "generation_time_ms": moss_result.generation_time_ms,
+        "generation_settings": dict(moss_result.resolved_generation_settings),
+        "warnings": moss_result.warnings,
+    }
+
+
+def _source_alignment_artifact(
+    *,
+    request: TwoBarRenderRequest,
+    moss_result: MossPhraseResult,
+    alignment: MmsAlignmentResult,
+    mapped: SyllableOnsetMap,
+    warnings: Sequence[str],
+) -> Mapping[str, object]:
+    """Private v2 evidence: everything up to MMS onsets; the client owns the warp."""
+    character_spans, word_spans = _alignment_span_payload(alignment)
+    anchors = tuple(
+        {
+            **dict(diagnostic),
+            "planned_phone": anchor.planned_phone,
+            "aligned_evidence": anchor.aligned_phone,
+            "anchor_kind": anchor.anchor_kind,
+        }
+        for anchor, diagnostic in zip(mapped.anchors, mapped.anchor_diagnostics, strict=True)
+    )
+    return {
+        "schema_version": "streammuse.mms_alignment.v1",
+        "request_sha256": request.sha256,
+        "normalized_transcript": alignment.normalized_transcript,
+        "aligner": _aligner_payload(alignment),
+        "source": _source_payload(moss_result),
+        "character_spans": character_spans,
+        "word_spans": word_spans,
+        "mapping": {
+            "coverage": mapped.coverage,
+            "method_counts": dict(mapped.method_counts),
+            "warnings": mapped.warnings,
+            "anchors": anchors,
+        },
+        "warp": {"status": "deferred_to_client"},
+        "output": None,
+        "warnings": tuple(warnings),
+    }
+
+
+def _source_phrase_result(
+    *,
+    request: TwoBarRenderRequest,
+    source_path: Path,
+    moss_result: MossPhraseResult,
+    alignment: MmsAlignmentResult,
+    mapped: SyllableOnsetMap,
+    stage_timings: Mapping[str, float],
+) -> PhraseSourceResult:
+    source_wav, peak, frame_count = _source_transport_wav(source_path)
+    warnings = _bounded_warnings(
+        tuple(dict.fromkeys((*moss_result.warnings, *mapped.warnings)))
+    )
+    return PhraseSourceResult(
+        source_wav=source_wav,
+        alignment_diagnostics={
+            "fallback_counts": {
+                "phoneme_weighted_character": int(
+                    mapped.method_counts.get("phoneme_weighted_character", 0)
+                ),
+                "word_duration_proportional": int(
+                    mapped.method_counts.get("word_duration_proportional", 0)
+                ),
+            },
+            "source_onsets": tuple(anchor.source_seconds for anchor in mapped.anchors),
+            "onset_confidence": tuple(
+                min(1.0, max(0.0, float(diagnostic["confidence"])))
+                for diagnostic in mapped.anchor_diagnostics
+            ),
+        },
+        audio_diagnostics={
+            "sample_rate_hz": _OUTPUT_SAMPLE_RATE_HZ,
+            "frame_count": frame_count,
+            "duration_seconds": frame_count / _OUTPUT_SAMPLE_RATE_HZ,
+            "peak": peak,
+        },
+        model_tool_versions={
+            "moss": f"{moss_result.model_id}@{moss_result.model_revision}",
+            "aligner": f"{alignment.aligner_identity}; {alignment.aligner_version}",
+        },
+        warnings=warnings,
+        stage_timings_ms=dict(stage_timings),
+        monitoring_summary={
+            "schema_version": REMOTE_CHUNK_MONITORING_SCHEMA_VERSION,
+            "alignment_method": alignment.aligner_identity,
+            "alignment_confidence": alignment.confidence,
+            "source_wav_sha256": moss_result.source_wav_sha256,
+        },
+        moss_serving_metadata=moss_result.serving_metadata.to_payload(),
+    )
+
+
+def _source_transport_wav(path: Path) -> tuple[bytes, float, int]:
+    """PCM16 transport copy of the raw phrase.
+
+    A PCM16 source keeps its exact samples, so the client's float32 view (int16 /
+    32768) equals the server's and an identical warp yields identical bytes.
+    Float sources are quantized once with the same encoder as the final vocal.
+    """
+    try:
+        sample_rate_hz, samples = wavfile.read(path)
+    except Exception as exc:
+        raise PhraseRenderFailed("raw MOSS source WAV is unreadable") from exc
+    array = np.asarray(samples)
+    if array.ndim == 2 and array.shape[1] == 1:
+        array = array[:, 0]
+    if sample_rate_hz != _OUTPUT_SAMPLE_RATE_HZ or array.ndim != 1 or array.size == 0:
+        raise PhraseRenderFailed("raw MOSS source WAV must be 24 kHz mono audio")
+    if array.dtype == np.int16:
+        pcm16 = array.astype("<i2")
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(_OUTPUT_SAMPLE_RATE_HZ)
+            output.writeframes(pcm16.tobytes())
+        source_wav = buffer.getvalue()
+    else:
+        source_wav, _ = _encode_pcm16_wav(_to_float32(array), sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ)
+        with wave.open(io.BytesIO(source_wav), "rb") as encoded:
+            pcm16 = np.frombuffer(encoded.readframes(encoded.getnframes()), dtype="<i2")
+    if not np.any(pcm16):
+        raise PhraseRenderFailed("raw MOSS source WAV must not be silent")
+    peak = float(np.max(np.abs(pcm16.astype(np.float64)))) / 32768.0
+    return source_wav, min(1.0, peak), int(pcm16.size)
+
+
+def _complete_alignment_artifact(
+    *,
+    request: TwoBarRenderRequest,
+    moss_result: MossPhraseResult,
+    alignment: MmsAlignmentResult,
+    mapped: SyllableOnsetMap,
+    diagnostic_anchors: Sequence[VowelAnchor],
+    effective_anchors: Sequence[VowelAnchor],
+    warp_plan: _WarpPlan,
+    endpoint_policy: Mapping[str, object],
+    stretch_ratios: tuple[float, ...],
+    output_wav: bytes | None,
+    output_metrics: Mapping[str, float] | None,
+    target_frame_count: int,
+    warnings: Sequence[str],
+    warp_status: str,
+) -> Mapping[str, object]:
+    character_spans, word_spans = _alignment_span_payload(alignment)
     anchors = tuple(
         {
             **dict(diagnostic),
@@ -628,38 +853,8 @@ def _complete_alignment_artifact(
         "schema_version": "streammuse.mms_alignment.v1",
         "request_sha256": request.sha256,
         "normalized_transcript": alignment.normalized_transcript,
-        "aligner": {
-            "identity": alignment.aligner_identity,
-            "version": alignment.aligner_version,
-            "alignment_time_ms": alignment.alignment_time_ms,
-            "duration_seconds": alignment.duration_seconds,
-            "confidence": alignment.confidence,
-            "warnings": alignment.warnings,
-            "source_timebase": {
-                "sample_rate_hz": alignment.source_sample_rate_hz,
-                "frame_count": alignment.source_frame_count,
-                "duration_seconds": alignment.source_duration_seconds,
-            },
-            "inference_timebase": {
-                "sample_rate_hz": alignment.inference_sample_rate_hz,
-                "frame_count": alignment.inference_frame_count,
-                "duration_seconds": alignment.duration_seconds,
-            },
-            "emission_frame_count": alignment.emission_frame_count,
-        },
-        "source": {
-            "artifact": "source.wav",
-            "sha256": moss_result.source_wav_sha256,
-            "sample_rate_hz": moss_result.sample_rate_hz,
-            "frame_count": moss_result.frame_count,
-            "duration_seconds": moss_result.duration_seconds,
-            "reference_voice_sha256": moss_result.reference_voice_sha256,
-            "model_id": moss_result.model_id,
-            "model_revision": moss_result.model_revision,
-            "generation_time_ms": moss_result.generation_time_ms,
-            "generation_settings": dict(moss_result.resolved_generation_settings),
-            "warnings": moss_result.warnings,
-        },
+        "aligner": _aligner_payload(alignment),
+        "source": _source_payload(moss_result),
         "character_spans": character_spans,
         "word_spans": word_spans,
         "mapping": {
