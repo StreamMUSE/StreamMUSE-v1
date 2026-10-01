@@ -354,3 +354,58 @@ D1（整理现有改动）
 ## 实施记录
 
 （每个阶段完成后在这里追加：日期、提交、实测数字、偏离计划之处。）
+
+### 第 0 阶段（2026-10-01，提交 `93c04b78`、`83c224c4`，以及本条记录所在的提交）
+
+**做了什么**
+
+- `93c04b78`：把拉伸相关的代码（准备输入、锚点规划、R3 调用、诊断）从 `moss_aligned_phrase.py` 移到不依赖 GPU 的 [phrase_warp.py](../../src/streammuse/infrastructure/rap/phrase_warp.py)。服务器输出逐字节不变。
+- `83c224c4`：协议 v2。
+  - 服务器做完 MOSS 和 MMS 就返回：原始人声（PCM16）、每个音节的 `source_onsets` 和 `onset_confidence`。
+  - Mac 用同一个 `chunk_render_request` 重建渲染请求，再通过 `PhraseWarper` 接口（实现是 `RubberBandPhraseWarper`）在本机跑 R3。
+  - v1 保留，用于回滚。
+  - `request_id` 包含 `schema_version`，v1 和 v2 的缓存天然分开。
+  - 服务器 `/health` 新增 `supported_schema_versions`。v2 客户端遇到只支持 v1 的服务器时直接报错，不会静默退回。
+- 新增参数：
+  - demo：`--rap-protocol v1|v2`（默认 v2）、`--rap-warp-policy`；
+  - `client_simulation.py`：`--protocol`、`--warp-policy`。
+- Mac 启动脚本改为 v2 加 `gentle_sparse_r3`。顺手补上了 Mac 计划里写了、但脚本里漏掉的 `--rap-render-reserve-ms 3500`。
+- 更新了 quickstart 和 09-11 流程说明。组会 slides 第 3 页的架构图还没改。
+
+**验收结果**（Mac-local 栈：MLX q8 MOSS + mlx_chat_server Qwen，PCM 传输，90 BPM）
+
+| 项目 | 门槛 | 结果 |
+|---|---|---|
+| `client_simulation` 24 个 chunk，gentle_sparse | 24 / 24 被接受 | **24 / 24**，Mac 端拒收 0 |
+| 端到端耗时 | — | p50 3298 ms，p90 3718 ms，p95 4142 ms，max 4234 ms |
+| Mac 本地 R3 | p95 ≤ 150 ms | p50 47 ms，p95 89 ms（只有第一次是 212 ms，属于冷启动） |
+| 输出一致性 | 逐字节相同 | 用真实 rubberband 4.0.0 测试通过，gentle_sparse 和 all_onsets 都覆盖；另有 orchestrator → 打包 → Mac 的跨边界测试 |
+| 真实会话（24 bar，无界面，wav 输出） | underrun 0 | **underrun 0**；R3 p50 48 ms，p95 86 ms；24 bar 里有 22 bar 用了远端人声 |
+
+真实会话里有 2 个 bar 用了 fallback（bar 8–9）。原因是服务器返回 `no_valid_candidates`：候选歌词不够，与 v2 无关。
+
+**Opus 的影响：与计划不同的地方**
+
+- 计划里沿用了第 4 阶段的波形门槛（SNR 和相关系数）。但 R3 是 phase vocoder，输入哪怕变一点点，输出的相位都会变。对照实验证明了这一点：只给原始人声加 1 LSB 的抖动（听不出来），拉伸结果的波形相关系数就掉到 0.58。所以在 R3 下游，波形 SNR 和相关系数没有意义，改用 STFT 幅度 SNR 和对数谱距离（LSD）。
+- 工具：[scripts/check_v2_opus_warp_quality.py](../../scripts/check_v2_opus_warp_quality.py)。下表是 37 个 chunk 的中位数，参考信号是“以 PCM 为输入的 Mac 端拉伸结果”。
+
+  | 路径 | 幅度 SNR | LSD | 波形相关 |
+  |---|---:|---:|---:|
+  | v1：先 R3 再 Opus 48k（现状） | 25.2 dB | 2.04 dB | 0.997 |
+  | v2：先 Opus 48k 再 R3 | 19.8 dB | 2.73 dB | 0.36 |
+  | v2：先 Opus 96k 再 R3 | 23.0 dB | 1.81 dB | 0.42 |
+  | 对照：加 1 LSB 抖动再 R3 | 23.6 dB | 1.46 dB | 0.58 |
+
+- 结论：
+  - **v2 加 48 kbps Opus 明显比 v1 差**，因为 Opus 的失真会被 R3 一起拉伸。
+  - **96 kbps** 时 LSD 已经好于 v1，幅度 SNR 接近抖动对照，也就是接近 R3 本身的波动下限。包大小约 74 KB，PCM 是 261 KB，48k 是 30 KB。
+  - Mac-local 默认用 PCM，不受影响。
+  - **待定：** H200 加 SSH 隧道那条路如果要用 v2 加 Opus，是否把码率提到 96 kbps，以及是否盲听确认。这件事和第 4 阶段的压缩级别评估一起决定，目前还没改代码。
+
+**其他发现，不在本阶段修**
+
+- `client_simulation` 里有 2 次首个请求返回 `render_failed`（503），客户端重试后成功。
+  - 两次都在 MOSS 之前就失败了：MOSS 服务的请求数只等于成功渲染的次数加上预热，而且失败耗时不到 1 s。所以失败发生在 renderer 的 preflight，是由选中歌词的文本引起的（例如 MMS 归一化后一个词变成了两个词）。v1 下也会这样。
+  - 重试成功是因为 MLX 批量采样不完全确定，重试时选中了不同的歌词。
+  - 证据被重试成功后的清理一起删掉了，下次应在服务器侧记录 preflight 的失败原因。
+- 本次分析的第一版临时脚本中，v1 Opus 对照因为解码没有对齐，曾经得出 12.6 dB。修好后与 8 月实验一致（21.7 dB，0.997），上表用的是修好后的结果。
