@@ -1941,6 +1941,38 @@ def test_mlx_producer_identity_is_distinct_from_sglang(tmp_path: Path) -> None:
     assert mlx_manifest.fingerprint != other_quantization.fingerprint
 
 
+def test_opus_compression_level_is_part_of_opus_producer_identity_only(tmp_path: Path) -> None:
+    common = dict(
+        model_revision="cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
+        reference_audio_sha256="1" * 64,
+        reference_text_sha256=None,
+        aligner_identity="MMS_FA",
+        aligner_version="mms-version",
+    )
+
+    def manifest(*extra: str):
+        config = rap_render_server._server_config_from_args(
+            build_parser().parse_args([*_mlx_cli_args(tmp_path), *extra])
+        )
+        return config, rap_render_server._build_producer_manifest(
+            config, aligner_device="mps", **common
+        )
+
+    pcm_config, pcm = manifest()
+    _, pcm_other_level = manifest("--opus-compression-level", "10")
+    opus_config, opus_default = manifest("--wire-audio-codec", "opus")
+    _, opus_ten = manifest("--wire-audio-codec", "opus", "--opus-compression-level", "10")
+
+    assert pcm_config.opus_compression_level == opus_config.opus_compression_level == 5
+    assert "opus_compression_level" not in pcm.to_payload()["output"]
+    assert pcm.fingerprint == pcm_other_level.fingerprint
+    assert opus_default.to_payload()["output"]["opus_compression_level"] == 5
+    assert opus_ten.to_payload()["output"]["opus_compression_level"] == 10
+    assert opus_default.fingerprint != opus_ten.fingerprint
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([*_mlx_cli_args(tmp_path), "--opus-compression-level", "11"])
+
+
 def test_cli_resolves_default_server_before_composing_resident_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

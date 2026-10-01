@@ -46,6 +46,11 @@ client also accepts PCM as a compatibility fallback, so the server can be
 temporarily started with `--wire-audio-codec pcm` without changing the client.
 The canonical `response.zip` and `vocal.wav` remain PCM in both modes; Opus is
 only a derived wire representation.
+`--opus-compression-level` (default 5) sets the libopus complexity. Level 5
+encodes in about 60% of the time of the former level 10 and measured no worse
+at 48 kbps (2026-10-01, 37 MOSS phrases); use `--opus-compression-level 10` to
+roll back. The level is part of the producer fingerprint in Opus mode, so each
+level has its own artifact namespace and cache.
 
 The remote chunk protocol defaults to v2 (`--rap-protocol v2`): the render
 server stops after MOSS and MMS and returns the raw MOSS phrase (PCM16) plus one

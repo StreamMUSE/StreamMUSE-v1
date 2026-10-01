@@ -10,7 +10,12 @@ import pytest
 from streammuse.infrastructure.rap.opus_codec import FFmpegOpusCodec, FFmpegOpusCodecError
 
 
-def test_encode_uses_24khz_mono_48kbps_libopus_audio_vbr(monkeypatch) -> None:
+def _option(command: list[str], flag: str) -> str:
+    return command[command.index(flag) + 1]
+
+
+@pytest.mark.parametrize(("level", "expected"), ((None, "5"), (0, "0"), (5, "5"), (10, "10")))
+def test_encode_uses_24khz_mono_48kbps_libopus_audio_vbr(monkeypatch, level, expected) -> None:
     calls: list[tuple[list[str], bytes]] = []
 
     def run(command, *, input, capture_output, check, timeout):
@@ -18,21 +23,39 @@ def test_encode_uses_24khz_mono_48kbps_libopus_audio_vbr(monkeypatch) -> None:
         return subprocess.CompletedProcess(command, 0, stdout=b"opus-bytes", stderr=b"")
 
     monkeypatch.setattr("streammuse.infrastructure.rap.opus_codec.subprocess.run", run)
-    codec = FFmpegOpusCodec(timeout_seconds=2.0)
+    codec = FFmpegOpusCodec(
+        timeout_seconds=2.0, **({} if level is None else {"compression_level": level})
+    )
 
     encoded = codec.encode_pcm16_mono_24khz(b"\x01\x00" * 12, expected_frame_count=12)
 
     assert encoded == b"opus-bytes"
-    assert calls == [
-        (
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", "24000", "-ac", "1",
-                "-i", "pipe:0", "-c:a", "libopus", "-b:a", "48k", "-vbr", "on", "-application", "audio",
-                "-compression_level", "10", "-f", "opus", "pipe:1",
-            ],
-            b"\x01\x00" * 12,
-        )
-    ]
+    (command, payload), = calls
+    assert payload == b"\x01\x00" * 12
+    assert command[:4] == ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    assert command[-1] == "pipe:1"
+    assert {flag: _option(command, flag) for flag in (
+        "-f", "-ar", "-ac", "-i", "-c:a", "-b:a", "-vbr", "-application", "-compression_level",
+    )} == {
+        "-f": "s16le",
+        "-ar": "24000",
+        "-ac": "1",
+        "-i": "pipe:0",
+        "-c:a": "libopus",
+        "-b:a": "48k",
+        "-vbr": "on",
+        "-application": "audio",
+        "-compression_level": expected,
+    }
+    assert command[-3:-1] == ["-f", "opus"]
+    assert codec.compression_level == int(expected)
+    assert f"compression_level={expected}" in codec.encoder_identity
+
+
+@pytest.mark.parametrize("level", (-1, 11, 5.0, True, "5"))
+def test_rejects_invalid_compression_level(level) -> None:
+    with pytest.raises(ValueError, match="compression_level"):
+        FFmpegOpusCodec(compression_level=level)
 
 
 def test_decode_rejects_non_exact_manifest_frame_count(monkeypatch) -> None:

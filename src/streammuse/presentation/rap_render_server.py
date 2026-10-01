@@ -245,6 +245,7 @@ class RapRenderServerConfig:
     candidate_profile: str
     moss_warp_policy: str = "gentle_sparse_r3"
     wire_audio_codec: str = "pcm"
+    opus_compression_level: int = 5
     moss_serving_backend: str = "inprocess"
     moss_sglang_url: str | None = None
     moss_reference_text_file: Path | None = None
@@ -1728,6 +1729,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--wire-audio-codec", choices=("pcm", "opus"), default="pcm")
     parser.add_argument(
+        "--opus-compression-level",
+        type=int,
+        choices=range(11),
+        default=5,
+        metavar="{0..10}",
+        help="libopus complexity for --wire-audio-codec opus (10 was the pre-2026-10 default)",
+    )
+    parser.add_argument(
         "--concurrent-bar-generation",
         action="store_true",
         help="generate both bars' initial candidate waves at once, one chat client per bar",
@@ -1760,7 +1769,7 @@ def main(
     if config.wire_audio_codec == "opus":
         from streammuse.infrastructure.rap.opus_codec import FFmpegOpusCodec
 
-        opus_codec = FFmpegOpusCodec()
+        opus_codec = FFmpegOpusCodec(compression_level=config.opus_compression_level)
         opus_codec.probe()
     composition = compose(config)
     try:
@@ -1911,6 +1920,7 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         candidate_profile=args.candidate_profile,
         moss_warp_policy=args.moss_warp_policy,
         wire_audio_codec=args.wire_audio_codec,
+        opus_compression_level=args.opus_compression_level,
         moss_serving_backend=backend,
         moss_sglang_url=args.moss_sglang_url,
         moss_reference_text_file=(
@@ -2545,6 +2555,13 @@ def _build_producer_manifest(
         output={
             "sample_rate_hz": 24_000,
             "wire_audio_codec": config.wire_audio_codec,
+            # Only Opus output depends on the level, so PCM namespaces keep
+            # their fingerprint (and cache) across this setting.
+            **(
+                {"opus_compression_level": config.opus_compression_level}
+                if config.wire_audio_codec == "opus"
+                else {}
+            ),
             "public_schema_version": _SUPPORTED_SCHEMA_VERSIONS_TEXT,
         },
     )
