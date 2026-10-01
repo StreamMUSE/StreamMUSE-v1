@@ -4,6 +4,7 @@ import io
 import struct
 import threading
 import wave
+from concurrent.futures import Executor, Future
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -276,6 +277,176 @@ def test_bar_generators_require_one_generator_per_bar() -> None:
             stress_only_weights(),
             bar_generators=(ScriptedGenerator([]),),
         )
+
+
+class _FlushingFuture(Future):
+    def __init__(self, executor: "VirtualParallelExecutor") -> None:
+        super().__init__()
+        self._executor = executor
+
+    def result(self, timeout=None):
+        if not self.done():
+            self._executor.flush()
+        return super().result(timeout)
+
+
+class VirtualParallelExecutor(Executor):
+    """Runs one round's submissions in reverse bar order, as if in parallel.
+
+    Every call starts at the round's start time on the shared fake clock, and the
+    round ends at the slowest call, so the planner sees true overlap without
+    real threads.
+    """
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.pending: list = []
+        self.completion_order: list[int] = []
+
+    def submit(self, fn, /, *args, **kwargs):
+        future = _FlushingFuture(self)
+        self.pending.append((future, fn, args, kwargs))
+        return future
+
+    def flush(self) -> None:
+        started = end = self.clock.value
+        for future, fn, args, kwargs in reversed(self.pending):
+            self.clock.value = started
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as error:  # pragma: no cover - mirrors Executor
+                future.set_exception(error)
+            end = max(end, self.clock.value)
+            self.completion_order.append(args[1].target_bar)
+        self.pending.clear()
+        self.clock.value = end
+
+
+_FOUR = ("one two three four", "five six seven eight", "nine ten eleven twelve")
+
+
+def test_rounds_finishing_bar_one_first_match_the_serial_ledger_and_selection() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    # Bar 0 needs one rescue wave; bar 1 is satisfied by its initial wave.
+    policy = RemoteCandidatePolicy("concurrent", 2, 2, 6, 2, 0.0, 500)
+    request = chunk_request(first_flow=four_syllables, second_flow=four_syllables, policy=policy)
+    initial_0 = (_FOUR[0], "too short")
+    initial_1 = (_FOUR[1], _FOUR[2])
+    rescue_0 = ("alpha beta gamma delta", "epsilon zeta eta theta")
+
+    serial = planner(
+        ScriptedGenerator([(0, initial_0), (1, initial_1), (0, rescue_0)])
+    ).plan(request)
+    clock = FakeClock()
+    executor = VirtualParallelExecutor(clock)
+    concurrent = ChunkCandidatePlanner(
+        ScriptedGenerator([]),
+        FakeAnalyzer(),
+        stress_only_weights(),
+        monotonic=clock,
+        bar_generators=(
+            ScriptedGenerator([(0, initial_0), (0, rescue_0)]),
+            ScriptedGenerator([(1, initial_1)]),
+        ),
+        executor=executor,
+    ).plan(request)
+
+    assert executor.completion_order == [1, 0, 0]
+    assert concurrent.candidate_ledger == serial.candidate_ledger
+    assert concurrent.selected_bars == serial.selected_bars
+    assert concurrent.candidate_stats == serial.candidate_stats
+
+
+def test_rescue_waves_for_both_bars_are_issued_together() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    policy = RemoteCandidatePolicy("concurrent", 1, 1, 2, 1, 0.0, 500)
+    barrier = threading.Barrier(2)
+    first = BarrierGenerator([(0, ("too short",)), (0, (_FOUR[0],))], barrier)
+    second = BarrierGenerator([(1, ("also short",)), (1, (_FOUR[1],))], barrier)
+
+    plan = ChunkCandidatePlanner(
+        ScriptedGenerator([]),
+        FakeAnalyzer(),
+        stress_only_weights(),
+        monotonic=FakeClock(),
+        bar_generators=(first, second),
+    ).plan(chunk_request(first_flow=four_syllables, second_flow=four_syllables, policy=policy))
+
+    # Each generate() waited on the shared barrier, so both rescue requests
+    # were in flight at the same time (a serial rescue would break it).
+    assert not barrier.broken
+    assert [request.request_id.rsplit(":", 1)[1] for request in first.requests] == ["0", "1"]
+    assert [request.request_id.rsplit(":", 1)[1] for request in second.requests] == ["0", "1"]
+    assert tuple(item.text for item in plan.selected_bars) == (_FOUR[0], _FOUR[1])
+    assert plan.candidate_stats.requested_count == 4
+
+
+def test_one_bar_generation_error_is_isolated_and_rescued() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    policy = RemoteCandidatePolicy("concurrent", 1, 1, 2, 1, 0.0, 500)
+    clock = FakeClock()
+    first = ScriptedGenerator([(0, RuntimeError("vLLM hiccup")), (0, (_FOUR[0],))])
+    second = ScriptedGenerator([(1, (_FOUR[1],))])
+
+    plan = ChunkCandidatePlanner(
+        ScriptedGenerator([]),
+        FakeAnalyzer(),
+        stress_only_weights(),
+        monotonic=clock,
+        bar_generators=(first, second),
+        executor=VirtualParallelExecutor(clock),
+    ).plan(chunk_request(first_flow=four_syllables, second_flow=four_syllables, policy=policy))
+
+    statuses = [(entry["bar"], entry["wave"], entry["status"]) for entry in plan.candidate_ledger]
+    assert statuses[0] == (0, 0, "generation_error")
+    assert statuses[1:] == [(1, 0, "selectable"), (0, 1, "selectable")]
+    assert len(second.requests) == 1
+    assert tuple(item.text for item in plan.selected_bars) == (_FOUR[0], _FOUR[1])
+
+
+def test_generation_time_is_the_round_wall_time_not_the_sum_of_requests() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    policy = RemoteCandidatePolicy("concurrent", 1, 0, 1, 1, 0.0, 500)
+    clock = FakeClock()
+
+    plan = ChunkCandidatePlanner(
+        ScriptedGenerator([]),
+        FakeAnalyzer(),
+        stress_only_weights(),
+        monotonic=clock,
+        bar_generators=(
+            ScriptedGenerator([(0, (_FOUR[0],))], clock=clock, elapsed_per_call=(0.3,)),
+            ScriptedGenerator([(1, (_FOUR[1],))], clock=clock, elapsed_per_call=(0.1,)),
+        ),
+        executor=VirtualParallelExecutor(clock),
+    ).plan(chunk_request(first_flow=four_syllables, second_flow=four_syllables, policy=policy))
+
+    assert plan.stage_timings_ms["generation"] == pytest.approx(300.0)
+    assert plan.stage_timings_ms["total"] >= plan.stage_timings_ms["generation"]
+
+
+def test_budget_cutoff_stops_new_rounds_but_evaluates_the_finished_one() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    policy = RemoteCandidatePolicy("concurrent", 1, 1, 2, 1, 0.0, 500)
+    clock = FakeClock()
+    # The initial round takes 4.6 s of a 5 s budget, leaving less than the
+    # 500 ms render reserve, so bar 0 gets no rescue round.
+    first = ScriptedGenerator([(0, ("too short",))], clock=clock, elapsed_per_call=(4.6,))
+    second = ScriptedGenerator([(1, (_FOUR[1],))])
+
+    with pytest.raises(NoValidCandidates) as error:
+        ChunkCandidatePlanner(
+            ScriptedGenerator([]),
+            FakeAnalyzer(),
+            stress_only_weights(),
+            monotonic=clock,
+            bar_generators=(first, second),
+            executor=VirtualParallelExecutor(clock),
+        ).plan(chunk_request(first_flow=four_syllables, second_flow=four_syllables, policy=policy))
+
+    assert len(first.requests) == 1
+    assert len(second.requests) == 1
+    assert {entry["bar"] for entry in error.value.candidate_ledger} == {0, 1}
 
 
 def test_planner_verbalizes_digits_before_analysis_selection_and_rendering() -> None:

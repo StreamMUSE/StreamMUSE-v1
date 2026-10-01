@@ -2044,10 +2044,13 @@ def test_cli_closes_composed_worker_when_server_raises(tmp_path: Path) -> None:
     assert close_calls == ["close"]
 
 
+@pytest.mark.parametrize("concurrent_bars", (False, True))
 def test_real_worker_composition_loads_warms_and_owns_resident_components(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, concurrent_bars: bool
 ) -> None:
     calls: dict[str, object] = {}
+    clients: list[object] = []
+    closed_clients: list[object] = []
     reference_bytes = _wav(_request())
 
     class FakeClientConfig:
@@ -2057,13 +2060,16 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
     class FakeClient:
         def __init__(self, config):
             calls["client"] = self
+            clients.append(self)
 
         def close(self):
             calls["client_close"] = int(calls.get("client_close", 0)) + 1
+            closed_clients.append(self)
 
     class FakeGenerator:
         def __init__(self, client, **kwargs):
             calls["generator"] = (client, kwargs)
+            self.client = client
 
     class FakeAnalyzer:
         def __init__(self):
@@ -2074,8 +2080,9 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
             calls["weights"] = self
 
     class FakePlanner:
-        def __init__(self, generator, analyzer, weights):
+        def __init__(self, generator, analyzer, weights, **kwargs):
             calls["planner"] = (self, generator, analyzer, weights)
+            calls["planner_kwargs"] = kwargs
 
     class FakeMossInstance:
         def synthesize(self, request, output_wav, *, execution):
@@ -2189,9 +2196,22 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         aligner_device="cuda:2",
         aligner_cache=tmp_path / "mms-cache",
         candidate_profile="realtime",
+        concurrent_bar_generation=concurrent_bars,
     )
 
     composition = rap_render_server._compose_real_worker(config)
+
+    _, primary_generator, _, _ = calls["planner"]  # type: ignore[misc]
+    if concurrent_bars:
+        # LocalChatModelClient allows one active request, so each bar has its
+        # own client; the first bar reuses the primary generator.
+        bar_generators = calls["planner_kwargs"]["bar_generators"]  # type: ignore[index]
+        assert bar_generators[0] is primary_generator
+        assert [generator.client for generator in bar_generators] == clients
+        assert len(set(map(id, clients))) == 2
+    else:
+        assert calls["planner_kwargs"] == {}
+        assert len(clients) == 1
 
     assert calls["client_config"] == {
         "base_url": "http://127.0.0.1:8000/v1",
@@ -2263,7 +2283,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
     composition.close()
     composition.close()
 
-    assert calls["client_close"] == 1
+    assert sorted(map(id, closed_clients)) == sorted(map(id, clients))
     assert calls["moss_close"] == 1
     assert calls["aligner_close"] == 1
 

@@ -6,7 +6,7 @@ import hashlib
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import product
 from math import isfinite
@@ -391,13 +391,17 @@ class ChunkCandidatePlanner:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         bar_generators: tuple[CandidateGenerator, CandidateGenerator] | None = None,
+        executor: Executor | None = None,
     ) -> None:
         """``bar_generators`` (one per bar, each with its own client) lets the
-        two initial waves generate concurrently; evaluation stays in bar order."""
+        bars of every wave round (initial and rescue) generate concurrently;
+        evaluation stays in bar order. ``executor`` runs those generations
+        (default: a short-lived two-thread pool per round)."""
         if bar_generators is not None and len(bar_generators) != 2:
             raise ValueError("bar_generators must provide exactly one generator per bar")
         self._generator = generator
         self._bar_generators = bar_generators
+        self._executor = executor
         self._analyzer = analyzer
         self._weights = weights
         self._monotonic = monotonic
@@ -438,8 +442,11 @@ class ChunkCandidatePlanner:
                     "generation cutoff expired before the first candidate wave"
                 )
             waves_started += len(states)
-            generated, evaluated = self._run_concurrent_initial_waves(
-                request, states, initial_wave_size, ledger, active_execution
+            generated, evaluated = self._run_concurrent_waves(
+                request,
+                [(state, initial_wave_size) for state in states],
+                ledger,
+                active_execution,
             )
             generation_ms += generated
             evaluation_ms += evaluated
@@ -464,7 +471,33 @@ class ChunkCandidatePlanner:
                 generation_ms += generated
                 evaluation_ms += evaluated
 
-        while True:
+        while self._bar_generators is not None:
+            # One concurrent rescue round: every bar still short of valid
+            # candidates generates at once, after a single budget check.
+            round_waves = []
+            for state in states:
+                if state.valid_count >= request.policy.minimum_valid_candidates:
+                    continue
+                remaining = request.policy.maximum_candidates - state.attempted_count
+                wave_size = min(request.policy.rescue_candidates, remaining)
+                if wave_size > 0:
+                    round_waves.append((state, wave_size))
+            if not round_waves:
+                break
+            if _execution_remaining_seconds(active_execution) <= render_reserve_seconds:
+                if waves_started == 0:
+                    raise RenderBudgetExpired(
+                        "generation cutoff expired before the first candidate wave"
+                    )
+                break
+            waves_started += len(round_waves)
+            generated, evaluated = self._run_concurrent_waves(
+                request, round_waves, ledger, active_execution
+            )
+            generation_ms += generated
+            evaluation_ms += evaluated
+
+        while self._bar_generators is None:
             progressed = False
             cutoff_reached = False
             for state in states:
@@ -547,21 +580,26 @@ class ChunkCandidatePlanner:
             candidate_ledger=tuple(_frozen_mapping(item) for item in ledger),
         )
 
-    def _run_concurrent_initial_waves(
+    def _run_concurrent_waves(
         self,
         request: RemoteRapChunkRequest,
-        states: list[_BarState],
-        wave_size: int,
+        waves: list[tuple[_BarState, int]],
         ledger: list[dict[str, object]],
         execution: SynthesisExecutionContext,
     ) -> tuple[float, float]:
         _execution_checkpoint(execution)
         prepared = [
-            (state, state.wave_index, self._next_candidate_request(request, state, wave_size))
-            for state in states
+            (
+                state,
+                state.wave_index,
+                wave_size,
+                self._next_candidate_request(request, state, wave_size),
+            )
+            for state, wave_size in waves
         ]
         started = self._monotonic()
-        with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
+
+        def submit_all(pool: Executor) -> list:
             futures = [
                 pool.submit(
                     self._generate_batch,
@@ -569,13 +607,22 @@ class ChunkCandidatePlanner:
                     candidate_request,
                     execution,
                 )
-                for state, _, candidate_request in prepared
+                for state, _, _, candidate_request in prepared
             ]
-            results = [future.result() for future in futures]
-        # Generation overlapped, so its stage time is wall time, not a sum.
+            return [future.result() for future in futures]
+
+        if self._executor is not None:
+            results = submit_all(self._executor)
+        else:
+            with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
+                results = submit_all(pool)
+        # Generation overlapped, so its stage time is the round's wall time,
+        # not the sum of the per-bar request times.
         generation_ms = max(0.0, (self._monotonic() - started) * 1000.0)
         evaluation_ms = 0.0
-        for (state, wave, candidate_request), (batch, error, _) in zip(
+        # Results are recorded in bar order whatever order they finished in, so
+        # the ledger, source_order and selection match the serial planner.
+        for (state, wave, wave_size, candidate_request), (batch, error, _) in zip(
             prepared, results, strict=True
         ):
             _, evaluated = self._record_wave(

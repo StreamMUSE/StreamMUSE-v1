@@ -98,9 +98,17 @@ CUDA_VISIBLE_DEVICES=<UNUSED_VLLM_GPU_ID> \
   --port 8001 \
   --served-model-name qwen-rap \
   --max-model-len 2048 \
-  --max-num-seqs 8 \
+  --max-num-seqs 32 \
   --gpu-memory-utilization 0.25
 ```
+
+`--max-num-seqs 32`: the render server asks for 16 candidates per bar and, with
+`--concurrent-bar-generation`, both bars at once, so one chunk is 32 sequences.
+With 8, a single n=16 request decodes in two rounds (measured on H200: server
+generation p50 317 ms at 8, 175 ms at 32 for one bar at a time). Each sequence
+is about 400 tokens; confirm in the vLLM startup log that the reported KV cache
+capacity holds at least 32 x 2048 tokens at `--gpu-memory-utilization 0.25`,
+otherwise vLLM queues the extra sequences.
 
 In H200 terminal B, declare the installed MOSS/Rubber Band assets and start the
 private render service on the second unused GPU. `CUDA_VISIBLE_DEVICES` maps
@@ -143,6 +151,7 @@ CUDA_VISIBLE_DEVICES=<UNUSED_MOSS_GPU_ID> \
   --artifact-root "$RAP_ARTIFACT_ROOT" \
   --vllm-url http://127.0.0.1:8001/v1 \
   --vllm-model qwen-rap \
+  --concurrent-bar-generation \
   --moss-model "$MOSS_SNAPSHOT" \
   --moss-serving-backend inprocess \
   --moss-device cuda:0 \
@@ -429,7 +438,7 @@ CUDA_VISIBLE_DEVICES=<UNUSED_GPU_ID> \
   --port 8001 \
   --served-model-name qwen-rap \
   --max-model-len 2048 \
-  --max-num-seqs 8 \
+  --max-num-seqs 32 \
   --gpu-memory-utilization 0.25
 ```
 

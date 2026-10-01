@@ -175,9 +175,17 @@ CUDA_VISIBLE_DEVICES="$QWEN_GPU" \
   --port 8001 \
   --served-model-name qwen-rap \
   --max-model-len 2048 \
-  --max-num-seqs 8 \
+  --max-num-seqs 32 \
   --gpu-memory-utilization 0.25
 ```
+
+`--max-num-seqs 32`: the render server asks for 16 candidates per bar and, with
+`--concurrent-bar-generation`, both bars at once, so one chunk is 32 sequences.
+With 8, a single n=16 request decodes in two rounds (measured on H200: server
+generation p50 317 ms at 8, 175 ms at 32 for one bar at a time). Each sequence
+is about 400 tokens; confirm in the vLLM startup log that the reported KV cache
+capacity holds at least 32 x 2048 tokens at `--gpu-memory-utilization 0.25`,
+otherwise vLLM queues the extra sequences.
 
 Wait until `curl --fail http://127.0.0.1:8001/v1/models` contains `qwen-rap`.
 
@@ -220,6 +228,7 @@ CUDA_VISIBLE_DEVICES="$MOSS_GPU" \
   --artifact-root "$RAP_ARTIFACT_ROOT" \
   --vllm-url http://127.0.0.1:8001/v1 \
   --vllm-model qwen-rap \
+  --concurrent-bar-generation \
   --moss-model "$MOSS_MODEL_ID" \
   --moss-serving-backend sglang-omni \
   --moss-reference-wav "$MOSS_REFERENCE_WAV" \
@@ -317,6 +326,7 @@ CUDA_VISIBLE_DEVICES="$MOSS_GPU" \
   --artifact-root "$ROLLBACK_ARTIFACT_ROOT" \
   --vllm-url http://127.0.0.1:8001/v1 \
   --vllm-model qwen-rap \
+  --concurrent-bar-generation \
   --moss-model "$MOSS_MODEL_PATH" \
   --moss-serving-backend inprocess \
   --moss-device cuda:0 \
