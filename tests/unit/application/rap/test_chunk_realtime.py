@@ -1099,6 +1099,7 @@ def test_chunk_event_strings_and_nested_aggregates_have_hard_bounds() -> None:
         "hashes",
         "artifact_refs",
         "transfer_bytes",
+        "local_warp",
         "failure_reason",
     }
     assert all(len(item.encode("utf-8")) <= 512 for item in payload["selected_lines"])

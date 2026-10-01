@@ -252,7 +252,10 @@ def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
     )
     result = renderer.render(_request(), tmp_path / "request-1")
 
-    assert stretcher_factory_calls == [{"engine": "r3", "smoothing": False}]
+    # The server builds R3 with the same length fitting the Mac v2 warper uses.
+    assert stretcher_factory_calls == [
+        {"engine": "r3", "smoothing": False, "length_tolerance_frames": 480, "tail_fade_frames": 120}
+    ]
     assert synthesizer.calls == [(_request(), tmp_path / "request-1" / "source.wav")]
     assert aligner.calls == [(tmp_path / "request-1" / "source.wav", "Steady motion!")]
     assert len(stretcher.calls) == 1

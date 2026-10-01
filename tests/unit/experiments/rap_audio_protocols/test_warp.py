@@ -1193,3 +1193,78 @@ def test_regularize_anchor_targets_handles_real_24khz_chunk_scale() -> None:
     )
     assert min(ratios) >= 0.5 - 0.001
     assert max(ratios) <= 2.0 + 0.001
+
+
+def _scripted_rubberband(monkeypatch: pytest.MonkeyPatch, outputs: list[np.ndarray]) -> list[list[str]]:
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs) -> None:
+        del kwargs
+        commands.append(list(command))
+        wavfile.write(Path(command[-1]), 1_000, outputs[len(commands) - 1])
+
+    monkeypatch.setattr("streammuse.experiments.rap_audio_protocols.warp.subprocess.run", fake_run)
+    return commands
+
+
+def test_time_map_stretcher_pads_a_short_output_within_tolerance_with_one_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = np.full(170, 0.5, dtype=np.float32)
+    commands = _scripted_rubberband(monkeypatch, [raw])
+    stretcher = RubberBandTimeMapStretcher(
+        binary="rubberband", length_tolerance_frames=40, tail_fade_frames=10
+    )
+
+    output = stretcher(np.ones(200, dtype=np.float32), 200, 1_000, ((0, 0), (100, 100), (199, 199)))
+
+    assert len(commands) == 1
+    assert len(output) == 200
+    assert stretcher.last_attempt_frame_deviations == (-30,)
+    np.testing.assert_array_equal(output[:160], raw[:160])
+    # The last 10 real frames fade out into the zero padding.
+    assert np.all(np.diff(output[160:170]) < 0) and output[169] < 0.1
+    np.testing.assert_array_equal(output[170:], np.zeros(30, dtype=np.float32))
+
+
+def test_time_map_stretcher_trims_a_long_output_within_tolerance_with_a_fade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = np.full(230, 0.5, dtype=np.float32)
+    commands = _scripted_rubberband(monkeypatch, [raw])
+    stretcher = RubberBandTimeMapStretcher(
+        binary="rubberband", length_tolerance_frames=40, tail_fade_frames=10
+    )
+
+    output = stretcher(np.ones(200, dtype=np.float32), 200, 1_000, ((0, 0), (100, 100), (199, 199)))
+
+    assert len(commands) == 1
+    assert stretcher.last_attempt_frame_deviations == (30,)
+    np.testing.assert_array_equal(output[:190], raw[:190])
+    assert np.all(np.diff(output[190:]) < 0) and output[-1] < 0.1
+
+
+def test_time_map_stretcher_corrects_the_endpoint_once_beyond_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final = np.linspace(-0.4, 0.4, 195, dtype=np.float32)
+    commands = _scripted_rubberband(monkeypatch, [np.zeros(120, dtype=np.float32), final])
+    stretcher = RubberBandTimeMapStretcher(
+        binary="rubberband", length_tolerance_frames=40, tail_fade_frames=10
+    )
+
+    output = stretcher(np.ones(200, dtype=np.float32), 200, 1_000, ((0, 0), (100, 100), (199, 199)))
+
+    assert len(commands) == 2
+    assert stretcher.last_attempt_frame_deviations == (-80, -5)
+    assert len(output) == 200
+    np.testing.assert_array_equal(output[:185], final[:185])
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    ({"length_tolerance_frames": 1}, {"length_tolerance_frames": 2.5}, {"tail_fade_frames": -1}),
+)
+def test_time_map_stretcher_rejects_invalid_length_fitting(kwargs) -> None:
+    with pytest.raises(ValueError):
+        RubberBandTimeMapStretcher(binary="rubberband", **kwargs)

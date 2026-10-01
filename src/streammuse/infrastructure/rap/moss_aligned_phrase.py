@@ -49,6 +49,7 @@ from streammuse.infrastructure.rap.mms_forced_alignment import (
 from streammuse.infrastructure.rap.moss_tts import MossPhraseResult
 from streammuse.infrastructure.rap.phrase_warp import (
     MossWarpPolicy,
+    R3_STRETCHER_OPTIONS,
     FullChunkStretcher as _FullChunkStretcher,
     WarpPlan as _WarpPlan,
     prepare_warp_input as _prepare_warp_input,
@@ -108,7 +109,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         self._synthesizer = synthesizer
         self._aligner = aligner
         self._onset_mapper = onset_mapper
-        self._stretcher = stretcher_factory(engine="r3", smoothing=False)
+        self._stretcher = stretcher_factory(**R3_STRETCHER_OPTIONS)
         self._rubberband_version = rubberband_version
         self._warp_policy = MossWarpPolicy(warp_policy)
         self._clock = clock

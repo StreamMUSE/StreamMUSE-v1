@@ -22,6 +22,7 @@ _MAX_FLOW_SLOTS = 32
 _MAX_CONTEXT_LINES = 4
 _MAX_COMPONENT_SCORES = 16
 _MAX_DIAGNOSTIC_ITEMS = 8
+_MAX_R3_ATTEMPTS = 8
 _MAX_ARTIFACT_REFS = len(REMOTE_CHUNK_ARTIFACT_IDS)
 _MAX_LINE_BYTES = 512
 _MAX_WARNING_BYTES = 256
@@ -298,12 +299,28 @@ def bounded_chunk_event_payload(value: object) -> dict[str, Any]:
             _safe_get(payload, "artifact_refs"), limit=_MAX_ARTIFACT_REFS
         ),
         "transfer_bytes": transfer_bytes,
+        "local_warp": _bounded_local_warp(_safe_get(payload, "local_warp")),
         "failure_reason": _bounded_text(
             _first_value(payload, ("failure_reason", "error_message")),
             _MAX_LINE_BYTES,
         ),
     }
     return _enforce_serialized_ceiling(result)
+
+
+def _bounded_local_warp(value: object) -> dict[str, Any] | None:
+    """Protocol v2 Mac-side R3 evidence; ``None`` for server-warped chunks."""
+    source = _mapping(value)
+    if not source:
+        return None
+    return {
+        "policy": _bounded_text(_safe_get(source, "policy"), _MAX_NAME_BYTES),
+        "rubberband": _bounded_text(_safe_get(source, "rubberband"), _MAX_NAME_BYTES),
+        "warp_ms": _nonnegative_number(_safe_get(source, "warp_ms")),
+        "r3_attempt_deviations": _bounded_signed_integers(
+            _safe_get(source, "r3_attempt_deviations"), _MAX_R3_ATTEMPTS
+        ),
+    }
 
 
 def _bounded_flow(value: Mapping[str, object]) -> dict[str, Any]:
@@ -453,6 +470,16 @@ def _bounded_integers(value: object, limit: int) -> list[int]:
     if not isinstance(value, (list, tuple)):
         return []
     return [item for item in islice(value, limit) if _nonnegative_integer(item) is not None]
+
+
+def _bounded_signed_integers(value: object, limit: int) -> list[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [
+        item
+        for item in islice(value, limit)
+        if type(item) is int and abs(item) <= _MAX_SAFE_INTEGER
+    ]
 
 
 def _bounded_integer_mapping(value: object) -> dict[str, int]:

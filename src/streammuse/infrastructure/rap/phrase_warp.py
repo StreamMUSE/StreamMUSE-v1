@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol
 
 import numpy as np
@@ -32,6 +33,14 @@ from streammuse.experiments.rap_audio_protocols.warp import (
 
 GENTLE_STRETCH_MIN = 0.75
 GENTLE_STRETCH_MAX = 1.35
+
+# R3 output-length fitting shared by the server (v1) and the Mac (v2). Measured
+# first-run errors were always short outputs ending in digital silence, so an
+# error up to 20 ms is padded (with a 5 ms seam fade) instead of re-running R3;
+# larger errors get one endpoint-corrected re-run.
+R3_STRETCHER_OPTIONS = MappingProxyType(
+    {"engine": "r3", "smoothing": False, "length_tolerance_frames": 480, "tail_fade_frames": 120}
+)
 
 
 class MossWarpPolicy(str, Enum):
@@ -461,6 +470,8 @@ class WarpedPhrase:
     effective_anchors: tuple[VowelAnchor, ...]
     diagnostic_anchors: tuple[VowelAnchor, ...]
     stretch_ratios: tuple[float, ...]
+    # Output length minus target per Rubber Band run (empty for fake stretchers).
+    r3_attempt_deviations: tuple[int, ...] = ()
 
 
 def warp_phrase(
@@ -518,6 +529,7 @@ def warp_phrase(
             sample_rate_hz=sample_rate_hz,
         ),
         stretch_ratios=tuple(region.stretch_ratio for region in warped.stretch_regions),
+        r3_attempt_deviations=tuple(getattr(stretcher, "last_attempt_frame_deviations", ())),
     )
 
 
@@ -572,7 +584,7 @@ class RubberBandPhraseWarper:
 
         self._policy = MossWarpPolicy(policy)
         self._rubberband_version = rubberband_version
-        self._stretcher = stretcher or RubberBandTimeMapStretcher(engine="r3", smoothing=False)
+        self._stretcher = stretcher or RubberBandTimeMapStretcher(**R3_STRETCHER_OPTIONS)
         self._sample_rate_hz = sample_rate_hz
         self._clock = clock or time.perf_counter
 
@@ -628,4 +640,5 @@ class RubberBandPhraseWarper:
             warp_ms=max(0.0, (self._clock() - started) * 1000.0),
             rubberband_version=self._rubberband_version,
             policy=self._policy.value,
+            r3_attempt_deviations=warped.r3_attempt_deviations,
         )

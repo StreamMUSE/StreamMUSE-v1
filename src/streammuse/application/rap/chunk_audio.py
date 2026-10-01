@@ -105,6 +105,8 @@ class LocalPhraseWarp:
     warp_ms: float
     rubberband_version: str
     policy: str
+    # Output length minus target for each Rubber Band run, in frames.
+    r3_attempt_deviations: tuple[int, ...] = ()
 
 
 class PhraseWarper(Protocol):
@@ -405,16 +407,14 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 "response_bytes": response.timing.response_bytes,
             },
         }
-        bounded = bounded_chunk_event_payload(raw)
         if local_warp is not None:
-            bounded = {
-                **bounded,
-                "local_warp": {
-                    "policy": local_warp.policy,
-                    "rubberband": local_warp.rubberband_version,
-                    "warp_ms": local_warp.warp_ms,
-                },
+            raw["local_warp"] = {
+                "policy": local_warp.policy,
+                "rubberband": local_warp.rubberband_version,
+                "warp_ms": local_warp.warp_ms,
+                "r3_attempt_deviations": local_warp.r3_attempt_deviations,
             }
+        bounded = bounded_chunk_event_payload(raw)
         return {
             **bounded,
             "transfer": {

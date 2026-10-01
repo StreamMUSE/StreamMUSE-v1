@@ -214,15 +214,28 @@ class RubberBandTimeMapStretcher:
         engine: str = "r3",
         smoothing: bool = False,
         extra_args: Sequence[str] = (),
+        length_tolerance_frames: int = 2,
+        tail_fade_frames: int = 0,
     ) -> None:
+        """``length_tolerance_frames`` is the largest output-length error accepted
+        without re-running Rubber Band; the accepted output is padded or trimmed at
+        the tail, with a ``tail_fade_frames`` linear fade at the seam."""
         if engine not in {"r2", "r3"}:
             raise ValueError("engine must be 'r2' or 'r3'")
         if engine == "r3" and smoothing:
             raise ValueError("Rubber Band smoothing is available only with the R2 engine")
+        if type(length_tolerance_frames) is not int or length_tolerance_frames < 2:
+            raise ValueError("length_tolerance_frames must be an integer of at least 2")
+        if type(tail_fade_frames) is not int or tail_fade_frames < 0:
+            raise ValueError("tail_fade_frames must be a non-negative integer")
         self._binary = binary
         self._engine = engine
         self._smoothing = smoothing
         self._extra_args = tuple(extra_args)
+        self._length_tolerance_frames = length_tolerance_frames
+        self._tail_fade_frames = tail_fade_frames
+        # Output length minus target for each Rubber Band run of the last call.
+        self.last_attempt_frame_deviations: tuple[int, ...] = ()
 
     def __call__(
         self,
@@ -243,6 +256,18 @@ class RubberBandTimeMapStretcher:
             if self._smoothing:
                 engine_args.append("--smoothing")
             active_time_map = time_map
+            deviations: list[int] = []
+            self.last_attempt_frame_deviations = ()
+
+            def fit(region: np.ndarray) -> np.ndarray:
+                return _enforce_target_length(
+                    region,
+                    target_frames,
+                    output_name="Rubber Band",
+                    tolerance_frames=self._length_tolerance_frames,
+                    fade_frames=self._tail_fade_frames,
+                )
+
             for attempt in range(_MAX_TIME_MAP_RENDER_ATTEMPTS):
                 time_map_path.write_text(
                     "".join(
@@ -277,12 +302,10 @@ class RubberBandTimeMapStretcher:
                     raise RuntimeError(f"rubberband time-map warp failed: {stderr}") from exc
                 _, stretched = wavfile.read(output_path)
                 stretched_mono = _to_mono_float32(stretched)
-                if abs(len(stretched_mono) - target_frames) <= 2:
-                    return _enforce_target_length(
-                        stretched_mono,
-                        target_frames,
-                        output_name="Rubber Band",
-                    )
+                deviations.append(len(stretched_mono) - target_frames)
+                self.last_attempt_frame_deviations = tuple(deviations)
+                if abs(len(stretched_mono) - target_frames) <= self._length_tolerance_frames:
+                    return fit(stretched_mono)
                 if attempt + 1 < _MAX_TIME_MAP_RENDER_ATTEMPTS:
                     if len(stretched_mono) == 0:
                         continue
@@ -290,21 +313,13 @@ class RubberBandTimeMapStretcher:
                     source_endpoint, target_endpoint = active_time_map[-1]
                     corrected_endpoint = target_endpoint + endpoint_delta
                     if corrected_endpoint <= active_time_map[-2][1]:
-                        return _enforce_target_length(
-                            stretched_mono,
-                            target_frames,
-                            output_name="Rubber Band",
-                        )
+                        return fit(stretched_mono)
                     active_time_map = (
                         *active_time_map[:-1],
                         (source_endpoint, corrected_endpoint),
                     )
                     continue
-                return _enforce_target_length(
-                    stretched_mono,
-                    target_frames,
-                    output_name="Rubber Band",
-                )
+                return fit(stretched_mono)
 
         raise RuntimeError("rubberband time-map duration fitting exhausted unexpectedly")
 
@@ -1376,19 +1391,29 @@ def _enforce_target_length(
     target_frames: int,
     *,
     output_name: str = "warp",
+    tolerance_frames: int = 2,
+    fade_frames: int = 0,
 ) -> np.ndarray:
     region = np.asarray(samples, dtype=np.float32).reshape(-1)
     length_difference = len(region) - target_frames
-    if abs(length_difference) > 2:
+    if abs(length_difference) > tolerance_frames:
         raise RuntimeError(
             f"{output_name} output length {len(region)} differs from target length "
             f"{target_frames} by {abs(length_difference)} frames"
         )
+    if length_difference == 0:
+        return region
     if length_difference > 0:
-        return region[:target_frames]
-    if length_difference < 0:
-        return np.pad(region, (0, -length_difference), mode="constant")
-    return region
+        fitted = region[:target_frames].copy()
+        seam = target_frames
+    else:
+        fitted = np.pad(region, (0, -length_difference), mode="constant")
+        seam = len(region)
+    if fade_frames > 0:
+        # Fade into the trimmed or zero-padded seam so the tail cannot click.
+        start = max(0, seam - fade_frames)
+        fitted[start:seam] *= np.linspace(1.0, 0.0, seam - start, endpoint=False, dtype=np.float32)
+    return fitted
 
 
 def _validate_time_map(time_map: Sequence[tuple[int, int]]) -> None:
