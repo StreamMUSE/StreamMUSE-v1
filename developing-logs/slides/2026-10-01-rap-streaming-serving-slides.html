@@ -861,26 +861,15 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
 <!-- 21 -->
 <section class="frame" id="s21"><div class="slide">
   <div class="part">小结</div>
-  <h2>小结与讨论</h2>
-  <div class="cols even">
-    <div class="box acc">
-      <h3>这段时间做了什么</h3>
-      <ul class="pts">
-        <li>MOSS 换到 SGLang-Omni：单段合成快 3.25 倍。</li>
-        <li>按 profiling 落地了六项改动：服务器准备一个 chunk 实测从 1.37 s 降到 1.09 s，MOSS 输出逐字节不变。</li>
-        <li>R3 移到 Mac，修好了 gentle_sparse chunk 被全部拒收的问题。</li>
-        <li>整条流程能在 Mac Studio 本地跑：端到端 p50 3.3 s，24 / 24 被接受，underrun 为 0。</li>
-      </ul>
-    </div>
-    <div class="box">
-      <h3>想讨论的问题</h3>
-      <ul class="pts">
-        <li>demo 用 H200 还是 Mac 本地？H200 快，但受 VPN 影响；Mac 慢一些，但没有网络开销。</li>
-        <li>要不要做真正的流式：MOSS 边生成，MMS 和 R3 边对齐拉伸？</li>
-        <li>MOSS 补丁要不要提给上游 SGLang-Omni？</li>
-        <li>“边听边想边说”的 concurrent streaming 和 serving 优化是两条线，先做哪条？</li>
-      </ul>
-    </div>
+  <h2>小结</h2>
+  <div class="box acc">
+    <h3>这段时间做了什么</h3>
+    <ul class="pts">
+      <li>MOSS 换到 SGLang-Omni：单段合成快 3.25 倍。</li>
+      <li>按 profiling 落地了六项改动：服务器准备一个 chunk 实测从 1.37 s 降到 1.09 s，MOSS 输出逐字节不变。</li>
+      <li>R3 移到 Mac，修好了 gentle_sparse chunk 被全部拒收的问题。</li>
+      <li>整条流程能在 Mac Studio 本地跑：端到端 p50 3.3 s，24 / 24 被接受，underrun 为 0。</li>
+    </ul>
   </div>
   <div class="pno">21 / 21</div>
 </div></section>
