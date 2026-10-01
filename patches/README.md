@@ -27,7 +27,7 @@ PATCH="$REPO_ROOT/patches/sglang-omni-0.1.4-af3ab61-moss-latency.patch"
 PATCH_ROOT=/absolute/path/to/sglang-omni-patched   # new, empty directory
 mkdir "$PATCH_ROOT"
 cp -a "$SITE/sglang_omni" "$PATCH_ROOT/"
-git -C "$PATCH_ROOT" apply -p1 "$PATCH"
+patch -p1 -d "$PATCH_ROOT" -i "$PATCH"
 sha256sum "$PATCH"
 ```
 

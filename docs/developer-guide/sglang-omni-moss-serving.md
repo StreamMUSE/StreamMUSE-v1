@@ -156,7 +156,7 @@ export MOSS_PATCH="$REPO_ROOT/patches/sglang-omni-0.1.4-af3ab61-moss-latency.pat
 export MOSS_PATCH_ROOT=/absolute/path/to/sglang-omni-patched   # new, empty directory
 mkdir "$MOSS_PATCH_ROOT"
 cp -a "$SGLANG_ENV/lib/python3.12/site-packages/sglang_omni" "$MOSS_PATCH_ROOT/"
-git -C "$MOSS_PATCH_ROOT" apply -p1 "$MOSS_PATCH"
+patch -p1 -d "$MOSS_PATCH_ROOT" -i "$MOSS_PATCH"
 export MOSS_PATCH_SHA256="$(sha256sum "$MOSS_PATCH" | cut -d' ' -f1)"
 PREFLIGHT_ARGS+=(--runtime-patch-file "$MOSS_PATCH" --runtime-patch-root "$MOSS_PATCH_ROOT")
 ```

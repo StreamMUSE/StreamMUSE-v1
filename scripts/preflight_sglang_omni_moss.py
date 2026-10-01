@@ -298,6 +298,10 @@ def qualify_runtime_patch(
     git = which(args.git_bin)
     if git is None:
         raise PreflightError("required executable is missing: git")
+    root = Path(args.runtime_patch_root)
+    # Without a ceiling, a root inside a git checkout makes `git apply` resolve
+    # the patch against that checkout's top level instead of the root.
+    environment = {**os.environ, "GIT_CEILING_DIRECTORIES": str(root.parent)}
     try:
         _run_bounded(
             [
@@ -311,6 +315,7 @@ def qualify_runtime_patch(
                 str(Path(args.runtime_patch_file)),
             ],
             run=run,
+            env=environment,
         )
     except PreflightError as exc:
         raise PreflightError(
@@ -524,6 +529,7 @@ def _run_bounded(
     argv: list[str],
     *,
     run: Callable[..., subprocess.CompletedProcess[bytes]],
+    env: Mapping[str, str] | None = None,
 ) -> bytes:
     try:
         completed = run(
@@ -531,6 +537,7 @@ def _run_bounded(
             check=False,
             capture_output=True,
             timeout=10.0,
+            **({"env": dict(env)} if env is not None else {}),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreflightError(f"tool probe failed: {Path(argv[0]).name}") from exc

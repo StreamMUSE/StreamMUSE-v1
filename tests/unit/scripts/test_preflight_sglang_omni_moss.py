@@ -213,10 +213,12 @@ def _patched_root(tmp_path: Path) -> tuple[Path, Path]:
     return root, patch
 
 
-def _validated_run(git_returncode: int, git_calls: list[list[str]]):
-    def run(command, **_kwargs):
+def _validated_run(git_returncode: int, git_calls: list[list[str]], git_envs=None):
+    def run(command, **kwargs):
         if "apply" in command:
             git_calls.append(list(command))
+            if git_envs is not None:
+                git_envs.append(kwargs.get("env"))
             return subprocess.CompletedProcess(command, git_returncode, stdout=b"", stderr=b"")
         output = b"tool version 1\n"
         if command[-2:] == ["serve", "--help"]:
@@ -232,13 +234,14 @@ def test_runtime_patch_is_verified_recorded_and_put_first_on_pythonpath(
     argv, manifest_path = _inputs(tmp_path)
     root, patch = _patched_root(tmp_path)
     git_calls: list[list[str]] = []
+    git_envs: list[dict[str, str] | None] = []
     exec_calls: list[dict[str, str]] = []
     monkeypatch.setenv("PYTHONPATH", "/existing")
 
     status = preflight.main(
         [*argv, "--runtime-patch-file", str(patch), "--runtime-patch-root", str(root), "--launch"],
         which=lambda command: f"/tools/{command}",
-        run=_validated_run(0, git_calls),
+        run=_validated_run(0, git_calls, git_envs),
         execvpe=lambda _executable, _command, environment: exec_calls.append(dict(environment)),
     )
 
@@ -246,6 +249,7 @@ def test_runtime_patch_is_verified_recorded_and_put_first_on_pythonpath(
     assert git_calls == [
         ["/tools/git", "-C", str(root), "apply", "--reverse", "--check", "-p1", str(patch)]
     ]
+    assert git_envs[0]["GIT_CEILING_DIRECTORIES"] == str(root.parent)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["runtime"]["patch_sha256"] == hashlib.sha256(patch.read_bytes()).hexdigest()
     assert manifest["runtime"]["patch_root"] == str(root)
@@ -280,17 +284,29 @@ def test_runtime_patch_flags_must_come_together_and_absent_keeps_manifest(
     assert "runtime-patch" not in manifest["tools"]
 
 
-def test_repository_patch_fails_the_check_on_an_unpatched_tree(tmp_path: Path) -> None:
+def test_real_git_check_runs_against_a_root_nested_in_a_checkout(tmp_path: Path) -> None:
     git = shutil.which("git")
     if git is None:
         pytest.skip("git is unavailable")
-    patch = Path(preflight.__file__).resolve().parents[1] / "patches" / (
-        "sglang-omni-0.1.4-af3ab61-moss-latency.patch"
-    )
-    root = tmp_path / "site"
+    checkout = tmp_path / "checkout"
+    subprocess.run([git, "init", "-q", str(checkout)], check=True)
+    root = checkout / "logs" / "patched"
     (root / "sglang_omni").mkdir(parents=True)
-    completed = subprocess.run(
-        [git, "-C", str(root), "apply", "--reverse", "--check", "-p1", str(patch)],
-        capture_output=True,
+    (root / "sglang_omni" / "__init__.py").write_text("", encoding="utf-8")
+    target = root / "sglang_omni" / "mod.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    patch = tmp_path / "runtime.patch"
+    patch.write_text(
+        "--- a/sglang_omni/mod.py\n+++ b/sglang_omni/mod.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+        encoding="utf-8",
     )
-    assert completed.returncode != 0
+    args = preflight.build_parser().parse_args(
+        [*_inputs(tmp_path / "inputs")[0], "--runtime-patch-file", str(patch), "--runtime-patch-root", str(root)]
+    )
+
+    # Unpatched: the reverse check must fail even though a checkout encloses root.
+    with pytest.raises(preflight.PreflightError, match="not applied"):
+        preflight.qualify_runtime_patch(args, which=shutil.which, run=subprocess.run)
+    subprocess.run(["patch", "-s", "-p1", "-d", str(root), "-i", str(patch)], check=True)
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+    assert preflight.qualify_runtime_patch(args, which=shutil.which, run=subprocess.run)["status"] == "applied"
