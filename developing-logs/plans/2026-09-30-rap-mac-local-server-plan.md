@@ -577,6 +577,6 @@ uv run python scripts/client_simulation.py \
    - 让 Mac 端接受服务端上报的 `target_drift`，在一个容差范围内放行；
    - 或者在 Mac 上一直用 `all_onsets_r3`。
    - 代价：固定语料下拉伸后的 WER 是 8.6%，而 `gentle_sparse` 是 1.7%。这个问题和 Mac 本地化无关，H200 上一样存在。
-2. **`.python-version`**：要不要从 3.10 改成 3.12。改了以后，在这台 Mac 上就不用每次都带 `UV_PYTHON=3.12`。但需要先确认 H200 上的环境能接受 3.12。
+2. **`.python-version`**：已定（2026-10-01），改成 3.12。
 3. **MOSS 用 4-bit 还是 8-bit**：4-bit 的 MOSS 只要 1.42 s，端到端可以再快约 0.7 s。按 D2，4-bit 要先通过音质门槛（Whisper WER 和盲听）。
 4. **预留时间要不要再调大**：现在是 3500 ms；如果想让真实 demo 里因为时间不够导致的 fallback 降到 0，可以再调大，代价是实时模式下基本不会再做补充生成。

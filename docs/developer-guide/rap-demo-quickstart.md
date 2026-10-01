@@ -287,7 +287,7 @@ variables in `~/.zshenv`; nothing is downloaded at runtime):
 
 ```bash
 brew install espeak-ng portaudio ffmpeg rubberband
-UV_PYTHON=3.12 uv sync                     # scipy 1.15 (Python 3.10) does not load on macOS 27
+uv sync                                    # Python 3.12 (.python-version)
 uv sync --project envs/rap-mlx-chat
 uv sync --project envs/rap-mlx-moss
 ```

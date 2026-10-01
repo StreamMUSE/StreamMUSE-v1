@@ -1,0 +1,15 @@
+[project]
+name = "streammuse-rap-mlx-chat"
+version = "0.1.0"
+description = "Isolated uv environment for the Mac-local Qwen server (scripts/mlx_chat_server.py)"
+requires-python = "==3.12.*"
+dependencies = [
+  # Same mlx-lm commit vllm-metal v0.30.0 pins (and the one benchmarked here).
+  "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@9e6acca691e64d6d8bb808c328fcdea459099cca",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]

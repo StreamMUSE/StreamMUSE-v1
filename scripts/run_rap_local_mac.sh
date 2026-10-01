@@ -48,8 +48,6 @@ MOSS_REFERENCE_WAV="${MOSS_REFERENCE_WAV:-$SSD_ROOT/assets/rap-voices/0011_00000
 MOSS_WARP_POLICY="${MOSS_WARP_POLICY:-all_onsets_r3}"
 RUN_DIR="${RUN_DIR:-$REPO_ROOT/output/rap_local_mac_run}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-$RUN_DIR/artifacts}"
-# Main env: Python 3.12; scipy 1.15 (the last 3.10 build) does not load on macOS 27.
-export UV_PYTHON="${UV_PYTHON:-3.12}"
 
 fail() { echo "error: $*" >&2; exit 1; }
 

@@ -1,0 +1,14 @@
+[project]
+name = "streammuse-rap-mlx-moss"
+version = "0.1.0"
+description = "Isolated uv environment for the Mac-local MLX MOSS-TTS service (scripts/mlx_moss_server.py)"
+requires-python = "==3.12.*"
+dependencies = [
+  # Pinned to an exact commit: the MOSS-TTS MLX port is still changing quickly.
+  "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio@94c7716212b2228f178d2f9c7619a591fd1b0b78",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+]
+
+[tool.uv]
+package = false
