@@ -1754,6 +1754,193 @@ def test_inprocess_cli_rejects_sglang_only_flags(tmp_path: Path) -> None:
         rap_render_server._server_config_from_args(args)
 
 
+def _mlx_cli_args(tmp_path: Path) -> list[str]:
+    return [
+        "--vllm-model",
+        "qwen-rap",
+        "--moss-model",
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "--moss-reference-wav",
+        str(tmp_path / "reference.wav"),
+        "--moss-serving-backend",
+        "mlx",
+        "--moss-mlx-url",
+        "http://127.0.0.1:8030",
+        "--moss-model-revision",
+        "cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
+        "--mlx-version",
+        "0.32.3",
+        "--mlx-audio-version",
+        "0.5.7",
+        "--mlx-audio-commit",
+        "94c7716212b2228f178d2f9c7619a591fd1b0b78",
+        "--mlx-moss-quantization",
+        "affine-q8-g64",
+        "--mlx-moss-weights-sha256",
+        "4" * 64,
+        "--mlx-moss-audio-tokenizer-revision",
+        "3cd226ba2947efa357ef453bcad111b6eafba782",
+    ]
+
+
+def test_mlx_cli_requires_and_preserves_complete_pinned_runtime(tmp_path: Path) -> None:
+    config = rap_render_server._server_config_from_args(
+        build_parser().parse_args(_mlx_cli_args(tmp_path))
+    )
+
+    assert config.moss_serving_backend == "mlx"
+    assert config.moss_device == "external"
+    assert config.moss_mlx_url == "http://127.0.0.1:8030"
+    assert dict(config.moss_mlx_runtime) == {
+        "mlx_version": "0.32.3",
+        "mlx_audio_version": "0.5.7",
+        "mlx_audio_commit": "94c7716212b2228f178d2f9c7619a591fd1b0b78",
+        "quantization": "affine-q8-g64",
+        "weights_sha256": "4" * 64,
+        "audio_tokenizer_revision": "3cd226ba2947efa357ef453bcad111b6eafba782",
+    }
+
+
+@pytest.mark.parametrize(
+    "flag",
+    (
+        "--moss-mlx-url",
+        "--mlx-version",
+        "--mlx-audio-version",
+        "--mlx-audio-commit",
+        "--mlx-moss-quantization",
+        "--mlx-moss-weights-sha256",
+        "--mlx-moss-audio-tokenizer-revision",
+        "--moss-model-revision",
+    ),
+)
+def test_mlx_cli_rejects_any_missing_pin(tmp_path: Path, flag: str) -> None:
+    args = _mlx_cli_args(tmp_path)
+    index = args.index(flag)
+    del args[index : index + 2]
+
+    with pytest.raises(ValueError, match=f"mlx requires.*{flag}"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(args))
+
+
+def test_mlx_cli_rejects_public_endpoint_relative_reference_and_mutable_pins(
+    tmp_path: Path,
+) -> None:
+    public = _mlx_cli_args(tmp_path)
+    public[public.index("--moss-mlx-url") + 1] = "http://192.168.1.20:8030"
+    with pytest.raises(ValueError, match="HTTP origin"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(public))
+
+    relative = _mlx_cli_args(tmp_path)
+    relative[relative.index("--moss-reference-wav") + 1] = "reference.wav"
+    with pytest.raises(ValueError, match="absolute"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(relative))
+
+    floating = _mlx_cli_args(tmp_path)
+    floating[floating.index("--mlx-audio-commit") + 1] = "main"
+    with pytest.raises(ValueError, match="--mlx-audio-commit"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(floating))
+
+    bad_hash = _mlx_cli_args(tmp_path)
+    bad_hash[bad_hash.index("--mlx-moss-weights-sha256") + 1] = "abc"
+    with pytest.raises(ValueError, match="SHA-256"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(bad_hash))
+
+
+def test_mlx_and_sglang_flags_are_mutually_exclusive(tmp_path: Path) -> None:
+    mlx_with_sglang = [*_mlx_cli_args(tmp_path), "--moss-sglang-url", "http://127.0.0.1:9000"]
+    with pytest.raises(ValueError, match="only be used with sglang-omni"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(mlx_with_sglang))
+
+    sglang_with_mlx = [*_sglang_cli_args(tmp_path), "--mlx-version", "0.32.3"]
+    with pytest.raises(ValueError, match="only be used with mlx"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(sglang_with_mlx))
+
+    inprocess_with_mlx = [
+        "--vllm-model",
+        "qwen-rap",
+        "--moss-model",
+        "moss",
+        "--moss-reference-wav",
+        str(tmp_path / "reference.wav"),
+        "--moss-mlx-url",
+        "http://127.0.0.1:8030",
+    ]
+    with pytest.raises(ValueError, match="only be used with mlx"):
+        rap_render_server._server_config_from_args(build_parser().parse_args(inprocess_with_mlx))
+
+
+def test_inprocess_cli_defaults_to_auto_devices(tmp_path: Path) -> None:
+    config = rap_render_server._server_config_from_args(
+        build_parser().parse_args(
+            [
+                "--vllm-model",
+                "qwen-rap",
+                "--moss-model",
+                "moss",
+                "--moss-reference-wav",
+                str(tmp_path / "reference.wav"),
+            ]
+        )
+    )
+
+    assert config.moss_device == "auto"
+    assert config.aligner_device == "auto"
+
+
+@pytest.mark.parametrize(
+    ("cuda", "mps", "expected"),
+    ((True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")),
+)
+def test_auto_device_prefers_cuda_then_mps_then_cpu(
+    monkeypatch: pytest.MonkeyPatch, cuda: bool, mps: bool, expected: str
+) -> None:
+    from streammuse.infrastructure.inference import runtime_device
+
+    monkeypatch.setattr(runtime_device.torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(runtime_device, "is_mps_available", lambda: mps)
+
+    assert rap_render_server._resolve_torch_device("auto") == expected
+    assert rap_render_server._resolve_torch_device("cuda:1") == "cuda:1"
+
+
+def test_mlx_producer_identity_is_distinct_from_sglang(tmp_path: Path) -> None:
+    mlx_config = rap_render_server._server_config_from_args(
+        build_parser().parse_args(_mlx_cli_args(tmp_path))
+    )
+    sglang_config = rap_render_server._server_config_from_args(
+        build_parser().parse_args(_sglang_cli_args(tmp_path))
+    )
+    common = dict(
+        model_revision="cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
+        reference_audio_sha256="1" * 64,
+        reference_text_sha256=None,
+        aligner_identity="MMS_FA",
+        aligner_version="mms-version",
+    )
+
+    mlx_manifest = rap_render_server._build_producer_manifest(
+        mlx_config, aligner_device="mps", **common
+    )
+    sglang_manifest = rap_render_server._build_producer_manifest(sglang_config, **common)
+    other_quantization = rap_render_server._build_producer_manifest(
+        replace(
+            mlx_config,
+            moss_mlx_runtime={**mlx_config.moss_mlx_runtime, "quantization": "affine-q4-g64"},
+        ),
+        aligner_device="mps",
+        **common,
+    )
+
+    payload = mlx_manifest.to_payload()
+    assert payload["backend"] == "mlx"
+    assert payload["runtime"]["identity"] == "MLX/mlx-audio"
+    assert payload["runtime"]["weights_sha256"] == "4" * 64
+    assert payload["alignment"]["device"] == "mps"
+    assert mlx_manifest.fingerprint != sglang_manifest.fingerprint
+    assert mlx_manifest.fingerprint != other_quantization.fingerprint
+
+
 def test_cli_resolves_default_server_before_composing_resident_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2060,6 +2247,7 @@ def test_real_worker_composition_loads_warms_and_owns_resident_components(
         "status": "warmed",
         "identity": "MMS_FA",
         "version": "mms-version",
+        "device": "cuda:2",
         "warmup": "complete",
     }
     assert composition.health["rubberband"] == {

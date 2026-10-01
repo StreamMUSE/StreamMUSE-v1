@@ -1,12 +1,19 @@
-"""Profile full remote RAP chunk preparation against a live render server.
+"""Client simulation: drive a live render server the way the Mac controller does.
 
-Drives consecutive two-bar requests the way the Mac controller does
-(default scenario, realtime policy, last four committed lines as context),
-through the real client-side RemoteMossChunkPreparationStrategy: HTTP,
-Opus decode, manifest validation, resample, and local drum mix. Records
-client wall time, transfer timing, Mac-side validation/mix time, server
-stage timings from the manifest, candidate statistics, and vLLM token
-counters. Audio devices and the playback clock are not exercised.
+Sends consecutive two-bar requests (default scenario, realtime policy, last
+four committed lines as context) through the real client-side
+RemoteMossChunkPreparationStrategy: HTTP, optional Opus decode, manifest
+validation, resample, and local drum mix. Records client wall time, transfer
+timing, Mac-side validation/mix time, server stage timings from the manifest,
+candidate statistics, and vLLM token counters (when the model server exposes
+/metrics). The playback clock, audio device, and fallback substitution are not
+simulated, so fallback rates and underruns need the real demo.
+
+--budget-ms sets both the request's remaining budget and the client deadline:
+5000 approximates realtime pressure; a large value (e.g. 60000) gives the
+unconstrained reference run. --save-audio keeps each chunk's vocal and mixed
+WAVs, and --replay-context reuses the context lines a previous run recorded,
+so per-chunk comparisons are not confounded by a diverging context trajectory.
 """
 
 from __future__ import annotations
@@ -28,7 +35,13 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 def vllm_counters(url: str) -> dict[str, float]:
     import httpx
 
-    text = httpx.get(url.rstrip("/").removesuffix("/v1") + "/metrics", timeout=10).text
+    try:
+        response = httpx.get(url.rstrip("/").removesuffix("/v1") + "/metrics", timeout=10)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        # Not every OpenAI-compatible server exposes Prometheus metrics.
+        return {}
+    text = response.text
     wanted = {
         "vllm:prompt_tokens_total": "prompt_tokens",
         "vllm:generation_tokens_total": "generation_tokens",
@@ -60,7 +73,19 @@ def main() -> None:
     parser.add_argument("--budget-ms", type=int, default=5000)
     parser.add_argument("--transport", choices=("pcm", "opus"), default="opus")
     parser.add_argument("--seed", type=int, default=20260925)
+    parser.add_argument("--render-reserve-ms", type=int, default=3_000)
+    parser.add_argument(
+        "--save-audio",
+        action="store_true",
+        help="write chunk-NNN-vocals.wav (server PCM) and chunk-NNN-mix.wav (Mac mix) under --out",
+    )
+    parser.add_argument(
+        "--replay-context",
+        type=Path,
+        help="records.jsonl of an earlier run; reuse its per-chunk context_lines instead of rolling",
+    )
     args = parser.parse_args()
+    replay_context = _load_replay_context(args.replay_context) if args.replay_context else None
 
     from streammuse.application.rap.chunk_audio import RemoteMossChunkPreparationStrategy
     from streammuse.domain.rap.audio import AudioFormat
@@ -90,7 +115,7 @@ def main() -> None:
         prosody=analyzer,
         tempo=tempo,
     )
-    policy = RemoteCandidatePolicy.realtime_default()
+    policy = RemoteCandidatePolicy.realtime_default(render_reserve_ms=args.render_reserve_ms)
     session = f"profile-{int(time.time())}"
     context: list[str] = []
 
@@ -161,7 +186,9 @@ def main() -> None:
                 tempo_bpm=tempo.bpm,
                 remaining_budget_ms=args.budget_ms,
                 policy=policy,
-                context_lines=tuple(context[-4:]),
+                context_lines=(
+                    replay_context[index] if replay_context is not None else tuple(context[-4:])
+                ),
                 seed=args.seed + index,
             )
             before = vllm_counters(args.vllm_url)
@@ -185,6 +212,9 @@ def main() -> None:
                 "topic": [b.topic for b in bars],
                 "wall_ms": wall_ms,
                 "error": error,
+                "seed": request.seed,
+                "context_lines": list(request.context_lines),
+                "budget_ms": args.budget_ms,
                 "vllm_delta": {k: after.get(k, 0) - before.get(k, 0) for k in after},
             }
             manifest = transfer.get("manifest")
@@ -206,6 +236,8 @@ def main() -> None:
                 row["selected"] = [b.get("text") for b in payload.get("selected_bars", [])]
                 context.extend(str(t) for t in row["selected"])
             row["client_package_decode_ms"] = captured.get("decode_ms")
+            if args.save_audio:
+                row["audio_files"] = _save_audio(args.out, index, captured.get("package"), prepared)
             if prepared is not None:
                 row["mac_prepare_ms"] = wall_ms - float(transfer.get("client_prepare_ms", 0.0))
             elif manifest is not None:
@@ -277,6 +309,38 @@ def main() -> None:
     summary["vllm_prompt_tokens_per_chunk"] = dist(r["vllm_delta"].get("prompt_tokens", 0) for r in measured)
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     print(json.dumps(summary, indent=2, default=str))
+
+
+def _load_replay_context(path: Path) -> dict[int, tuple[str, ...]]:
+    contexts: dict[int, tuple[str, ...]] = {}
+    for line in path.open():
+        row = json.loads(line)
+        if "context_lines" not in row:
+            raise SystemExit(f"{path} has no context_lines; record it with this script first")
+        contexts[int(row["index"])] = tuple(str(item) for item in row["context_lines"])
+    return contexts
+
+
+def _save_audio(out: Path, index: int, package: object, prepared: object) -> dict[str, str]:
+    from scipy.io import wavfile
+
+    files: dict[str, str] = {}
+    vocal_wav = getattr(package, "vocal_wav", None)
+    if vocal_wav:
+        vocals = out / f"chunk-{index:03d}-vocals.wav"
+        vocals.write_bytes(vocal_wav)
+        files["vocals"] = vocals.name
+    bars = getattr(prepared, "bars", None)
+    if bars:
+        # Mac-side bars are interleaved float32 PCM; write an IEEE-float WAV.
+        fmt = bars[0].audio.format
+        samples = np.concatenate(
+            [np.frombuffer(bar.audio.data, dtype=np.float32).reshape(-1, fmt.channels) for bar in bars]
+        )
+        mix = out / f"chunk-{index:03d}-mix.wav"
+        wavfile.write(mix, fmt.sample_rate_hz, samples)
+        files["mix"] = mix.name
+    return files
 
 
 if __name__ == "__main__":

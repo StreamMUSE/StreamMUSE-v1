@@ -493,6 +493,11 @@ class MmsForcedAligner:
                 tokens = self._tokenizer(list(words))
                 model_output = self._model(waveform.tensor.to(self._device))
                 emission = model_output[0]
+                # torchaudio's forced_align runs on CPU and CUDA only; on Apple
+                # Silicon the acoustic model stays on MPS and only the CTC
+                # alignment moves to CPU.
+                if str(self._device).startswith("mps"):
+                    emission = emission.to("cpu")
                 aligned_words = self._ctc_aligner(emission[0], tokens)
         alignment_time_ms = max(0.0, (self._clock() - started) * 1000.0)
 

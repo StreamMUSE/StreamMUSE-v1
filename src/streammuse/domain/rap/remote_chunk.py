@@ -196,8 +196,18 @@ class RemoteCandidatePolicy:
             raise ValueError("minimum_score must be finite")
 
     @classmethod
-    def realtime_default(cls) -> RemoteCandidatePolicy:
-        return cls("realtime_default", 16, 4, 20, 3, 0.0, 3_000)
+    def realtime_default(cls, *, render_reserve_ms: int = 3_000) -> RemoteCandidatePolicy:
+        """The realtime candidate counts; only the render reserve is tunable.
+
+        3000 ms fits the H200 renderer. A slower renderer (for example the
+        Mac-local MLX stack) needs its MOSS+MMS+R3 p95 plus one rescue wave.
+        """
+        profile = (
+            "realtime_default"
+            if render_reserve_ms == 3_000
+            else f"realtime_default_reserve_{render_reserve_ms}"
+        )
+        return cls(profile, 16, 4, 20, 3, 0.0, render_reserve_ms)
 
     def to_payload(self) -> dict[str, object]:
         return {

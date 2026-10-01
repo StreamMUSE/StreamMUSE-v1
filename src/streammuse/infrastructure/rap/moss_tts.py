@@ -123,7 +123,7 @@ class MossServingMetadata:
     resolved_generation_settings: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.backend not in {"inprocess", "sglang-omni"}:
+        if self.backend not in {"inprocess", "sglang-omni", "mlx"}:
             raise ValueError("unsupported MOSS serving backend")
         for name in (
             "correlation_id",

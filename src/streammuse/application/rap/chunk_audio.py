@@ -44,6 +44,8 @@ _VOCAL_GAIN = 0.80
 _DRUM_GAIN = 0.55
 _FINAL_PEAK = 0.95
 _REMOTE_SAMPLE_RATE_HZ = 24_000
+# Matches the MOSS adapters' maximum_audio_seconds for one source phrase.
+_MAX_REMOTE_SOURCE_SECONDS = 30.0
 
 
 class RemoteChunkPreparationError(RuntimeError):
@@ -409,10 +411,17 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         if len(alignment["source_anchors"]) != len(all_scheduled) or len(alignment["target_anchors"]) != len(all_scheduled):
             raise RemoteChunkPreparationError("remote alignment anchors do not cover every selected syllable")
         duration_seconds = request.expected_frame_count / _REMOTE_SAMPLE_RATE_HZ
-        for anchors in (alignment["source_anchors"], alignment["target_anchors"]):
+        # Target anchors live on the chunk timeline. Source anchors live on the
+        # MOSS source timeline, which can run past the chunk (a 67-token target
+        # decodes to 68 codec frames, 5.44 s for a 5.333 s chunk), so they are
+        # bounded by the longest source audio the MOSS adapters accept.
+        for anchors, upper_bound in (
+            (alignment["source_anchors"], _MAX_REMOTE_SOURCE_SECONDS),
+            (alignment["target_anchors"], duration_seconds),
+        ):
             values = tuple(float(item) for item in anchors)
             frame_values = tuple(round(value * _REMOTE_SAMPLE_RATE_HZ) for value in values)
-            if any(not 0.0 <= value <= duration_seconds for value in values) or any(
+            if any(not 0.0 <= value <= upper_bound for value in values) or any(
                 current <= previous for previous, current in zip(values, values[1:])
             ) or any(
                 current <= previous for previous, current in zip(frame_values, frame_values[1:])

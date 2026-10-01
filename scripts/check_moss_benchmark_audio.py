@@ -85,7 +85,7 @@ def main():
                     print(json.dumps({key: result[key] for key in
                                       ("block", "sample", "kind", "wer", "transcript")}), flush=True)
     summary = {"unique_audio_transcriptions": len(transcripts), "groups": {}}
-    for backend in ("inprocess", "sglang-omni"):
+    for backend in sorted({r["backend"] for r in results}):
         for kind in ("source", "final"):
             rows = [r for r in results if r["backend"] == backend and r["kind"] == kind]
             counts = {key: sum(r[key] for r in rows) for key in

@@ -152,28 +152,37 @@ Mac 路径通过启动脚本显式选择 `mlx` 后端。代码里现有的默认
 
 0. **存储位置（先于任何下载）**：模型权重和所有大的缓存都放在外接 SSD `/Volumes/ZBW-SSD1` 上，不占内置硬盘。
    - 这块 SSD 是 APFS 格式、USB 接口，2026-09-30 时剩余约 282 GB。卷名已经去掉了空格，路径可以直接使用。
-   - 缓存根目录：`/Volumes/ZBW-SSD1/streammuse-cache/`。
-   - 在 `~/.zshenv` 里统一设置下面这些环境变量，并写进一键启动脚本：
+   - 缓存根目录：`/Volumes/ZBW-SSD1/cache/`。这是本机所有项目共用的全局设置，不是本项目专用的。
+   - 这些环境变量在 `~/.zshenv` 里全局设置，本项目不再单独配置。一键启动脚本只检查它们是否已设置，并且确实指向 SSD：
 
      | 变量 | 指向 | 用途 |
      |---|---|---|
-     | `HF_HOME` | `/Volumes/ZBW-SSD1/streammuse-cache/huggingface` | MOSS、Qwen 等 HF 权重，mlx-audio 和 vllm-metal 都通过它下载 |
+     | `HF_HOME` | `/Volumes/ZBW-SSD1/cache/huggingface` | MOSS、Qwen 等 HF 权重，mlx-audio 和 vllm-metal 都通过它下载 |
      | `HF_HUB_CACHE` | `$HF_HOME/hub` | 同上 |
-     | `TORCH_HOME` | `/Volumes/ZBW-SSD1/streammuse-cache/torch` | torchaudio 的 MMS_FA；渲染服务的 `--aligner-cache` 也指到这里 |
-     | `XDG_CACHE_HOME` | `/Volumes/ZBW-SSD1/streammuse-cache/xdg` | 其他按 XDG 规范存缓存的库，比如 whisper |
-     | `UV_CACHE_DIR` | `/Volumes/ZBW-SSD1/streammuse-cache/uv` | uv 下载的 wheel，torch 之类的包很大 |
-     | `UV_PYTHON_INSTALL_DIR` | `/Volumes/ZBW-SSD1/streammuse-cache/uv-python` | uv 管理的 Python 解释器 |
-     | `PIP_CACHE_DIR` | `/Volumes/ZBW-SSD1/streammuse-cache/pip` | pip 缓存 |
-     | `VLLM_CACHE_ROOT` | `/Volumes/ZBW-SSD1/streammuse-cache/vllm` | vllm-metal 缓存 |
+     | `TORCH_HOME` | `/Volumes/ZBW-SSD1/cache/torch` | torchaudio 的 MMS_FA；渲染服务的 `--aligner-cache` 也指到这里 |
+     | `XDG_CACHE_HOME` | `/Volumes/ZBW-SSD1/cache/xdg` | 其他按 XDG 规范存缓存的库，比如 whisper |
+     | `UV_CACHE_DIR` | `/Volumes/ZBW-SSD1/cache/uv` | uv 下载的 wheel，torch 之类的包很大 |
+     | `UV_PYTHON_INSTALL_DIR` | `/Volumes/ZBW-SSD1/cache/uv-python` | uv 管理的 Python 解释器 |
+     | `PIP_CACHE_DIR` | `/Volumes/ZBW-SSD1/cache/pip` | pip 缓存 |
+     | `VLLM_CACHE_ROOT` | `/Volumes/ZBW-SSD1/cache/vllm` | vllm-metal 缓存 |
 
    - 启动脚本要先检查 SSD 是否已挂载，没挂载就直接报错退出，不能静默写到内置硬盘。
    - USB 的速度只影响冷启动时加载权重，不影响稳态推理。测冷启动时间时要注明权重是从 USB SSD 读的。
-1. 系统依赖：`brew install espeak-ng portaudio ffmpeg rubberband`
-2. 主项目环境：`uv sync`。确认它在这台机器上能通过；`deepspeed`、`tensorflow`、`nvitop` 都在主依赖里，如果装不上，就移到 extras。
-3. 模型服务单独建环境，不进主项目的 `pyproject.toml`，和 H200 上 SGLang 单独一个环境的做法一致：
-   - `rap-mlx-moss`：`mlx`、`mlx-audio`。固定 commit，因为 MOSS 的 MLX 移植还在快速变化。
-   - vllm-metal：`brew tap vllm-project/vllm-metal && brew install vllm-project/vllm-metal/vllm-metal`。
+   - uv 的缓存在 SSD 上，`.venv` 在内置硬盘上，跨了两个卷，uv 没法用硬链接，只能复制文件。所以 `uv sync` 会慢一些，也会打印一条警告，可以设 `UV_LINK_MODE=copy` 关掉这条警告。
+1. 系统依赖：`brew install espeak-ng portaudio ffmpeg rubberband`。这些是命令行工具和 C 库，不是 Python 环境。
+2. **所有 Python 环境都用 uv 构建**，不用 conda、brew 里的 Python 包、裸 `pip` 或 `python -m venv`。
+   - 主项目环境：`uv sync`。确认它在这台机器上能通过；`deepspeed`、`tensorflow`、`nvitop` 都在主依赖里，如果装不上，就移到 extras。
+3. 模型服务单独建环境，不进主项目的 `pyproject.toml`，和 H200 上 SGLang 单独一个环境的做法一致。
    - 原因：主项目使用 vendored 的 `transformers` fork，和 mlx-audio、vLLM 依赖的 transformers 很可能冲突。
+   - 做法：每个服务环境都是仓库里的一个独立 uv 项目，有自己的 `pyproject.toml` 和 `uv.lock`，版本由 lockfile 固定。
+     - 构建：`uv sync --project envs/<name>`
+     - 运行：`uv run --project envs/<name> ...`
+   - `envs/rap-mlx-moss/`：Python 3.12，`mlx`、`mlx-audio`。mlx-audio 用 git 依赖固定到具体 commit，因为 MOSS 的 MLX 移植还在快速变化。
+   - `envs/rap-vllm-metal/`：Python 3.12（vllm-metal 的 wheel 只有 cp312 版本）。
+     - 不用官方的 brew 安装方式，也不用它的 `install.sh`（它会在 `~/.venv-vllm-metal` 自建环境）。
+     - 改为在 `pyproject.toml` 里用直链依赖固定两个 wheel：GitHub release 上的 vLLM macOS arm64 CPU wheel（`vllm-<ver>+cpu-cp312-cp312-macosx_11_0_arm64.whl`），以及对应版本的 vllm-metal wheel。
+     - 官方 `install.sh` 内部本来就是用 `uv pip install` 装这两个 wheel，所以这样做和官方结果等价，但版本可复现。
+   - 各服务的 `.venv` 放在各自的 `envs/<name>/.venv`，加进 `.gitignore`。
 4. 权重：
    - MOSS-TTS-v1.5 的 8-bit MLX 权重，例如 `luisarn/MOSS-TTS-v1.5-MLX-8bit`，要核对它转换自哪个上游 revision；
    - 需要时自行从固定的上游 revision `cdd3b911` 转换 4-bit；
@@ -251,7 +260,7 @@ uv run python scripts/client_simulation.py \
 
 ### 步骤
 
-1. 用 vllm-metal 在 `127.0.0.1:8001` 上启动 `qwen-rap`，参数尽量与 H200 一致：`--max-model-len 2048`；`--max-num-seqs` 按 0c 的结果决定。
+1. 用 vllm-metal 在 `127.0.0.1:8001` 上启动 `qwen-rap`：`uv run --project envs/rap-vllm-metal vllm serve <qwen-mlx-4bit> --served-model-name qwen-rap --host 127.0.0.1 --port 8001 ...`。参数尽量与 H200 一致：`--max-model-len 2048`；`--max-num-seqs` 按 0c 的结果决定。
 2. 渲染服务的 `--vllm-url` 改为 `http://127.0.0.1:8001/v1`，其余代码不改。
 3. 如果 0c 发现 `n` 不可用，或者被静默截成 1 个 choice，有两个备选：
    - 新增 `scripts/mlx_chat_server.py`：一个很薄的 OpenAI 兼容服务，用 `mlx_lm` 的批量生成来实现 `n`，共享的 prompt 只做一次 prefill；
@@ -286,7 +295,7 @@ uv run python scripts/client_simulation.py \
 
 ### 步骤
 
-1. **MOSS MLX 服务**：新增 `scripts/mlx_moss_server.py`，在 `rap-mlx-moss` 环境里运行，监听 `127.0.0.1:8030`。
+1. **MOSS MLX 服务**：新增 `scripts/mlx_moss_server.py`，在 `envs/rap-mlx-moss` 环境里运行（`uv run --project envs/rap-mlx-moss python scripts/mlx_moss_server.py`），监听 `127.0.0.1:8030`。
    - 接口：`/health`、`/v1/models`、`/v1/audio/speech`，请求和响应格式与 SglangMossSynthesizer 使用的子集一致。
    - 如果 mlx-audio 自带的 server 能支持全部所需字段，就直接用它，只补缺少的部分。
 2. **参数一致**：以下参数都要和 [moss_generation.py](../../src/streammuse/infrastructure/rap/moss_generation.py) 一致：
@@ -356,7 +365,7 @@ uv run python scripts/client_simulation.py \
 
 新增 `scripts/run_rap_local_mac.sh`：
 
-- 依次启动 vllm-metal、MOSS MLX 服务和渲染服务，每一步等健康检查通过再继续；
+- 依次启动 vllm-metal、MOSS MLX 服务和渲染服务，每一步等健康检查通过再继续。三者都用 `uv run` 启动：前两个分别用 `--project envs/rap-vllm-metal` 和 `--project envs/rap-mlx-moss`，渲染服务用主项目环境；
 - 把 PID 写进文件，退出时只停掉自己启动的进程；
 - 最后启动 demo；
 - 不再需要 H200 quickstart 里的 `LD_LIBRARY_PATH`、`CUDA_VISIBLE_DEVICES` 和 SSH 隧道。
@@ -469,3 +478,105 @@ uv run python scripts/client_simulation.py \
 ## 实施记录
 
 （每个阶段完成后在这里追加：日期、提交、实测数字、偏离计划之处。）
+
+### 2026-09-30：第 0 到第 5 阶段首轮实施
+
+尚未提交。数据都在 `output/` 下，这个目录已被 gitignore。
+
+#### 结论
+
+可行性关口通过。Mac 本地端到端 p95 是 3.55 s，比 4.0 s 的门槛低，24 个 chunk 前后没有漂移，第 6 阶段的深度优化可以先不做。真实 demo 跑 24 小节，其中 22 小节用的是远端人声，underrun 为 0。
+
+#### 环境（0b）
+
+| 项目 | 实际情况 |
+|---|---|
+| 系统工具 | brew：ffmpeg（带 libopus）、rubberband 4.0.0（H200 上是 3.3.0）、espeak-ng 1.52.0、portaudio |
+| 主环境 | `UV_PYTHON=3.12 uv sync`。仓库里的 `.python-version` 是 3.10，但 scipy 1.15.3（最后一个支持 3.10 的版本）在 macOS 27 上加载失败（`__thread_bss` 段被动态链接器拒绝）。3.12 用锁文件里已有的 scipy 1.16.0，不需要改锁 |
+| 新增依赖 | `torchaudio>=2.5.0,<2.10`，Linux 上走 cu128 源。Mac 解析到 2.7.1，H200 解析到 2.9.1+cu128；H200 上的 torch 保持 2.9.1，没有被降级 |
+| `envs/rap-mlx-moss` | mlx 0.32.3、mlx-audio 0.5.7（git `94c77162`） |
+| `envs/rap-mlx-chat` | mlx-lm（git `9e6acca6`，和 vllm-metal v0.30.0 锁定的是同一个 commit） |
+| `envs/rap-vllm-metal` | vLLM 0.30.0+cpu 加 vllm-metal 0.30.0，只解析 macOS arm64。环境建成了，但最后没用上，原因见第 1 阶段 |
+| MOSS 权重 | 从上游 `cdd3b911` 自行转换出 q8g64（8.5 GB）、q4g64、bf16 三个版本。音频 tokenizer 固定为 `3cd226ba`，用 APFS 克隆放进各模型目录的 `audio_tokenizer/`。q8 版的权重 sha256 是 `2453a273…0a0f06` |
+| Qwen 权重 | 从上游 `a09a3545` 自行转换出 MLX q4g64（4.0 GB，实际每权重 4.5 bit） |
+| 参考音色 | 实时运行用 TED-TTS `datasets/Ref/0011_000001.wav`（commit `36ffc3e2`，sha256 `0eb7ab13…`）；固定语料基准用 seed-tts-eval-mini 的 `common_voice_en_10119832.wav`（sha256 `af3ac928…`），和 H200 基准报告用的是同一个 |
+
+#### 0a：锚点契约
+
+- 服务端已改成每个音节都给一个公开锚点。参与拉伸的锚点照原样上报；没参与拉伸的音节，用它的实测起点在实际时间映射上插值，得到真实落点。`all_onsets` 下结果不变。
+- **但这还不足以让 Mac 接受 `gentle_sparse`**：Mac 端要求每个目标锚点（换成采样点后）都和它自己排的时间表完全相等，而 `gentle_sparse` 为了限制拉伸比例，本来就会把锚点挪开（`target_drift`）。所以这个策略的 chunk 仍然会被拒。见下面的"待决定"。
+- 另外修了 Mac 端的一个旧 bug：原来源锚点也被限制在 chunk 时长之内。但源锚点在 MOSS 原始音频的时间轴上，67 个 token 解码出 68 帧，也就是 5.44 s，比 5.333 s 的 chunk 长。这会导致约 5% 的 chunk 被误拒。现在源锚点的上限改成 30 s（等于 MOSS 适配器允许的最长音频），目标锚点仍然限制在 chunk 时长之内。
+
+#### 0c：微基准（M5 Max）
+
+| 项目 | 结果 |
+|---|---|
+| MOSS MLX，2 小节（5.44 s 音频） | q4：1.42 s；**q8：2.13 s**；bf16：3.37 s。峰值内存分别是 12.7、16.8、24.7 GB |
+| MOSS PyTorch MPS bf16 | 跑不通。3b 的代码改动已经做完，但在一个独立环境里（transformers 5.0.0、torch 2.8.0）运行时，上游 remote code 在 MPS 上触发 `[srcBuf length] > 0 INTERNAL ASSERT`。要修就得改上游代码，没有继续 |
+| MMS | MPS：36.6 ms；CPU：200 ms；对齐置信度相同。`forced_align` 不支持 MPS，所以只把对齐这一步放在 CPU 上做 |
+| Qwen，vllm-metal | n=1 用时 537 ms；**n=16 用时 2139 ms**，耗时几乎随 n 线性增长 |
+| Qwen，mlx-lm 共享 prefill | prompt 长 601 token 时：单个 bar 16 条 1299 ms；两个 bar 合成 32 条 1809 ms。不共享 prefill 时分别是 3420 ms 和 6097 ms |
+| R3（Mac CPU） | 端到端运行里 p50 62 ms，p95 164 ms |
+
+#### 第 1 阶段：偏离原计划
+
+- vllm-metal 支持 `n=16`，每次都返回 16 个 choice，但它在 Apple Silicon 上几乎没有批量加速。所以改用原计划第 3 步的第一个备选：新增 `scripts/mlx_chat_server.py`，做共享 prefill，并把短时间窗口内同时到达的请求合成一个 batch。
+- 同时实现了 2026-10-01 plan 的 1b（两个 bar 并发生成）：
+  - `ChunkCandidatePlanner` 新增 `bar_generators` 参数；
+  - render server 新增 `--concurrent-bar-generation` 开关，默认关闭，所以 H200 的行为不变；
+  - 评估和 ledger 仍然按 bar 顺序进行，测试已经验证并发和串行选出的结果相同。
+- 新增 `tests/integration/test_local_chat_choices_contract.py`。它只在设置了 `STREAMMUSE_CHAT_URL` 时运行，对着 MLX chat 服务已经验证通过。
+
+#### 第 2、3 阶段
+
+- `mlx` 后端：新增 `scripts/mlx_moss_server.py` 和 `MlxMossSynthesizer`；后者复用 SGLang 客户端的超时、取消、大小上限和 WAV 校验。
+  - render server 需要显式固定 6 项运行时身份：mlx 版本、mlx-audio 版本和 commit、量化方式、权重 sha256、tokenizer revision。服务端上报的身份只要有一项不符，就拒绝启动。
+  - 这些身份都会写进 producer manifest；产物的指纹和 sglang 的不同，不同量化方式之间的指纹也不同。
+- **确定性**：同一个 seed 下，20/20 个固定请求在不同 block 之间生成的 source WAV 逐字节相同。
+- **还没做到的一项**：MLX 生成过程中途不能中断。客户端断开连接后，服务端会把这一次生成做完，结果直接丢弃。
+- 设备选择：`--aligner-device` 和 MOSS 设备的默认值改成 `auto`（按 cuda → mps → cpu 选择），实际选中的设备写进 manifest 的 `alignment.device`。
+- 内存：
+  - MLX 两个服务都加了缓存上限：chat 2 GB 并在每个 batch 后清缓存，MOSS 4 GB。不加的话，chat 服务的占用会涨到 48 GB，导致系统换页、每个 chunk 越来越慢。
+  - vllm-metal 默认的 `--gpu-memory-utilization` 是 0.9，会预留约 62 GB；这次实际没用 vllm-metal，但如果要用，必须调低。
+- 一键启动：`scripts/run_rap_local_mac.sh` 已经实测过：三个服务依次就绪；收到 SIGTERM 后所有子进程和端口都会被清理。
+
+#### 第 0d、4、5 阶段：端到端
+
+条件：q8 MOSS、MLX chat、两个 bar 并发、`all_onsets_r3`、PCM 传输、90 BPM、24 个 chunk 加 2 个热身。
+
+| 运行 | 接受 | 端到端 p50 / p95 / 最大 | 每个 bar 的最高分（均值） | 每个 chunk 的有效候选（均值） |
+|---|---:|---:|---:|---:|
+| 不限时间（60 s 预算） | 24/24 | 3280 / 3554 / 3657 ms | 0.707 | 10.8 |
+| 实时（5 s 预算，预留 3500 ms），固定 context | 24/24 | 3217 / 3694 / 4047 ms | 0.722 | 12.0 |
+| 实时（5 s 预算，预留 3500 ms），自由滚动 | 24/24 | 3190 / 3479 / 3967 ms | 0.686 | 9.5 |
+
+- 不限时间那一轮各阶段的 p50：Qwen 964 ms（p95 1264）、MOSS 2089 ms、MMS 50 ms、R3 62 ms（p95 164）、loopback 传输 34 ms、Mac 校验加混音 4 ms。
+- 前 8 个和后 8 个 chunk 的 p50 漂移是 0.0%。
+- 三轮每个 chunk 平均都请求了约 32.7 个候选，说明实时预算下补充生成没有被截断。D4 的结论是：看不出时间限制带来的质量损失；三轮的差别在 Qwen 无 seed 采样本身的波动范围之内。
+- 选中的歌词没有一句和参考运行完全相同，因为 Qwen 的采样不带 seed（H200 上也一样），所以只能比较分布。
+- **预留时间**：3000 ms 时，24 个 chunk 里有 1 个在补充生成之后撞上 deadline，取消时超出了宽限期，服务因此进入需要重启的状态。所以 Mac 的启动脚本给 demo 传 `--rap-render-reserve-ms 3500`；这个参数默认仍然是 3000，H200 不受影响。
+- **真实 demo**：用 `--audio-output wav --no-web` 跑 24 小节，22 小节用了远端人声（11/12 个 chunk），underrun 为 0，音节观测延迟 p95 是 13.9 ms。
+  - 失败的那个 chunk：MOSS 用了 2.23 s，之后在 MMS 阶段撞上 deadline 被取消。真实 demo 的预算从 fallback 准备完成之后才开始算，还会被下一个 chunk 的开始时间卡住，所以通常比 5 s 更紧。
+  - 这次取消发生在可以中断的阶段，没有导致服务降级。
+
+#### 音质（第 5 阶段，Whisper small.en 自动转写，不是人工评估）
+
+| 语料 / 策略 | source WAV WER | 拉伸后 WER |
+|---|---:|---:|
+| 固定的 20 条基准语料，`gentle_sparse_r3`（Mac） | 1.72% | **1.72%** |
+| 固定的 20 条基准语料，`all_onsets_r3`（Mac） | 1.72% | 8.59% |
+| H200（2026-09-11 报告，同一语料、同一参考音色） | 2.06% / 0.69% | 2.41% / 2.75% |
+| Qwen 实时歌词，`all_onsets_r3`（三轮端到端） | 5.2% | 19.1% / 19.1% / 22.9% |
+| Qwen 实时歌词，`gentle_sparse_r3`（服务端产物，Mac 端拒收） | 7.8% | 10.2% |
+
+结论：同一语料下，MLX 8-bit 的可懂度不比 H200 差。端到端 WER 高的主要原因有两个：一是被迫使用的 `all_onsets_r3` 拉伸，二是 Qwen 实时写的歌词本身更难识别。盲听（5 对）需要人来做，还没做。
+
+#### 待决定
+
+1. **`gentle_sparse_r3` 的公开契约**：Mac 端目前要求每个目标锚点都精确等于它排的时间表。两种改法：
+   - 让 Mac 端接受服务端上报的 `target_drift`，在一个容差范围内放行；
+   - 或者在 Mac 上一直用 `all_onsets_r3`。
+   - 代价：固定语料下拉伸后的 WER 是 8.6%，而 `gentle_sparse` 是 1.7%。这个问题和 Mac 本地化无关，H200 上一样存在。
+2. **`.python-version`**：要不要从 3.10 改成 3.12。改了以后，在这台 Mac 上就不用每次都带 `UV_PYTHON=3.12`。但需要先确认 H200 上的环境能接受 3.12。
+3. **MOSS 用 4-bit 还是 8-bit**：4-bit 的 MOSS 只要 1.42 s，端到端可以再快约 0.7 s。按 D2，4-bit 要先通过音质门槛（Whisper WER 和盲听）。
+4. **预留时间要不要再调大**：现在是 3500 ms；如果想让真实 demo 里因为时间不够导致的 fallback 降到 0，可以再调大，代价是实时模式下基本不会再做补充生成。

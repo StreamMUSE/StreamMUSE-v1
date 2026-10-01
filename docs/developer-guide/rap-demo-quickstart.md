@@ -266,6 +266,80 @@ Mac flag to `--rap-audio-transport pcm`. To disable Opus generation entirely,
 start the server with `--wire-audio-codec pcm`; the remaining commands are
 unchanged.
 
+## Mac Local Runtime (Apple Silicon, No H200)
+
+The whole server side can also run on one Apple Silicon Mac (measured on a Mac
+Studio M5 Max, 64 GB). Everything stays on loopback; no SSH tunnel is needed.
+
+| Component | Process | uv environment | Port |
+|---|---|---|---|
+| Qwen2.5-7B-Instruct, MLX 4-bit | `scripts/mlx_chat_server.py` | `envs/rap-mlx-chat` | 8001 |
+| MOSS-TTS-v1.5, MLX 8-bit | `scripts/mlx_moss_server.py` | `envs/rap-mlx-moss` | 8030 |
+| chunk orchestrator, MMS (MPS), R3 | `streammuse-rap-render-server --moss-serving-backend mlx` | main env, Python 3.12 | 8020 |
+
+`mlx_chat_server.py` replaces vLLM: vllm-metal accepts `n` but barely batches
+it on Apple Silicon, while the planner needs 16 choices per bar. The MLX chat
+server prefills the shared prompt once and decodes both bars' choices in one
+batch (`--concurrent-bar-generation` on the render server).
+
+One-time setup (model weights and caches live on the external SSD through the
+variables in `~/.zshenv`; nothing is downloaded at runtime):
+
+```bash
+brew install espeak-ng portaudio ffmpeg rubberband
+UV_PYTHON=3.12 uv sync                     # scipy 1.15 (Python 3.10) does not load on macOS 27
+uv sync --project envs/rap-mlx-chat
+uv sync --project envs/rap-mlx-moss
+```
+
+Convert the pinned upstream snapshots (the same revisions the H200 uses) and
+place the pinned audio tokenizer inside the MOSS model directory so mlx-audio
+never fetches an unpinned one:
+
+```bash
+M=/Volumes/ZBW-SSD1/models
+uv run --project envs/rap-mlx-moss hf download OpenMOSS-Team/MOSS-TTS-v1.5 --revision cdd3b911b1585e3f2dbc7775ef10f9926f58850a
+uv run --project envs/rap-mlx-moss hf download OpenMOSS-Team/MOSS-Audio-Tokenizer --revision 3cd226ba2947efa357ef453bcad111b6eafba782
+uv run --project envs/rap-mlx-moss python -m mlx_audio.convert \
+  --hf-path "$HF_HOME/hub/models--OpenMOSS-Team--MOSS-TTS-v1.5/snapshots/cdd3b911b1585e3f2dbc7775ef10f9926f58850a" \
+  --mlx-path $M/moss-tts-v1.5-cdd3b911-mlx-q8g64 -q --q-bits 8 --q-group-size 64 --model-domain tts
+cp -cRL "$HF_HOME/hub/models--OpenMOSS-Team--MOSS-Audio-Tokenizer/snapshots/3cd226ba2947efa357ef453bcad111b6eafba782" \
+  $M/moss-tts-v1.5-cdd3b911-mlx-q8g64/audio_tokenizer
+uv run --project envs/rap-mlx-moss hf download Qwen/Qwen2.5-7B-Instruct --revision a09a35458c702b33eeacc393d103063234e8bc28
+uv run --project envs/rap-mlx-chat python -m mlx_lm convert \
+  --hf-path "$HF_HOME/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28" \
+  --mlx-path $M/qwen2.5-7b-instruct-a09a3545-mlx-q4g64 -q --q-bits 4 --q-group-size 64
+```
+
+Start everything, then the demo:
+
+```bash
+scripts/run_rap_local_mac.sh --demo
+```
+
+Without `--demo` the script only starts the three services and waits; stop it
+with Ctrl-C (or `kill <pid>` when it runs in the background). It checks the SSD
+and cache variables first, runs the services with `HF_HUB_OFFLINE=1`, and the
+render server refuses to start if the MOSS service reports a different runtime
+identity than the pins in the script (`MOSS_WEIGHTS_SHA256` and friends; a
+reconverted model needs its new hash).
+
+Mac-specific settings the script applies:
+
+- `--moss-warp-policy all_onsets_r3`: the Mac client requires every returned
+  target anchor to equal its own schedule, which gentle sparse R3 does not
+  satisfy (it moves anchors to bound stretch ratios). Until that contract is
+  settled, gentle sparse chunks are rejected and only fall back.
+- `--rap-render-reserve-ms 3500` on the demo: the MLX renderer (MOSS + MMS + R3)
+  plus one rescue wave needs more than the H200's 3000 ms reserve.
+- `--wire-audio-codec pcm`: Opus only helped the SSH route.
+
+Measured on 2026-09-30 (24 chunks, 90 BPM, 2-bar chunks): end-to-end p50
+3.28 s / p95 3.55 s; Qwen 0.96 s, MOSS 2.09 s, MMS 0.05 s, R3 0.06 s; a
+24-bar headless demo (`--audio-output wav --no-web`) used remote audio for 22
+bars with zero underruns. Details and open decisions are in
+`developing-logs/plans/2026-09-30-rap-mac-local-server-plan.md`.
+
 ## Normal Runtime Shutdown
 
 1. Select Stop in the Mac website or call the stop endpoint and wait for the

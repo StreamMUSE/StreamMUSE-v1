@@ -350,6 +350,9 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                     warp_input,
                     warp_plan,
                     warped.anchor_map,
+                    source_frame_count=len(warp_input.samples),
+                    target_frame_count=target_frame_count,
+                    sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
                 ),
                 stretch_ratios=stretch_ratios,
             )
@@ -683,7 +686,18 @@ def _effective_diagnostic_anchors(
     preparation: _WarpPreparation,
     plan: _WarpPlan,
     effective_anchors: Sequence[VowelAnchor],
+    *,
+    source_frame_count: int,
+    target_frame_count: int,
+    sample_rate_hz: int,
 ) -> tuple[VowelAnchor, ...]:
+    """Return one public anchor per planned syllable.
+
+    Boundary and stretched anchors are reported as warped. A syllable omitted
+    from a sparse warp keeps its measured MMS source onset and reports where the
+    applied time map actually placed it, so the public contract stays
+    one-anchor-per-syllable while the sparse selection stays private.
+    """
     boundary_indices = frozenset(preparation.boundary_anchor_indices)
     interior_indices = tuple(
         index
@@ -691,12 +705,33 @@ def _effective_diagnostic_anchors(
         if index not in boundary_indices
     )
     effective_by_index = dict(zip(interior_indices, effective_anchors, strict=True))
-    return tuple(
-        preparation.diagnostic_anchors[index]
-        if index in boundary_indices
-        else effective_by_index[index]
-        for index in plan.selected_request_indices
+    # Same sample-domain time map continuous_pitch_preserving_warp hands to R3.
+    source_points = np.array(
+        (0, *(anchor.source_sample for anchor in effective_anchors), source_frame_count - 1),
+        dtype=np.float64,
     )
+    target_points = np.array(
+        (0, *(anchor.target_sample for anchor in effective_anchors), target_frame_count - 1),
+        dtype=np.float64,
+    )
+    anchors: list[VowelAnchor] = []
+    for index, anchor in enumerate(preparation.diagnostic_anchors):
+        if index in boundary_indices:
+            anchors.append(anchor)
+        elif index in effective_by_index:
+            anchors.append(effective_by_index[index])
+        else:
+            target_sample = float(
+                np.interp(anchor.source_sample, source_points, target_points)
+            )
+            anchors.append(
+                replace(
+                    anchor,
+                    target_seconds=target_sample / sample_rate_hz,
+                    target_sample=int(round(target_sample)),
+                )
+            )
+    return tuple(anchors)
 
 
 def _float32le_sha256(samples: np.ndarray) -> str:

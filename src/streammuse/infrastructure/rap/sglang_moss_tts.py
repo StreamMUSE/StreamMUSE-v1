@@ -174,7 +174,19 @@ class SglangMossConfig:
 
 
 class SglangMossSynthesizer:
-    """Reuse one HTTP pool and expose the backend-neutral MOSS contract."""
+    """Reuse one HTTP pool and expose the backend-neutral MOSS contract.
+
+    Subclasses serving the same speech API from another runtime override the
+    class attributes, ``_config_type``, ``_extra_payload`` and
+    ``_validate_model_entry``.
+    """
+
+    _BACKEND = "sglang-omni"
+    _LABEL = "SGLang MOSS"
+
+    @classmethod
+    def _config_type(cls) -> type:
+        return SglangMossConfig
 
     def __init__(
         self,
@@ -183,8 +195,8 @@ class SglangMossSynthesizer:
         client: httpx.Client | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
-        if not isinstance(config, SglangMossConfig):
-            raise ValueError("SGLang MOSS synthesizer requires validated config")
+        if not isinstance(config, self._config_type()):
+            raise ValueError(f"{self._LABEL} synthesizer requires validated config")
         self._config = config
         self._client = client or httpx.Client(
             base_url=config.base_url,
@@ -194,7 +206,7 @@ class SglangMossSynthesizer:
         self._clock = clock
         self._state_lock = threading.Lock()
         self._closed = False
-        self._server_identity = "sglang-omni"
+        self._server_identity = self._BACKEND
         self._server_version = "unknown"
 
     @property
@@ -204,13 +216,13 @@ class SglangMossSynthesizer:
     def probe(self) -> Mapping[str, object]:
         with self._state_lock:
             if self._closed:
-                raise MossBackendUnavailable("SGLang MOSS synthesizer is closed")
+                raise MossBackendUnavailable(f"{self._LABEL} synthesizer is closed")
         health = self._probe_get("/health", allow_empty=True)
         models = self._probe_get("/v1/models", allow_empty=False)
         model_entries = models.get("data") if isinstance(models, Mapping) else None
         if not isinstance(model_entries, list):
             raise MossBackendUnavailable(
-                "SGLang model list has an invalid data field"
+                f"{self._LABEL} model list has an invalid data field"
             )
         matching_models = [
             item
@@ -219,11 +231,11 @@ class SglangMossSynthesizer:
         ]
         if not matching_models:
             raise MossBackendUnavailable(
-                "configured model is absent from the SGLang model list"
+                f"configured model is absent from the {self._LABEL} model list"
             )
         if len(matching_models) != 1:
             raise MossBackendUnavailable(
-                "configured model appears more than once in the SGLang model list"
+                f"configured model appears more than once in the {self._LABEL} model list"
             )
         matching_model = matching_models[0]
         reported_revision = _reported_model_revision(matching_model)
@@ -232,8 +244,9 @@ class SglangMossSynthesizer:
             and reported_revision != self._config.model_revision
         ):
             raise MossBackendUnavailable(
-                "SGLang model revision does not match the configured pin"
+                f"{self._LABEL} model revision does not match the configured pin"
             )
+        self._validate_model_entry(matching_model)
         return MappingProxyType(
             {
                 "ready": True,
@@ -246,6 +259,12 @@ class SglangMossSynthesizer:
             }
         )
 
+    def _validate_model_entry(self, model: Mapping[str, object]) -> None:
+        """Hook for subclasses that pin more than the model revision."""
+
+    def _extra_payload(self) -> dict[str, object]:
+        return {"ref_text": self._config.reference_text}
+
     def warmup(
         self, *, execution: SynthesisExecutionContext | None = None
     ) -> Mapping[str, object]:
@@ -256,7 +275,7 @@ class SglangMossSynthesizer:
     def build_request_payload(self, request: TwoBarRenderRequest) -> dict[str, object]:
         if not isinstance(request, TwoBarRenderRequest):
             raise MossRequestRejected(
-                "SGLang MOSS synthesis requires a two-bar render request"
+                f"{self._LABEL} synthesis requires a two-bar render request"
             )
         settings = resolved_generation_settings(
             request,
@@ -273,7 +292,7 @@ class SglangMossSynthesizer:
             "response_format": "wav",
             "stream": False,
             "ref_audio": self._config.reference_audio_uri,
-            "ref_text": self._config.reference_text,
+            **self._extra_payload(),
             "language": LANGUAGE,
             "instructions": RAP_INSTRUCTION,
             "token_count": settings["token_target"],
@@ -297,11 +316,11 @@ class SglangMossSynthesizer:
         execution: SynthesisExecutionContext,
     ) -> MossPhraseResult:
         if not isinstance(execution, SynthesisExecutionContext):
-            raise ValueError("SGLang MOSS synthesis requires an execution context")
+            raise ValueError(f"{self._LABEL} synthesis requires an execution context")
         execution.checkpoint()
         with self._state_lock:
             if self._closed:
-                raise MossBackendUnavailable("SGLang MOSS synthesizer is closed")
+                raise MossBackendUnavailable(f"{self._LABEL} synthesizer is closed")
 
         payload = self.build_request_payload(request)
         output_path = Path(output_wav)
@@ -348,7 +367,7 @@ class SglangMossSynthesizer:
                         response_bytes += len(chunk)
                         if response_bytes > self._config.response_byte_limit:
                             raise MossInvalidOutput(
-                                "SGLang MOSS response exceeds the configured byte limit"
+                                f"{self._LABEL} response exceeds the configured byte limit"
                             )
                         output.write(chunk)
                         execution.checkpoint()
@@ -377,13 +396,13 @@ class SglangMossSynthesizer:
         except httpx.TimeoutException as exc:
             _raise_execution_or_unavailable(
                 execution,
-                "SGLang MOSS request timed out",
+                f"{self._LABEL} request timed out",
                 exc,
             )
         except httpx.RequestError as exc:
             _raise_execution_or_unavailable(
                 execution,
-                "SGLang MOSS request transport failed",
+                f"{self._LABEL} request transport failed",
                 exc,
             )
         except OSError as exc:
@@ -413,7 +432,7 @@ class SglangMossSynthesizer:
             resolved_generation_settings=settings,
             warnings=(STYLE_INSTRUCTION_CAVEAT, DETERMINISTIC_SEED_CAVEAT),
             serving_metadata=MossServingMetadata(
-                backend="sglang-omni",
+                backend=self._BACKEND,
                 correlation_id=execution.correlation_id,
                 service_request_ms=total_ms,
                 http_response_headers_ms=max(0.0, (headers_at - started) * 1000.0),
@@ -454,26 +473,26 @@ class SglangMossSynthesizer:
         try:
             stream = self._client.stream("GET", path, timeout=timeout)
         except httpx.TimeoutException as exc:
-            raise MossBackendUnavailable("SGLang MOSS probe timed out") from exc
+            raise MossBackendUnavailable(f"{self._LABEL} probe timed out") from exc
         except httpx.RequestError as exc:
-            raise MossBackendUnavailable("SGLang MOSS probe transport failed") from exc
+            raise MossBackendUnavailable(f"{self._LABEL} probe transport failed") from exc
         try:
             with stream as response:
                 if response.status_code != 200:
                     raise MossBackendUnavailable(
-                        "SGLang MOSS probe returned an error"
+                        f"{self._LABEL} probe returned an error"
                     )
                 _validate_content_length(
                     response.headers.get("content-length"),
                     limit=_PROBE_RESPONSE_LIMIT,
-                    label="SGLang MOSS probe response",
+                    label=f"{self._LABEL} probe response",
                     error_type=MossBackendUnavailable,
                 )
                 content = bytearray()
                 for chunk in response.iter_bytes():
                     if len(content) + len(chunk) > _PROBE_RESPONSE_LIMIT:
                         raise MossBackendUnavailable(
-                            "SGLang MOSS probe response is too large"
+                            f"{self._LABEL} probe response is too large"
                         )
                     content.extend(chunk)
                 server = response.headers.get("server")
@@ -485,17 +504,17 @@ class SglangMossSynthesizer:
                 value = json.loads(content)
             except (UnicodeDecodeError, ValueError) as exc:
                 raise MossBackendUnavailable(
-                    "SGLang MOSS probe returned invalid JSON"
+                    f"{self._LABEL} probe returned invalid JSON"
                 ) from exc
             if not isinstance(value, Mapping):
                 raise MossBackendUnavailable(
-                    "SGLang MOSS probe returned an invalid object"
+                    f"{self._LABEL} probe returned an invalid object"
                 )
             return MappingProxyType(dict(value))
         except httpx.TimeoutException as exc:
-            raise MossBackendUnavailable("SGLang MOSS probe timed out") from exc
+            raise MossBackendUnavailable(f"{self._LABEL} probe timed out") from exc
         except httpx.RequestError as exc:
-            raise MossBackendUnavailable("SGLang MOSS probe transport failed") from exc
+            raise MossBackendUnavailable(f"{self._LABEL} probe transport failed") from exc
 
     def _request_timeout(self, execution: SynthesisExecutionContext) -> httpx.Timeout:
         remaining = execution.remaining_seconds()
@@ -515,20 +534,20 @@ class SglangMossSynthesizer:
             return
         if 400 <= response.status_code < 500 and response.status_code != 429:
             raise MossRequestRejected(
-                f"SGLang MOSS rejected the request ({response.status_code})"
+                f"{self._LABEL} rejected the request ({response.status_code})"
             )
         raise MossBackendUnavailable(
-            f"SGLang MOSS service is unavailable ({response.status_code})"
+            f"{self._LABEL} service is unavailable ({response.status_code})"
         )
 
     def _validate_response_headers(self, response: httpx.Response) -> None:
         media_type = response.headers.get("content-type", "").partition(";")[0]
         if media_type.strip().lower() not in _WAV_MEDIA_TYPES:
-            raise MossInvalidOutput("SGLang MOSS response media type is not WAV")
+            raise MossInvalidOutput(f"{self._LABEL} response media type is not WAV")
         _validate_content_length(
             response.headers.get("content-length"),
             limit=self._config.response_byte_limit,
-            label="SGLang MOSS response",
+            label=f"{self._LABEL} response",
             error_type=MossInvalidOutput,
         )
 

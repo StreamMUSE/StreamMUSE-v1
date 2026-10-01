@@ -106,7 +106,7 @@ _CANDIDATE_PROFILES = {
     "realtime": {"max_tokens_per_choice": 32, "temperature": 1.0},
 }
 _MOSS_WARP_POLICIES = ("gentle_sparse_r3", "all_onsets_r3")
-_MOSS_SERVING_BACKENDS = ("inprocess", "sglang-omni")
+_MOSS_SERVING_BACKENDS = ("inprocess", "sglang-omni", "mlx")
 _PRIVATE_SIDECAR_MAX_BYTES = 64 * 1024
 
 
@@ -254,6 +254,9 @@ class RapRenderServerConfig:
     moss_runtime_environment_sha256: str | None = None
     moss_runtime_config: Path | None = None
     moss_runtime_config_sha256: str | None = None
+    moss_mlx_url: str | None = None
+    moss_mlx_runtime: Mapping[str, str] | None = None
+    concurrent_bar_generation: bool = False
 
 
 @dataclass
@@ -1692,7 +1695,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--moss-runtime-environment-sha256")
     parser.add_argument("--moss-runtime-config")
     parser.add_argument("--moss-runtime-config-sha256")
-    parser.add_argument("--aligner-device", default="cuda")
+    parser.add_argument("--moss-mlx-url")
+    parser.add_argument("--mlx-version")
+    parser.add_argument("--mlx-audio-version")
+    parser.add_argument("--mlx-audio-commit")
+    parser.add_argument("--mlx-moss-quantization")
+    parser.add_argument("--mlx-moss-weights-sha256")
+    parser.add_argument("--mlx-moss-audio-tokenizer-revision")
+    parser.add_argument(
+        "--aligner-device",
+        default="auto",
+        help="auto picks cuda, then mps, then cpu",
+    )
     parser.add_argument("--aligner-cache")
     parser.add_argument(
         "--candidate-profile", choices=tuple(_CANDIDATE_PROFILES), default="realtime"
@@ -1703,6 +1717,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="gentle_sparse_r3",
     )
     parser.add_argument("--wire-audio-codec", choices=("pcm", "opus"), default="pcm")
+    parser.add_argument(
+        "--concurrent-bar-generation",
+        action="store_true",
+        help="generate both bars' initial candidate waves at once, one chat client per bar",
+    )
     return parser
 
 
@@ -1771,13 +1790,51 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         "--moss-runtime-config": args.moss_runtime_config,
         "--moss-runtime-config-sha256": args.moss_runtime_config_sha256,
     }
+    mlx_only = {
+        "--moss-mlx-url": args.moss_mlx_url,
+        "--mlx-version": args.mlx_version,
+        "--mlx-audio-version": args.mlx_audio_version,
+        "--mlx-audio-commit": args.mlx_audio_commit,
+        "--mlx-moss-quantization": args.mlx_moss_quantization,
+        "--mlx-moss-weights-sha256": args.mlx_moss_weights_sha256,
+        "--mlx-moss-audio-tokenizer-revision": args.mlx_moss_audio_tokenizer_revision,
+    }
+    sglang_conflicts = [name for name, value in sglang_only.items() if value is not None]
+    mlx_conflicts = [name for name, value in mlx_only.items() if value is not None]
+    if backend != "sglang-omni" and sglang_conflicts:
+        raise ValueError(
+            f"{', '.join(sglang_conflicts)} may only be used with sglang-omni"
+        )
+    if backend != "mlx" and mlx_conflicts:
+        raise ValueError(f"{', '.join(mlx_conflicts)} may only be used with mlx")
+    moss_mlx_runtime: dict[str, str] | None = None
     if backend == "inprocess":
-        conflicts = [name for name, value in sglang_only.items() if value is not None]
-        if conflicts:
-            raise ValueError(
-                f"{', '.join(conflicts)} may only be used with sglang-omni"
-            )
-        moss_device = args.moss_device or "cuda"
+        moss_device = args.moss_device or "auto"
+    elif backend == "mlx":
+        if args.moss_device is not None:
+            raise ValueError("--moss-device is only valid for the inprocess backend")
+        missing = [name for name, value in mlx_only.items() if value is None]
+        if args.moss_model_revision is None:
+            missing.append("--moss-model-revision")
+        if missing:
+            raise ValueError(f"mlx requires {', '.join(missing)}")
+        _validate_origin_url(args.moss_mlx_url, "--moss-mlx-url", loopback_only=True)
+        if not Path(args.moss_reference_wav).is_absolute():
+            raise ValueError("--moss-reference-wav must be an absolute path")
+        _validate_pinned_identity(args.moss_model_revision, "--moss-model-revision")
+        _validate_sha256(args.mlx_moss_weights_sha256, "--mlx-moss-weights-sha256")
+        for name, value in mlx_only.items():
+            if name != "--moss-mlx-url":
+                _validate_pinned_identity(value, name)
+        moss_mlx_runtime = {
+            "mlx_version": args.mlx_version,
+            "mlx_audio_version": args.mlx_audio_version,
+            "mlx_audio_commit": args.mlx_audio_commit,
+            "quantization": args.mlx_moss_quantization,
+            "weights_sha256": args.mlx_moss_weights_sha256,
+            "audio_tokenizer_revision": args.mlx_moss_audio_tokenizer_revision,
+        }
+        moss_device = "external"
     else:
         if args.moss_device is not None:
             raise ValueError("--moss-device is only valid for the inprocess backend")
@@ -1865,6 +1922,9 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
             Path(args.moss_runtime_config) if args.moss_runtime_config else None
         ),
         moss_runtime_config_sha256=args.moss_runtime_config_sha256,
+        moss_mlx_url=args.moss_mlx_url,
+        moss_mlx_runtime=moss_mlx_runtime,
+        concurrent_bar_generation=args.concurrent_bar_generation,
     )
 
 
@@ -1959,16 +2019,28 @@ def _compose_real_worker(
         vllm_health = _probe_vllm(config.vllm_url, config.vllm_model)
 
         profile = _CANDIDATE_PROFILES[config.candidate_profile]
-        generator = dependencies.IndependentChoiceCandidateGenerator(
-            client,
-            max_tokens_per_choice=profile["max_tokens_per_choice"],
-            temperature=profile["temperature"],
-        )
+
+        def make_generator(chat_client: object) -> object:
+            return dependencies.IndependentChoiceCandidateGenerator(
+                chat_client,
+                max_tokens_per_choice=profile["max_tokens_per_choice"],
+                temperature=profile["temperature"],
+            )
+
+        generator = make_generator(client)
+        bar_generators = None
+        if config.concurrent_bar_generation:
+            # LocalChatModelClient allows one active request, so the second bar
+            # gets its own client; the first bar reuses the primary one.
+            second_client = dependencies.LocalChatModelClient(client_config)
+            _register_close(resources, second_client)
+            bar_generators = (generator, make_generator(second_client))
         analyzer = dependencies.CmuProsodyAnalyzer()
         planner = dependencies.ChunkCandidatePlanner(
             generator,
             analyzer,
             dependencies.ScoreWeights(),
+            **({"bar_generators": bar_generators} if bar_generators is not None else {}),
         )
 
         if config.moss_serving_backend == "inprocess":
@@ -1981,6 +2053,13 @@ def _compose_real_worker(
                 "version": _package_version("transformers"),
                 "model": config.moss_model,
             }
+        elif config.moss_serving_backend == "mlx":
+            synthesizer = _load_mlx_moss_synthesizer(
+                config,
+                reference_audio_sha256=reference_audio_sha256,
+            )
+            _register_close(resources, synthesizer)
+            moss_probe = synthesizer.probe()
         else:
             synthesizer = _load_sglang_moss_synthesizer(
                 config,
@@ -2023,9 +2102,8 @@ def _compose_real_worker(
                 ) from exc
             if config.aligner_cache is not None:
                 _configure_aligner_cache(config.aligner_cache)
-            aligner = dependencies.MmsForcedAligner.load(
-                device=config.aligner_device
-            )
+            aligner_device = _resolve_torch_device(config.aligner_device)
+            aligner = dependencies.MmsForcedAligner.load(device=aligner_device)
             _register_close(resources, aligner)
             aligner_warmup = aligner.warmup(warmup_wav, warmup_request.text)
         warmup_time_ms = max(0.0, (time.perf_counter() - warmup_started) * 1000.0)
@@ -2056,6 +2134,7 @@ def _compose_real_worker(
             reference_text_sha256=reference_text_sha256,
             aligner_identity=str(aligner_warmup["aligner"]),
             aligner_version=str(aligner_warmup["version"]),
+            aligner_device=aligner_device,
         )
         namespace_root = initialize_producer_namespace(
             config.artifact_root,
@@ -2110,10 +2189,14 @@ def _compose_real_worker(
                 "status": "warmed",
                 "identity": str(aligner_warmup["aligner"]),
                 "version": str(aligner_warmup["version"]),
+                "device": aligner_device,
                 "warmup": "complete",
             },
             "rubberband": dict(rubberband_health),
             "candidate_profile": config.candidate_profile,
+            "candidate_generation": (
+                "concurrent_bars" if config.concurrent_bar_generation else "serial_bars"
+            ),
             "warmup": {"ready": True, "status": "complete"},
         }
         return _WorkerComposition(
@@ -2158,6 +2241,35 @@ def _validate_composition_inputs(
         raise ValueError("MOSS reference WAV is invalid") from exc
     if reference_samples.shape[0] / reference_rate > 120.0:
         raise ValueError("MOSS reference WAV exceeds 120 seconds")
+
+    mlx_fields = (config.moss_mlx_url, config.moss_mlx_runtime)
+    if config.moss_serving_backend != "mlx" and any(
+        value is not None for value in mlx_fields
+    ):
+        raise ValueError("only the mlx backend accepts MLX configuration")
+    if config.moss_serving_backend == "mlx":
+        if any(value is None for value in mlx_fields) or config.moss_model_revision is None:
+            raise ValueError("mlx backend is missing pinned startup configuration")
+        _validate_origin_url(config.moss_mlx_url, "MLX MOSS URL", loopback_only=True)
+        _validate_pinned_identity(config.moss_model_revision, "MOSS model revision")
+        if not config.moss_reference_wav.is_absolute():
+            raise ValueError("mlx backend requires an absolute MOSS reference WAV path")
+        sglang_fields = (
+            config.moss_sglang_url,
+            config.moss_reference_text_file,
+            config.moss_sglang_reference_uri,
+            config.moss_sglang_reference_sha256,
+            config.moss_runtime_version,
+            config.moss_runtime_revision,
+            config.moss_sglang_version,
+            config.moss_sglang_revision,
+            config.moss_runtime_environment_sha256,
+            config.moss_runtime_config,
+            config.moss_runtime_config_sha256,
+        )
+        if any(value is not None for value in sglang_fields):
+            raise ValueError("mlx backend received SGLang-only configuration")
+        return reference_audio, None
 
     if config.moss_serving_backend == "inprocess":
         conflicts = (
@@ -2252,9 +2364,45 @@ def _load_inprocess_moss_synthesizer(config: RapRenderServerConfig) -> object:
 
     return PersistentMossSynthesizer.load(
         model_id=config.moss_model,
-        device=config.moss_device,
+        device=_resolve_torch_device(config.moss_device),
         reference_wav=config.moss_reference_wav,
     )
+
+
+def _resolve_torch_device(preference: str) -> str:
+    """Resolve auto to cuda, then mps, then cpu; keep explicit devices such as cuda:1."""
+    if preference.strip().lower() != "auto":
+        return preference
+    from streammuse.infrastructure.inference.runtime_device import resolve_device
+
+    return resolve_device("auto")
+
+
+def _load_mlx_moss_synthesizer(
+    config: RapRenderServerConfig,
+    *,
+    reference_audio_sha256: str,
+) -> object:
+    from streammuse.infrastructure.rap.mlx_moss_tts import (
+        MlxMossConfig,
+        MlxMossSynthesizer,
+    )
+
+    assert config.moss_mlx_url is not None
+    assert config.moss_model_revision is not None
+    assert config.moss_mlx_runtime is not None
+    client_config = MlxMossConfig(
+        base_url=config.moss_mlx_url,
+        model_id=config.moss_model,
+        model_revision=config.moss_model_revision,
+        # Same host and filesystem: the service reads the exact file hashed here.
+        reference_audio_uri=config.moss_reference_wav.resolve().as_uri(),
+        reference_audio_sha256=reference_audio_sha256,
+        runtime_identity=config.moss_mlx_runtime,
+        request_timeout_seconds=config.moss_request_timeout_s,
+        cancellation_grace_seconds=config.moss_cancellation_grace_s,
+    )
+    return MlxMossSynthesizer(client_config)
 
 
 def _load_sglang_moss_synthesizer(
@@ -2297,6 +2445,7 @@ def _build_producer_manifest(
     reference_text_sha256: str | None,
     aligner_identity: str,
     aligner_version: str,
+    aligner_device: str | None = None,
 ) -> ProducerManifestV1:
     from streammuse.infrastructure.rap.moss_generation import (
         DEFAULT_BASE_SEED,
@@ -2304,7 +2453,22 @@ def _build_producer_manifest(
         producer_generation_settings,
     )
 
-    if config.moss_serving_backend == "sglang-omni":
+    if config.moss_serving_backend == "mlx":
+        from streammuse.infrastructure.rap.mlx_moss_tts import (
+            MLX_MOSS_ADAPTER_REVISION,
+            runtime_identity_sha256,
+        )
+
+        assert config.moss_mlx_runtime is not None
+        backend_revision = MLX_MOSS_ADAPTER_REVISION
+        runtime = {
+            "identity": "MLX/mlx-audio",
+            "version": str(config.moss_mlx_runtime["mlx_audio_version"]),
+            "revision": str(config.moss_mlx_runtime["mlx_audio_commit"]),
+            **{name: str(value) for name, value in config.moss_mlx_runtime.items()},
+            "config_sha256": runtime_identity_sha256(config.moss_mlx_runtime),
+        }
+    elif config.moss_serving_backend == "sglang-omni":
         from streammuse.infrastructure.rap.sglang_moss_tts import (
             SGLANG_MOSS_ADAPTER_REVISION,
         )
@@ -2365,6 +2529,7 @@ def _build_producer_manifest(
             "identity": aligner_identity,
             "version": aligner_version,
             "warp_policy": config.moss_warp_policy,
+            **({"device": aligner_device} if aligner_device is not None else {}),
         },
         output={
             "sample_rate_hz": 24_000,
@@ -2444,10 +2609,13 @@ def _probe_artifact_namespace(namespace: Path) -> None:
 
 
 def _moss_endpoint_health(config: RapRenderServerConfig) -> dict[str, object]:
-    if config.moss_serving_backend != "sglang-omni":
+    url = {
+        "sglang-omni": config.moss_sglang_url,
+        "mlx": config.moss_mlx_url,
+    }.get(config.moss_serving_backend)
+    if url is None:
         return {}
-    assert config.moss_sglang_url is not None
-    parsed = urlsplit(config.moss_sglang_url)
+    parsed = urlsplit(url)
     return {
         "endpoint_host": parsed.hostname or "unknown",
         "endpoint_port": parsed.port or (443 if parsed.scheme == "https" else 80),

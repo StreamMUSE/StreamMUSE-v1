@@ -182,19 +182,45 @@ def run_block(args):
     from streammuse.infrastructure.rap.moss_tts import PersistentMossSynthesizer
     from streammuse.infrastructure.rap.sglang_moss_tts import SglangMossConfig, SglangMossSynthesizer
     from streammuse.infrastructure.rap.mms_forced_alignment import MmsForcedAligner
+    from streammuse.infrastructure.inference.runtime_device import resolve_device
     from streammuse.infrastructure.rap.moss_aligned_phrase import MossAlignedPhraseRenderer
     from streammuse.application.rap.execution import SynthesisExecutionContext
 
     block = args.root / args.block
     block.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(8)
+    device = resolve_device("auto")
+    on_cuda = device == "cuda"
+
+    def synchronize() -> None:
+        if on_cuda:
+            torch.cuda.synchronize()
+
     packages = {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()}
     write_json(block / "packages.json", packages)
     started = time.perf_counter()
     if args.backend == "inprocess":
         inner = PersistentMossSynthesizer.load(
-            model_id=str(args.model), device="cuda:0", reference_wav=args.reference,
+            model_id=str(args.model), device="cuda:0" if on_cuda else device,
+            reference_wav=args.reference,
         )
+    elif args.backend == "mlx":
+        from streammuse.infrastructure.rap.mlx_moss_tts import MlxMossConfig, MlxMossSynthesizer
+
+        # The benchmark reads the identity the service reports; the render
+        # server instead pins it on its command line.
+        model_entry = json.loads(subprocess.run(
+            ["curl", "-sf", f"{args.url}/v1/models"], capture_output=True, check=True, timeout=10,
+        ).stdout)["data"][0]
+        runtime = {k: v for k, v in model_entry["streammuse_runtime"].items()
+                   if k not in ("server", "model_revision")}
+        inner = MlxMossSynthesizer(MlxMossConfig(
+            base_url=args.url, model_id=model_entry["id"],
+            model_revision=model_entry["revision"], reference_audio_uri=args.reference.as_uri(),
+            reference_audio_sha256=sha(args.reference), runtime_identity=runtime,
+            request_timeout_seconds=180,
+        ))
+        inner.probe()
     else:
         inner = SglangMossSynthesizer(SglangMossConfig.from_files(
             base_url=args.url, model_id=args.served_model or str(args.model),
@@ -205,16 +231,21 @@ def run_block(args):
         inner.probe()
     load_ms = (time.perf_counter() - started) * 1000
     started = time.perf_counter()
-    aligner = MmsForcedAligner.load(device="cuda:0")
+    aligner = MmsForcedAligner.load(device="cuda:0" if on_cuda else device)
     aligner_load_ms = (time.perf_counter() - started) * 1000
     recording = RecordingSynthesizer(inner)
+    rubberband = subprocess.run(["rubberband", "--version"], capture_output=True, text=True)
+    rubberband_version = (rubberband.stdout or rubberband.stderr).strip().splitlines()[-1]
     renderer = MossAlignedPhraseRenderer(synthesizer=recording, aligner=aligner,
-                                        rubberband_version="3.3.0 R3")
+                                        rubberband_version=f"{rubberband_version} R3",
+                                        warp_policy=args.warp_policy)
     write_json(block / "startup.json", {
         "moss_load_or_probe_ms": load_ms, "aligner_load_ms": aligner_load_ms,
         "backend": args.backend, "torch_cuda": torch.version.cuda,
-        "model": str(args.model), "gpu_name": torch.cuda.get_device_name(),
-        "threads": torch.get_num_threads(),
+        "model": str(args.model),
+        "gpu_name": torch.cuda.get_device_name() if on_cuda else device,
+        "threads": torch.get_num_threads(), "warp_policy": args.warp_policy,
+        "rubberband": rubberband_version,
     })
     requests = load_requests(args.root / "corpus.json")
     failed = 0
@@ -233,7 +264,8 @@ def run_block(args):
                 stop.wait(0.5)
 
     monitor_thread = threading.Thread(target=monitor, daemon=True)
-    monitor_thread.start()
+    if on_cuda:
+        monitor_thread.start()
     try:
         jobs = [(True, i, requests[i % len(requests)]) for i in range(args.warmups)]
         jobs += [(False, i, r) for i, r in enumerate(requests[:args.limit])]
@@ -243,12 +275,12 @@ def run_block(args):
                 row = {"block": args.block, "backend": args.backend, "sample": i,
                        "warmup": warmup, "request_sha256": request.sha256,
                        "text": request.text, "target_seconds": request.duration_seconds}
-                torch.cuda.synchronize()
+                synchronize()
                 started = time.perf_counter()
                 try:
                     result = renderer.render(request, path, execution=SynthesisExecutionContext.from_timeout(
                         240, correlation_id=f"benchmark-{args.block}-{warmup}-{i}"))
-                    torch.cuda.synchronize()
+                    synchronize()
                     row.update(success=True, total_ms=(time.perf_counter() - started) * 1000,
                                stages_ms=plain(result.stage_timings_ms),
                                alignment=plain(result.alignment_diagnostics),
@@ -265,7 +297,8 @@ def run_block(args):
                     "block", "sample", "warmup", "success", "moss_ms", "total_ms", "error")}), flush=True)
     finally:
         stop.set()
-        monitor_thread.join(timeout=12)
+        if on_cuda:
+            monitor_thread.join(timeout=12)
         close = getattr(inner, "close", None)
         if close:
             close()
@@ -290,8 +323,10 @@ def summarize(args):
         return output
     for label in ("A1", "B1", "B2", "A2"):
         summary["blocks"][label] = stats([r for r in measured if r["block"] == label])
-    for backend in ("inprocess", "sglang-omni"):
-        summary["backends"][backend] = stats([r for r in measured if r["backend"] == backend])
+    for backend in ("inprocess", "sglang-omni", "mlx"):
+        rows = [r for r in measured if r["backend"] == backend]
+        if rows:
+            summary["backends"][backend] = stats(rows)
     for metric in ("moss_ms", "total_ms"):
         paired = []
         for i in sorted({r["sample"] for r in measured}):
@@ -316,7 +351,10 @@ def main():
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--block")
-    parser.add_argument("--backend", choices=("inprocess", "sglang-omni"))
+    parser.add_argument("--backend", choices=("inprocess", "sglang-omni", "mlx"))
+    parser.add_argument(
+        "--warp-policy", choices=("gentle_sparse_r3", "all_onsets_r3"), default="gentle_sparse_r3"
+    )
     parser.add_argument("--url", default="http://127.0.0.1:8030")
     parser.add_argument("--served-model")
     parser.add_argument("--config", type=Path)

@@ -575,6 +575,58 @@ def test_remote_chunk_rejects_distinct_source_anchors_on_the_same_pcm_frame() ->
         strategy.prepare(request, deadline_monotonic=10.0)
 
 
+def test_remote_chunk_accepts_source_anchor_past_chunk_end() -> None:
+    # MOSS source audio can be longer than the chunk (68 frames = 5.44 s for a
+    # 5.333 s chunk); the last measured onset may legitimately sit past the end.
+    request = _request()
+    package = _package(request)
+    anchors = list(package.manifest.diagnostics.alignment_diagnostics["source_anchors"])
+    duration = request.expected_frame_count / 24_000
+    anchors[-1] = duration + 0.08
+    package = _replace_alignment(package, source_anchors=tuple(anchors))
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    prepared = strategy.prepare(request, deadline_monotonic=10.0)
+
+    assert prepared.bars[0].source == "moss_aligned_remote"
+
+
+@pytest.mark.parametrize(
+    ("anchor_name", "value"),
+    (("target", None), ("source", 30.5), ("source", -0.01)),
+)
+def test_remote_chunk_rejects_anchor_outside_its_timeline(anchor_name: str, value: float | None) -> None:
+    request = _request()
+    package = _package(request)
+    anchors = list(package.manifest.diagnostics.alignment_diagnostics[f"{anchor_name}_anchors"])
+    duration = request.expected_frame_count / 24_000
+    index = 0 if value is not None and value < 0 else -1
+    anchors[index] = duration + 0.01 if value is None else value
+    package = _replace_alignment(
+        package,
+        source_anchors=tuple(anchors) if anchor_name == "source" else None,
+        target_anchors=tuple(anchors) if anchor_name == "target" else None,
+    )
+    strategy = RemoteMossChunkPreparationStrategy(
+        client=_FakeClient(package),
+        tempo_bpm=90.0,
+        audio_format=AudioFormat(),
+        drums=_FakeDrums([]),
+        prosody=_FakeProsody([]),
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RemoteChunkPreparationError, match="anchors are not monotonic"):
+        strategy.prepare(request, deadline_monotonic=10.0)
+
+
 def test_remote_chunk_rejects_vocal_hash_mismatch() -> None:
     request = _request()
     package = _package(request)

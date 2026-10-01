@@ -646,6 +646,24 @@ def test_attention_capability_query_uses_requested_cuda_device(monkeypatch: pyte
     assert torch_module.cuda.device_capability_calls == ["cuda:3"]
 
 
+@pytest.mark.parametrize(
+    ("device", "dtype_name", "attention"),
+    (("cuda:0", "bfloat16", "sdpa"), ("mps", "bfloat16", "sdpa"), ("cpu", "float32", "eager")),
+)
+def test_device_selects_dtype_and_attention_without_cuda_only_paths(
+    monkeypatch: pytest.MonkeyPatch, device: str, dtype_name: str, attention: str
+) -> None:
+    module = _load_module("scripts.rap_audio_backends.moss_backend_device_matrix")
+    torch_module = FakeTorch()
+    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: None)
+
+    dtype = module._resolve_dtype(torch_module, device=device)
+
+    assert dtype is getattr(torch_module, dtype_name)
+    assert module._resolve_attn_implementation(torch_module, device=device, dtype=dtype) == attention
+    assert torch_module.cuda.device_capability_calls == []
+
+
 def test_render_requests_passes_real_torch_tensor_to_save_and_records_valid_wav(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     module = _load_module("scripts.rap_audio_backends.moss_backend_real_tensor")

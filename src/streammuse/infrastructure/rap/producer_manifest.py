@@ -21,7 +21,7 @@ PRODUCER_MANIFEST_FILE = "_producer_manifest.v1.json"
 PRODUCER_FINGERPRINT_FILE = "_producer_fingerprint.sha256"
 _LOCK_FILE = ".producer_manifest.lock"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_BACKENDS = {"inprocess", "sglang-omni"}
+_BACKENDS = {"inprocess", "sglang-omni", "mlx"}
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]

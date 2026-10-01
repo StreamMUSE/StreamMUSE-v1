@@ -79,9 +79,10 @@ def create_runtime(*, model_id: str = MODEL_ID, device: str = "cuda:0") -> MossB
     auto_model = getattr(transformers_module, "AutoModel")
     auto_processor = getattr(transformers_module, "AutoProcessor")
 
-    dtype = torch_module.bfloat16 if _is_cuda_device(device) else torch_module.float32
+    dtype = _resolve_dtype(torch_module, device=device)
     attn_implementation = _resolve_attn_implementation(torch_module, device=device, dtype=dtype)
-    _configure_torch_backends(torch_module)
+    if _is_cuda_device(device):
+        _configure_torch_backends(torch_module)
 
     processor = auto_processor.from_pretrained(model_id, trust_remote_code=True)
     audio_tokenizer = getattr(processor, "audio_tokenizer", None)
@@ -601,9 +602,30 @@ def _seed_torch_best_effort(torch_module: Any, *, seed: int) -> None:
         manual_seed_all = getattr(cuda, "manual_seed_all", None)
         if callable(manual_seed_all):
             manual_seed_all(seed)
+    mps = getattr(torch_module, "mps", None)
+    mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+    if (
+        mps is not None
+        and mps_backend is not None
+        and callable(getattr(mps_backend, "is_available", None))
+        and mps_backend.is_available()
+    ):
+        mps_manual_seed = getattr(mps, "manual_seed", None)
+        if callable(mps_manual_seed):
+            mps_manual_seed(seed)
+
+
+def _resolve_dtype(torch_module: Any, *, device: str) -> Any:
+    # bf16 on CUDA and on Apple Silicon MPS (torch >= 2.3 supports bf16 on MPS);
+    # fp32 only on CPU, where reduced-precision matmuls are slow or unsupported.
+    if _is_cuda_device(device) or _is_mps_device(device):
+        return torch_module.bfloat16
+    return torch_module.float32
 
 
 def _resolve_attn_implementation(torch_module: Any, *, device: str, dtype: Any) -> str:
+    if _is_mps_device(device):
+        return "sdpa"
     if _is_cuda_device(device):
         has_flash_attn = importlib.util.find_spec("flash_attn") is not None
         if has_flash_attn and dtype in {getattr(torch_module, "float16", object()), getattr(torch_module, "bfloat16", object())}:
@@ -632,6 +654,10 @@ def _configure_torch_backends(torch_module: Any) -> None:
 
 def _is_cuda_device(device: str) -> bool:
     return device.startswith("cuda")
+
+
+def _is_mps_device(device: str) -> bool:
+    return device.startswith("mps")
 
 
 def _request_from_payload(payload: dict[str, Any]) -> TwoBarRenderRequest:

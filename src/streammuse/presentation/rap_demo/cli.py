@@ -138,6 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rap-render-profile", choices=("realtime",), default="realtime")
     parser.add_argument("--rap-render-startup-timeout", type=float, default=120.0)
     parser.add_argument("--rap-render-rolling-timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--rap-render-reserve-ms",
+        type=int,
+        default=3_000,
+        help="time the renderer keeps for MOSS+MMS+R3 before it stops generating candidates",
+    )
     parser.add_argument("--tempo", type=float, default=None, help="Override the scenario playback tempo")
     parser.add_argument("--audio-device", default=None)
     parser.add_argument("--sample-rate", type=int, default=48_000)
@@ -494,7 +500,9 @@ def _build_audio_demo(
                     publisher=publisher,
                     enqueue=playback.enqueue,
                     session_id=str(manifest["session_id"]),
-                    policy=RemoteCandidatePolicy.realtime_default(),
+                    policy=RemoteCandidatePolicy.realtime_default(
+                        render_reserve_ms=args.rap_render_reserve_ms
+                    ),
                     seed=args.seed,
                     planning_bar_limit=planning_bar_limit,
                     startup_timeout_seconds=args.rap_render_startup_timeout,

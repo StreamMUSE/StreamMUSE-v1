@@ -428,7 +428,6 @@ def test_default_policy_uses_gentle_sparse_salient_onsets(tmp_path: Path) -> Non
     )
     assert min(ratios) >= 0.75 - 0.001
     assert max(ratios) <= 1.35 + 0.001
-    assert len(result.alignment_diagnostics["source_anchors"]) == 3
     artifact = json.loads(
         (tmp_path / "request" / "mms_alignment.json").read_text(encoding="utf-8")
     )
@@ -438,12 +437,28 @@ def test_default_policy_uses_gentle_sparse_salient_onsets(tmp_path: Path) -> Non
     assert artifact["warp"]["ratio_bounds"] == [0.75, 1.35]
     assert artifact["warp"]["selected_anchor_indices"] == [0, 2, 3]
     assert artifact["warp"]["omitted_anchor_indices"] == [1]
-    assert result.alignment_diagnostics["target_anchors"] == pytest.approx(
-        tuple(
-            anchor["target_seconds"]
-            for anchor in artifact["mapping"]["effective_warp_anchors"]
-        )
+
+    # The public contract keeps one anchor per syllable even though only the
+    # selected anchors drove the warp; the sparse selection stays private.
+    source_anchors = result.alignment_diagnostics["source_anchors"]
+    target_anchors = result.alignment_diagnostics["target_anchors"]
+    assert len(source_anchors) == len(target_anchors) == len(_request().syllables)
+    effective = artifact["mapping"]["effective_warp_anchors"]
+    assert tuple(target_anchors[index] for index in (0, 2, 3)) == pytest.approx(
+        tuple(anchor["target_seconds"] for anchor in effective)
     )
+    assert list(target_anchors) == sorted(target_anchors)
+
+    # The omitted syllable reports where the applied time map placed its
+    # measured source onset.
+    sample_rate_hz = 24_000
+    source_points = [source for source, _ in time_map]
+    target_points = [target for _, target in time_map]
+    omitted_source_sample = round(source_anchors[1] * sample_rate_hz)
+    expected_target = (
+        np.interp(omitted_source_sample, source_points, target_points) / sample_rate_hz
+    )
+    assert target_anchors[1] == pytest.approx(expected_target, abs=1.0 / sample_rate_hz)
 
 
 def test_preserves_complete_canonical_source_and_mms_alignment_artifacts(

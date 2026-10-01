@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import struct
+import threading
 import wave
 from collections.abc import Mapping
 from pathlib import Path
@@ -207,6 +208,74 @@ def test_verbalize_ascii_digits_uses_individual_english_digit_words(
     expected: str,
 ) -> None:
     assert orchestration_module.verbalize_ascii_digits(text) == expected
+
+
+class BarrierGenerator(ScriptedGenerator):
+    """Blocks until both bar generators are inside generate() at the same time."""
+
+    def __init__(self, script, barrier: threading.Barrier) -> None:
+        super().__init__(script)
+        self.barrier = barrier
+
+    def generate(self, request):
+        self.barrier.wait(timeout=5)
+        return super().generate(request)
+
+
+def test_concurrent_bar_generators_overlap_initial_waves_and_keep_bar_order() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    policy = RemoteCandidatePolicy("concurrent", 1, 0, 1, 1, 0.0, 500)
+    barrier = threading.Barrier(2)
+    first = BarrierGenerator([(0, ("alpha beta gamma delta",))], barrier)
+    second = BarrierGenerator([(1, ("epsilon zeta eta theta",))], barrier)
+    unused = ScriptedGenerator([])
+
+    plan = ChunkCandidatePlanner(
+        unused,
+        FakeAnalyzer(),
+        stress_only_weights(),
+        monotonic=FakeClock(),
+        bar_generators=(first, second),
+    ).plan(chunk_request(first_flow=four_syllables, second_flow=four_syllables, policy=policy))
+
+    # Both generate() calls passed the barrier, so they ran concurrently.
+    assert [item.target_bar for item in first.requests] == [0]
+    assert [item.target_bar for item in second.requests] == [1]
+    assert unused.requests == []
+    assert [entry["bar"] for entry in plan.candidate_ledger] == [0, 1]
+    assert tuple(item.text for item in plan.selected_bars) == (
+        "alpha beta gamma delta",
+        "epsilon zeta eta theta",
+    )
+
+
+def test_concurrent_and_serial_planning_select_the_same_lines() -> None:
+    four_syllables = flow("four", (0, 4, 8, 12))
+    policy = RemoteCandidatePolicy("concurrent", 2, 0, 2, 1, 0.0, 500)
+    lines = {0: ("one two three four", "five six seven eight"), 1: ("nine ten eleven twelve",)}
+    request = chunk_request(first_flow=four_syllables, second_flow=four_syllables, policy=policy)
+
+    serial = planner(ScriptedGenerator([(0, lines[0]), (1, lines[1])])).plan(request)
+    concurrent = ChunkCandidatePlanner(
+        ScriptedGenerator([]),
+        FakeAnalyzer(),
+        stress_only_weights(),
+        monotonic=FakeClock(),
+        bar_generators=(ScriptedGenerator([(0, lines[0])]), ScriptedGenerator([(1, lines[1])])),
+    ).plan(request)
+
+    assert concurrent.selected_bars == serial.selected_bars
+    assert concurrent.candidate_ledger == serial.candidate_ledger
+
+
+def test_bar_generators_require_one_generator_per_bar() -> None:
+    with pytest.raises(ValueError, match="one generator per bar"):
+        ChunkCandidatePlanner(
+            ScriptedGenerator([]),
+            FakeAnalyzer(),
+            stress_only_weights(),
+            bar_generators=(ScriptedGenerator([]),),
+        )
 
 
 def test_planner_verbalizes_digits_before_analysis_selection_and_rendering() -> None:
