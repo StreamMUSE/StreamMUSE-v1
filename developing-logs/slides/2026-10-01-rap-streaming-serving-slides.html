@@ -861,15 +861,25 @@ body.presenting .slide { max-height: calc(100vh - 24px); overflow: auto; }
 <!-- 21 -->
 <section class="frame" id="s21"><div class="slide">
   <div class="part">小结</div>
-  <h2>小结</h2>
-  <div class="box acc">
-    <h3>这段时间做了什么</h3>
-    <ul class="pts">
-      <li>MOSS 换到 SGLang-Omni：单段合成快 3.25 倍。</li>
-      <li>按 profiling 落地了六项改动：服务器准备一个 chunk 实测从 1.37 s 降到 1.09 s，MOSS 输出逐字节不变。</li>
-      <li>R3 移到 Mac，修好了 gentle_sparse chunk 被全部拒收的问题。</li>
-      <li>整条流程能在 Mac Studio 本地跑：端到端 p50 3.3 s，24 / 24 被接受，underrun 为 0。</li>
-    </ul>
+  <h2>小结与下一步</h2>
+  <div class="cols even">
+    <div class="box acc">
+      <h3>这段时间做了什么</h3>
+      <ul class="pts">
+        <li>MOSS 换到 SGLang-Omni：单段合成快 3.25 倍。</li>
+        <li>按 profiling 落地了六项改动：服务器准备一个 chunk 实测从 1.37 s 降到 1.09 s，MOSS 输出逐字节不变。</li>
+        <li>R3 移到 Mac，修好了 gentle_sparse chunk 被全部拒收的问题。</li>
+        <li>整条流程能在 Mac Studio 本地跑：端到端 p50 3.3 s，24 / 24 被接受，underrun 为 0。</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>下一步的想法</h3>
+      <ul class="pts">
+        <li><b>从头训一个 rap 的 omni 模型：</b>能做，但比较 ad hoc，研究价值有限，倾向不做。</li>
+        <li><b>在 SGLang-Omni 上改造 MOSS 的流水线：</b>把 Qwen 写词接进来，成为图里的一个新 stage；MOSS 的 decode 改成流式输出；后面的拉伸和 tick 映射也做成流式。</li>
+        <li><b>边缘设备：</b>Mac 端的适配还很弱，vLLM-Metal 对 Qwen 几乎没有批量加速，SGLang-Omni 也不支持 MLX 版的 MOSS，提升空间很大。</li>
+      </ul>
+    </div>
   </div>
   <div class="pno">21 / 21</div>
 </div></section>
