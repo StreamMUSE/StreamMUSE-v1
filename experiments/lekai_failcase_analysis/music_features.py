@@ -30,6 +30,11 @@ class TrackSelectionError(ValueError):
         self.status = status
 
 
+def _matches_semantic_track(name: str, semantic_name: str, suffix: str) -> bool:
+    normalized = name.strip().casefold()
+    return normalized == semantic_name.casefold() or normalized.endswith(suffix)
+
+
 def quantize_beat(value: float, step: float = GRID_STEP_BEATS) -> float:
     """Match MidiConverter: int(round(beat * steps_per_beat)) / steps_per_beat."""
     steps_per_beat = int(round(1.0 / step))
@@ -54,7 +59,10 @@ def instrument_to_beat_notes(
 
 
 def select_source_melody(midi: pretty_midi.PrettyMIDI) -> pretty_midi.Instrument:
-    named = [inst for inst in midi.instruments if inst.name.strip().casefold() == "melody"]
+    named = [
+        inst for inst in midi.instruments
+        if _matches_semantic_track(inst.name, "Melody", "-mel")
+    ]
     if len(named) == 1:
         return named[0]
     if len(named) > 1:
@@ -69,7 +77,7 @@ def select_source_melody(midi: pretty_midi.PrettyMIDI) -> pretty_midi.Instrument
 def select_prompt_accompaniment(midi: pretty_midi.PrettyMIDI) -> pretty_midi.Instrument:
     named = [
         inst for inst in midi.instruments
-        if inst.name.strip().casefold() == "accompaniment"
+        if _matches_semantic_track(inst.name, "Accompaniment", "-acc")
     ]
     if len(named) == 1:
         return named[0]
@@ -87,10 +95,11 @@ def load_prompt_accompaniment(path: Path) -> tuple[str, list[BeatNote], bool]:
     midi = pretty_midi.PrettyMIDI(str(path))
     named = [
         inst for inst in midi.instruments
-        if inst.name.strip().casefold() == "accompaniment"
+        if _matches_semantic_track(inst.name, "Accompaniment", "-acc")
     ]
     if not named and midi.instruments and all(
-        inst.name.strip().casefold() == "melody" for inst in midi.instruments
+        _matches_semantic_track(inst.name, "Melody", "-mel")
+        for inst in midi.instruments
     ):
         return "", [], False
     instrument = select_prompt_accompaniment(midi)
@@ -334,11 +343,100 @@ def prompt_features(notes: list[BeatNote]) -> dict[str, float]:
     return result
 
 
+def _cell_pitch_content(
+    notes: list[BeatNote], cell_start: float, cell_end: float
+) -> tuple[list[int], np.ndarray | None]:
+    pitches: list[int] = []
+    weights = np.zeros(12, dtype=float)
+    for note in notes:
+        overlap = min(note.end, cell_end) - max(note.start, cell_start)
+        if overlap <= 0.0:
+            continue
+        pitches.append(note.pitch)
+        weights[note.pitch % 12] += overlap
+    total = float(np.sum(weights))
+    return pitches, weights / total if total > 0.0 else None
+
+
+def _pitch_consonance_score(melody_pitch: int, accompaniment_pitch: int) -> float:
+    interval_class = abs(melody_pitch - accompaniment_pitch) % 12
+    if interval_class in {0, 3, 4, 7, 8, 9}:
+        return 1.0
+    if interval_class == 5:
+        return 0.0
+    return -1.0
+
+
+def _tonal_centroid(pcp: np.ndarray) -> np.ndarray:
+    """Map an L1-normalized PCP to the standard six-dimensional Tonnetz."""
+    pitch_classes = np.arange(12, dtype=float)
+    angular_rates = np.pi * np.asarray([7.0 / 6.0, 3.0 / 2.0, 2.0 / 3.0])
+    angles = angular_rates[:, None] * pitch_classes[None, :]
+    radii = np.asarray([1.0, 1.0, 0.5])[:, None]
+    basis = np.empty((6, 12), dtype=float)
+    basis[0::2] = radii * np.sin(angles)
+    basis[1::2] = radii * np.cos(angles)
+    return basis @ pcp
+
+
+def _harmony_relation_features(
+    melody: list[BeatNote], accompaniment: list[BeatNote]
+) -> dict[str, float]:
+    cell_count = int(round(PREFIX_BEATS / GRID_STEP_BEATS))
+    pcs_values: list[float] = []
+    mctd_values: list[float] = []
+    chroma_cosine_values: list[float] = []
+
+    for index in range(cell_count):
+        cell_start = index * GRID_STEP_BEATS
+        cell_end = cell_start + GRID_STEP_BEATS
+        melody_pitches, melody_pcp = _cell_pitch_content(melody, cell_start, cell_end)
+        accompaniment_pitches, accompaniment_pcp = _cell_pitch_content(
+            accompaniment, cell_start, cell_end
+        )
+        if melody_pcp is None or accompaniment_pcp is None:
+            continue
+
+        pair_scores = [
+            _pitch_consonance_score(melody_pitch, accompaniment_pitch)
+            for melody_pitch in melody_pitches
+            for accompaniment_pitch in accompaniment_pitches
+        ]
+        pcs_values.append(float(np.mean(pair_scores)))
+
+        melody_centroid = _tonal_centroid(melody_pcp)
+        accompaniment_centroid = _tonal_centroid(accompaniment_pcp)
+        mctd_values.append(float(np.linalg.norm(melody_centroid - accompaniment_centroid)))
+
+        denominator = float(np.linalg.norm(melody_pcp) * np.linalg.norm(accompaniment_pcp))
+        chroma_cosine_values.append(
+            float(np.dot(melody_pcp, accompaniment_pcp) / denominator)
+        )
+
+    pcs = np.asarray(pcs_values, dtype=float)
+    mctd = np.asarray(mctd_values, dtype=float)
+    chroma_cosine = np.asarray(chroma_cosine_values, dtype=float)
+    return {
+        "relation_pcs_mean": float(np.mean(pcs)) if pcs.size else float("nan"),
+        "relation_pcs_p10": _safe_percentile(pcs, 10),
+        "relation_mctd_mean": float(np.mean(mctd)) if mctd.size else float("nan"),
+        "relation_mctd_p90": _safe_percentile(mctd, 90),
+        "relation_local_chroma_cosine_mean": (
+            float(np.mean(chroma_cosine)) if chroma_cosine.size else float("nan")
+        ),
+        "relation_local_chroma_cosine_p10": _safe_percentile(chroma_cosine, 10),
+        "relation_local_chroma_cosine_std": (
+            float(np.std(chroma_cosine)) if chroma_cosine.size else float("nan")
+        ),
+        "relation_harmony_valid_cell_ratio": len(pcs_values) / cell_count,
+    }
+
+
 def relation_features(melody: list[BeatNote], accompaniment: list[BeatNote]) -> dict[str, float]:
     mel = window_features(melody, PREFIX_BEATS)
     acc = window_features(accompaniment, PREFIX_BEATS)
     signed = _signed_log_ratio(acc["onset_note_density"], mel["onset_note_density"])
-    return {
+    result = {
         "relation_log_density_ratio": signed,
         "relation_abs_log_density_ratio": abs(signed) if np.isfinite(signed) else float("nan"),
         "relation_abs_median_duration_log_mismatch": _abs_log_ratio(
@@ -356,6 +454,8 @@ def relation_features(melody: list[BeatNote], accompaniment: list[BeatNote]) -> 
             acc["pitch_median"], mel["pitch_median"]
         ),
     }
+    result.update(_harmony_relation_features(melody, accompaniment))
+    return result
 
 
 def _bar_onset_vector(notes: list[BeatNote], start: float) -> np.ndarray:

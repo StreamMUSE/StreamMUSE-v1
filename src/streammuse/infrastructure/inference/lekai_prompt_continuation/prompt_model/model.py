@@ -72,3 +72,39 @@ class PianoLLaMA(PreTrainedModel):
             pad_token_id=self.pad_token_id,
         )
         return output.cpu()
+
+    @torch.no_grad()
+    def generate_music_batch(
+        self,
+        initial_tokens: torch.Tensor,
+        batch_size: int,
+        device: str = 'cuda',
+        max_length: int = 8192,
+        temperature: float = 0.8,
+        top_k: int = 50,
+        top_p: float = 0.95,
+        repetition_penalty: float = 1.0,
+    ) -> torch.Tensor:
+        """Generate independent samples from one repeated Melody condition."""
+
+        if int(batch_size) < 1:
+            raise ValueError("batch_size must be positive")
+        self.eval()
+        input_ids = (
+            initial_tokens.unsqueeze(0)
+            .repeat(int(batch_size), 1)
+            .contiguous()
+            .to(device)
+        )
+        output = self.model.generate(
+            input_ids=input_ids,
+            max_length=max_length,
+            do_sample=True,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            eos_token_id=self.eos_token_id,
+            pad_token_id=self.pad_token_id,
+        )
+        return output.cpu()

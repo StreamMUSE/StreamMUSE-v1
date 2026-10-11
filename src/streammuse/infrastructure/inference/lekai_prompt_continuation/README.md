@@ -502,6 +502,78 @@ export LEKAI_RT_REPETITION_PENALTY=1.2
 The batch validation script accepts these as shell variables and forwards them
 to server/CLI.
 
+## Batched Rule-S Prompt Selection
+
+The Prompt stage can optionally reproduce the frozen Best-of-5 selector from
+the Q1 pilot:
+
+```text
+one Melody condition
+  -> one Prompt Model generate call with input shape [N, L]
+  -> reject empty or incomplete candidates
+  -> raw-logit accompaniment PPL + symbolic Prompt metrics
+  -> frozen within-batch Rule-S ranking
+  -> only the selected Prompt enters the existing continuation path
+```
+
+This mode changes only `LekaiPromptEngine`. It does not introduce another
+client, scheduler, continuation path, or playback policy. The default remains
+the existing single-sample behavior:
+
+```bash
+export LEKAI_PROMPT_SELECTION_MODE=single
+```
+
+Enable the frozen experimental configuration with:
+
+```bash
+export LEKAI_PROMPT_SELECTION_MODE=rule_s
+export LEKAI_PROMPT_BATCH_CANDIDATES=5
+export LEKAI_PROMPT_TEMPERATURE=0.8
+export LEKAI_PROMPT_TOP_K=50
+export LEKAI_PROMPT_TOP_P=0.95
+```
+
+When Rule-S mode is enabled and sampling variables are absent, the Prompt
+Engine uses `temperature=0.8`, `top_k=50`, and `top_p=0.95`. Explicit sampling
+environment variables always take precedence.
+
+The frozen score is:
+
+```text
+S =
+  -0.450 * rank(PPL)
+  +0.477 * rank(Pitch Range)
+  +0.467 * rank(Pitch-Class Entropy)
+  +0.496 * rank(Average Voice Number)
+```
+
+Ranks are normalized inside the current real Prompt batch. PPL is recomputed
+with one raw-logit batch forward and does not use temperature-scaled or
+top-k/top-p-truncated probabilities. If all candidates are empty, incomplete,
+or unscorable, the engine falls back to candidate 1 and records
+`selection_fallback_reason=no_eligible_candidate`.
+
+For an offline StreamMUSE-path smoke test:
+
+```bash
+python scripts/run_lekai_prompt_continuation_offline.py \
+  --midi-file /path/to/melody.mid \
+  --output-dir output/rule_s_smoke \
+  --device cuda \
+  --prompt-selection-mode rule_s \
+  --prompt-batch-candidates 5 \
+  --prompt-temperature 0.8 \
+  --prompt-top-k 50 \
+  --prompt-top-p 0.95
+```
+
+`stage1_token_log.json` retains the selected candidate number, per-candidate
+metrics, token hashes, eligible count, generation time, and PPL scoring time.
+The Q1 held-out pilot showed strong failure avoidance but did not establish a
+quality gain among generations that were already successful; this switch must
+therefore remain optional during further validation.
+
 ## How To Run A Strict CLI Test
 
 Use `streammuse-cli` for realtime-path validation. Do not use a separate fake
