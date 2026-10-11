@@ -895,6 +895,8 @@ class LekaiHttpBackend:
         repetition_penalty: float,
         tonal_pitch_classes: Optional[Set[int]] = None,
         block_empty_token: bool = False,
+        tonal_boost_pcs: Optional[Set[int]] = None,
+        tonal_boost_tau: float = 0.0,
     ) -> List[int]:
         assert self._model_adapter is not None
         from streammuse.infrastructure.inference.lekai_model.generation_utils import sample_token
@@ -909,7 +911,11 @@ class LekaiHttpBackend:
         generated = prompt_tokens.unsqueeze(0).to(device)
         raw_tokens: List[int] = []
         past_key_values = None
-        tonal_mask = TonalBeatMask(tonal_pitch_classes) if tonal_pitch_classes is not None else None
+        tonal_mask = TonalBeatMask(
+            tonal_pitch_classes,
+            boost_pitch_classes=tonal_boost_pcs if tonal_boost_tau > 0 else None,
+            boost_tau=tonal_boost_tau,
+        ) if tonal_pitch_classes is not None else None
 
         with self._model_generation_lock, torch.no_grad():
             for step in range(100):
@@ -1177,6 +1183,26 @@ class LekaiHttpBackend:
                     allowed_pitch_classes = set(decision["allowed_pitch_classes"])
                     tonal_kwargs["tonal_pitch_classes"] = allowed_pitch_classes
                 tonal_decisions.append({"generation_start_tick": beat_start_tick, **decision})
+                # Strong-beat triad boost: additive logit bias on tonic-triad
+                # pitch classes (all octaves) at beats 1/3 of each bar. Window
+                # via env; tau=0 disables. Only when the key is determined.
+                boost_tau = float(os.environ.get("LEKAI_TONAL_BOOST_TAU", "0") or 0)
+                if boost_tau > 0 and decision.get("key"):
+                    boost_start = int(os.environ.get("LEKAI_TONAL_BOOST_START_TICK", "32"))
+                    boost_end_env = int(os.environ.get("LEKAI_TONAL_BOOST_END_TICK", "256") or 0)
+                    in_window = beat_start_tick >= boost_start and (
+                        boost_end_env <= 0 or beat_start_tick < boost_end_env
+                    )
+                    if in_window and (beat_start_tick // TIMESTEPS_PER_BEAT) % measure_beats in (0, measure_beats // 2):
+                        key_info = decision["key"]
+                        tonic = int(key_info["tonic_pitch_class"]) % 12
+                        third = 3 if key_info.get("mode") == "minor" else 4
+                        boost_pcs = {tonic, (tonic + third) % 12, (tonic + 7) % 12}
+                        tonal_kwargs["tonal_boost_pcs"] = boost_pcs
+                        tonal_kwargs["tonal_boost_tau"] = boost_tau
+                        tonal_decisions[-1]["strong_beat_boost"] = {
+                            "pcs": sorted(boost_pcs), "tau": boost_tau,
+                        }
             raw_generated_tokens = self._generate_part1_tokens_from_prompt(
                 prompt_tokens,
                 temperature=rt_temperature,

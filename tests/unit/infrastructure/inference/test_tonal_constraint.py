@@ -242,3 +242,23 @@ def test_backend_mask_closes_old_out_of_key_sustain_and_records_decision(monkeyp
     assert all(e['pitch']%12 in d['allowed_pitch_classes'] for e in events if e['type']=='note_on')
     backend.clear_history()
     assert backend._tonal_tracker._decision is None
+
+
+def test_beat_mask_boost_adds_tau_only_to_boosted_onset_pitches():
+    allowed = {0, 2, 4, 5, 7, 9, 11}  # C major
+    mask = TonalBeatMask(allowed, boost_pitch_classes={0, 4, 7}, boost_tau=3.0)
+    logits = torch.zeros(1, 300)
+    boosted = mask.apply(logits, step=0)
+    # Onset state (position 0): PIT token for pitch 60 (C) boosted, 62 (D) not.
+    assert boosted[0, 81 + 39] == pytest.approx(3.0)   # 21+39=60 -> pc 0
+    assert boosted[0, 81 + 41] == pytest.approx(0.0)   # 21+41=62 -> pc 2
+    assert boosted[0, 169] == pytest.approx(0.0)       # EMPTY untouched
+    mask.accept(81 + 39)
+    # Sustain/state pitch: boost no longer applies to PAT selection.
+    pat = mask.apply(torch.zeros(1, 300), step=1)
+    assert pat[0, 1] == pytest.approx(0.0)
+
+
+def test_beat_mask_boost_requires_subset_of_allowed():
+    with pytest.raises(ValueError):
+        TonalBeatMask({0, 2}, boost_pitch_classes={1}, boost_tau=1.0)

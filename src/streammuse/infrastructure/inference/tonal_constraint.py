@@ -130,10 +130,18 @@ class TonalBeatMask:
     Both onset and sustain at an out-of-key pitch are blocked.
     """
 
-    def __init__(self, allowed_pitch_classes):
+    def __init__(self, allowed_pitch_classes, boost_pitch_classes=None, boost_tau=0.0):
         self.allowed = frozenset(int(pc) for pc in allowed_pitch_classes)
         if not self.allowed <= set(range(12)):
             raise ValueError("pitch classes must be in 0..11")
+        # Optional strong-beat additive boost on in-key onset pitches (pitch
+        # classes cover every octave because PIT pitch is taken modulo 12).
+        self.boost = frozenset(int(pc) for pc in (boost_pitch_classes or ()))
+        if not self.boost <= self.allowed:
+            raise ValueError("boost pitch classes must be a subset of allowed")
+        if boost_tau < 0:
+            raise ValueError("boost_tau must be non-negative")
+        self.boost_tau = float(boost_tau)
         self.position = 0
         self.has_pitch = False
         self.state = "pitch"
@@ -152,6 +160,20 @@ class TonalBeatMask:
         mask = torch.ones(logits.shape[-1], dtype=torch.bool, device=logits.device)
         mask[legal] = False
         result = logits.clone().masked_fill(mask, -float("inf"))
+        if self.boost_tau and self.state == "pitch" and self.boost:
+            # Boost only onset pitch choices whose absolute pitch class is
+            # boosted; relative sustains keep the unmodified distribution.
+            boosted = [
+                81 + delta
+                for delta in range(1 if self.has_pitch else 0, 88 - self.position)
+                if (21 + self.position + delta) % 12 in self.boost
+            ]
+            if boosted:
+                index = torch.tensor(boosted, dtype=torch.long, device=logits.device)
+                current = result[:, index]
+                result[:, index] = torch.where(
+                    torch.isfinite(current), current + self.boost_tau, current,
+                )
         result = result.masked_fill(~torch.isfinite(result), -float("inf"))
         # Never relax the key constraint, even if all legal logits are invalid.
         fallback = 67 if self.state == "pattern" else (169 if 169 in legal else 170)
