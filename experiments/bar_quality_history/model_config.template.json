@@ -1,0 +1,15 @@
+{
+  "mode": "real",
+  "checkpoint_path": "/REPLACE_WITH_VERIFIED_CONTINUATION_CHECKPOINT/model.safetensors",
+  "device": "cuda",
+  "dtype": "float16",
+  "bpm": 120,
+  "context_beats": 32,
+  "temperature": 1.05,
+  "top_p": 0.98,
+  "top_k": 0,
+  "repetition_penalty": 1.0,
+  "tonal_constraint_enabled": true,
+  "empty_token_guard_enabled": true,
+  "time_signature_index": 4
+}

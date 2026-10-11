@@ -1,0 +1,28 @@
+{
+  "steps_per_beat": 4,
+  "bar_start_step": 16,
+  "bar_length_steps": 16,
+  "observed_until": 32,
+  "melody_notes": [{"onset": 16, "end": 20, "pitch": 72}],
+  "history_notes": [
+    {"onset": 8, "end": 16, "pitch": 48},
+    {"onset": 16, "end": 24, "pitch": 55}
+  ],
+  "played_notes": [
+    {"onset": 8, "end": 16, "pitch": 48},
+    {"onset": 16, "end": 24, "pitch": 55}
+  ],
+  "policy": "repair_history",
+  "decisions": [{
+    "bar_start_step": 16,
+    "boundary_step": 32,
+    "decision": "reject",
+    "source": "synthetic hand-authored decision; not a measured quality label"
+  }],
+  "repair_fallback": "error",
+  "repair_candidate": {
+    "decision": "accept",
+    "source": "synthetic hand-authored notes; not model output or measured data",
+    "notes": [{"onset": 16, "end": 20, "pitch": 60}]
+  }
+}
