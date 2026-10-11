@@ -25,6 +25,9 @@ from streammuse.infrastructure.inference.runtime_device import (
 from streammuse.infrastructure.inference.generation_logger import GenerationLogger
 from streammuse.infrastructure.inference.tonal_constraint import TwoBarKeyTracker, TonalBeatMask
 from streammuse.infrastructure.inference.empty_token_guard import EmptyTokenGuard
+from streammuse.infrastructure.inference.history_repair import (
+    HistoryRepairError, prepare_history_repair,
+)
 
 
 EventPayload = Dict[str, int | str]
@@ -163,7 +166,8 @@ class LekaiHttpBackend:
     2. Real PianoLLaMA model (when checkpoint is available)
     """
     
-    def __init__(self, checkpoint_path: Optional[str] = None) -> None:
+    def __init__(self, checkpoint_path: Optional[str] = None, *,
+                 history_repair_enabled: Optional[bool] = None) -> None:
         # Requests and session resets are serialized.  The boundary worker does
         # not acquire this lock, which lets reset_session drain it without a
         # lock inversion with _model_generation_lock.
@@ -171,6 +175,20 @@ class LekaiHttpBackend:
         self._accepting_requests = True
         self._session_epoch = 0
         self._session_id: Optional[str] = None
+        if history_repair_enabled is not None and type(history_repair_enabled) is not bool:
+            raise ValueError("history_repair_enabled must be boolean")
+        self._history_repair_enabled = (
+            self._runtime_bool("LEKAI_HISTORY_REPAIR_ENABLED", False)
+            if history_repair_enabled is None else history_repair_enabled
+        )
+        self._history_revision = 0
+        self._history_repair_ticket = None
+        self._history_repair_completed_until: Optional[int] = None
+        self._history_repair_generated_beats: Set[int] = set()
+        self._history_repair_melody_fence: Optional[int] = None
+        self._history_repair_retained_from = 0
+        self._history_repair_audit: List[Dict[str, Any]] = []
+        self._history_repair_constraint_snapshots: Dict[int, Dict[str, Any]] = {}
         self._effective_seed = int(os.environ.get("LEKAI_RT_SEED", "0"))
         self._sample_generator = self._make_generator(self._effective_seed, "cpu")
         self._generation_metadata_lock = threading.Lock()
@@ -290,6 +308,22 @@ class LekaiHttpBackend:
         return sampling
 
     def set_session_generation_config(
+        self, *, temperature: Optional[float] = None, top_p: Optional[float] = None,
+        top_k: Optional[int] = None, repetition_penalty: Optional[float] = None,
+    ) -> None:
+        with self._session_gate:
+            before = (self._session_temperature, self._session_top_p,
+                      self._session_top_k, self._session_repetition_penalty)
+            self._set_session_generation_config_locked(
+                temperature=temperature, top_p=top_p, top_k=top_k,
+                repetition_penalty=repetition_penalty,
+            )
+            after = (self._session_temperature, self._session_top_p,
+                     self._session_top_k, self._session_repetition_penalty)
+            if before != after:
+                self._invalidate_history_repair()
+
+    def _set_session_generation_config_locked(
         self,
         *,
         temperature: Optional[float] = None,
@@ -558,12 +592,16 @@ class LekaiHttpBackend:
         return self._model_adapter is not None and self._converter is not None
 
     def configure(self, config: BackendRuntimeConfig, input_file: Optional[str] = None) -> None:
-        self._runtime_config = config
-        if input_file:
-            self._current_input_file = input_file
-        # Try to load model if checkpoint_path provided and not already loaded
-        if config.checkpoint_path and not self._has_real_model():
-            self._load_model(config.checkpoint_path)
+        with self._session_gate:
+            if self._runtime_config != config or (
+                    input_file and input_file != getattr(self, "_current_input_file", None)):
+                self._invalidate_history_repair()
+            self._runtime_config = config
+            if input_file:
+                self._current_input_file = input_file
+            # Try to load model if checkpoint_path provided and not already loaded
+            if config.checkpoint_path and not self._has_real_model():
+                self._load_model(config.checkpoint_path)
 
     def _apply_runtime_limits(
         self,
@@ -646,6 +684,8 @@ class LekaiHttpBackend:
             "sample_seed": self._effective_seed,
             "session_id": self._session_id,
             "session_epoch": self._session_epoch,
+            "history_repair_enabled": self._history_repair_enabled,
+            "history_revision": self._history_revision,
             "accepting_requests": self._accepting_requests,
             "pending_boundary_generations": len(self._pending_boundary_generations),
             "boundary_generation_order": (
@@ -659,6 +699,7 @@ class LekaiHttpBackend:
         """Atomically retire the old session and create a seeded session epoch."""
         with self._session_gate:
             self._accepting_requests = False
+            self._invalidate_history_repair(retire=True)
             try:
                 # Do not hold _model_generation_lock while waiting: boundary
                 # futures need that lock in order to finish.
@@ -1110,6 +1151,12 @@ class LekaiHttpBackend:
             target_beat = current_beat + beat_offset
             beat_start_tick = target_beat * TIMESTEPS_PER_BEAT
 
+            if self._history_repair_enabled:
+                self._history_repair_constraint_snapshots[beat_start_tick] = {
+                    "empty_guard": self._empty_token_guard.snapshot(),
+                    "tonal_tracker": copy.deepcopy(vars(self._tonal_tracker)),
+                }
+
             prompt_tokens, part0_tokens = build_standard_offline_prompt(target_beat)
             last_prompt_tokens = [int(token) for token in prompt_tokens.tolist()]
             tonal_kwargs = {}
@@ -1313,6 +1360,12 @@ class LekaiHttpBackend:
         """
         with self._session_gate:
             self._validate_session(session_id=session_id, session_epoch=session_epoch)
+            # Even failed generation can have advanced RNG, guards or history.
+            self._invalidate_history_repair()
+            if self._history_repair_enabled and self._history_repair_completed_until != generation_start_tick:
+                self._history_repair_generated_beats.clear()
+            self._history_repair_completed_until = None
+            self._history_repair_melody_fence = None
             effective_request_id = str(
                 request_id
                 or f"legacy-e{self._session_epoch}-{time.time_ns()}"
@@ -1336,6 +1389,9 @@ class LekaiHttpBackend:
                     bpm=bpm,
                     input_file=input_file,
                 )
+            except BaseException:
+                self._history_repair_generated_beats.clear()
+                raise
             finally:
                 self._tonal_input_snapshot = None
             self._input_digest_history.extend(input_increment)
@@ -1429,6 +1485,23 @@ class LekaiHttpBackend:
             }
             with self._generation_metadata_lock:
                 self._generation_metadata[effective_request_id] = metadata
+            if self._history_repair_enabled and self._runtime_config is not None:
+                self._history_repair_completed_until = (
+                    int(generation_start_tick) + self._runtime_config.generation_length_frames
+                )
+                self._history_repair_generated_beats.update(
+                    int(beat["target_beat"]) for beat in token_decode_beats
+                    if int(beat["start_tick"]) == int(beat["target_beat"]) * TIMESTEPS_PER_BEAT
+                    and int(generation_start_tick) <= int(beat["start_tick"])
+                    and int(beat["start_tick"]) + TIMESTEPS_PER_BEAT <= self._history_repair_completed_until
+                )
+                self._history_repair_generated_beats = {
+                    beat for beat in self._history_repair_generated_beats
+                    if beat * TIMESTEPS_PER_BEAT >= self._history_repair_retained_from
+                }
+                fence = trace.get("part0_roll_end_tick")
+                if metadata["part0_trace_available"] and type(fence) is int:
+                    self._history_repair_melody_fence = fence
             return accompaniment, timings
 
     def _generate_locked(
@@ -1722,6 +1795,231 @@ class LekaiHttpBackend:
         
         return accompaniment
 
+    def _invalidate_history_repair(self, *, retire: bool = False) -> None:
+        if not self._history_repair_enabled:
+            return
+        self._history_revision += 1
+        self._history_repair_ticket = None
+        if retire:
+            self._history_repair_completed_until = None
+            self._history_repair_generated_beats.clear()
+            self._history_repair_melody_fence = None
+            self._history_repair_retained_from = 0
+            self._history_repair_audit = []
+            self._history_repair_constraint_snapshots = {}
+
+    def _history_repair_state(self) -> Dict[str, Any]:
+        # In addition to revision CAS, detect aliased history/config mutations.
+        # No RNG draw or reset is involved in this detached comparison snapshot.
+        return copy.deepcopy({
+            "session_id": self._session_id, "session_epoch": self._session_epoch,
+            "history_revision": self._history_revision,
+            "melody": self._melody_history, "input": self._input_digest_history,
+            "accompaniment": self._accompaniment_history,
+            "tokens": self._accompaniment_token_history,
+            "bar_tokens": self._accompaniment_bar_token_history,
+            "active": sorted(self._active_pitches),
+            "tonal": vars(self._tonal_tracker), "empty": vars(self._empty_token_guard),
+            "runtime": vars(self._runtime_config) if self._runtime_config else None,
+            "runtime_status": vars(self._runtime_status),
+            "sampling": self._sampling_config(), "bpm": self._request_bpm,
+            "completed_until": self._history_repair_completed_until,
+            "generated_beats": sorted(self._history_repair_generated_beats),
+            "melody_fence": self._history_repair_melody_fence,
+            "retained_from": self._history_repair_retained_from,
+            "environment": {k: v for k, v in os.environ.items() if k.startswith("LEKAI_")},
+            "constraint_snapshots": self._history_repair_constraint_snapshots,
+        })
+
+    def _history_repair_precondition(self, start_tick: int, end_tick: int) -> Optional[str]:
+        if not self._history_repair_enabled:
+            return "disabled"
+        if not self._accepting_requests or self._session_id is None:
+            return "no_active_session"
+        if self._pending_boundary_generations:
+            return "pending_boundary_generation"
+        if (type(start_tick) is not int or type(end_tick) is not int
+                or start_tick < 0 or start_tick % 16 or end_tick != start_tick + 16):
+            return "unsupported_bar_range"
+        if (os.environ.get("LEKAI_TIME_SIGNATURE_INDEX", "4") != "4"
+                or os.environ.get("LEKAI_MEASURE_BEATS", "4") != "4"):
+            return "unsupported_meter"
+        if (self._runtime_bool("LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD", True)
+                and start_tick not in self._history_repair_constraint_snapshots):
+            return "missing_bar_start_constraint_snapshot"
+        if (self._history_repair_completed_until is None
+                or end_tick + TIMESTEPS_PER_BEAT > self._history_repair_completed_until):
+            return "bar_not_interior_to_completed_history"
+        if self._history_repair_melody_fence is None or self._history_repair_melody_fence < end_tick:
+            return "melody_fence_unavailable_or_insufficient"
+        if start_tick < self._history_repair_retained_from:
+            return "history_trimmed"
+        if (self._runtime_config is None or self._runtime_config.model_name not in {"lekai", "lekai_prompt_continuation"}
+                or self._runtime_config.inference_mode != "sliding_window"
+                or not all(beat in self._accompaniment_token_history
+                           and beat in self._history_repair_generated_beats
+                           for beat in range(start_tick // 4, end_tick // 4))):
+            return "unsupported_generation_history"
+        return None
+
+    def begin_history_repair(self, start_tick: int, end_tick: int) -> Dict[str, Any]:
+        """Nonblocking snapshot for an external, privately owned repair worker.
+
+        Returns {status: ready, ticket: {...}, reason: ready} or a rejection.
+        Only a completed interior 4/4 bar is supported. Prefix sustain is kept;
+        candidate events at end and pending decoders are rejected.
+        Original events at end belong to the preserved suffix.
+        Melody-only tonal tracking is preserved. One outstanding ticket is kept;
+        any new ticket or generation attempt supersedes it. No model is called.
+        observed_until is the last successful trace's Melody encoding horizon,
+        NOT an input-completeness fence. Melody is additionally capped at end.
+        """
+        if not self._session_gate.acquire(blocking=False):
+            return {"status": "rejected", "reason": "backend_busy"}
+        try:
+            reason = self._history_repair_precondition(start_tick, end_tick)
+            if reason:
+                return {"status": "rejected", "reason": reason}
+            if not self._model_generation_lock.acquire(blocking=False):
+                return {"status": "rejected", "reason": "backend_busy"}
+            try:
+                original_bar = [e for e in self._accompaniment_history
+                                if start_tick <= int(e.get("tick", -1)) < end_tick]
+                prepare_history_repair(self._accompaniment_history, original_bar,
+                                       start_tick, end_tick, self._active_pitches,
+                                       self._history_repair_completed_until)
+                ticket = {
+                    "ticket_id": uuid.uuid4().hex,
+                    "session_id": self._session_id, "session_epoch": self._session_epoch,
+                    "history_revision": self._history_revision,
+                    "start_tick": start_tick, "end_tick": end_tick,
+                    "observed_until": self._history_repair_melody_fence,
+                    "melody_cutoff_tick": end_tick,
+                    "completed_until": self._history_repair_completed_until,
+                    "melody_observation": "received_events_only",
+                    "generation_config": {
+                        "checkpoint_path": self._runtime_status.checkpoint_path,
+                        "device": self._runtime_status.resolved_device,
+                        "dtype": self._runtime_status.resolved_dtype,
+                        "bpm": self._request_bpm if self._request_bpm is not None
+                               else int(os.environ.get("LEKAI_DEFAULT_BPM", "120")),
+                        "context_beats": self._prompt_context_beats(),
+                        **self._sampling_config(),
+                        "time_signature_index": 4,
+                        "tonal_constraint_enabled": self._runtime_bool("LEKAI_CONTINUATION_TONAL_CONSTRAINT", True),
+                        "empty_token_guard_enabled": self._runtime_bool("LEKAI_CONTINUATION_EMPTY_TOKEN_GUARD", True),
+                    },
+                    "constraint_snapshot": self._history_repair_constraint_snapshots.get(start_tick),
+                    "melody_events": [e for e in self._melody_history
+                                      if int(e.get("tick", 0)) < end_tick
+                                      or (int(e.get("tick", 0)) == end_tick
+                                          and e.get("type") == "note_off")],
+                    "accompaniment_events": self._accompaniment_history,
+                    "initial_active_pitches": sorted(self._active_pitches_before_tick(
+                        self._accompaniment_history, start_tick)),
+                    "active_pitches_at_end": sorted(self._active_pitches_before_tick(
+                        self._accompaniment_history, end_tick)),
+                }
+                ticket = copy.deepcopy(ticket)
+                self._history_repair_ticket = (ticket, self._history_repair_state())
+                return {"status": "ready", "ticket": copy.deepcopy(ticket), "reason": "ready"}
+            except (HistoryRepairError, TypeError, ValueError, KeyError) as exc:
+                return {"status": "rejected", "reason": str(exc)}
+            finally:
+                self._model_generation_lock.release()
+        finally:
+            self._session_gate.release()
+
+    def apply_history_repair(self, ticket: dict, candidate: dict) -> Dict[str, Any]:
+        """CAS history only; never inject/reset, sample, or change emitted events.
+
+        Candidate requires events and token_decode_beats. Its token trace is
+        unverified worker provenance, NOT live generation or guard evidence.
+        Live EMPTY guard follows actual emitted decisions and is never reset or
+        replaced by the candidate's counterfactual guard state.
+        Identical end active pitches are required to preserve decoder/playback
+        carry. No synthetic release or playback reconciliation is performed.
+        """
+        if not self._session_gate.acquire(blocking=False):
+            return {"status": "rejected", "reason": "backend_busy"}
+        try:
+            if not self._history_repair_enabled:
+                return {"status": "rejected", "reason": "disabled"}
+            saved = self._history_repair_ticket
+            if type(ticket) is not dict or saved is None or ticket != saved[0]:
+                return {"status": "rejected", "reason": "stale_or_invalid_ticket"}
+            start, end = ticket["start_tick"], ticket["end_tick"]
+            reason = self._history_repair_precondition(start, end)
+            if reason:
+                return {"status": "rejected", "reason": reason}
+            if not self._model_generation_lock.acquire(blocking=False):
+                return {"status": "rejected", "reason": "backend_busy"}
+            try:
+                if self._history_repair_state() != saved[1]:
+                    return {"status": "rejected", "reason": "snapshot_changed"}
+                if (type(candidate) is not dict
+                        or not {"events", "token_decode_beats"} <= candidate.keys()
+                        or candidate.keys() - {"events", "token_decode_beats", "provenance", "guard_semantics"}
+                        or type(candidate["token_decode_beats"]) is not list):
+                    return {"status": "rejected", "reason": "invalid_candidate"}
+                candidate = copy.deepcopy(candidate)
+                # Ensure provenance is detached, finite JSON data before committing.
+                json.dumps(candidate, allow_nan=False)
+                replacement = prepare_history_repair(
+                    self._accompaniment_history, candidate["events"], start, end,
+                    self._active_pitches, self._history_repair_completed_until,
+                )
+                affected = set(range(start // 4, end // 4))
+                tokens = {k: v for k, v in self._accompaniment_token_history.items()
+                          if k not in affected}
+                bar_tokens = {k: v for k, v in self._accompaniment_bar_token_history.items()
+                              if k not in affected}
+                record = copy.deepcopy({
+                    "ticket": ticket, "candidate": candidate,
+                    "original_bar_tokens": {k: v for k, v in self._accompaniment_token_history.items()
+                                            if k in affected},
+                    "original_boundary_tokens": {k: v for k, v in self._accompaniment_bar_token_history.items()
+                                                 if k in affected},
+                    "scope": "history_only", "candidate_trace_verified": False,
+                    "tonal_state": "preserved_melody_only",
+                    "empty_guard": "preserved_actual_generation_chronology",
+                    "empty_guard_before": self._empty_token_guard.snapshot(),
+                    "empty_guard_after": self._empty_token_guard.snapshot(),
+                    "playback_changed": False,
+                    "applied_at_ns": time.time_ns(),
+                    "history_revision_after": self._history_revision + 1,
+                })
+                audit = [*self._history_repair_audit, record]
+                # All validation/allocation precedes this lock-protected commit.
+                self._accompaniment_history = replacement
+                self._accompaniment_token_history = tokens
+                self._accompaniment_bar_token_history = bar_tokens
+                self._history_repair_audit = audit
+                self._invalidate_history_repair()
+                return {"status": "applied", "reason": "applied",
+                        "history_revision": self._history_revision,
+                        "invalidated_token_beats": sorted(affected)}
+            except (HistoryRepairError, TypeError, ValueError, KeyError) as exc:
+                return {"status": "rejected", "reason": str(exc)}
+            finally:
+                self._model_generation_lock.release()
+        finally:
+            self._session_gate.release()
+
+    def history_repair_audit_snapshot(self) -> List[Dict[str, Any]]:
+        """Detached session-local repair provenance, separate from raw generation."""
+        with self._session_gate:
+            return copy.deepcopy(self._history_repair_audit)
+
+    def history_repair_completed_until(self) -> Optional[int]:
+        """Read the successful generation frontier without waiting for a model."""
+        if not self._session_gate.acquire(blocking=False):
+            return None
+        try:
+            return self._history_repair_completed_until
+        finally:
+            self._session_gate.release()
+
     def inject_history(
         self,
         melody_events: List[EventPayload],
@@ -1741,6 +2039,7 @@ class LekaiHttpBackend:
         accompaniment_events: List[EventPayload],
         injection_length_ticks: int,
     ) -> Dict[str, int | bool | str]:
+        self._invalidate_history_repair(retire=True)
         self._resolve_pending_boundary_generations(store=False)
         self._melody_history = list(melody_events)
         self._input_digest_history = [dict(event) for event in melody_events]
@@ -1766,6 +2065,7 @@ class LekaiHttpBackend:
             return self._clear_history_locked()
 
     def _clear_history_locked(self) -> Dict[str, Any]:
+        self._invalidate_history_repair(retire=True)
         self._resolve_pending_boundary_generations(store=False)
         melody_history = [dict(event) for event in self._melody_history]
         accompaniment_history = [dict(event) for event in self._accompaniment_history]
@@ -1827,6 +2127,11 @@ class LekaiHttpBackend:
         cutoff_tick = int(generation_start_tick) - max_history_ticks
         
         if cutoff_tick > 0:
+            self._history_repair_constraint_snapshots = {
+                tick: state for tick, state in self._history_repair_constraint_snapshots.items()
+                if tick >= cutoff_tick
+            }
+            self._history_repair_retained_from = max(self._history_repair_retained_from, cutoff_tick)
             self._accompaniment_history = self._trim_event_history(
                 self._accompaniment_history,
                 cutoff_tick,

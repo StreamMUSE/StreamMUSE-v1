@@ -10,6 +10,20 @@ class EmptyTokenGuard:
         self.remaining_beats = 0
         self.last_tick = None
 
+    def snapshot(self):
+        return dict(consecutive_empty=self.consecutive_empty,
+                    remaining_beats=self.remaining_beats, last_tick=self.last_tick)
+
+    def restore(self, state):
+        if type(state) is not dict or set(state) != {"consecutive_empty", "remaining_beats", "last_tick"}:
+            raise ValueError("invalid EMPTY guard snapshot")
+        count, remaining, tick = state["consecutive_empty"], state["remaining_beats"], state["last_tick"]
+        if (type(count) is not int or not 0 <= count <= 3 or type(remaining) is not int
+                or not 0 <= remaining <= 8 or
+                (tick is not None and (type(tick) is not int or tick < 0 or tick % 4))):
+            raise ValueError("invalid EMPTY guard snapshot values")
+        self.consecutive_empty, self.remaining_beats, self.last_tick = count, remaining, tick
+
     def before_beat(self, tick: int) -> bool:
         # A jump/replay is not a consecutive beat sequence.
         if self.last_tick is not None and tick != self.last_tick + 4:
