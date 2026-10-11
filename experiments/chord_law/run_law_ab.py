@@ -169,6 +169,7 @@ def main():
     probe = SnapshotProbe(config, allow_gpu=True)
     summary = []
     try:
+        probe.__enter__()
         with probe._environment():
             os.environ['LEKAI_REQUIRE_SESSION'] = '0'
             backend = probe._backend
