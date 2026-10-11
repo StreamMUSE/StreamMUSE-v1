@@ -1,0 +1,65 @@
+{
+  "classical": {
+    "creator_terms": [
+      "johann sebastian bach", "j s bach", "bach",
+      "ludwig van beethoven", "beethoven",
+      "wolfgang amadeus mozart", "mozart",
+      "frederic chopin", "chopin",
+      "claude debussy", "debussy",
+      "franz schubert", "schubert",
+      "pyotr ilyich tchaikovsky", "tchaikovsky",
+      "sergei rachmaninoff", "rachmaninoff",
+      "franz liszt", "liszt",
+      "johannes brahms", "brahms",
+      "george frideric handel", "handel",
+      "antonio vivaldi", "vivaldi",
+      "felix mendelssohn", "mendelssohn",
+      "robert schumann", "schumann",
+      "erik satie", "satie",
+      "maurice ravel", "ravel"
+    ],
+    "title_terms": []
+  },
+  "pop": {
+    "creator_terms": [
+      "the beatles", "john lennon", "paul mccartney",
+      "taylor swift", "adele", "ed sheeran", "abba",
+      "elton john", "billy joel", "freddie mercury", "queen",
+      "coldplay", "chris martin", "lady gaga", "billie eilish",
+      "bruno mars", "john legend", "michael jackson",
+      "stevie wonder", "carole king", "burt bacharach"
+    ],
+    "title_terms": []
+  },
+  "film_tv_soundtrack": {
+    "creator_terms": [
+      "john williams", "hans zimmer", "alan menken",
+      "howard shore", "ramin djawadi",
+      "ennio morricone", "danny elfman", "alexandre desplat"
+    ],
+    "title_terms": [
+      "star wars", "harry potter",
+      "game of thrones", "pirates of the caribbean", "interstellar"
+    ]
+  },
+  "game_anime_soundtrack": {
+    "creator_terms": [
+      "joe hisaishi", "nobuo uematsu", "koji kondo", "yoko shimomura"
+    ],
+    "title_terms": [
+      "final fantasy", "legend of zelda", "super mario", "minecraft",
+      "undertale", "studio ghibli"
+    ]
+  },
+  "jazz_blues_ragtime": {
+    "creator_terms": [
+      "scott joplin", "duke ellington", "george gershwin",
+      "thelonious monk", "bill evans", "oscar peterson",
+      "dave brubeck", "herbie hancock", "chick corea",
+      "miles davis", "charlie parker"
+    ],
+    "title_terms": [
+      "jazz", "blues", "ragtime", "boogie", "swing"
+    ]
+  }
+}

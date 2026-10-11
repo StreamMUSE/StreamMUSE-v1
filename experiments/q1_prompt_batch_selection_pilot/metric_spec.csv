@@ -1,0 +1,16 @@
+group,metric,definition,phase
+prompt,Note Density,Number of note-on events per beat,after_rating
+prompt,Rhythm Density,Ratio of quantized time steps containing at least one onset,after_rating
+prompt,Empty Beat Rate,Ratio of beats with no accompaniment note,after_rating
+prompt,Pitch Range,Maximum MIDI pitch minus minimum MIDI pitch,after_rating
+prompt,Average Pitch Interval,Mean absolute interval between consecutive accompaniment onsets,after_rating
+prompt,Pitch Class Entropy,Shannon entropy of the 12-bin accompaniment pitch-class histogram,after_rating
+prompt,Pitch-in-Scale Rate,Ratio of accompaniment notes in the melody-estimated scale,after_rating
+prompt,Qualified Note Rate,Ratio of notes meeting the fixed minimum-duration threshold,after_rating
+prompt,Voice Number,Average number of simultaneous accompaniment notes,after_rating
+model,Prompt Model PPL,Per-token perplexity over accompaniment content in the injected 8 beats under raw Prompt Model logits,during_generation
+relation,Tonal Distance,Tonal-centroid distance between melody and accompaniment,after_rating
+relation,TIV Similarity,Cosine similarity between melody and accompaniment tonal interval vectors,after_rating
+relation,Melody-Chord Interval Distribution,Distribution of melody-to-accompaniment harmonic intervals,after_rating
+relation,Rhythm Feature Similarity,Cosine similarity of onset-hold-rest rhythm features,after_rating
+relation,Onset Distribution Distance,Distance between within-beat onset-position distributions,after_rating
