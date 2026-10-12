@@ -98,6 +98,16 @@ class RapAudioFactories:
 
         return FFmpegOpusCodec()
 
+    def create_lyric_stream(self, *, base_url: str):
+        from streammuse.infrastructure.rap.lyric_stream_client import LyricStreamConnection
+
+        return LyricStreamConnection(base_url)
+
+    def create_bar_audio_source(self, *, base_url: str, opus_codec):
+        from streammuse.infrastructure.rap.lyric_stream_client import HttpBarAudioSource
+
+        return HttpBarAudioSource(base_url, opus_codec=opus_codec)
+
     def create_sink(
         self,
         *,
@@ -145,9 +155,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rap-audio-transport", choices=("pcm", "opus"), default="pcm")
     parser.add_argument(
         "--rap-protocol",
-        choices=("v1", "v2"),
+        choices=("v1", "v2", "v3"),
         default="v2",
-        help="v2: the server returns the raw MOSS phrase and the Mac applies R3; v1: server-side R3",
+        help=(
+            "v3: per-bar lyric stream (server writes lyrics and pre-renders audio, fetched by lyric id); "
+            "v2: the server returns the raw MOSS phrase and the Mac applies R3; v1: server-side R3"
+        ),
+    )
+    parser.add_argument(
+        "--rap-scripted-edits",
+        default="",
+        help=(
+            "v3 only: listener edits for headless runs, e.g. "
+            "'12:topic=deep sea;20:template=baseline_straight_9' (applied when that bar is two bars away)"
+        ),
     )
     parser.add_argument(
         "--rap-warp-policy",
@@ -403,7 +424,7 @@ def _build_audio_demo(
         "artifact_paths": {"wav": str(audio_file)} if args.audio_output in ("wav", "composite") else {},
     }
     phrase_warper = None
-    if args.rap_audio_renderer == "moss_aligned_remote" and args.rap_protocol == "v2":
+    if args.rap_audio_renderer == "moss_aligned_remote" and args.rap_protocol in ("v2", "v3"):
         # v2 chunks arrive unwarped; probe the local R3 before anything starts and
         # record the build in the session evidence.
         try:
@@ -508,6 +529,38 @@ def _build_audio_demo(
                 on_audio_committed=playback.enqueue,
                 monotonic=clock,
             )
+        elif args.rap_protocol == "v3":
+            from streammuse.application.rap.bar_audio import BarAudioPreparer
+            from streammuse.application.rap.bar_stream import BarStreamController
+
+            opus_codec = None
+            if args.rap_audio_transport == "opus":
+                opus_codec = audio_factories.create_opus_codec()
+                opus_codec.probe()
+            controller = BarStreamController(
+                tempo=tempo,
+                scenario=scenario,
+                templates=BUILTIN_TEMPLATES,
+                fallback_catalog=fallbacks,
+                analyzer=analyzer,
+                fallback_renderer=renderer,
+                lyric_stream=audio_factories.create_lyric_stream(base_url=args.rap_render_url),
+                audio_source=audio_factories.create_bar_audio_source(
+                    base_url=args.rap_render_url, opus_codec=opus_codec
+                ),
+                preparer=BarAudioPreparer(
+                    warper=phrase_warper, drums=drums, tempo=tempo, audio_format=audio_format
+                ),
+                publisher=publisher,
+                enqueue=playback.enqueue,
+                session_id=str(manifest["session_id"]),
+                seed=args.seed,
+                planning_bar_limit=planning_bar_limit,
+                startup_timeout_seconds=args.rap_render_startup_timeout,
+                monotonic=clock,
+            )
+            if args.rap_scripted_edits:
+                _install_scripted_edits(controller, args.rap_scripted_edits, tempo)
         else:
             if args.rap_audio_transport == "opus":
                 audio_factories.create_opus_codec().probe()
@@ -620,6 +673,41 @@ def _build_audio_demo(
     )
 
 
+def _parse_scripted_edits(text: str) -> list[tuple[int, str | None, str | None]]:
+    """'12:topic=deep sea;20:template=baseline_straight_9' -> [(12, 'deep sea', None), (20, None, ...)]."""
+    edits = []
+    for item in filter(None, (part.strip() for part in text.split(";"))):
+        bar_text, _, assignments = item.partition(":")
+        topic = template_id = None
+        for assignment in assignments.split(","):
+            key, _, value = assignment.partition("=")
+            if key.strip() == "topic":
+                topic = value.strip()
+            elif key.strip() == "template":
+                template_id = value.strip()
+            else:
+                raise ValueError(f"unknown scripted edit field {key!r}")
+        if topic is None and template_id is None:
+            raise ValueError(f"scripted edit {item!r} changes nothing")
+        edits.append((int(bar_text), topic, template_id))
+    return edits
+
+
+def _install_scripted_edits(controller, text: str, tempo) -> None:
+    """Apply each edit when its bar is two bars ahead, the way a listener would."""
+    pending = sorted(_parse_scripted_edits(text))
+    original_on_tick = controller.on_tick
+
+    def on_tick(tick: int) -> None:
+        original_on_tick(tick)
+        bar = tick // tempo.ticks_per_bar
+        while pending and pending[0][0] - 2 <= bar and tick % tempo.ticks_per_bar == tempo.ticks_per_bar // 2:
+            from_bar, topic, template_id = pending.pop(0)
+            controller.update_plan(from_bar=from_bar, topic=topic, template_id=template_id)
+
+    controller.on_tick = on_tick  # type: ignore[method-assign]
+
+
 def _validate_audio_options(args: argparse.Namespace, *, require_external: bool) -> None:
     if args.tempo is not None and (not isfinite(args.tempo) or args.tempo <= 0):
         raise ValueError("tempo must be positive")
@@ -636,7 +724,7 @@ def _validate_audio_options(args: argparse.Namespace, *, require_external: bool)
     if args.rap_audio_renderer == "moss_aligned_remote":
         if args.audio_output == "none":
             raise ValueError("moss_aligned_remote requires audio output")
-        if args.max_bars and args.max_bars % 2:
+        if args.max_bars and args.max_bars % 2 and args.rap_protocol != "v3":
             raise ValueError("remote max-bars must be zero or even")
         if args.lookahead_bars != 2:
             raise ValueError("moss_aligned_remote requires lookahead-bars 2")

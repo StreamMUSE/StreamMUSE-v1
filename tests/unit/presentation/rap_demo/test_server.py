@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from queue import Queue
 from threading import Event, Lock, Thread
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -646,3 +646,34 @@ def test_monitor_cleanup_stops_broadcaster_even_when_runtime_close_raises(tmp_pa
         assert lifecycle._runtime_thread is not None and not lifecycle._runtime_thread.is_alive()
 
     asyncio.run(exercise())
+
+
+class _PlanController:
+    next_editable_bar = 7
+
+    def __init__(self) -> None:
+        self.edits = []
+
+    def update_plan(self, *, from_bar, topic=None, template_id=None):
+        if template_id == "missing":
+            raise ValueError("unknown flow template: missing")
+        self.edits.append((from_bar, topic, template_id))
+        return SimpleNamespace(edit_seq=len(self.edits), from_bar=from_bar)
+
+
+def test_plan_control_forwards_live_edits_to_a_v3_controller(tmp_path: Path) -> None:
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = _PlanController()
+    with TestClient(app) as client:
+        response = client.post("/api/control/plan", json={"topic": "deep sea"})
+        assert response.status_code == 200
+        assert response.json() == {"edit_seq": 1, "from_bar": 7}
+        assert runtime.controller.edits == [(7, "deep sea", None)]
+        assert client.post("/api/control/plan", json={}).status_code == 422
+        assert client.post("/api/control/plan", json={"template_id": "missing"}).status_code == 422
+
+
+def test_plan_control_is_unavailable_without_a_v3_controller(tmp_path: Path) -> None:
+    app, _, _ = _app(tmp_path)
+    with TestClient(app) as client:
+        assert client.post("/api/control/plan", json={"topic": "x"}).status_code == 404

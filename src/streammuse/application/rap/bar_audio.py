@@ -14,8 +14,20 @@ from pathlib import Path
 import time
 from typing import Protocol
 
+import numpy as np
+
+from streammuse.application.rap.audio_rendering import bar_frame_count, limit_peak, mix_at
+from streammuse.application.rap.chunk_audio import (
+    _DRUM_GAIN,
+    _FINAL_PEAK,
+    _VOCAL_GAIN,
+    _decode_pcm16_mono_wav,
+    _resample_to_output,
+)
 from streammuse.application.rap.chunk_orchestration import PhraseSourceResult
 from streammuse.application.rap.lyric_session import RenderedBarAudio
+from streammuse.domain.rap import RemoteRapChunkRequest
+from streammuse.domain.rap.audio import PcmAudio, PreparedRapBar
 from streammuse.domain.rap.lyric_stream import BarAudioManifest, BarLyricRecord
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget, TwoBarRenderRequest
 
@@ -116,3 +128,42 @@ class PreparedBarVocal:
 
     vocal_wav: bytes
     warp_ms: float
+
+
+class BarAudioPreparer:
+    """Client side: warp one bar's MOSS line onto its beat and mix the drums."""
+
+    def __init__(self, *, warper, drums, tempo, audio_format) -> None:
+        self._warper = warper
+        self._drums = drums
+        self._tempo = tempo
+        self._audio_format = audio_format
+
+    def prepare(self, record: BarLyricRecord, manifest: BarAudioManifest, source_wav: bytes) -> PreparedRapBar:
+        if manifest.lyric_id != record.lyric_id or manifest.bar != record.bar:
+            raise ValueError("bar audio does not belong to this lyric record")
+        target_frames = RemoteRapChunkRequest.frame_count_for(self._tempo.bpm, bars=1)
+        warp = self._warper.warp(
+            bar_render_request(record, self._tempo.bpm),
+            source_wav,
+            manifest.source_onsets,
+            target_frame_count=target_frames,
+        )
+        vocals = _decode_pcm16_mono_wav(warp.vocal_wav, target_frames)
+        frames = bar_frame_count(record.bar, self._tempo, self._audio_format)
+        mixed = _resample_to_output(vocals, self._audio_format, frames) * np.float32(_VOCAL_GAIN)
+        drum = self._drums.render(record.flow_template, self._tempo, self._audio_format, record.bar)
+        if drum.format != self._audio_format or drum.frame_count != frames:
+            raise ValueError("local drum render does not match the exact bar format")
+        mix_at(mixed, drum, 0, _DRUM_GAIN)
+        return PreparedRapBar(
+            bar=record.bar,
+            text=record.text,
+            source="moss_lyric_stream",
+            fallback_reason=None,
+            scheduled=record.scheduled,
+            audio=PcmAudio(self._audio_format, frames, limit_peak(mixed, _FINAL_PEAK).tobytes()),
+            diagnostics=(),
+            warnings=(),
+            render_latency_ms=warp.warp_ms,
+        )

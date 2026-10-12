@@ -16,7 +16,7 @@ from queue import Empty
 from threading import Lock, Thread
 from typing import Any, AsyncIterator, Mapping
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -162,6 +162,25 @@ class _MonitorLifecycle:
                     raise HTTPException(status_code=409, detail="runtime stop is still completing")
             reset()
         return {"state": "stopped"}
+
+    def plan_control(self, payload: dict[str, Any]) -> dict[str, object]:
+        """A listener's live theme/flow edit (protocol v3 controllers only)."""
+        controller = getattr(self.runtime, "controller", None)
+        update_plan = getattr(controller, "update_plan", None)
+        if not callable(update_plan):
+            raise HTTPException(status_code=404, detail="runtime does not support live plan edits")
+        topic = payload.get("topic")
+        template_id = payload.get("template_id")
+        if topic is None and template_id is None:
+            raise HTTPException(status_code=422, detail="plan edit needs a topic or a template_id")
+        from_bar = payload.get("from_bar")
+        if from_bar is None:
+            from_bar = getattr(controller, "next_editable_bar", 0)
+        try:
+            edit = update_plan(from_bar=int(from_bar), topic=topic, template_id=template_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"edit_seq": edit.edit_seq, "from_bar": edit.from_bar}
 
     async def connect(self, websocket: WebSocket) -> None:
         """Send an authoritative snapshot plus its ordered live-event catch-up."""
@@ -333,6 +352,10 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
     @app.post("/api/control/reset")
     async def reset_runtime() -> object:
         return lifecycle.reset_control()
+
+    @app.post("/api/control/plan")
+    async def plan_runtime(request: Request) -> object:
+        return lifecycle.plan_control(await request.json())
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
