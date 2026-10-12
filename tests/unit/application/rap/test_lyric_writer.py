@@ -189,3 +189,14 @@ def test_rescue_waves_drop_the_history_context() -> None:
     assert generator.requests[0].context_lines == ("we sail the night",)
     assert generator.requests[1].context_lines == ()
     assert generator.requests[1].rhyme_with == "we sail the night"
+
+
+@pytest.mark.parametrize("leak", ["sail the night [phrase]", "we seek our 太空", "sail (the) night"])
+def test_markup_and_non_english_text_is_rejected(leak: str) -> None:
+    generator = _Generator([(leak, "we roam the light")])
+    writer = SequentialLyricWriter(generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, minimum_valid=1))
+
+    written = writer.write(_request(bar=1))
+
+    assert written.record.text == "we roam the light"
+    assert written.ledger[0]["reasons"] == ("non_lyric_characters",)

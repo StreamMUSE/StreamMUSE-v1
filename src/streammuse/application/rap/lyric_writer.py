@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import re
 import time
 from types import MappingProxyType
 
@@ -29,6 +30,7 @@ from streammuse.domain.rap.lyric_stream import BarLyricRecord
 # record says which writer produced it.
 LYRIC_WRITER_VERSION = "sequential-lyric-writer.v2"
 RHYME_SCHEMES = ("couplet", "chain", "none")
+_LYRIC_TEXT = re.compile(r"[A-Za-z][A-Za-z' ,.!?;:\-]*")
 
 
 @dataclass(frozen=True)
@@ -295,6 +297,10 @@ class SequentialLyricWriter:
                 ledger.append({**row, "status": "duplicate", "reasons": ("duplicate_normalized_text",)})
                 continue
             seen.add(normalized)
+            if not _LYRIC_TEXT.fullmatch(text):
+                # "[phrase]" labels, CJK words and other markup pass the syllable gate otherwise.
+                ledger.append({**row, "status": "malformed", "reasons": ("non_lyric_characters",)})
+                continue
             if _ends_on_rhyme_label(text, request.flow_template):
                 ledger.append({**row, "status": "malformed", "reasons": ("rhyme_label_leak",)})
                 continue
