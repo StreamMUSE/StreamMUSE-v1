@@ -340,8 +340,8 @@ def _rhyme_instruction(request: CandidateRequest) -> str:
     if request.rhyme_with is None:
         return ""
     return (
-        " End the line on a word that rhymes with the final word of this previous line: "
-        f"{request.rhyme_with!r}."
+        " End the line on a different word that rhymes with the final word of this previous line: "
+        f"{request.rhyme_with!r}. Do not reuse that final word."
     )
 
 

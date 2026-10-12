@@ -77,6 +77,7 @@ def main() -> None:
     )
     paired = []
     failures = {"paired": 0, "sequential": 0}
+    failure_reasons: dict[str, int] = {}
     context: list[str] = []
     for start in range(0, args.bars, 2):
         bars = tuple(RemoteRapBarRequest(bar, *plan_for(bar)) for bar in (start, start + 1))
@@ -117,8 +118,11 @@ def main() -> None:
                 previous_line=previous.text if previous else None,
                 previous_template=previous.flow_template if previous else None,
             ))
-        except LyricWriteFailed:
+        except LyricWriteFailed as error:
             failures["sequential"] += 1
+            for row in error.ledger:
+                for reason in row.get("reasons") or ():
+                    failure_reasons[str(reason).split(":")[0]] = failure_reasons.get(str(reason).split(":")[0], 0) + 1
             previous = None
             continue
         elapsed = (time.perf_counter() - started) * 1000.0
@@ -149,6 +153,12 @@ def main() -> None:
             "bars": len(rows),
             "failed_bars": failures[name],
             "rhyme_label_leaks": sum(1 for row in rows if row["text"].rstrip(" .,!?").endswith(" A")),
+            "repeated_end_words": sum(
+                1 for before, after in zip(rows, rows[1:])
+                if after["bar"] == before["bar"] + 1
+                and before["text"].lower().split()[-1].strip(".,!?") == after["text"].lower().split()[-1].strip(".,!?")
+            ),
+            "distinct_end_words": len({row["text"].lower().split()[-1].strip(".,!?") for row in rows}),
             "couplet_rhyme_rate": rhyme_rate(rows),
             "mean_score": statistics.mean(row["score"] for row in rows),
             "generation_ms_per_bar_median": statistics.median(row["generation_ms_per_bar"] for row in rows),
@@ -156,9 +166,10 @@ def main() -> None:
             "rescue_rate": sum(1 for row in rows if row["waves"] > 1) / len(rows),
         }
 
-    result = {"paired": summary("paired", paired), "sequential": summary("sequential", sequential), "rows": {"paired": paired, "sequential": sequential}}
+    result = {"paired": summary("paired", paired), "sequential": summary("sequential", sequential),
+              "sequential_failure_reasons": failure_reasons, "rows": {"paired": paired, "sequential": sequential}}
     args.out.write_text(json.dumps(result, indent=1))
-    print(json.dumps({k: result[k] for k in ("paired", "sequential")}, indent=1))
+    print(json.dumps({k: result[k] for k in ("paired", "sequential", "sequential_failure_reasons")}, indent=1))
     for client in clients:
         client.close()
 

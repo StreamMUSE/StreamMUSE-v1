@@ -113,7 +113,7 @@ def test_even_bar_starts_a_new_couplet_and_chain_scheme_always_rhymes() -> None:
 def test_rescue_wave_runs_only_when_too_few_candidates_pass() -> None:
     generator = _Generator([("too short", "four words right here"), ("five words is too long", "now four words fit")])
     writer = SequentialLyricWriter(
-        generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, rescue_candidates=2, minimum_valid=2)
+        generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, rescue_candidates=2, rescue_waves=1, minimum_valid=2)
     )
 
     written = writer.write(_request(bar=0, previous=None))
@@ -126,7 +126,7 @@ def test_rescue_wave_runs_only_when_too_few_candidates_pass() -> None:
 def test_generation_error_is_recorded_and_no_valid_candidate_fails_with_the_ledger() -> None:
     generator = _Generator([RuntimeError("vllm down"), ("too short",)])
     writer = SequentialLyricWriter(
-        generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, rescue_candidates=1, minimum_valid=1)
+        generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, rescue_candidates=1, rescue_waves=1, minimum_valid=1)
     )
 
     with pytest.raises(LyricWriteFailed) as error:
@@ -153,3 +153,26 @@ def test_line_ending_on_a_copied_rhyme_label_is_rejected() -> None:
 
     assert written.record.text == "we roam the light"
     assert written.ledger[0]["reasons"] == ("rhyme_label_leak",)
+
+
+def test_repeating_the_previous_end_word_is_not_a_rhyme() -> None:
+    generator = _Generator([("they sail the night", "deep tides take flight")])
+    writer = SequentialLyricWriter(generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, minimum_valid=1))
+
+    written = writer.write(_request(bar=1))
+
+    assert written.record.text == "deep tides take flight"
+    assert written.ledger[0]["reasons"] == ("repeats_previous_end_word",)
+
+
+def test_rescue_waves_continue_until_a_line_passes() -> None:
+    generator = _Generator([("too short",), ("still too short",), ("four words fit here",)])
+    writer = SequentialLyricWriter(
+        generator, _Analyzer(), _WEIGHTS,
+        LyricWriterPolicy(candidates=1, rescue_candidates=1, rescue_waves=3, minimum_valid=1),
+    )
+
+    written = writer.write(_request(bar=0, previous=None))
+
+    assert written.waves == 3 and written.record.text == "four words fit here"
+    assert written.record.provenance["candidates_requested"] == 3

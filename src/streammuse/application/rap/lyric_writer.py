@@ -27,7 +27,7 @@ from streammuse.domain.rap.lyric_stream import BarLyricRecord
 
 # Bumped whenever the prompt or the selection rule changes, so every lyric
 # record says which writer produced it.
-LYRIC_WRITER_VERSION = "sequential-lyric-writer.v1"
+LYRIC_WRITER_VERSION = "sequential-lyric-writer.v2"
 RHYME_SCHEMES = ("couplet", "chain", "none")
 
 
@@ -36,7 +36,8 @@ class LyricWriterPolicy:
     """Candidate counts per bar; H200 uses 32, the Mac will use fewer."""
 
     candidates: int = 32
-    rescue_candidates: int = 8
+    rescue_candidates: int = 16
+    rescue_waves: int = 3
     minimum_valid: int = 3
     minimum_score: float = 0.0
     rhyme_scheme: str = "couplet"
@@ -45,8 +46,9 @@ class LyricWriterPolicy:
         for name in ("candidates", "minimum_valid"):
             if not isinstance(getattr(self, name), int) or getattr(self, name) <= 0:
                 raise ValueError(f"lyric writer {name} must be a positive integer")
-        if not isinstance(self.rescue_candidates, int) or self.rescue_candidates < 0:
-            raise ValueError("lyric writer rescue_candidates must be a non-negative integer")
+        for name in ("rescue_candidates", "rescue_waves"):
+            if not isinstance(getattr(self, name), int) or getattr(self, name) < 0:
+                raise ValueError(f"lyric writer {name} must be a non-negative integer")
         if self.rhyme_scheme not in RHYME_SCHEMES:
             raise ValueError(f"rhyme_scheme must be one of {RHYME_SCHEMES}")
 
@@ -54,6 +56,7 @@ class LyricWriterPolicy:
         return {
             "candidates": self.candidates,
             "rescue_candidates": self.rescue_candidates,
+            "rescue_waves": self.rescue_waves,
             "minimum_valid": self.minimum_valid,
             "minimum_score": self.minimum_score,
             "rhyme_scheme": self.rhyme_scheme,
@@ -154,7 +157,8 @@ class SequentialLyricWriter:
         generation_ms = evaluation_ms = 0.0
         waves = 0
         result = None
-        for wave, count in enumerate((self._policy.candidates, self._policy.rescue_candidates)):
+        wave_sizes = (self._policy.candidates,) + (self._policy.rescue_candidates,) * self._policy.rescue_waves
+        for wave, count in enumerate(wave_sizes):
             if count <= 0:
                 break
             waves += 1
@@ -163,6 +167,8 @@ class SequentialLyricWriter:
             generation_ms += max(0.0, (self._monotonic() - started) * 1000.0)
             started = self._monotonic()
             self._record_batch(request, wave, count, batch, error, candidates, seen, ledger)
+            if not candidates:
+                continue
             result = rank_candidates(
                 tuple((item.candidate_id, item.text, item.analysis) for item in candidates),
                 template=request.flow_template,
@@ -211,10 +217,7 @@ class SequentialLyricWriter:
                 "seed": request.seed,
                 "rhyme_with": rhyme_with,
                 "components": {item.name: item.value for item in selected.components},
-                "candidates_requested": sum(
-                    count
-                    for count in (self._policy.candidates, self._policy.rescue_candidates)[:waves]
-                ),
+                "candidates_requested": sum(wave_sizes[:waves]),
                 "candidates_valid": sum(1 for item in result.evaluations if item.valid),
                 "waves": waves,
             },
@@ -293,6 +296,10 @@ class SequentialLyricWriter:
             if _ends_on_rhyme_label(text, request.flow_template):
                 ledger.append({**row, "status": "malformed", "reasons": ("rhyme_label_leak",)})
                 continue
+            if request.previous_line is not None and _final_word(text) == _final_word(request.previous_line):
+                # "... up high" after "... up high" is a repeat, not a rhyme.
+                ledger.append({**row, "status": "malformed", "reasons": ("repeats_previous_end_word",)})
+                continue
             try:
                 analysis = self._analyzer.analyze(text)
             except Exception as analysis_error:
@@ -321,6 +328,11 @@ def _ends_on_rhyme_label(text: str, template: FlowTemplate) -> bool:
     words = text.rstrip(" .,!?;:").split()
     labels = {slot.rhyme_group for slot in template.slots if slot.rhyme_group}
     return len(words) > 1 and words[-1] in labels
+
+
+def _final_word(text: str) -> str:
+    words = normalize_text(text).split()
+    return words[-1] if words else ""
 
 
 def _frozen(rows: Sequence[Mapping[str, object]]) -> tuple[Mapping[str, object], ...]:
