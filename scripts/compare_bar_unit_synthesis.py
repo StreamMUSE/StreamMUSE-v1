@@ -30,9 +30,15 @@ def split_into_bars(request):
     """Return the two one-bar requests that carry the same lyrics as ``request``."""
     from streammuse.experiments.rap_audio_protocols.contracts import TwoBarRenderRequest
 
-    lines = request.text.split("\n")
-    if len(lines) != 2:
-        raise ValueError(f"expected two lyric lines, got {len(lines)}")
+    first = [item for item in request.syllables if item.tick_in_chunk < 16]
+    second = [item for item in request.syllables if item.tick_in_chunk >= 16]
+    if second and second[0].index_in_word != 0:
+        raise ValueError("a word straddles the bar line")
+    tokens = request.text.split()
+    first_words = sum(1 for item in first if item.index_in_word == 0)
+    lines = (" ".join(tokens[:first_words]), " ".join(tokens[first_words:]))
+    if not all(lines):
+        raise ValueError("one bar has no words")
     bar_seconds = request.duration_seconds / 2
     halves = []
     for index, line in enumerate(lines):
@@ -80,7 +86,14 @@ def main() -> None:
         synthesizer=synthesizer,
         aligner=MmsForcedAligner.load(device=args.aligner_device),
     )
-    requests = profile.load_requests(args.bench)
+    requests = []
+    for request in profile.load_requests(args.bench):
+        try:
+            split_into_bars(request)
+        except ValueError as error:
+            print(f"skip {request.song_id}:{request.chunk_index}: {error}", flush=True)
+            continue
+        requests.append(request)
     # Warm the service and the aligner once per unit before measuring.
     renderer.render_source(requests[0], args.out / "warmup-phrase")
     renderer.render_source(split_into_bars(requests[0])[0], args.out / "warmup-bar")
