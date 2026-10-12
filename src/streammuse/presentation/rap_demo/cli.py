@@ -167,7 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "v3 only: listener edits for headless runs, e.g. "
-            "'12:topic=deep sea;20:template=baseline_straight_9' (applied when that bar is two bars away)"
+            "'12:topic=deep sea;20@1:template=baseline_straight_9' (applied mid-bar, bar@notice bars before "
+            "that bar; notice defaults to 2)"
         ),
     )
     parser.add_argument(
@@ -673,11 +674,18 @@ def _build_audio_demo(
     )
 
 
-def _parse_scripted_edits(text: str) -> list[tuple[int, str | None, str | None]]:
-    """'12:topic=deep sea;20:template=baseline_straight_9' -> [(12, 'deep sea', None), (20, None, ...)]."""
+def _parse_scripted_edits(text: str) -> list[tuple[int, int, str | None, str | None]]:
+    """'12:topic=deep sea;20@1:template=baseline_straight_9' -> [(12, 2, 'deep sea', None), (20, 1, None, ...)].
+
+    ``bar@notice`` applies the edit in the middle of bar ``bar - notice`` (default notice 2).
+    """
     edits = []
     for item in filter(None, (part.strip() for part in text.split(";"))):
         bar_text, _, assignments = item.partition(":")
+        bar_text, _, notice_text = bar_text.partition("@")
+        notice = int(notice_text) if notice_text else 2
+        if notice < 1:
+            raise ValueError(f"scripted edit {item!r} needs a notice of at least one bar")
         topic = template_id = None
         for assignment in assignments.split(","):
             key, _, value = assignment.partition("=")
@@ -689,20 +697,20 @@ def _parse_scripted_edits(text: str) -> list[tuple[int, str | None, str | None]]
                 raise ValueError(f"unknown scripted edit field {key!r}")
         if topic is None and template_id is None:
             raise ValueError(f"scripted edit {item!r} changes nothing")
-        edits.append((int(bar_text), topic, template_id))
+        edits.append((int(bar_text), notice, topic, template_id))
     return edits
 
 
 def _install_scripted_edits(controller, text: str, tempo) -> None:
-    """Apply each edit when its bar is two bars ahead, the way a listener would."""
-    pending = sorted(_parse_scripted_edits(text))
+    """Apply each edit mid-bar, its notice (default two) bars before it takes effect."""
+    pending = sorted(_parse_scripted_edits(text), key=lambda edit: edit[0] - edit[1])
     original_on_tick = controller.on_tick
 
     def on_tick(tick: int) -> None:
         original_on_tick(tick)
         bar = tick // tempo.ticks_per_bar
-        while pending and pending[0][0] - 2 <= bar and tick % tempo.ticks_per_bar == tempo.ticks_per_bar // 2:
-            from_bar, topic, template_id = pending.pop(0)
+        while pending and pending[0][0] - pending[0][1] <= bar and tick % tempo.ticks_per_bar == tempo.ticks_per_bar // 2:
+            from_bar, _notice, topic, template_id = pending.pop(0)
             controller.update_plan(from_bar=from_bar, topic=topic, template_id=template_id)
 
     controller.on_tick = on_tick  # type: ignore[method-assign]
