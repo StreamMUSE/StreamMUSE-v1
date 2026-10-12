@@ -415,11 +415,12 @@ class BarStreamController:
                 self._fetch_executor.submit(self._fetch_remote, self._epoch, latest, commit_at)
 
     def _fetch_remote(self, epoch: int, record: BarLyricRecord, commit_at: float | None) -> None:
-        accept_older = True
         submitted = self._clock()
         try:
             with self._lock:
                 session_id = self.session_id
+                # An older revision already here is the fallback; only the exact one is worth a fetch.
+                accept_older = not self._slot(record.bar).remote
             self._emit(RapEventType.CHUNK_REQUEST_SUBMITTED, bar=record.bar, request_id=record.lyric_id,
                        payload=self._bar_payload(record, state="requested", decision="pending"))
             while True:

@@ -271,3 +271,24 @@ def test_reset_starts_a_new_server_session() -> None:
         assert {"type": "stop"} in stream.sent
     finally:
         controller.close()
+
+
+def test_an_older_revision_already_fetched_is_not_fetched_again() -> None:
+    stream, source, enqueued = _Stream(), _Source(), []
+    bar0 = _record(0)
+    source.ready[bar0.lyric_id] = _fetch(bar0)
+    controller = _start_with(stream, source, enqueued, bar0)
+    try:
+        bar1_old, bar1_new = _record(1, 0, "old"), _record(1, 1, "new")
+        source.ready[bar1_old.lyric_id] = _fetch(bar1_old)
+        _push(stream, bar1_old)
+        source.calls.clear()
+        source.ready[bar1_new.lyric_id] = _fetch(bar1_new)
+        _push(stream, bar1_new)
+
+        controller.on_tick(15)
+
+        assert source.calls == [(1, bar1_new.lyric_id, False)]
+        assert enqueued[-1].source == "remote:1"
+    finally:
+        controller.close()
