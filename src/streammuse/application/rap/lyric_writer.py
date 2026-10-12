@@ -290,6 +290,9 @@ class SequentialLyricWriter:
                 ledger.append({**row, "status": "duplicate", "reasons": ("duplicate_normalized_text",)})
                 continue
             seen.add(normalized)
+            if _ends_on_rhyme_label(text, request.flow_template):
+                ledger.append({**row, "status": "malformed", "reasons": ("rhyme_label_leak",)})
+                continue
             try:
                 analysis = self._analyzer.analyze(text)
             except Exception as analysis_error:
@@ -311,6 +314,13 @@ class SequentialLyricWriter:
 
 def _rhyme_group(template: FlowTemplate) -> str | None:
     return next((slot.rhyme_group for slot in reversed(template.slots) if slot.rhyme_group), None)
+
+
+def _ends_on_rhyme_label(text: str, template: FlowTemplate) -> bool:
+    """A line ending in a bare rhyme-group label ("... endless space A") copied it from the prompt."""
+    words = text.rstrip(" .,!?;:").split()
+    labels = {slot.rhyme_group for slot in template.slots if slot.rhyme_group}
+    return len(words) > 1 and words[-1] in labels
 
 
 def _frozen(rows: Sequence[Mapping[str, object]]) -> tuple[Mapping[str, object], ...]:

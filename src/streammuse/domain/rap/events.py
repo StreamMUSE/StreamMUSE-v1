@@ -40,6 +40,7 @@ class RapEventType(str, Enum):
     SESSION_RESET = "session_reset"
     AUDIO_UNDERRUN = "audio_underrun"
     AUDIO_DEVICE_FAILED = "audio_device_failed"
+    PLAN_EDITED = "plan_edited"
 
 
 @dataclass(frozen=True)

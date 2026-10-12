@@ -267,6 +267,13 @@ class BarStreamController:
                     slot.local = None
                     slot.local_requested = False
             self._ensure_window_locked()
+            self._emit(RapEventType.PLAN_EDITED, bar=effective, tick=self._last_tick if self._last_tick >= 0 else None, payload={
+                "edit_seq": edit.edit_seq,
+                "from_bar": from_bar,
+                "effective_from_bar": effective,
+                "topic": topic,
+                "template_id": template_id,
+            })
         self._lyric_stream.send({"type": "update", "edit": edit.to_payload()})
         return edit
 

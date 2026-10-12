@@ -143,3 +143,13 @@ def test_duplicate_of_history_is_rejected() -> None:
     written = writer.write(_request(bar=1))
 
     assert written.record.text == "we sail the light"
+
+
+def test_line_ending_on_a_copied_rhyme_label_is_rejected() -> None:
+    generator = _Generator([("sail the night A", "we roam the light")])
+    writer = SequentialLyricWriter(generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, minimum_valid=1))
+
+    written = writer.write(_request(bar=1))
+
+    assert written.record.text == "we roam the light"
+    assert written.ledger[0]["reasons"] == ("rhyme_label_leak",)

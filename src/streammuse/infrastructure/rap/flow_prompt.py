@@ -47,19 +47,28 @@ def describe_flow(template: FlowTemplate) -> FlowPromptDescription:
 
 
 def format_flow_for_prompt(template: FlowTemplate) -> str:
-    """Serialize exact flow values and compact notation for model context."""
+    """Serialize exact flow values and compact notation for model context.
+
+    Rhyme groups are written as 1-based slot numbers, never by their letter
+    labels: given "rhyme group A", Qwen appends a literal "A" to its lines
+    (and the extra syllable makes those lines score well).
+    """
     flow = describe_flow(template)
     ticks = ", ".join(str(value) for value in flow.ticks)
     stresses = ", ".join(repr(float(value)) for value in flow.stresses)
     boundary_strengths = ", ".join(str(value) for value in flow.boundary_strengths)
-    rhyme_groups = json.dumps(flow.rhyme_groups)
-    rhyme = flow.final_rhyme_group or "none"
+    groups: dict[str, list[int]] = {}
+    for index, group in enumerate(flow.rhyme_groups, start=1):
+        if group is not None:
+            groups.setdefault(group, []).append(index)
+    rhyme_slots = json.dumps(list(groups.values()))
+    rhyme = "a rhyme slot" if flow.final_rhyme_group else "no rhyme"
     return (
         f"Flow template: {template.template_id}\n"
         f"Syllable ticks: [{ticks}]\n"
         f"Target stress: [{stresses}]\n"
         f"Boundary strengths: [{boundary_strengths}]\n"
-        f"Rhyme groups: {rhyme_groups}\n"
+        f"Rhyme slots (1-based; each list rhymes together): {rhyme_slots}\n"
         f"Pattern: {flow.notation}\n"
-        f"Final slot: phrase boundary strength {flow.final_boundary_strength}, rhyme group {rhyme}"
+        f"Final slot: phrase boundary strength {flow.final_boundary_strength}, {rhyme}"
     )

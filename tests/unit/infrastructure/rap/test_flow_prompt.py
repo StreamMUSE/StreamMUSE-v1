@@ -17,7 +17,9 @@ def test_syncopated_template_formats_exact_ticks_stress_boundary_and_rhyme() -> 
     assert description.stresses == (1.0, 0.2, 0.7, 0.2, 0.6, 1.0, 0.2, 0.7, 0.9)
     assert description.notation == "S . w M | . w . M | S . w . | . M . S"
     assert "phrase boundary strength 3" in rendered
-    assert "rhyme group A" in rendered
+    assert "Rhyme slots (1-based; each list rhymes together): [[9]]" in rendered
+    assert rendered.endswith(", a rhyme slot")
+    assert '"A"' not in rendered and "group A" not in rendered
 
 
 def test_equal_length_templates_with_different_timing_have_different_prompts() -> None:
@@ -59,5 +61,5 @@ def test_flow_description_preserves_per_slot_boundaries_and_rhyme_roles() -> Non
     assert description.boundary_strengths == (0, 2, 0, 4)
     assert description.rhyme_groups == ("A", "B", None, "C")
     assert "Boundary strengths: [0, 2, 0, 4]" in rendered
-    assert 'Rhyme groups: ["A", "B", null, "C"]' in rendered
-    assert "Final slot: phrase boundary strength 4, rhyme group C" in rendered
+    assert "Rhyme slots (1-based; each list rhymes together): [[1], [2], [4]]" in rendered
+    assert "Final slot: phrase boundary strength 4, a rhyme slot" in rendered

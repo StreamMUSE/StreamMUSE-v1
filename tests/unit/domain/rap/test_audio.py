@@ -50,6 +50,7 @@ def test_rap_audio_event_names_are_canonical() -> None:
         "session_reset",
         "audio_underrun",
         "audio_device_failed",
+        "plan_edited",
     ]
 
 
