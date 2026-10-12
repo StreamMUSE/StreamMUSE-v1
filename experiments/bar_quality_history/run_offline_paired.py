@@ -152,6 +152,8 @@ def run_condition(engine, backend, worker, config, melody, prompt, seed, stop, r
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=Path, required=True)
+    parser.add_argument('--cohort', default='user10',
+                        help="plan['cohorts'] key (user10, or beat40 from prep_beat40.py)")
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--gpu', choices=['1', '2', '3'], required=True)
     parser.add_argument('--limit-pieces', type=int, default=10)
@@ -161,13 +163,14 @@ def main():
         raise ValueError('GPU binding mismatch')
     args.output.mkdir(parents=True, exist_ok=False)
     plan = json.loads(args.plan.read_text())
-    cohort = plan['cohorts']['user10']
+    cohort = plan['cohorts'][args.cohort]
     pieces = cohort['pieces'][:args.limit_pieces]
+    metric_start = cohort.get('primary_metric_start_tick', 84)
     for checkpoint in plan['checkpoints'].values():
         assert sha(checkpoint['path']) == checkpoint['sha256']
     for piece in pieces:
         assert sha(piece['melody_midi']) == piece['melody_midi_sha256']
-        assert piece['stop_tick'] > 84 and piece['stop_tick'] % 4 == 0
+        assert piece['stop_tick'] > metric_start and piece['stop_tick'] % 4 == 0
     config = {'mode': 'real', 'checkpoint_path': plan['checkpoints']['continuation']['path'],
               'device': 'cuda', 'dtype': 'float16', 'bpm': cohort['model_bpm'],
               'context_beats': 32, **cohort['sampling'], 'time_signature_index': 4,
@@ -176,7 +179,7 @@ def main():
         'source_plan': str(args.plan), 'source_plan_sha256': sha(args.plan),
         'checkpoints': plan['checkpoints'], 'export_bpm': cohort['playback_bpm'],
         'repair_bar_ticks': [64, 80], 'repair_apply_before_tick': 84, 'repair_seed': 101,
-        'primary_metric_start_tick': 84, 'secondary_metric_start_tick': 32,
+        'primary_metric_start_tick': metric_start, 'secondary_metric_start_tick': 32,
         'scope': 'causal offline, no wall clock, no future melody, raw outputs',
         'prompt': 'one shared Rule If-Else N=10 generation per piece/seed',
         'repair_policy': 'preserve_cross_boundary', 'automatic_quality_gate': False})
