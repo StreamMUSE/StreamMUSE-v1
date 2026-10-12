@@ -30,7 +30,7 @@ def test_pcm_audio_accepts_exact_stereo_float32_data() -> None:
 
 
 def test_rap_audio_event_names_are_canonical() -> None:
-    assert [event.value for event in RapEventType][-19:] == [
+    assert [event.value for event in RapEventType][-20:] == [
         "audio_render_started",
         "audio_render_completed",
         "pronunciation_fallback",
