@@ -274,6 +274,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             target_frame_count = RemoteRapChunkRequest.frame_count_for(
                 request.tempo_bpm,
                 _OUTPUT_SAMPLE_RATE_HZ,
+                bars=request.bar_count,
             )
             warp_input = _prepare_warp_input(
                 source_samples,

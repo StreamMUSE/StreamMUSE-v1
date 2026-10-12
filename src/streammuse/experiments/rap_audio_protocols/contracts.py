@@ -82,18 +82,28 @@ class TwoBarRenderRequest:
     tempo_bpm: float = 90.0
 
     def __post_init__(self) -> None:
-        if self.end_bar - self.start_bar != 2:
-            raise ValueError("two-bar render requests must span exactly two bars")
+        # One-bar requests serve the per-bar lyric stream (protocol v3); the
+        # historical two-bar phrase stays the default unit.
+        if self.end_bar - self.start_bar not in (1, 2):
+            raise ValueError("render requests must span one or two bars")
         if not self.syllables:
-            raise ValueError("two-bar render requests must contain at least one syllable")
-        if any(item.tick_in_chunk < 0 or item.tick_in_chunk >= 32 for item in self.syllables):
-            raise ValueError("two-bar render requests must stay within a 32-tick chunk")
+            raise ValueError("render requests must contain at least one syllable")
+        if any(item.tick_in_chunk < 0 or item.tick_in_chunk >= self.tick_count for item in self.syllables):
+            raise ValueError("render request syllables must stay within the requested bars")
         if not isfinite(self.tempo_bpm) or self.tempo_bpm <= 0:
-            raise ValueError("two-bar render request tempo must be finite and positive")
+            raise ValueError("render request tempo must be finite and positive")
+
+    @property
+    def bar_count(self) -> int:
+        return self.end_bar - self.start_bar
+
+    @property
+    def tick_count(self) -> int:
+        return 16 * self.bar_count
 
     @property
     def duration_seconds(self) -> float:
-        return 32 * Tempo(self.tempo_bpm, 4, 4).seconds_per_tick
+        return self.tick_count * Tempo(self.tempo_bpm, 4, 4).seconds_per_tick
 
     def to_payload(self) -> dict[str, Any]:
         return {

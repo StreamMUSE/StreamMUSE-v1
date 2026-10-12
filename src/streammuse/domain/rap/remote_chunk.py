@@ -579,11 +579,16 @@ class RemoteRapChunkRequest:
             raise ValueError("request_id does not match the canonical request body")
 
     @staticmethod
-    def frame_count_for(tempo_bpm: float, sample_rate_hz: int = REMOTE_CHUNK_SAMPLE_RATE_HZ) -> int:
+    def frame_count_for(
+        tempo_bpm: float, sample_rate_hz: int = REMOTE_CHUNK_SAMPLE_RATE_HZ, *, bars: int = 2
+    ) -> int:
+        """Exact frames for ``bars`` 4/4 bars (two for a v1/v2 chunk, one for a v3 bar)."""
         if not _is_real(tempo_bpm) or tempo_bpm <= 0 or not _is_int(sample_rate_hz) or sample_rate_hz <= 0:
             raise ValueError("tempo_bpm and sample_rate_hz must be positive finite wire numbers")
+        if not _is_int(bars) or bars not in (1, 2):
+            raise ValueError("bars must be one or two")
         try:
-            exact_frame_count = sample_rate_hz * 8 * 60 / tempo_bpm
+            exact_frame_count = sample_rate_hz * 4 * bars * 60 / tempo_bpm
             if not isfinite(exact_frame_count) or exact_frame_count <= 0:
                 raise ValueError("derived frame count must be positive and finite")
             frame_count = round(exact_frame_count)

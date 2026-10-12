@@ -61,3 +61,36 @@ def test_two_bar_request_rejects_an_empty_vocal_schedule() -> None:
             text="",
             syllables=(),
         )
+
+
+def test_one_bar_request_spans_sixteen_ticks_and_half_the_duration() -> None:
+    request = TwoBarRenderRequest(
+        song_id="lyric_stream",
+        chunk_index=7,
+        start_bar=7,
+        end_bar=8,
+        text="Pulse.",
+        syllables=(_syllable(0),),
+        tempo_bpm=90.0,
+    )
+
+    assert request.bar_count == 1
+    assert request.tick_count == 16
+    assert request.duration_seconds == pytest.approx(16 * 60 / 90 / 4)
+
+
+@pytest.mark.parametrize("end_bar", (0, 3))
+def test_render_request_rejects_spans_other_than_one_or_two_bars(end_bar: int) -> None:
+    with pytest.raises(ValueError, match="one or two bars"):
+        TwoBarRenderRequest(
+            song_id="lyric_stream", chunk_index=0, start_bar=0, end_bar=end_bar,
+            text="Pulse.", syllables=(_syllable(0),),
+        )
+
+
+def test_one_bar_request_rejects_syllables_beyond_its_bar() -> None:
+    with pytest.raises(ValueError, match="within the requested bars"):
+        TwoBarRenderRequest(
+            song_id="lyric_stream", chunk_index=0, start_bar=0, end_bar=1,
+            text="Pulse.", syllables=(_syllable(16),),
+        )
