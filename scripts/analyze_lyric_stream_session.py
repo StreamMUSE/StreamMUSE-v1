@@ -75,6 +75,10 @@ def summarize(session: Path) -> dict[str, object]:
         "remote_ready_lead_ms": {"min": _pct(remote_lead, 0.0001), "p5": _pct(remote_lead, 0.05), "p50": _pct(remote_lead, 0.5)},
         "fetch_transfer_ms": {"p50": _pct([t.get("transfer") for t in completed], 0.5), "p95": _pct([t.get("transfer") for t in completed], 0.95)},
         "mac_prepare_ms": {"p50": _pct([t.get("mac") for t in completed], 0.5), "p95": _pct([t.get("mac") for t in completed], 0.95)},
+        "server_moss_ms": {"p50": _pct([t.get("server_moss") for t in completed], 0.5), "p95": _pct([t.get("server_moss") for t in completed], 0.95)},
+        "continued_rate": (
+            round(sum(t.get("continued", 0.0) for t in completed) / len(completed), 3) if completed else None
+        ),
         "max_revision_committed": max(revisions) if revisions else None,
         "committed_older_revision": stale,
         "underruns": (summary.get("audio") or {}).get("underruns"),

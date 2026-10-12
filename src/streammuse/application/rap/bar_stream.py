@@ -458,6 +458,8 @@ class BarStreamController:
                                 "mac": prepare_ms,
                                 "total": (self._clock() - submitted) * 1000.0,
                                 **{f"server_{k}": float(v) for k, v in fetch.manifest.stage_timings_ms.items()},
+                                # 1 when the server synthesized this bar as the previous bar's continuation.
+                                "continued": float(bool((fetch.manifest.diagnostics.get("continuation") or {}).get("used"))),
                             }
                         self._emit(RapEventType.CHUNK_REMOTE_COMPLETED, bar=record.bar, request_id=audio_record.lyric_id,
                                    payload=self._bar_payload(audio_record, state="remote_ready",
