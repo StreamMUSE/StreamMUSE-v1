@@ -1088,6 +1088,11 @@ class LekaiHttpBackend:
 
         accompaniment_context_events: List[EventPayload] = list(real_accompaniment_history)
 
+        # Mel-first prompt layout pairs [BEAT][mel_t][acc_t] per beat so the
+        # model conditions acc_t on same-beat melody — must match a checkpoint
+        # trained with mel_first=True (train.py --mel-first).
+        mel_first_prompt = self._runtime_bool("LEKAI_MEL_FIRST", False)
+
         def build_standard_offline_prompt(
             target_beat: int,
         ) -> Tuple[torch.Tensor, List[int]]:
@@ -1117,7 +1122,8 @@ class LekaiHttpBackend:
                     active_pitches=accompaniment_active,
                     end_marker=LEKAI_ACC_END_TOKEN,
                 )
-                seq.append(acc_tokens)
+                if not mel_first_prompt:
+                    seq.append(acc_tokens)
 
                 mel_tokens, melody_active = self._encode_beat_tokens(
                     events=self._melody_history,
@@ -1129,10 +1135,25 @@ class LekaiHttpBackend:
                     int(token) for token in mel_tokens.tolist()
                 )
                 seq.append(mel_tokens)
+                if mel_first_prompt:
+                    seq.append(acc_tokens)
 
             if target_beat == start_beat or target_beat % measure_beats == 0:
                 seq.append(torch.tensor([LEKAI_BAR_TOKEN], dtype=torch.long))
             seq.append(torch.tensor([LEKAI_BEAT_TOKEN], dtype=torch.long))
+            if mel_first_prompt:
+                # p(acc_t | ... [BEAT] mel_t): feed the target beat's melody
+                # so generation conditions on same-beat melody.
+                target_mel_tokens, _ = self._encode_beat_tokens(
+                    events=self._melody_history,
+                    beat_start_tick=target_beat * TIMESTEPS_PER_BEAT,
+                    active_pitches=melody_active,
+                    end_marker=LEKAI_MEL_END_TOKEN,
+                )
+                prompt_part0_tokens.extend(
+                    int(token) for token in target_mel_tokens.tolist()
+                )
+                seq.append(target_mel_tokens)
             return torch.cat(seq, dim=0), prompt_part0_tokens
 
         generated_events: List[EventPayload] = []

@@ -158,6 +158,9 @@ def main():
     parser.add_argument('--gpu', choices=['1', '2', '3'], required=True)
     parser.add_argument('--limit-pieces', type=int, default=10)
     parser.add_argument('--seeds', nargs='+', type=int, default=[0, 1, 2])
+    parser.add_argument('--mel-first', action='store_true',
+                        help='mel-first prompt layout ([BEAT][mel][acc], target-beat melody '
+                             'prefed) — requires a mel_first-trained continuation checkpoint')
     args = parser.parse_args()
     if os.environ.get('CUDA_VISIBLE_DEVICES') != args.gpu:
         raise ValueError('GPU binding mismatch')
@@ -174,7 +177,8 @@ def main():
     config = {'mode': 'real', 'checkpoint_path': plan['checkpoints']['continuation']['path'],
               'device': 'cuda', 'dtype': 'float16', 'bpm': cohort['model_bpm'],
               'context_beats': 32, **cohort['sampling'], 'time_signature_index': 4,
-              'tonal_constraint_enabled': True, 'empty_token_guard_enabled': True}
+              'tonal_constraint_enabled': True, 'empty_token_guard_enabled': True,
+              'mel_first': bool(args.mel_first)}
     save(args.output / 'plan.json', {'config': config, 'pieces': pieces, 'seeds': args.seeds,
         'source_plan': str(args.plan), 'source_plan_sha256': sha(args.plan),
         'checkpoints': plan['checkpoints'], 'export_bpm': cohort['playback_bpm'],
@@ -193,6 +197,10 @@ def main():
         LEKAI_PROMPT_TIME_SIGNATURE_INDEX='4', LEKAI_PROMPT_CONTEXT_BEATS='32',
         LEKAI_PROMPT_BPM=str(config['bpm']), LEKAI_DISABLE_FALLBACK='1',
         LEKAI_RT_LOG_DIR=str(args.output / 'model_logs'))
+    if args.mel_first:
+        # Read by lekai_http_backend._generate_with_interleaved_prompt; the spawned
+        # repair worker inherits process env (ProcessPoolExecutor after this update).
+        os.environ['LEKAI_MEL_FIRST'] = '1'
     from experiments.bar_quality_history.model_probe import SnapshotProbe, _verify_runtime
     from experiments.bar_quality_history.process_worker import ProcessRepairWorker
     from streammuse.infrastructure.inference.lekai_prompt_continuation.prompt_engine import LekaiPromptEngine
