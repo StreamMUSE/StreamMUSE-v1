@@ -149,6 +149,8 @@ def run_arm(engine, backend, config, melody, prompt, gt_acc, seed, stop, arm, di
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=Path, required=True)
+    parser.add_argument('--cohort', default='user10',
+                        help="plan['cohorts'] key (user10, or beat40 from prep_beat40.py)")
     parser.add_argument('--gt-manifest', type=Path, required=True,
                         help='JSON: {"accompaniment": {piece_id: {"midi": path, "sha256": ..., "track": optional}}}')
     parser.add_argument('--output', type=Path, required=True)
@@ -161,7 +163,7 @@ def main():
         raise ValueError('GPU binding mismatch')
     args.output.mkdir(parents=True, exist_ok=False)
     plan = json.loads(args.plan.read_text())
-    cohort = plan['cohorts']['user10']
+    cohort = plan['cohorts'][args.cohort]
     pieces = cohort['pieces'][:args.limit_pieces]
     for checkpoint in plan['checkpoints'].values():
         assert sha(checkpoint['path']) == checkpoint['sha256']

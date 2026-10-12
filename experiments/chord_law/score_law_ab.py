@@ -29,7 +29,7 @@ class N:
         self.start, self.end, self.pitch = a, b, p
 
 
-def score(path, stop_tick, step, metrics):
+def score(path, stop_tick, step, metrics, start_tick=84):
     import mido
     mid = mido.MidiFile(path)
     tpb = mid.ticks_per_beat
@@ -46,7 +46,7 @@ def score(path, stop_tick, step, metrics):
                     a = open_n.pop(key)
                     note = N(a / tpb * step, t / tpb * step, msg.note)
                     (mel if msg.channel == 0 else acc).append(note)
-    s, e = 84 * step, stop_tick * step
+    s, e = start_tick * step, stop_tick * step
     for n in mel + acc:
         n.end = max(n.end, n.start + 1e-6)
     mel_c = [n for n in mel if n.start < e and n.end > s]
@@ -65,6 +65,7 @@ def main():
     args = parser.parse_args()
     plan = json.loads((args.root / 'plan.json').read_text())
     step = 60.0 / (plan['export_bpm'] * 4)
+    start_tick = plan.get('primary_metric_start_tick', 84)
     metrics = load_metrics()
     rows = []
     for piece in plan['pieces']:
@@ -73,7 +74,7 @@ def main():
                 path = args.root / piece['piece_id'] / f'seed{seed}' / arm / 'full.mid'
                 if not path.exists():
                     continue
-                s = score(path, piece['stop_tick'], step, metrics)
+                s = score(path, piece['stop_tick'], step, metrics, start_tick)
                 if s is None:
                     rows.append({'piece_id': piece['piece_id'], 'seed': seed, 'arm': arm,
                                  'error': 'empty_window'})
