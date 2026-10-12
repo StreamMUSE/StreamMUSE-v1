@@ -29,8 +29,9 @@ sys.path[:0] = [str(ROOT / "src")]
 
 
 def main() -> None:
-    from streammuse.application.rap.chunk_orchestration import ChunkCandidatePlanner
+    from streammuse.application.rap.chunk_orchestration import ChunkCandidatePlanner, NoValidCandidates
     from streammuse.application.rap.lyric_writer import (
+        LyricWriteFailed,
         LyricWriteRequest,
         LyricWriterPolicy,
         SequentialLyricWriter,
@@ -75,6 +76,7 @@ def main() -> None:
         generators[0], analyzer, ScoreWeights(), bar_generators=(generators[0], generators[1])
     )
     paired = []
+    failures = {"paired": 0, "sequential": 0}
     context: list[str] = []
     for start in range(0, args.bars, 2):
         bars = tuple(RemoteRapBarRequest(bar, *plan_for(bar)) for bar in (start, start + 1))
@@ -84,7 +86,11 @@ def main() -> None:
             context_lines=tuple(context[-4:]), seed=args.seed + start,
         )
         started = time.perf_counter()
-        plan = planner.plan(request)
+        try:
+            plan = planner.plan(request)
+        except NoValidCandidates:
+            failures["paired"] += 2  # the runtime would play two fallback bars
+            continue
         elapsed = (time.perf_counter() - started) * 1000.0
         for selected in plan.selected_bars:
             waves = {row.get("wave") for row in plan.candidate_ledger if row.get("bar") == selected.bar and row.get("wave") is not None}
@@ -104,12 +110,17 @@ def main() -> None:
     for bar in range(args.bars):
         topic, template = plan_for(bar)
         started = time.perf_counter()
-        written = writer.write(LyricWriteRequest(
-            session_id="sequential", bar=bar, revision=0, topic=topic, flow_template=template,
-            history=tuple(history[-4:]), seed=args.seed + bar,
-            previous_line=previous.text if previous else None,
-            previous_template=previous.flow_template if previous else None,
-        ))
+        try:
+            written = writer.write(LyricWriteRequest(
+                session_id="sequential", bar=bar, revision=0, topic=topic, flow_template=template,
+                history=tuple(history[-4:]), seed=args.seed + bar,
+                previous_line=previous.text if previous else None,
+                previous_template=previous.flow_template if previous else None,
+            ))
+        except LyricWriteFailed:
+            failures["sequential"] += 1
+            previous = None
+            continue
         elapsed = (time.perf_counter() - started) * 1000.0
         record = written.record
         sequential.append({
@@ -123,15 +134,21 @@ def main() -> None:
 
     def rhyme_rate(rows):
         hits = []
-        for even, odd in zip(rows[0::2], rows[1::2]):
+        by_bar = {row["bar"]: row for row in rows}
+        for bar in range(0, args.bars, 2):
+            even, odd = by_bar.get(bar), by_bar.get(bar + 1)
+            if even is None or odd is None:
+                continue
             tail_a = tuple(analyzer.analyze(even["text"]).end_rhyme_tail)
             tail_b = tuple(analyzer.analyze(odd["text"]).end_rhyme_tail)
             hits.append(rhyme_quality(tail_b, tail_a) >= 0.6)
-        return sum(hits) / len(hits)
+        return sum(hits) / max(1, len(hits))
 
-    def summary(rows):
+    def summary(name, rows):
         return {
             "bars": len(rows),
+            "failed_bars": failures[name],
+            "rhyme_label_leaks": sum(1 for row in rows if row["text"].rstrip(" .,!?").endswith(" A")),
             "couplet_rhyme_rate": rhyme_rate(rows),
             "mean_score": statistics.mean(row["score"] for row in rows),
             "generation_ms_per_bar_median": statistics.median(row["generation_ms_per_bar"] for row in rows),
@@ -139,7 +156,7 @@ def main() -> None:
             "rescue_rate": sum(1 for row in rows if row["waves"] > 1) / len(rows),
         }
 
-    result = {"paired": summary(paired), "sequential": summary(sequential), "rows": {"paired": paired, "sequential": sequential}}
+    result = {"paired": summary("paired", paired), "sequential": summary("sequential", sequential), "rows": {"paired": paired, "sequential": sequential}}
     args.out.write_text(json.dumps(result, indent=1))
     print(json.dumps({k: result[k] for k in ("paired", "sequential")}, indent=1))
     for client in clients:
