@@ -328,10 +328,20 @@ def _build_independent_messages(
                 "spoken pronunciation. Match lexical stress to the stronger slots, preserve natural words, and "
                 "close the phrase at the final slot. Spell out every number with words; never emit digits. "
                 "Do not include numbering, labels, explanations, syllable "
-                f"markup, or alternate lines.\n{flow}\nRecent frozen lines:\n{history}\n"
+                f"markup, or alternate lines.{_rhyme_instruction(request)}\n{flow}\nRecent frozen lines:\n{history}\n"
                 f"Variation seed: {request.seed}."
             ),
         },
+    )
+
+
+def _rhyme_instruction(request: CandidateRequest) -> str:
+    """Ask for an end rhyme with the previous line (lyric stream couplets)."""
+    if request.rhyme_with is None:
+        return ""
+    return (
+        " End the line on a word that rhymes with the final word of this previous line: "
+        f"{request.rhyme_with!r}."
     )
 
 

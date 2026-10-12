@@ -265,6 +265,9 @@ class RapRenderServerConfig:
     moss_mlx_url: str | None = None
     moss_mlx_runtime: Mapping[str, str] | None = None
     concurrent_bar_generation: bool = False
+    lyric_stream: bool = False
+    lyric_candidates: int = 32
+    lyric_rhyme_scheme: str = "couplet"
 
 
 @dataclass
@@ -273,6 +276,11 @@ class _WorkerComposition:
     health: Mapping[str, object]
     producer_manifest: ProducerManifestV1
     _resources: ExitStack
+    # Protocol v3 (--lyric-stream): a per-session writer factory and the shared
+    # MOSS+MMS phrase renderer, which main() wraps into the bar audio service.
+    lyric_writer_factory: Callable[[], tuple[object, Callable[[], None]]] | None = None
+    phrase_renderer: object | None = None
+    bar_workspace_root: Path | None = None
 
     def close(self) -> None:
         self._resources.close()
@@ -1106,8 +1114,13 @@ def create_rap_render_app(
     opus_codec: object | None = None,
     cancellation_grace_seconds: float = 2.0,
     monotonic_clock: Callable[[], float] = time.monotonic,
+    lyric_stream: object | None = None,
 ) -> FastAPI:
-    """Create the testable private render service without composing model dependencies."""
+    """Create the testable private render service without composing model dependencies.
+
+    ``lyric_stream`` (a ``LyricStreamService``) adds the protocol v3 session and
+    bar-audio routes next to the v1/v2 chunk route.
+    """
     from streammuse.infrastructure.rap.chunk_package import (
         RAP_CHUNK_PACKAGE_MEDIA_TYPE,
         RAP_CHUNK_OPUS_PACKAGE_MEDIA_TYPE,
@@ -1134,6 +1147,11 @@ def create_rap_render_app(
     app.state.rap_artifact_store = store
     app.state.rap_runtime_state = runtime_state
     app.add_event_handler("shutdown", store.close)
+    if lyric_stream is not None:
+        from streammuse.presentation.rap_lyric_stream_server import mount_lyric_stream_routes
+
+        mount_lyric_stream_routes(app, lyric_stream)  # type: ignore[arg-type]
+        app.add_event_handler("shutdown", lyric_stream.close)  # type: ignore[attr-defined]
 
     @app.get("/health")
     async def get_health() -> dict[str, object]:
@@ -1747,6 +1765,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="generate both bars' initial candidate waves at once, one chat client per bar",
     )
+    parser.add_argument(
+        "--lyric-stream",
+        action="store_true",
+        help="enable protocol v3: per-bar lyric stream sessions and bar audio routes",
+    )
+    parser.add_argument(
+        "--lyric-candidates", type=int, default=32, help="lyric stream candidates per bar (v3)"
+    )
+    parser.add_argument(
+        "--lyric-rhyme-scheme", choices=("couplet", "chain", "none"), default="couplet"
+    )
     return parser
 
 
@@ -1778,6 +1807,23 @@ def main(
         opus_codec = FFmpegOpusCodec(compression_level=config.opus_compression_level)
         opus_codec.probe()
     composition = compose(config)
+    lyric_stream = None
+    if config.lyric_stream and composition.lyric_writer_factory is not None:
+        from streammuse.application.rap.bar_audio import MossBarAudioRenderer
+        from streammuse.infrastructure.rap.bar_package import (
+            OpusBarPackageEncoder,
+            PcmBarPackageEncoder,
+        )
+        from streammuse.presentation.rap_lyric_stream_server import LyricStreamService
+
+        lyric_stream = LyricStreamService(
+            writer_factory=composition.lyric_writer_factory,  # type: ignore[arg-type]
+            renderer=MossBarAudioRenderer(
+                composition.phrase_renderer,  # type: ignore[arg-type]
+                OpusBarPackageEncoder(opus_codec) if opus_codec is not None else PcmBarPackageEncoder(),
+                workspace_root=composition.bar_workspace_root or config.artifact_root / "bars",
+            ),
+        )
     try:
         run_server(
             create_rap_render_app(
@@ -1788,6 +1834,7 @@ def main(
                 wire_audio_codec=config.wire_audio_codec,
                 opus_codec=opus_codec,
                 cancellation_grace_seconds=config.moss_cancellation_grace_s,
+                lyric_stream=lyric_stream,
             ),
             host=config.host,
             port=config.port,
@@ -1960,6 +2007,9 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         moss_mlx_url=args.moss_mlx_url,
         moss_mlx_runtime=moss_mlx_runtime,
         concurrent_bar_generation=args.concurrent_bar_generation,
+        lyric_stream=args.lyric_stream,
+        lyric_candidates=args.lyric_candidates,
+        lyric_rhyme_scheme=args.lyric_rhyme_scheme,
     )
 
 
@@ -2235,11 +2285,40 @@ def _compose_real_worker(
             ),
             "warmup": {"ready": True, "status": "complete"},
         }
+        lyric_writer_factory = None
+        if config.lyric_stream:
+            from streammuse.application.rap.lyric_writer import (
+                LyricWriterPolicy,
+                SequentialLyricWriter,
+            )
+
+            lyric_policy = LyricWriterPolicy(
+                candidates=config.lyric_candidates, rhyme_scheme=config.lyric_rhyme_scheme
+            )
+
+            def lyric_writer_factory() -> tuple[object, Callable[[], None]]:
+                # One chat client per session: each allows a single active request.
+                chat = dependencies.LocalChatModelClient(client_config)
+                writer = SequentialLyricWriter(
+                    make_generator(chat),
+                    dependencies.CmuProsodyAnalyzer(),
+                    dependencies.ScoreWeights(),
+                    lyric_policy,
+                    provenance={
+                        "model": config.vllm_model,
+                        "candidate_profile": config.candidate_profile,
+                    },
+                )
+                return writer, chat.close
+
         return _WorkerComposition(
             orchestrator,
             health,
             producer_manifest,
             resources,
+            lyric_writer_factory=lyric_writer_factory,
+            phrase_renderer=renderer,
+            bar_workspace_root=namespace_root / "bars",
         )
     except BaseException:
         resources.close()

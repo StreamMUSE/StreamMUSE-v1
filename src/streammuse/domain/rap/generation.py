@@ -21,10 +21,16 @@ class CandidateRequest:
     count: int
     context_lines: tuple[str, ...]
     seed: int
+    # Protocol v3 lyric stream: the previous line this one should rhyme with.
+    rhyme_with: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, str) or not self.request_id.strip():
             raise ValueError("candidate request_id must be non-empty")
+        if self.rhyme_with is not None and (
+            not isinstance(self.rhyme_with, str) or not self.rhyme_with.strip()
+        ):
+            raise ValueError("candidate rhyme_with must be a non-empty string or None")
         if (
             not isinstance(self.target_bar, int)
             or isinstance(self.target_bar, bool)
