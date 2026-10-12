@@ -165,11 +165,12 @@ def main():
     plan = json.loads(args.plan.read_text())
     cohort = plan['cohorts'][args.cohort]
     pieces = cohort['pieces'][:args.limit_pieces]
+    metric_start = cohort.get('primary_metric_start_tick', 84)
     for checkpoint in plan['checkpoints'].values():
         assert sha(checkpoint['path']) == checkpoint['sha256']
     for piece in pieces:
         assert sha(piece['melody_midi']) == piece['melody_midi_sha256']
-        assert piece['stop_tick'] > 84 and piece['stop_tick'] % 4 == 0
+        assert piece['stop_tick'] > metric_start and piece['stop_tick'] % 4 == 0
     manifest = json.loads(args.gt_manifest.read_text())
     gt_paths = {}
     for piece in pieces:
@@ -186,7 +187,7 @@ def main():
         'seeds': args.seeds, 'source_plan': str(args.plan), 'source_plan_sha256': sha(args.plan),
         'gt_manifest': str(args.gt_manifest), 'gt_manifest_sha256': sha(args.gt_manifest),
         'checkpoints': plan['checkpoints'], 'export_bpm': cohort['playback_bpm'],
-        'primary_metric_start_tick': 84, 'secondary_metric_start_tick': 32,
+        'primary_metric_start_tick': metric_start, 'secondary_metric_start_tick': 32,
         'scope': 'causal offline, per-window GT-accompaniment history via inject_history, '
                  'no repair, no boost, no wall clock',
         'oracle_semantics': 'acc history [32,t) = GT each window; prompt [0,32) shared; '

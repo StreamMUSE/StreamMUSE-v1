@@ -85,6 +85,7 @@ def main():
     plan = {'cohorts': {'beat40': {
         'pieces': pieces, 'sampling': SAMPLING,
         'model_bpm': 120, 'playback_bpm': 120,
+        'primary_metric_start_tick': 32,
         'source_root': str(BEAT_GT_ROOT),
         'note': 'melody+gt_acc split from round-trip-verified full_gt.mid; '
                 'same source npz as the 20260903 beatgt eval'}},

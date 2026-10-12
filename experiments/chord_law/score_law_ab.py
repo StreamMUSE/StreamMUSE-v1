@@ -30,9 +30,17 @@ class N:
 
 
 def score(path, stop_tick, step, metrics, start_tick=84):
+    """CR/UR over event ticks [start_tick, stop_tick).
+
+    step is seconds per event tick (quarter-beat). Note times convert via
+    beats (a/tpb) * seconds-per-beat = a/tpb * step*4 — not a/tpb*step,
+    which silently shrank the window by 4x in every score before 20261012
+    (user10 exports were effectively scored on [336, stop), not [84, stop)).
+    """
     import mido
     mid = mido.MidiFile(path)
     tpb = mid.ticks_per_beat
+    beat_sec = step * 4
     mel, acc, open_n = [], [], {}
     for tr in mid.tracks:
         t = 0
@@ -44,7 +52,7 @@ def score(path, stop_tick, step, metrics, start_tick=84):
                 key = (msg.channel, msg.note)
                 if key in open_n:
                     a = open_n.pop(key)
-                    note = N(a / tpb * step, t / tpb * step, msg.note)
+                    note = N(a / tpb * beat_sec, t / tpb * beat_sec, msg.note)
                     (mel if msg.channel == 0 else acc).append(note)
     s, e = start_tick * step, stop_tick * step
     for n in mel + acc:
