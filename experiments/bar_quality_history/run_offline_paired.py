@@ -177,13 +177,13 @@ def main():
     config = {'mode': 'real', 'checkpoint_path': plan['checkpoints']['continuation']['path'],
               'device': 'cuda', 'dtype': 'float16', 'bpm': cohort['model_bpm'],
               'context_beats': 32, **cohort['sampling'], 'time_signature_index': 4,
-              'tonal_constraint_enabled': True, 'empty_token_guard_enabled': True,
-              'mel_first': bool(args.mel_first)}
+              'tonal_constraint_enabled': True, 'empty_token_guard_enabled': True}
     save(args.output / 'plan.json', {'config': config, 'pieces': pieces, 'seeds': args.seeds,
         'source_plan': str(args.plan), 'source_plan_sha256': sha(args.plan),
         'checkpoints': plan['checkpoints'], 'export_bpm': cohort['playback_bpm'],
         'repair_bar_ticks': [64, 80], 'repair_apply_before_tick': 84, 'repair_seed': 101,
         'primary_metric_start_tick': metric_start, 'secondary_metric_start_tick': 32,
+        'mel_first': bool(args.mel_first),
         'scope': 'causal offline, no wall clock, no future melody, raw outputs',
         'prompt': 'one shared Rule If-Else N=10 generation per piece/seed',
         'repair_policy': 'preserve_cross_boundary', 'automatic_quality_gate': False})
