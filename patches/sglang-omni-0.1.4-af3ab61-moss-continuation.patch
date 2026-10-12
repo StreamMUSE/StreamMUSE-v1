@@ -1,0 +1,126 @@
+diff -ru a/sglang_omni/models/moss_tts/payload_types.py b/sglang_omni/models/moss_tts/payload_types.py
+--- a/sglang_omni/models/moss_tts/payload_types.py
++++ b/sglang_omni/models/moss_tts/payload_types.py
+@@ -62,6 +62,8 @@
+     ref_text: str | None = None
+     language: str | None = None
+     instructions: str | None = None
++    prefix_audio: Any | None = None
++    prefix_text: str | None = None
+     token_count: int | None = wire(None, codec="opt_int")
+     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
+     delayed_audio_codes: Any | None = wire(None, codec="tensor_cpu")
+diff -ru a/sglang_omni/models/moss_tts/request_builders.py b/sglang_omni/models/moss_tts/request_builders.py
+--- a/sglang_omni/models/moss_tts/request_builders.py
++++ b/sglang_omni/models/moss_tts/request_builders.py
+@@ -296,6 +296,8 @@
+         language=language,
+         instructions=instructions,
+         token_count=token_count,
++        prefix_audio=tts_params.get("prefix_audio"),
++        prefix_text=_resolve_optional_text(tts_params.get("prefix_text")),
+         generation_kwargs=build_generation_kwargs(params, tts_params=tts_params),
+     )
+ 
+@@ -443,6 +445,9 @@
+     processor: Any,
+     state: MossTTSState,
+     reference_encoder: Any = None,
++    *,
++    text: str | None = None,
++    tokens: int | None = None,
+ ) -> dict[str, Any]:
+     reference = _reference_for_processor(
+         processor,
+@@ -450,14 +455,45 @@
+         reference_encoder,
+     )
+     return processor.build_user_message(
+-        text=state.text,
++        text=state.text if text is None else text,
+         reference=reference,
+         instruction=state.instructions,
+-        tokens=state.token_count,
++        tokens=state.token_count if tokens is None else tokens,
+         language=state.language,
+     )
+ 
+ 
++def _build_processor_batch(
++    processor: Any,
++    state: MossTTSState,
++    reference_encoder: Any = None,
++) -> Any:
++    if state.prefix_audio is None:
++        message = _build_processor_message(processor, state, reference_encoder)
++        return processor([[message]], mode="generation")
++    # Continuation: the user turn holds prefix + new text, the assistant turn
++    # the prefix codes, and generation resumes after the prefix audio.
++    prefix_codes = (
++        reference_encoder.encode(state.prefix_audio)
++        if reference_encoder is not None
++        else processor.encode_audios_from_path([state.prefix_audio])[0]
++    )
++    tokens = (
++        None
++        if state.token_count is None
++        else int(state.token_count) + int(prefix_codes.shape[0])
++    )
++    message = _build_processor_message(
++        processor,
++        state,
++        reference_encoder,
++        text=f"{state.prefix_text} {state.text}",
++        tokens=tokens,
++    )
++    assistant = processor.build_assistant_message(audio_codes_list=[prefix_codes])
++    return processor([[message, assistant]], mode="continuation")
++
++
+ def _prepare_moss_tts_request(
+     payload: StagePayload,
+     *,
+@@ -465,8 +501,7 @@
+     reference_encoder: Any = None,
+ ) -> MossTTSPreparedRequest:
+     state = build_moss_tts_state(payload)
+-    message = _build_processor_message(processor, state, reference_encoder)
+-    batch = processor([[message]], mode="generation")
++    batch = _build_processor_batch(processor, state, reference_encoder)
+     input_rows = batch["input_ids"]
+     if input_rows.ndim != 3 or int(input_rows.shape[0]) != 1:
+         raise ValueError(
+diff -ru a/sglang_omni/serve/protocol.py b/sglang_omni/serve/protocol.py
+--- a/sglang_omni/serve/protocol.py
++++ b/sglang_omni/serve/protocol.py
+@@ -355,6 +355,11 @@
+     token_count: int | None = None  # MOSS-TTS duration token target
+     duration_tokens: int | None = None  # alias for token_count
+     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
++    # MOSS-TTS continuation: the output continues this audio (a data:audio/...
++    # URI) whose transcript is prefix_text. The returned audio starts with the
++    # re-decoded prefix; token_count counts only the new audio.
++    prefix_audio: str | None = None
++    prefix_text: str | None = None
+ 
+     # Generation parameters
+     max_new_tokens: int | None = None
+diff -ru a/sglang_omni/serve/speech_service.py b/sglang_omni/serve/speech_service.py
+--- a/sglang_omni/serve/speech_service.py
++++ b/sglang_omni/serve/speech_service.py
+@@ -768,6 +768,15 @@
+     explicit_generation_params = _explicit_generation_params(request)
+     if explicit_generation_params:
+         tts_params["explicit_generation_params"] = explicit_generation_params
++    if request.prefix_audio is not None:
++        if not request.prefix_audio.startswith("data:audio/"):
++            raise bad_request("prefix_audio must be a data:audio/... URI", param="prefix_audio")
++        if len(request.prefix_audio) > MAX_REFERENCE_AUDIO_BYTES * 4 // 3 + 64:
++            raise bad_request("prefix_audio is too large", param="prefix_audio")
++        if not (request.prefix_text or "").strip():
++            raise bad_request("prefix_audio requires prefix_text", param="prefix_text")
++        tts_params["prefix_audio"] = request.prefix_audio
++        tts_params["prefix_text"] = request.prefix_text.strip()
+     if request.task_type is not None:
+         tts_params["task_type"] = request.task_type
+     if request.language is not None:

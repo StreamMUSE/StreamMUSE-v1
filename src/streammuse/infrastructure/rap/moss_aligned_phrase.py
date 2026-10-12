@@ -28,6 +28,7 @@ from streammuse.application.rap.execution import (
     ExecutionDeadlineExceeded,
     SynthesisExecutionContext,
 )
+from streammuse.domain.rap.audio import SpeechPrefix
 from streammuse.domain.rap.remote_chunk import (
     REMOTE_CHUNK_MONITORING_SCHEMA_VERSION,
     REMOTE_CHUNK_SAMPLE_RATE_HZ,
@@ -144,8 +145,12 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         workspace: Path,
         *,
         execution: SynthesisExecutionContext | None = None,
+        prefix: SpeechPrefix | None = None,
     ) -> PhraseSourceResult:
-        """Synthesize and align one phrase, leaving the R3 warp to the v2 client."""
+        """Synthesize and align one phrase, leaving the R3 warp to the v2 client.
+
+        ``prefix`` makes MOSS continue that speech (the synthesizer must accept it).
+        """
         active_execution = execution or SynthesisExecutionContext.from_timeout(
             3600.0, correlation_id=f"moss-source-{getattr(request, 'chunk_index', 0)}"
         )
@@ -157,7 +162,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 break
         try:
             return self._render_locked(
-                request, Path(workspace), execution=active_execution, source_only=True
+                request, Path(workspace), execution=active_execution, source_only=True, prefix=prefix
             )
         finally:
             self._lock.release()
@@ -169,6 +174,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
         *,
         execution: SynthesisExecutionContext,
         source_only: bool = False,
+        prefix: SpeechPrefix | None = None,
     ) -> PhraseRenderResult | PhraseSourceResult:
         _renderer_checkpoint(execution)
         try:
@@ -215,7 +221,10 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             stage = "moss"
             started = self._clock()
             moss_result = self._synthesizer.synthesize(
-                request, source_path, execution=execution
+                request,
+                source_path,
+                execution=execution,
+                **({} if prefix is None else {"prefix": prefix}),
             )
             stage_timings["moss"] = _elapsed_ms(self._clock, started)
             _renderer_checkpoint(execution)

@@ -155,3 +155,17 @@ class AudioPlaybackSnapshot:
     queue_depth: int
     underrun_count: int
     buffered_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class SpeechPrefix:
+    """Speech a synthesis continues from: the previous line's 24 kHz mono WAV and its text."""
+
+    text: str
+    wav: bytes
+
+    def __post_init__(self) -> None:
+        if not self.text.strip():
+            raise ValueError("speech prefix text must not be empty")
+        if not self.wav:
+            raise ValueError("speech prefix audio must not be empty")

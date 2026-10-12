@@ -59,7 +59,11 @@ class RenderedBarAudio:
 
 
 class BarAudioRenderer(Protocol):
-    def render(self, record: BarLyricRecord, *, tempo_bpm: float) -> RenderedBarAudio: ...
+    def render(
+        self, record: BarLyricRecord, *, tempo_bpm: float, previous: BarLyricRecord | None = None
+    ) -> RenderedBarAudio:
+        """Render ``record``; ``previous`` is the latest line of the bar before, to continue from."""
+        ...
 
 
 class LyricSessionListener(Protocol):
@@ -370,8 +374,10 @@ class LyricStreamSession:
                 entry = self._audio.setdefault(record.lyric_id, _AudioEntry("queued"))
                 entry.status = "rendering"
                 entry.attempts += 1
+                before = self._bars.get(record.bar - 1)
+                previous = None if before is None else before.latest
             try:
-                audio = self._renderer.render(record, tempo_bpm=self._tempo_bpm)
+                audio = self._renderer.render(record, tempo_bpm=self._tempo_bpm, previous=previous)
                 error = None
             except Exception as failure:  # reported to the fetching client
                 audio, error = None, f"{type(failure).__name__}: {failure}"

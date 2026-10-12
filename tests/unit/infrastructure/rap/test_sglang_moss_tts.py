@@ -703,3 +703,61 @@ def test_close_is_idempotent_and_prevents_reuse(tmp_path: Path) -> None:
         synthesizer.synthesize(
             _request(), tmp_path / "source.wav", execution=_execution()
         )
+
+
+def test_continuation_sends_a_frame_padded_prefix_and_cuts_it_from_the_output(tmp_path: Path) -> None:
+    import base64
+
+    from streammuse.domain.rap.audio import SpeechPrefix
+
+    prefix_samples = np.arange(1, 3_001, dtype=np.int16)  # 3,000 samples -> padded to 3,840
+    prefix_wav = io.BytesIO()
+    wavfile.write(prefix_wav, 24_000, prefix_samples)
+    new_samples = np.full(2_400, 7, dtype=np.int16)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = io.BytesIO()
+        wavfile.write(body, 24_000, np.concatenate([np.ones(3_840, dtype=np.int16), new_samples]))
+        return httpx.Response(200, headers={"content-type": "audio/wav"}, content=body.getvalue())
+
+    client = httpx.Client(base_url="http://127.0.0.1:30000", transport=httpx.MockTransport(handler))
+    synthesizer = SglangMossSynthesizer(_config(tmp_path), client=client)
+    output = tmp_path / "source.wav"
+
+    result = synthesizer.synthesize(
+        _request(), output, execution=_execution(), prefix=SpeechPrefix("previous line", prefix_wav.getvalue())
+    )
+
+    payload = json.loads(requests[0].content)
+    assert payload["prefix_text"] == "previous line"
+    sent_rate, sent = wavfile.read(io.BytesIO(base64.b64decode(payload["prefix_audio"].split(",", 1)[1])))
+    assert sent_rate == 24_000 and sent.size == 3_840
+    assert np.array_equal(sent[:3_000], prefix_samples) and not sent[3_000:].any()
+    assert payload["token_count"] == round(_request().duration_seconds * 12.5)  # only the new line
+    _, written = wavfile.read(output)
+    assert np.array_equal(written, new_samples)
+    assert result.frame_count == 2_400
+
+
+def test_continuation_output_no_longer_than_the_prefix_is_invalid(tmp_path: Path) -> None:
+    from streammuse.domain.rap.audio import SpeechPrefix
+
+    prefix_wav = io.BytesIO()
+    wavfile.write(prefix_wav, 24_000, np.ones(1_920, dtype=np.int16))
+    body = io.BytesIO()
+    wavfile.write(body, 24_000, np.ones(1_920, dtype=np.int16))
+    client = httpx.Client(
+        base_url="http://127.0.0.1:30000",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, headers={"content-type": "audio/wav"}, content=body.getvalue())
+        ),
+    )
+    synthesizer = SglangMossSynthesizer(_config(tmp_path), client=client)
+
+    with pytest.raises(MossInvalidOutput):
+        synthesizer.synthesize(
+            _request(), tmp_path / "source.wav", execution=_execution(),
+            prefix=SpeechPrefix("previous line", prefix_wav.getvalue()),
+        )

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -17,11 +19,14 @@ from types import MappingProxyType
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+import numpy as np
+from scipy.io import wavfile
 
 from streammuse.application.rap.execution import (
     ExecutionStopped,
     SynthesisExecutionContext,
 )
+from streammuse.domain.rap.audio import SpeechPrefix
 from streammuse.experiments.rap_audio_protocols.contracts import TwoBarRenderRequest
 from streammuse.infrastructure.rap.moss_generation import (
     DEFAULT_BASE_SEED,
@@ -272,7 +277,9 @@ class SglangMossSynthesizer:
             execution.checkpoint()
         return self.probe()
 
-    def build_request_payload(self, request: TwoBarRenderRequest) -> dict[str, object]:
+    def build_request_payload(
+        self, request: TwoBarRenderRequest, *, prefix: SpeechPrefix | None = None
+    ) -> dict[str, object]:
         if not isinstance(request, TwoBarRenderRequest):
             raise MossRequestRejected(
                 f"{self._LABEL} synthesis requires a two-bar render request"
@@ -306,6 +313,7 @@ class SglangMossSynthesizer:
                 request=request,
                 attempt=1,
             ),
+            **({} if prefix is None else _prefix_payload(prefix)[0]),
         }
 
     def synthesize(
@@ -314,7 +322,14 @@ class SglangMossSynthesizer:
         output_wav: Path,
         *,
         execution: SynthesisExecutionContext,
+        prefix: SpeechPrefix | None = None,
     ) -> MossPhraseResult:
+        """Synthesize ``request``; with ``prefix``, continue the prefix speech.
+
+        The service returns the re-decoded prefix followed by the new speech;
+        the prefix (padded to whole codec frames) is cut off here, so the
+        output holds only the new line.
+        """
         if not isinstance(execution, SynthesisExecutionContext):
             raise ValueError(f"{self._LABEL} synthesis requires an execution context")
         execution.checkpoint()
@@ -322,7 +337,8 @@ class SglangMossSynthesizer:
             if self._closed:
                 raise MossBackendUnavailable(f"{self._LABEL} synthesizer is closed")
 
-        payload = self.build_request_payload(request)
+        payload = self.build_request_payload(request, prefix=prefix)
+        prefix_frames = 0 if prefix is None else _prefix_payload(prefix)[1]
         output_path = Path(output_wav)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         partial_path = output_path.with_name(
@@ -378,6 +394,13 @@ class SglangMossSynthesizer:
                 download_finished = self._clock()
             response = None
             execution.checkpoint()
+            if prefix_frames:
+                _cut_prefix(
+                    partial_path,
+                    prefix_frames,
+                    maximum_frame_count=prefix_frames
+                    + round(self._config.maximum_audio_seconds * 24_000),
+                )
             sample_rate_hz, samples = read_valid_mono_wav(
                 partial_path,
                 expected_sample_rate_hz=24_000,
@@ -688,3 +711,28 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+# One MOSS codec frame is 1920 samples at 24 kHz (12.5 frames per second).
+_CODEC_FRAME_SAMPLES = 1920
+
+
+def _prefix_payload(prefix: SpeechPrefix) -> tuple[dict[str, object], int]:
+    """The request fields for a continuation prefix, and its padded length in samples."""
+    _, samples = read_valid_mono_wav_bytes(prefix.wav, expected_sample_rate_hz=24_000)
+    if samples.dtype != np.int16:
+        raise MossRequestRejected("speech prefix must be 16-bit PCM")
+    padded = np.concatenate([samples, np.zeros((-samples.size) % _CODEC_FRAME_SAMPLES, dtype=np.int16)])
+    buffer = io.BytesIO()
+    wavfile.write(buffer, 24_000, padded)
+    uri = "data:audio/wav;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    return {"prefix_audio": uri, "prefix_text": prefix.text}, int(padded.size)
+
+
+def _cut_prefix(path: Path, prefix_frames: int, *, maximum_frame_count: int) -> None:
+    sample_rate_hz, samples = read_valid_mono_wav(
+        path, expected_sample_rate_hz=24_000, maximum_frame_count=maximum_frame_count
+    )
+    if samples.size <= prefix_frames:
+        raise MossInvalidOutput("MOSS continuation output is not longer than its prefix")
+    wavfile.write(path, sample_rate_hz, samples[prefix_frames:])

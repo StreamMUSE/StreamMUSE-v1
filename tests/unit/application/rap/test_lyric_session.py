@@ -81,14 +81,16 @@ class _Generator:
 class _Renderer:
     def __init__(self) -> None:
         self.rendered = []
+        self.previous = []
         self.gate = threading.Event()
         self.gate.set()
         self.lock = threading.Lock()
 
-    def render(self, record, *, tempo_bpm):
+    def render(self, record, *, tempo_bpm, previous=None):
         assert self.gate.wait(5)
         with self.lock:
             self.rendered.append((record.bar, record.revision))
+            self.previous.append(None if previous is None else (previous.bar, previous.revision))
         return RenderedBarAudio(
             lyric_id=record.lyric_id,
             bar=record.bar,
@@ -170,6 +172,8 @@ def test_writes_lyrics_in_bar_order_up_to_the_lead_and_renders_up_to_the_audio_l
         time.sleep(0.05)
         assert [record.bar for record in listener.lyrics] == [0, 1, 2]
         assert renderer.rendered == [(0, 0), (1, 0)]
+        # Each bar is rendered as the continuation of the bar before's latest line.
+        assert renderer.previous == [None, (0, 0)]
         # Each line follows the one before.
         assert listener.lyrics[2].provenance["seed"] != listener.lyrics[1].provenance["seed"]
 

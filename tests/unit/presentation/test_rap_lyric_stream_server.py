@@ -36,9 +36,11 @@ def _wav(frames: int) -> bytes:
 class _SourceRenderer:
     def __init__(self) -> None:
         self.requests = []
+        self.prefixes = []
 
-    def render_source(self, request, workspace):
+    def render_source(self, request, workspace, *, prefix=None):
         self.requests.append(request)
+        self.prefixes.append(prefix)
         source = _wav(60_000)
         return PhraseSourceResult(
             source_wav=source,
@@ -169,3 +171,48 @@ def test_reconnect_reattaches_and_resends_live_lines(tmp_path) -> None:
             websocket.send_json({"type": "stop"})
     finally:
         service.close()
+
+
+def test_bar_renderer_continues_the_previous_line_it_rendered(tmp_path) -> None:
+    from streammuse.application.rap.bar_audio import MossBarAudioRenderer
+
+    first = _record_for_continuation(0, "first line here now")
+    second = _record_for_continuation(1, "second line here now")
+    unknown = _record_for_continuation(1, "never rendered line")
+    source = _SourceRenderer()
+    renderer = MossBarAudioRenderer(source, PcmBarPackageEncoder(), workspace_root=tmp_path)
+
+    renderer.render(first, tempo_bpm=90.0)
+    rendered = renderer.render(second, tempo_bpm=90.0, previous=first)
+    renderer.render(first, tempo_bpm=90.0, previous=unknown)
+
+    assert source.prefixes[0] is None
+    assert source.prefixes[1].text == first.text and source.prefixes[1].wav == _wav(60_000)
+    assert rendered.manifest.diagnostics["continuation"] == {"used": True, "prefix_lyric_id": first.lyric_id}
+    assert source.prefixes[2] is None
+
+    disabled_source = _SourceRenderer()
+    disabled = MossBarAudioRenderer(disabled_source, PcmBarPackageEncoder(), workspace_root=tmp_path, continuation=False)
+    disabled.render(first, tempo_bpm=90.0)
+    assert disabled.render(second, tempo_bpm=90.0, previous=first).manifest.diagnostics["continuation"]["used"] is False
+    assert disabled_source.prefixes == [None, None]
+
+
+def _record_for_continuation(bar: int, text: str):
+    from streammuse.application.rap.alignment import align_exact
+    from streammuse.domain.rap import ProsodyAnalysis, Syllable, materialize_flow, normalize_text
+    from streammuse.domain.rap.lyric_stream import BarLyricRecord
+    from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
+
+    template = BUILTIN_TEMPLATES.get("baseline_straight_9")
+    words = (normalize_text(text).split() * 3)[: len(template.slots)]
+    line = " ".join(words)
+    analysis = ProsodyAnalysis(
+        text=line, normalized_text=line,
+        syllables=tuple(Syllable(word, 0, 1, 1, ("AH1",), "fake") for word in words),
+        end_rhyme_tail=("AH1",), oov_words=(), heuristic_words=(), punctuation_boundary_after=(),
+    )
+    return BarLyricRecord(
+        session_id="s1", bar=bar, revision=0, topic="space", flow_template=template, text=line,
+        scheduled=align_exact(analysis, materialize_flow(template, bar)), score=0.5,
+    )

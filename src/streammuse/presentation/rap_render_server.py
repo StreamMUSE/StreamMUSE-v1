@@ -268,6 +268,7 @@ class RapRenderServerConfig:
     lyric_stream: bool = False
     lyric_candidates: int = 32
     lyric_rhyme_scheme: str = "couplet"
+    lyric_continuation: bool = False
 
 
 @dataclass
@@ -1776,6 +1777,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lyric-rhyme-scheme", choices=("couplet", "chain", "none"), default="couplet"
     )
+    parser.add_argument(
+        "--lyric-continuation",
+        action="store_true",
+        help=(
+            "v3: synthesize each bar as the continuation of the previous bar's line; needs the "
+            "sglang-omni backend with patches/sglang-omni-0.1.4-af3ab61-moss-continuation.patch"
+        ),
+    )
     return parser
 
 
@@ -1822,6 +1831,7 @@ def main(
                 composition.phrase_renderer,  # type: ignore[arg-type]
                 OpusBarPackageEncoder(opus_codec) if opus_codec is not None else PcmBarPackageEncoder(),
                 workspace_root=composition.bar_workspace_root or config.artifact_root / "bars",
+                continuation=config.lyric_continuation,
             ),
         )
     try:
@@ -1847,6 +1857,8 @@ def main(
 
 def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
     backend = args.moss_serving_backend
+    if args.lyric_continuation and (not args.lyric_stream or backend != "sglang-omni"):
+        raise ValueError("--lyric-continuation requires --lyric-stream and the sglang-omni backend")
     sglang_only = {
         "--moss-sglang-url": args.moss_sglang_url,
         "--moss-reference-text-file": args.moss_reference_text_file,
@@ -2010,6 +2022,7 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         lyric_stream=args.lyric_stream,
         lyric_candidates=args.lyric_candidates,
         lyric_rhyme_scheme=args.lyric_rhyme_scheme,
+        lyric_continuation=args.lyric_continuation,
     )
 
 

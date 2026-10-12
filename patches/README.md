@@ -42,3 +42,38 @@ Pass the same hash to the render server with `--moss-runtime-patch-sha256`, so
 patched output gets its own producer fingerprint and cache namespace. To roll
 back, start the service without the two preflight flags and the render server
 without the hash. The fingerprint then returns to the unpatched value.
+
+## `sglang-omni-0.1.4-af3ab61-moss-continuation.patch`
+
+Applies **on top of** the latency patch above (same `-p1` layout; it does not
+apply to the unpatched package). It adds MOSS-TTS continuation to the speech
+endpoint, for the lyric stream's per-bar synthesis (protocol v3, plan
+`developing-logs/plans/2026-10-08-rap-lyric-stream-plan.md`, phase 6):
+
+| Change | File |
+|---|---|
+| Optional request fields `prefix_audio` (a `data:audio/...` URI, at most the reference-audio size) and `prefix_text` (its transcript, required with it) | `serve/protocol.py`, `serve/speech_service.py` (into `tts_params`) |
+| `MossTTSState.prefix_audio` / `prefix_text` | `models/moss_tts/payload_types.py`, `request_builders.build_moss_tts_state` |
+| With a prefix, preprocessing encodes it with the shared reference encoder and builds `[user(prefix_text + " " + text), assistant(prefix codes)]` in the processor's `continuation` mode; `tokens` is `token_count` plus the prefix's code frames, so `token_count` still means the new audio only. Without a prefix the request is built exactly as before. | `models/moss_tts/request_builders.py` |
+
+The AR stage already resumes from an assistant prefix (`_initialize_generation_state`
+detects it), so nothing else changes. The response is the re-decoded prefix
+followed by the new speech; the client cuts the prefix off. StreamMUSE pads the
+prefix to whole codec frames (1,920 samples at 24 kHz) so that cut is exact
+(`SglangMossSynthesizer.synthesize(..., prefix=...)`). Only the non-streaming
+response is used; the streaming path would also re-emit the prefix rows.
+
+Build it like the latency patch, applying both in order:
+
+```bash
+cp -a "$SITE/sglang_omni" "$PATCH_ROOT/"
+patch -p1 -d "$PATCH_ROOT" -i patches/sglang-omni-0.1.4-af3ab61-moss-latency.patch
+patch -p1 -d "$PATCH_ROOT" -i patches/sglang-omni-0.1.4-af3ab61-moss-continuation.patch
+```
+
+Then start the render server with `--lyric-stream --lyric-continuation` and
+`--moss-runtime-patch-sha256` set to the continuation patch's hash (it only
+applies on top of the latency patch, so it identifies both). Measured on the
+H200 (2026-10-12): the new part's length follows `token_count` as without a
+prefix, the returned prefix correlates 0.96–0.98 with the original, and a
+2.7 s prefix adds 35–65 ms per bar.
