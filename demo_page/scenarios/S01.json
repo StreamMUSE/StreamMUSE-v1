@@ -1,0 +1,17 @@
+{
+ "scenario_id": "demo_page_S01",
+ "tempo_bpm": 90.0,
+ "loop": false,
+ "segments": [
+  {
+   "start_bar": 0,
+   "bars": 16,
+   "topic": "space",
+   "template_id": "baseline_straight_9",
+   "fallback_lines": [
+    "space dreams rise while bright stars cross dark night",
+    "we drift through cold black skies with no ground"
+   ]
+  }
+ ]
+}

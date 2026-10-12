@@ -1,0 +1,17 @@
+{
+ "scenario_id": "demo_page_S12",
+ "tempo_bpm": 90.0,
+ "loop": false,
+ "segments": [
+  {
+   "start_bar": 0,
+   "bars": 16,
+   "topic": "deep sea",
+   "template_id": "baseline_staggered_9",
+   "fallback_lines": [
+    "deep sea winds move while moon lights guide ships",
+    "blue waves roll while fish swim through the dark"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,92 @@
+[
+ {
+  "sample": "S01",
+  "topic": "space",
+  "template_id": "baseline_straight_9",
+  "seed": 20261001
+ },
+ {
+  "sample": "S02",
+  "topic": "deep sea",
+  "template_id": "baseline_straight_9",
+  "seed": 20261002
+ },
+ {
+  "sample": "S03",
+  "topic": "city nights",
+  "template_id": "baseline_straight_9",
+  "seed": 20261003
+ },
+ {
+  "sample": "S04",
+  "topic": "basketball",
+  "template_id": "baseline_straight_9",
+  "seed": 20261004
+ },
+ {
+  "sample": "S05",
+  "topic": "rainy morning",
+  "template_id": "baseline_straight_9",
+  "seed": 20261005
+ },
+ {
+  "sample": "S06",
+  "topic": "space",
+  "template_id": "baseline_syncopated_9",
+  "seed": 20261006
+ },
+ {
+  "sample": "S07",
+  "topic": "deep sea",
+  "template_id": "baseline_syncopated_9",
+  "seed": 20261007
+ },
+ {
+  "sample": "S08",
+  "topic": "city nights",
+  "template_id": "baseline_syncopated_9",
+  "seed": 20261008
+ },
+ {
+  "sample": "S09",
+  "topic": "basketball",
+  "template_id": "baseline_syncopated_9",
+  "seed": 20261009
+ },
+ {
+  "sample": "S10",
+  "topic": "rainy morning",
+  "template_id": "baseline_syncopated_9",
+  "seed": 20261010
+ },
+ {
+  "sample": "S11",
+  "topic": "space",
+  "template_id": "baseline_staggered_9",
+  "seed": 20261011
+ },
+ {
+  "sample": "S12",
+  "topic": "deep sea",
+  "template_id": "baseline_staggered_9",
+  "seed": 20261012
+ },
+ {
+  "sample": "S13",
+  "topic": "city nights",
+  "template_id": "baseline_staggered_9",
+  "seed": 20261013
+ },
+ {
+  "sample": "S14",
+  "topic": "basketball",
+  "template_id": "baseline_staggered_9",
+  "seed": 20261014
+ },
+ {
+  "sample": "S15",
+  "topic": "rainy morning",
+  "template_id": "baseline_staggered_9",
+  "seed": 20261015
+ }
+]
