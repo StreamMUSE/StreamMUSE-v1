@@ -86,7 +86,7 @@ def main() -> None:
     for entry in manifest:
         row = {"round": entry["round"], "item": entry["item"]}
         reference = normalize(entry["text"])
-        for unit in ("phrase", "bars"):
+        for unit in [unit for unit in ("phrase", "bars", "continued") if unit in entry]:
             audio = load16k(args.compare_out / "warped" / entry[unit])
             half = audio.size // 2
             hypothesis = normalize(
@@ -107,10 +107,10 @@ def main() -> None:
                 ),
             }
         rows.append(row)
-        print(json.dumps({"item": row["item"], "round": row["round"], **{u: {k: v for k, v in row[u].items() if k != "hypothesis"} for u in ("phrase", "bars")}}), flush=True)
+        print(json.dumps({"item": row["item"], "round": row["round"], **{u: {k: v for k, v in row[u].items() if k != "hypothesis"} for u in ("phrase", "bars", "continued") if u in row}}), flush=True)
 
     summary = {}
-    for unit in ("phrase", "bars"):
+    for unit in [unit for unit in ("phrase", "bars", "continued") if all(unit in row for row in rows)]:
         values = [row[unit] for row in rows]
         pitch = [item["seam_pitch_jump_semitones"] for item in values if item["seam_pitch_jump_semitones"] is not None]
         summary[unit] = {

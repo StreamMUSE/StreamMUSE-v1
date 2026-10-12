@@ -90,6 +90,8 @@ def main() -> None:
         timing["bar0_moss"].append(bar_parts[0]["stage_timings_ms"]["moss"])
         timing["bar1_moss"].append(bar_parts[1]["stage_timings_ms"]["moss"])
         timing["bars_moss_total"].append(sum(part["stage_timings_ms"]["moss"] for part in bar_parts))
+        if "continued" in units:
+            timing.setdefault("continued_bar1_moss", []).append(units["continued"]["parts"][1]["stage_timings_ms"]["moss"])
         manifest.append(
             {
                 "round": round_index,

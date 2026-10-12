@@ -3,7 +3,9 @@
 For every fixed two-bar corpus request, synthesize and MMS-align:
 
 - ``phrase``: the two-bar request in one MOSS call (today's unit);
-- ``bars``: the same lyrics as two independent one-bar MOSS calls.
+- ``bars``: the same lyrics as two independent one-bar MOSS calls;
+- ``continued`` (phase 6): bar 0 alone, then bar 1 as the MOSS continuation of
+  bar 0's audio (needs the continuation patch on the service).
 
 Each source WAV, its syllable onsets and per-call timings are written under
 ``--out`` so warping and quality metrics (``analyze_bar_unit_synthesis.py``)
@@ -68,6 +70,7 @@ def split_into_bars(request):
 def main() -> None:
     import profile_sglang_moss as profile
 
+    from streammuse.domain.rap.audio import SpeechPrefix
     from streammuse.infrastructure.rap.mms_forced_alignment import MmsForcedAligner
     from streammuse.infrastructure.rap.moss_aligned_phrase import MossAlignedPhraseRenderer
 
@@ -77,8 +80,12 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--aligner-device", default="cuda:0")
     parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--units", default="phrase,bars", help="comma-separated: phrase, bars, continued")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    units = [unit.strip() for unit in args.units.split(",") if unit.strip()]
+    if not set(units) <= {"phrase", "bars", "continued"}:
+        parser.error("--units takes phrase, bars and continued")
     args.out.mkdir(parents=True, exist_ok=False)
 
     synthesizer = profile.make_synthesizer(args)
@@ -101,12 +108,24 @@ def main() -> None:
     records = []
     for round_index in range(args.rounds):
         for index, request in enumerate(requests):
-            for unit, parts in (("phrase", (request,)), ("bars", split_into_bars(request))):
+            for unit in units:
+                parts = (request,) if unit == "phrase" else split_into_bars(request)
                 outputs = []
+                previous = None
                 for part_index, part in enumerate(parts):
                     workspace = args.out / f"r{round_index}-{index:02d}-{unit}-{part_index}"
+                    prefix = (
+                        SpeechPrefix(parts[part_index - 1].text, previous.source_wav)
+                        if unit == "continued" and previous is not None
+                        else None
+                    )
                     started = time.perf_counter()
-                    result = renderer.render_source(part, workspace)
+                    result = (
+                        renderer.render_source(part, workspace)
+                        if prefix is None
+                        else renderer.render_source(part, workspace, prefix=prefix)
+                    )
+                    previous = result
                     wall_ms = (time.perf_counter() - started) * 1000.0
                     (workspace / "source.pcm16.wav").write_bytes(result.source_wav)
                     outputs.append(
