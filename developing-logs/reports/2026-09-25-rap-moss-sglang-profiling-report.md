@@ -273,3 +273,30 @@ planner 先对 bar 0 发出 n=16 的请求，完成后再发 bar 1 的请求。�
 - 没通过验收的 chunk，基线 2 个、优化 1 个，全部是服务器返回 `no_valid_candidates`。原因是候选歌词不合 flow，与传输和本次优化无关。
 - Qwen 只降到 147 ms，计划估计的是约 105 ms。剩下的主要是 n=16 本身的解码时间。
 - **注意：** 当天学校 VPN 很慢，隧道上一次 `/health` 往返就要 1.3 到 1.8 秒。所以客户端看到的端到端墙钟时间（基线 2157 ms，优化 1883 ms）主要是网络开销，不能用来比较服务器的改动。
+
+## 11. 2026-10-12 协议 v3（歌词流、单 bar、续写）的复测
+
+依据：[歌词流计划](../plans/2026-10-08-rap-lyric-stream-plan.md)的第 9 阶段；详见 [2026-10-12 实施报告](2026-10-12-rap-lyric-stream-implementation-report.md)。
+
+**设置**
+
+- H200 GPU 2：vLLM（`--max-num-seqs 48`）、打了延迟补丁和续写补丁的 SGLang-Omni MOSS、render server（`--lyric-stream --lyric-candidates 32 --lyric-continuation`，Opus 级别 5）。
+- Mac 端跑 headless demo，协议 v3，走 SSH 隧道。96 个 bar，90 BPM，中途 8 次修改主题和 flow。
+
+| 指标 | 结果 |
+|---|---|
+| 最新版本 / 旧版本 / eSpeak | 92 / 4 / 0 |
+| underrun | 0 |
+| 歌词提前到达，中位数（p5） | 7.4 s（3.0 s） |
+| 音频提前合成好，中位数（最小） | 3.8 s（1.35 s） |
+| 服务器 MOSS 每个 bar，中位数（p95） | 609（684）ms，与 vLLM 写词同卡 |
+| 续写比例 | 99%（只有第一个 bar 没有上一句） |
+| 客户端取音频，中位数 | 1.37 s，基本是隧道往返（当天 `/health` 一次 1.0 到 1.6 s） |
+| Mac 端准备（解码、拉伸、混音），中位数 | 35 ms |
+| GPU 2 利用率，平均 | 22%，显存 61.5 GB |
+
+**和 v2 的区别**
+
+- v2 每两个 bar 请求一次，服务器算完 Qwen、MOSS、MMS 大约 1.1 s 后才返回。
+- v3 中服务器自己提前写词、提前合成，客户端拿的都是已经准备好的音频，所以关键路径只剩隧道传输。
+

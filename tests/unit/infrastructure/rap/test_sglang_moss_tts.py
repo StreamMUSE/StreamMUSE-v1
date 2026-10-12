@@ -710,7 +710,7 @@ def test_continuation_sends_a_frame_padded_prefix_and_cuts_it_from_the_output(tm
 
     from streammuse.domain.rap.audio import SpeechPrefix
 
-    prefix_samples = np.arange(1, 3_001, dtype=np.int16)  # 3,000 samples -> padded to 3,840
+    prefix_samples = (np.sin(np.arange(3_000) / 7.0) * 9_000).astype(np.int16)  # padded to 3,840
     prefix_wav = io.BytesIO()
     wavfile.write(prefix_wav, 24_000, prefix_samples)
     new_samples = np.full(2_400, 7, dtype=np.int16)
@@ -719,7 +719,8 @@ def test_continuation_sends_a_frame_padded_prefix_and_cuts_it_from_the_output(tm
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         body = io.BytesIO()
-        wavfile.write(body, 24_000, np.concatenate([np.ones(3_840, dtype=np.int16), new_samples]))
+        echoed = np.concatenate([prefix_samples, np.zeros(840, dtype=np.int16)])  # the re-decoded prefix
+        wavfile.write(body, 24_000, np.concatenate([echoed, new_samples]))
         return httpx.Response(200, headers={"content-type": "audio/wav"}, content=body.getvalue())
 
     client = httpx.Client(base_url="http://127.0.0.1:30000", transport=httpx.MockTransport(handler))
@@ -741,13 +742,15 @@ def test_continuation_sends_a_frame_padded_prefix_and_cuts_it_from_the_output(tm
     assert result.frame_count == 2_400
 
 
-def test_continuation_output_no_longer_than_the_prefix_is_invalid(tmp_path: Path) -> None:
+@pytest.mark.parametrize("returned_frames", [1_920, 6_000])
+def test_continuation_output_without_the_prefix_is_invalid(tmp_path: Path, returned_frames: int) -> None:
+    """Too short, or (an unpatched service ignoring the prefix) not starting with it."""
     from streammuse.domain.rap.audio import SpeechPrefix
 
     prefix_wav = io.BytesIO()
-    wavfile.write(prefix_wav, 24_000, np.ones(1_920, dtype=np.int16))
+    wavfile.write(prefix_wav, 24_000, (np.sin(np.arange(1_920) / 7.0) * 9_000).astype(np.int16))
     body = io.BytesIO()
-    wavfile.write(body, 24_000, np.ones(1_920, dtype=np.int16))
+    wavfile.write(body, 24_000, (np.cos(np.arange(returned_frames) / 3.0) * 5_000).astype(np.int16))
     client = httpx.Client(
         base_url="http://127.0.0.1:30000",
         transport=httpx.MockTransport(

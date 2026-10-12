@@ -70,6 +70,43 @@ server whose `/health` does not list `streammuse.rap_chunk.v2` in
 `supported_schema_versions`. v1 and v2 requests have different request IDs, so
 their server caches never mix.
 
+### Protocol v3: Lyric Stream (H200 Only)
+
+`--rap-protocol v3` replaces the two-bar request/response loop with a per-bar
+lyric stream (plan `developing-logs/plans/2026-10-08-rap-lyric-stream-plan.md`,
+report `developing-logs/reports/2026-10-12-rap-lyric-stream-implementation-report.md`):
+
+- The server writes one line per bar, three bars ahead of the last committed
+  bar (32 Qwen candidates per bar, the later line of each couplet rhymes with
+  the earlier one), pushes each line to the client over a WebSocket, and
+  synthesizes audio two bars ahead.
+- The client fetches each bar's audio by lyric ID and warps it locally (R3, as
+  in v2). If the theme or flow changed and only the previous version is ready
+  at commit time, it plays that one; without any server audio it speaks the
+  streamed line with eSpeak.
+- Start the render server with `--lyric-stream` (`--lyric-candidates 32` is the
+  default). Add `--lyric-continuation` to synthesize each bar as the MOSS
+  continuation of the bar before; it needs the sglang-omni backend patched with
+  both `patches/sglang-omni-0.1.4-af3ab61-moss-latency.patch` and
+  `patches/sglang-omni-0.1.4-af3ab61-moss-continuation.patch` (see
+  `patches/README.md`), and `--moss-runtime-patch-sha256` set to the
+  continuation patch's hash.
+- The Mac local runtime does not support v3 yet; it keeps v2.
+
+```bash
+uv run streammuse-rap-demo --rap-audio-renderer moss_aligned_remote \
+  --rap-protocol v3 --rap-audio-transport opus \
+  --rap-render-url http://127.0.0.1:18020 --tempo 90
+```
+
+Live edits: while v3 runs, `POST /api/control/plan` on the demo website with
+`{"topic": "volcano"}`, `{"template_id": "baseline_straight_9"}` or both
+(optional `"from_bar"`, default the next editable bar). For headless runs,
+`--rap-scripted-edits "12:topic=volcano;20@1:template=baseline_straight_9"`
+applies each edit in the middle of the bar `notice` bars before it (`bar@notice`,
+default notice 2). Summarize a session with
+`uv run python scripts/analyze_lyric_stream_session.py <log-dir>`.
+
 When gentle regularization is mathematically infeasible for an outlier MOSS
 source duration, the warp falls back to the legacy all-onsets policy for that
 one chunk and emits a visible warning instead of dropping the vocal.

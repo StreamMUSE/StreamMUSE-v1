@@ -313,7 +313,7 @@ class SglangMossSynthesizer:
                 request=request,
                 attempt=1,
             ),
-            **({} if prefix is None else _prefix_payload(prefix)[0]),
+            **({} if prefix is None else _prefix_payload(prefix)),
         }
 
     def synthesize(
@@ -338,7 +338,7 @@ class SglangMossSynthesizer:
                 raise MossBackendUnavailable(f"{self._LABEL} synthesizer is closed")
 
         payload = self.build_request_payload(request, prefix=prefix)
-        prefix_frames = 0 if prefix is None else _prefix_payload(prefix)[1]
+        padded_prefix = None if prefix is None else _padded_prefix_samples(prefix)
         output_path = Path(output_wav)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         partial_path = output_path.with_name(
@@ -394,11 +394,11 @@ class SglangMossSynthesizer:
                 download_finished = self._clock()
             response = None
             execution.checkpoint()
-            if prefix_frames:
+            if padded_prefix is not None:
                 _cut_prefix(
                     partial_path,
-                    prefix_frames,
-                    maximum_frame_count=prefix_frames
+                    padded_prefix,
+                    maximum_frame_count=padded_prefix.size
                     + round(self._config.maximum_audio_seconds * 24_000),
                 )
             sample_rate_hz, samples = read_valid_mono_wav(
@@ -717,22 +717,39 @@ def _fsync_directory(path: Path) -> None:
 _CODEC_FRAME_SAMPLES = 1920
 
 
-def _prefix_payload(prefix: SpeechPrefix) -> tuple[dict[str, object], int]:
-    """The request fields for a continuation prefix, and its padded length in samples."""
+# The re-decoded prefix correlates 0.96-0.98 with the one sent (H200, 2026-10-12).
+# A service without the continuation patch ignores the prefix fields and
+# returns only new speech, which would otherwise be cut silently.
+_MINIMUM_PREFIX_CORRELATION = 0.5
+
+
+def _padded_prefix_samples(prefix: SpeechPrefix) -> np.ndarray:
     _, samples = read_valid_mono_wav_bytes(prefix.wav, expected_sample_rate_hz=24_000)
     if samples.dtype != np.int16:
         raise MossRequestRejected("speech prefix must be 16-bit PCM")
-    padded = np.concatenate([samples, np.zeros((-samples.size) % _CODEC_FRAME_SAMPLES, dtype=np.int16)])
+    return np.concatenate([samples, np.zeros((-samples.size) % _CODEC_FRAME_SAMPLES, dtype=np.int16)])
+
+
+def _prefix_payload(prefix: SpeechPrefix) -> dict[str, object]:
+    """The request fields for a continuation prefix (padded to whole codec frames)."""
     buffer = io.BytesIO()
-    wavfile.write(buffer, 24_000, padded)
+    wavfile.write(buffer, 24_000, _padded_prefix_samples(prefix))
     uri = "data:audio/wav;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-    return {"prefix_audio": uri, "prefix_text": prefix.text}, int(padded.size)
+    return {"prefix_audio": uri, "prefix_text": prefix.text}
 
 
-def _cut_prefix(path: Path, prefix_frames: int, *, maximum_frame_count: int) -> None:
+def _cut_prefix(path: Path, prefix: np.ndarray, *, maximum_frame_count: int) -> None:
     sample_rate_hz, samples = read_valid_mono_wav(
         path, expected_sample_rate_hz=24_000, maximum_frame_count=maximum_frame_count
     )
-    if samples.size <= prefix_frames:
+    if samples.size <= prefix.size:
         raise MossInvalidOutput("MOSS continuation output is not longer than its prefix")
-    wavfile.write(path, sample_rate_hz, samples[prefix_frames:])
+    head = samples[: prefix.size].astype(np.float64)
+    sent = prefix.astype(np.float64)
+    denominator = float(np.linalg.norm(head - head.mean()) * np.linalg.norm(sent - sent.mean()))
+    correlation = float(np.dot(head - head.mean(), sent - sent.mean()) / denominator) if denominator else 0.0
+    if correlation < _MINIMUM_PREFIX_CORRELATION:
+        raise MossInvalidOutput(
+            "MOSS output does not start with the prefix; is the continuation patch installed?"
+        )
+    wavfile.write(path, sample_rate_hz, samples[prefix.size :])
