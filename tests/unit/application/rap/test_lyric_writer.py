@@ -176,3 +176,16 @@ def test_rescue_waves_continue_until_a_line_passes() -> None:
 
     assert written.waves == 3 and written.record.text == "four words fit here"
     assert written.record.provenance["candidates_requested"] == 3
+
+
+def test_rescue_waves_drop_the_history_context() -> None:
+    generator = _Generator([("too short",), ("four words fit here",)])
+    writer = SequentialLyricWriter(
+        generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=1, rescue_candidates=1, minimum_valid=1)
+    )
+
+    writer.write(_request(bar=1))
+
+    assert generator.requests[0].context_lines == ("we sail the night",)
+    assert generator.requests[1].context_lines == ()
+    assert generator.requests[1].rhyme_with == "we sail the night"

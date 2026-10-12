@@ -239,7 +239,9 @@ class SequentialLyricWriter:
             topic=request.topic,
             flow_template=request.flow_template,
             count=count,
-            context_lines=tuple(request.history[-4:]),
+            # Rescue waves drop the history: when recent lines share one shape, Qwen
+            # returns the same line n times and the wave yields a single candidate.
+            context_lines=tuple(request.history[-4:]) if wave == 0 else (),
             seed=request.seed * 100 + wave,
             rhyme_with=rhyme_with,
         )
