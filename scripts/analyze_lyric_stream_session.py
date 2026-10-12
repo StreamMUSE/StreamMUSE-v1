@@ -25,6 +25,10 @@ def _pct(values, q):
     return round(values[max(0, math.ceil(q * len(values)) - 1)], 1)
 
 
+def _rate(flags):
+    return round(sum(1 for flag in flags if flag) / len(flags), 3) if flags else None
+
+
 def summarize(session: Path) -> dict[str, object]:
     events = [json.loads(line) for line in (session / "events.jsonl").read_text().splitlines()]
     frozen = [e for e in events if e["event_type"] == "bar_frozen"]
@@ -75,10 +79,9 @@ def summarize(session: Path) -> dict[str, object]:
         "remote_ready_lead_ms": {"min": _pct(remote_lead, 0.0001), "p5": _pct(remote_lead, 0.05), "p50": _pct(remote_lead, 0.5)},
         "fetch_transfer_ms": {"p50": _pct([t.get("transfer") for t in completed], 0.5), "p95": _pct([t.get("transfer") for t in completed], 0.95)},
         "mac_prepare_ms": {"p50": _pct([t.get("mac") for t in completed], 0.5), "p95": _pct([t.get("mac") for t in completed], 0.95)},
-        "server_moss_ms": {"p50": _pct([t.get("server_moss") for t in completed], 0.5), "p95": _pct([t.get("server_moss") for t in completed], 0.95)},
-        "continued_rate": (
-            round(sum(t.get("continued", 0.0) for t in completed) / len(completed), 3) if completed else None
-        ),
+        "server_moss_ms": {"p50": _pct([t.get("moss") for t in completed], 0.5), "p95": _pct([t.get("moss") for t in completed], 0.95)},
+        # Of the bars played from server audio, how many were synthesized as a continuation.
+        "continued_rate": _rate([e["payload"].get("continued") for e in frozen if e["payload"].get("continued") is not None]),
         "max_revision_committed": max(revisions) if revisions else None,
         "committed_older_revision": stale,
         "underruns": (summary.get("audio") or {}).get("underruns"),

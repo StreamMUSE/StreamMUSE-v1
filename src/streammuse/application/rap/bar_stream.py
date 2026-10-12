@@ -98,6 +98,7 @@ class _Slot:
     remote: dict[str, PreparedRapBar] = field(default_factory=dict)
     remote_ready_at: dict[str, float] = field(default_factory=dict)
     remote_timing: dict[str, dict[str, float]] = field(default_factory=dict)
+    remote_continued: dict[str, bool] = field(default_factory=dict)
     espeak: dict[str, PreparedRapBar] = field(default_factory=dict)
     local: PreparedRapBar | None = None
     local_requested: bool = False
@@ -457,10 +458,12 @@ class BarStreamController:
                                 "transfer": fetch.request_ms,
                                 "mac": prepare_ms,
                                 "total": (self._clock() - submitted) * 1000.0,
-                                **{f"server_{k}": float(v) for k, v in fetch.manifest.stage_timings_ms.items()},
-                                # 1 when the server synthesized this bar as the previous bar's continuation.
-                                "continued": float(bool((fetch.manifest.diagnostics.get("continuation") or {}).get("used"))),
+                                # Server stages keep their names (moss, aligner, ...) for the monitoring schema.
+                                **{k: float(v) for k, v in fetch.manifest.stage_timings_ms.items()},
                             }
+                            slot.remote_continued[audio_record.lyric_id] = bool(
+                                (fetch.manifest.diagnostics.get("continuation") or {}).get("used")
+                            )
                         self._emit(RapEventType.CHUNK_REMOTE_COMPLETED, bar=record.bar, request_id=audio_record.lyric_id,
                                    payload=self._bar_payload(audio_record, state="remote_ready",
                                                              decision="older" if fetch.status == "older_version" else "latest",
@@ -602,6 +605,7 @@ class BarStreamController:
                 if lyric_id is not None and lyric_id in slot.remote_ready_at and self._clock_origin is not None
                 else None
             ),
+            "continued": slot.remote_continued.get(lyric_id) if lyric_id is not None else None,
         }
         self._emit(RapEventType.BAR_FROZEN, bar=bar, tick=tick, request_id=lyric_id, payload=payload)
         if choice != SOURCE_REMOTE_LATEST:
