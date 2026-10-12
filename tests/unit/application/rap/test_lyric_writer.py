@@ -137,12 +137,13 @@ def test_generation_error_is_recorded_and_no_valid_candidate_fails_with_the_ledg
 
 
 def test_duplicate_of_history_is_rejected() -> None:
-    generator = _Generator([("we sail the night", "we sail the light")])
+    generator = _Generator([("we sail the night", "blue tides take flight")])
     writer = SequentialLyricWriter(generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, minimum_valid=1))
 
     written = writer.write(_request(bar=1))
 
-    assert written.record.text == "we sail the light"
+    assert written.record.text == "blue tides take flight"
+    assert written.ledger[0]["status"] != "selected"
 
 
 def test_line_ending_on_a_copied_rhyme_label_is_rejected() -> None:
@@ -162,7 +163,17 @@ def test_repeating_the_previous_end_word_is_not_a_rhyme() -> None:
     written = writer.write(_request(bar=1))
 
     assert written.record.text == "deep tides take flight"
-    assert written.ledger[0]["reasons"] == ("repeats_previous_end_word",)
+    assert written.ledger[0]["reasons"] == ("repeats_recent_end_word",)
+
+
+def test_reusing_a_recent_opening_is_rejected() -> None:
+    generator = _Generator([("we sail the light", "deep tides take flight")])
+    writer = SequentialLyricWriter(generator, _Analyzer(), _WEIGHTS, LyricWriterPolicy(candidates=2, minimum_valid=1))
+
+    written = writer.write(_request(bar=1))
+
+    assert written.record.text == "deep tides take flight"
+    assert written.ledger[0]["reasons"] == ("repeats_recent_opening",)
 
 
 def test_rescue_waves_continue_until_a_line_passes() -> None:

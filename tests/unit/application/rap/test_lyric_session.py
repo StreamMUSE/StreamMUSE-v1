@@ -70,7 +70,7 @@ class _Generator:
             index = len(self.requests)
         topic = request.topic.replace(" ", "")
         lines = tuple(
-            f"{topic} {_WORDS[request.target_bar % 10]} {_WORDS[index % 10]} {_WORDS[choice]}"
+            f"{topic} {_WORDS[request.target_bar % 10]} {_WORDS[choice]} {_WORDS[index % 10]}"
             for choice in range(request.count)
         )
         return CandidateBatch(

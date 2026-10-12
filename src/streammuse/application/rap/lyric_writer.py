@@ -30,6 +30,8 @@ from streammuse.domain.rap.lyric_stream import BarLyricRecord
 # record says which writer produced it.
 LYRIC_WRITER_VERSION = "sequential-lyric-writer.v2"
 RHYME_SCHEMES = ("couplet", "chain", "none")
+_RECENT_LINES = 4
+_OPENING_WORDS = 3
 _LYRIC_TEXT = re.compile(r"[A-Za-z][A-Za-z' ,.!?;:\-]*")
 
 
@@ -304,9 +306,17 @@ class SequentialLyricWriter:
             if _ends_on_rhyme_label(text, request.flow_template):
                 ledger.append({**row, "status": "malformed", "reasons": ("rhyme_label_leak",)})
                 continue
-            if request.previous_line is not None and _final_word(text) == _final_word(request.previous_line):
+            recent = (*request.history[-_RECENT_LINES:], *((request.previous_line,) if request.previous_line else ()))
+            words = normalize_text(text).split()
+            if any(words[-1:] == normalize_text(line).split()[-1:] for line in recent):
                 # "... up high" after "... up high" is a repeat, not a rhyme.
-                ledger.append({**row, "status": "malformed", "reasons": ("repeats_previous_end_word",)})
+                ledger.append({**row, "status": "malformed", "reasons": ("repeats_recent_end_word",)})
+                continue
+            if len(words) >= _OPENING_WORDS and any(
+                words[:_OPENING_WORDS] == normalize_text(line).split()[:_OPENING_WORDS] for line in recent
+            ):
+                # Qwen copies the shape of the history ("In the code where ...") bar after bar.
+                ledger.append({**row, "status": "malformed", "reasons": ("repeats_recent_opening",)})
                 continue
             try:
                 analysis = self._analyzer.analyze(text)
@@ -336,11 +346,6 @@ def _ends_on_rhyme_label(text: str, template: FlowTemplate) -> bool:
     words = text.rstrip(" .,!?;:").split()
     labels = {slot.rhyme_group for slot in template.slots if slot.rhyme_group}
     return len(words) > 1 and words[-1] in labels
-
-
-def _final_word(text: str) -> str:
-    words = normalize_text(text).split()
-    return words[-1] if words else ""
 
 
 def _frozen(rows: Sequence[Mapping[str, object]]) -> tuple[Mapping[str, object], ...]:
