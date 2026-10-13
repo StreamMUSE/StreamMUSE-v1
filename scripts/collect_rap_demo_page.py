@@ -79,13 +79,14 @@ def _bars(events, server_outcomes):
             "continued": payload.get("continued"),
         })
     bars.sort(key=lambda item: item["bar"])
-    # v0.x clients allow one request at a time: after a chunk times out its
-    # request is still being torn down, so the next chunk fails at once without
-    # reaching the server. That knock-on failure is a timing failure too.
+    # v0.x clients allow one request at a time: after a chunk fails late (it
+    # timed out, or the server failed only after using up the time) its request
+    # is still open, so the next chunk fails at once without reaching the
+    # server. That knock-on failure is a timing failure too.
     by_bar = {item["bar"]: item for item in bars}
     for item in bars:
         before = by_bar.get(item["bar"] - 2)
-        if item["category"] == "other" and before is not None and before["category"] == "timing":
+        if item["category"] == "other" and before is not None and before["source"] == "espeak":
             item["category"], item["detail"] = "timing", "the previous chunk's late request was still open"
     return bars
 
