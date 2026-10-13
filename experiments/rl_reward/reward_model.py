@@ -64,8 +64,9 @@ class MatchRewardModel(nn.Module):
         mel, acc = self.embed(mel_roll, acc_roll)
         return (mel * acc).sum(-1)
 
-    def losses(self, mel, acc, temperature=0.1):
-        """Symmetric InfoNCE + discriminator BCE on in-batch corrupted pairs."""
+    def losses(self, mel, acc, acc_neg=None, temperature=0.1):
+        """Symmetric InfoNCE + optional same-song hard-negative contrast +
+        discriminator BCE (in-batch cross-song fakes and hard negatives)."""
         mel_e, acc_e = self.embed(mel, acc)
         logits = mel_e @ acc_e.t() / temperature
         target = torch.arange(logits.size(0), device=logits.device)
@@ -83,10 +84,23 @@ class MatchRewardModel(nn.Module):
         fake = acc_e[roll]
         real_feat = torch.cat([mel_e, acc_e, mel_e * acc_e], dim=-1)
         fake_feat = torch.cat([mel_e, fake, mel_e * fake], dim=-1)
+
+        hard_acc = 1.0
+        if acc_neg is not None:
+            neg_e = self.acc_encoder(acc_neg)
+            pos_s = (mel_e * acc_e).sum(-1) / temperature
+            neg_s = (mel_e * neg_e).sum(-1) / temperature
+            nce = nce + F.cross_entropy(
+                torch.stack([pos_s, neg_s], dim=1),
+                torch.zeros(b, dtype=torch.long, device=mel_e.device))
+            hard_acc = (pos_s > neg_s).float().mean().item()
+            hard_feat = torch.cat([mel_e, neg_e, mel_e * neg_e], dim=-1)
+            fake_feat = torch.cat([fake_feat, hard_feat], dim=0)
+
         real_score = self.discriminator(real_feat)
         fake_score = self.discriminator(fake_feat)
         disc = F.binary_cross_entropy_with_logits(
             real_score, torch.ones_like(real_score)) + \
             F.binary_cross_entropy_with_logits(
                 fake_score, torch.zeros_like(fake_score))
-        return nce, disc, logits
+        return nce, disc, logits, hard_acc

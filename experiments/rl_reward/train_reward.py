@@ -22,7 +22,7 @@ from experiments.rl_reward.reward_data import NpzWindowDataset, scan_windows
 def val_retrieval(model, loader, device):
     model.eval()
     correct = total = 0
-    for mel, acc in loader:
+    for mel, acc, _ in loader:
         mel, acc = mel.to(device), acc.to(device)
         mel_e, acc_e = model.embed(mel, acc)
         logits = mel_e @ acc_e.t()
@@ -54,14 +54,21 @@ def main():
     print('scanning windows...', flush=True)
     windows = scan_windows(args.data_dir)
     print(f'{len(windows)} content windows from 7574 files', flush=True)
+    # split by SONG, not by window: windows of one song share key/style/tempo,
+    # so a random window split leaks song identity into the val split
     rng = random.Random(args.seed)
-    idx = list(range(len(windows)))
-    rng.shuffle(idx)
-    n_val = max(1, int(len(idx) * args.val_frac))
+    songs = sorted({path for path, _ in windows})
+    rng.shuffle(songs)
+    n_val = max(1, int(len(songs) * args.val_frac))
+    val_songs = set(songs[:n_val])
+    val_w = [w for w in windows if w[0] in val_songs]
+    train_w = [w for w in windows if w[0] not in val_songs]
     if args.limit_windows:
-        idx = idx[:args.limit_windows]
-    val_ds = NpzWindowDataset([windows[i] for i in idx[:n_val]])
-    train_ds = NpzWindowDataset([windows[i] for i in idx[n_val:]])
+        train_w = train_w[:args.limit_windows]
+    print(f'{len(songs)} songs: val={len(val_songs)} songs / {len(val_w)} windows, '
+          f'train={len(train_w)} windows', flush=True)
+    val_ds = NpzWindowDataset(val_w)
+    train_ds = NpzWindowDataset(train_w)
     train_ld = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                           num_workers=args.workers, pin_memory=True, drop_last=True)
     val_ld = DataLoader(val_ds, batch_size=args.batch, num_workers=args.workers,
@@ -75,10 +82,12 @@ def main():
     history = []
     best_val = -1.0
     for epoch in range(args.epochs):
-        running = {'nce': 0.0, 'disc': 0.0, 'acc': 0.0, 'n': 0}
-        for mel, acc in train_ld:
-            mel, acc = mel.to(device), acc.to(device)
-            nce, disc, logits = model.losses(mel, acc)
+        running = {'nce': 0.0, 'disc': 0.0, 'acc': 0.0, 'hard': 0.0, 'n': 0}
+        for mel, acc, acc_neg in train_ld:
+            mel = mel.to(device)
+            acc = acc.to(device)
+            acc_neg = acc_neg.to(device)
+            nce, disc, logits, hard_acc = model.losses(mel, acc, acc_neg)
             loss = nce + 0.5 * disc
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -87,6 +96,7 @@ def main():
             running['disc'] += disc.item()
             running['acc'] += (logits.argmax(1) ==
                                torch.arange(logits.size(0), device=device)).float().mean().item()
+            running['hard'] += hard_acc
             running['n'] += 1
         sched.step()
         val_r1 = val_retrieval(model, val_ld, device)
@@ -94,6 +104,7 @@ def main():
                  'nce': running['nce'] / running['n'],
                  'disc': running['disc'] / running['n'],
                  'train_r1': running['acc'] / running['n'],
+                 'hard_acc': running['hard'] / running['n'],
                  'val_r1': val_r1}
         history.append(entry)
         print(json.dumps(entry), flush=True)

@@ -43,6 +43,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ckpt', type=Path, required=True)
     parser.add_argument('--pairs-root', type=Path, action='append', required=True)
+    parser.add_argument('--beats', type=int, default=32,
+                        help='scoring window length in beats (default 32 = train windows)')
+    parser.add_argument('--beat-offset', type=int, default=0,
+                        help='first beat of the scoring window in the piece')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -64,7 +68,8 @@ def main():
                     path = root / pid / f'seed{seed}' / arm / 'full.mid'
                     if not path.exists():
                         continue
-                    mel, acc = midi_pair_rolls(path)
+                    mel, acc = midi_pair_rolls(path, beats=args.beats,
+                                               start_beat=args.beat_offset)
                     pair = (mel.unsqueeze(0).to(device), acc.unsqueeze(0).to(device))
                     mel_e, acc_e = model.embed(*pair)
                     disc_in = torch.cat([mel_e, acc_e, mel_e * acc_e], dim=-1)
