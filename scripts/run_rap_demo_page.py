@@ -31,6 +31,7 @@ PROJECTS = ROOT.parent
 VERSIONS = {
     "v0.0": {"tree": PROJECTS / "StreamMUSE-rap-v0.0", "tag": "rap-v0.0", "url": "http://127.0.0.1:18120", "extra": []},
     "v0.1": {"tree": PROJECTS / "StreamMUSE-rap-v0.1", "tag": "rap-v0.1", "url": "http://127.0.0.1:18220", "extra": []},
+    "v0.2": {"tree": PROJECTS / "StreamMUSE-rap-v0.2", "tag": "rap-v0.2", "url": "http://127.0.0.1:18320", "extra": ["--rap-protocol", "v2"]},
     "v1.0": {"tree": ROOT, "tag": "rap-v1.0", "url": "http://127.0.0.1:18020", "extra": ["--rap-protocol", "v3"]},
 }
 FAKE_TIMEOUTS = ["--rap-render-startup-timeout", "600", "--rap-render-rolling-timeout", "60"]

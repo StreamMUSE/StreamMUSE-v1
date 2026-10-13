@@ -31,6 +31,14 @@ VERSIONS = [
         "fallback": "eSpeak for the whole 2-bar chunk",
     },
     {
+        "id": "v0.2", "name": "Optimized SGLang-Omni", "tag": "rap-v0.2", "commit": "0ea74a7f", "date": "2026-10-01",
+        "unit": "2 bars per request",
+        "lyrics": "Qwen writes the two bars concurrently on the server (vLLM allows 32 sequences)",
+        "speech": "MOSS on SGLang-Omni with a latency patch",
+        "timing": "MMS on the server; the Mac warps the raw voice with R3 itself (protocol v2); Opus level 5",
+        "fallback": "eSpeak for the whole 2-bar chunk",
+    },
+    {
         "id": "v1.0", "name": "Lyric stream", "tag": "rap-v1.0", "commit": "19526512", "date": "2026-10-12",
         "unit": "1 bar, rendered ahead",
         "lyrics": "Qwen writes one line per bar from 32 candidates, three bars ahead, and streams it to the Mac",
@@ -89,7 +97,9 @@ header { display: grid; gap: 14px; }
 .defs div { display: grid; gap: 4px; }
 .defs b { font-family: var(--display); font-stretch: 90%; font-size: 1.02rem; }
 section { display: grid; gap: 18px; }
-.versions { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.versions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1060px) { .versions { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .versions { grid-template-columns: minmax(0, 1fr); } }
 .version { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 12px; align-content: start; }
 .version .head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .vid { font: 800 1.6rem/1 var(--display); font-stretch: 75%; color: var(--accent); }
@@ -150,7 +160,7 @@ pre { margin: 0; padding: 12px 14px; background: var(--surface); border: 1px sol
 <header>
   <div class="eyebrow">StreamMUSE · real-time rap · version comparison</div>
   <h1>StreamMUSE Rap Versions</h1>
-  <p>Three versions of the same system, each heard twice on the same 15 prompts: five topics, three flow templates, 16 bars at 90 BPM over the same drums. Every pad under a player is one bar, colored by where that bar's voice came from.</p>
+  <p>Four versions of the same system, each heard twice on the same 15 prompts: five topics, three flow templates, 16 bars at 90 BPM over the same drums. Every pad under a player is one bar, colored by where that bar's voice came from.</p>
   <div class="legend">
     <span><i class="dot s-remote"></i>Server voice (MOSS)</span>
     <span><i class="dot s-remote_older"></i>Server voice, earlier version of the line (v1.0 only)</span>
@@ -163,7 +173,7 @@ pre { margin: 0; padding: 12px 14px; background: var(--surface); border: 1px sol
 </header>
 
 <section aria-labelledby="versions-h">
-  <h2 id="versions-h">The three versions</h2>
+  <h2 id="versions-h">The four versions</h2>
   <div class="versions" id="versions"></div>
   <div class="table-scroll"><table id="summary"></table></div>
   <p class="muted" id="summary-note"></p>
