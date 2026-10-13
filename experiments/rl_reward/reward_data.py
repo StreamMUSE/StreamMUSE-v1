@@ -25,29 +25,42 @@ def measure_roll(measure):
     return mel, acc
 
 
-def scan_windows(data_dir):
-    """(file_idx, start_measure) for windows where both parts are active in
-    at least half the beats. One pass over all files at scan time."""
-    import glob
-    from pathlib import Path
-    windows = []
+def _scan_one(path):
+    """All (start_measure) windows where 8 consecutive measures are exactly
+    (6, 88, 96) with both parts nonempty. The npz corpus mixes measure tick
+    counts (72/48/108...); strictest filter avoids resampling semantics."""
     import re
     measure_key = re.compile(r'measure_\d+$')
-    for path in sorted(glob.glob(str(Path(data_dir) / '*.npz'))):
-        try:
-            z = np.load(path, allow_pickle=True)
-            n = sum(1 for k in z.files if measure_key.match(k))
-        except Exception as exc:  # noqa: BLE001
-            print(f'skip {path}: {exc}')
-            continue
-        for start in range(0, max(0, n - WINDOW_MEASURES + 1)):
-            ok_mel = ok_acc = 0
+    try:
+        z = np.load(path, allow_pickle=True)
+        n = sum(1 for k in z.files if measure_key.match(k))
+        starts = []
+        for start in range(0, n - WINDOW_MEASURES + 1):
+            ok = True
             for i in range(start, start + WINDOW_MEASURES):
-                mel, acc = measure_roll(z[f'measure_{i}'])
-                ok_mel += mel.sum() > 0
-                ok_acc += acc.sum() > 0
-            if ok_mel >= WINDOW_MEASURES // 2 and ok_acc >= WINDOW_MEASURES // 2:
-                windows.append((path, start))
+                m = z[f'measure_{i}']
+                if m.shape != (6, 88, 96) or m[:3].sum() == 0 or m[3:].sum() == 0:
+                    ok = False
+                    break
+            if ok:
+                starts.append(start)
+        return path, starts
+    except Exception as exc:  # noqa: BLE001
+        print(f'skip {path}: {exc}')
+        return path, []
+
+
+def scan_windows(data_dir, workers=16):
+    import glob
+    from multiprocessing import Pool
+    from pathlib import Path
+    paths = sorted(glob.glob(str(Path(data_dir) / '*.npz')))
+    windows = []
+    with Pool(workers) as pool:
+        for k, (path, starts) in enumerate(pool.imap_unordered(_scan_one, paths, chunksize=32)):
+            windows.extend((path, s) for s in starts)
+            if (k + 1) % 1000 == 0:
+                print(f'scanned {k + 1}/{len(paths)} files...', flush=True)
     return windows
 
 
