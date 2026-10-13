@@ -95,6 +95,7 @@ def midi_pair_rolls(path, beats=ROLL_BEATS):
     mel = np.zeros((88, ticks), dtype=np.float32)
     acc = np.zeros((88, ticks), dtype=np.float32)
     open_notes = {}
+    skipped = 0
     for track in mid.tracks:
         t = 0
         for msg in track:
@@ -106,11 +107,17 @@ def midi_pair_rolls(path, beats=ROLL_BEATS):
                 if key not in open_notes:
                     continue
                 start = open_notes.pop(key)
+                pitch = msg.note - 21  # corpus vocabulary is MIDI 21..108
+                if not 0 <= pitch < 88:
+                    skipped += 1
+                    continue
                 pos = round(start / tpb * TICKS_PER_BEAT)
                 end = min(round(t / tpb * TICKS_PER_BEAT), ticks)
                 roll = mel if msg.channel == 0 else acc
-                for p in range(pos, max(pos + 1, min(end, ticks))):
+                for p in range(max(pos, 0), max(pos + 1, min(end, ticks))):
                     if 0 <= p < ticks:
-                        roll[msg.note, p] = 1.0
+                        roll[pitch, p] = 1.0
+    if skipped:
+        print(f'{path}: skipped {skipped} out-of-vocabulary notes')
     return (torch.from_numpy(mel).unsqueeze(0),
             torch.from_numpy(acc).unsqueeze(0))
