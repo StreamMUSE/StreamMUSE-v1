@@ -16,6 +16,8 @@ from experiments.lekai_failcase_analysis.music_features import (
     load_prompt_accompaniment,
     melody_features,
     quantize_beat,
+    relation_features,
+    select_prompt_accompaniment,
     select_source_melody,
     window_features,
 )
@@ -85,6 +87,74 @@ def test_js_divergence_endpoints_and_prefix_full_features():
     assert features["prefix_full_pitch_class_js_divergence"] > 0
 
 
+def test_harmony_relation_features_for_identical_pitch_content():
+    melody = [BeatNote(0.0, 8.0, 60)]
+    accompaniment = [BeatNote(0.0, 8.0, 48)]
+
+    features = relation_features(melody, accompaniment)
+    harmony_fields = {
+        "relation_pcs_mean",
+        "relation_pcs_p10",
+        "relation_mctd_mean",
+        "relation_mctd_p90",
+        "relation_local_chroma_cosine_mean",
+        "relation_local_chroma_cosine_p10",
+        "relation_local_chroma_cosine_std",
+        "relation_harmony_valid_cell_ratio",
+    }
+
+    assert harmony_fields <= features.keys()
+    assert all(np.isfinite(features[field]) for field in harmony_fields)
+    assert features["relation_pcs_mean"] == pytest.approx(1.0)
+    assert features["relation_pcs_p10"] == pytest.approx(1.0)
+    assert features["relation_mctd_mean"] == pytest.approx(0.0, abs=1e-12)
+    assert features["relation_mctd_p90"] == pytest.approx(0.0, abs=1e-12)
+    assert features["relation_local_chroma_cosine_mean"] == pytest.approx(1.0)
+    assert features["relation_local_chroma_cosine_p10"] == pytest.approx(1.0)
+    assert features["relation_local_chroma_cosine_std"] == pytest.approx(0.0)
+    assert features["relation_harmony_valid_cell_ratio"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    ("melody_pitch", "expected_score"),
+    [(67, 1.0), (65, 0.0), (61, -1.0)],
+    ids=["consonant_fifth", "neutral_fourth", "dissonant_minor_second"],
+)
+def test_harmony_relation_pcs_interval_scores(melody_pitch, expected_score):
+    features = relation_features(
+        [BeatNote(0.0, 0.25, melody_pitch)],
+        [BeatNote(0.0, 0.25, 60)],
+    )
+
+    assert features["relation_pcs_mean"] == pytest.approx(expected_score)
+    assert features["relation_pcs_p10"] == pytest.approx(expected_score)
+    assert features["relation_harmony_valid_cell_ratio"] == pytest.approx(1.0 / 32.0)
+
+
+@pytest.mark.parametrize(
+    ("melody", "accompaniment"),
+    [
+        ([BeatNote(0.0, 0.25, 60)], [BeatNote(0.25, 0.5, 60)]),
+        ([BeatNote(0.0, 0.25, 60)], []),
+    ],
+    ids=["non_overlapping_tracks", "empty_accompaniment"],
+)
+def test_harmony_relation_features_without_valid_cells_are_nan(melody, accompaniment):
+    features = relation_features(melody, accompaniment)
+    nullable_fields = {
+        "relation_pcs_mean",
+        "relation_pcs_p10",
+        "relation_mctd_mean",
+        "relation_mctd_p90",
+        "relation_local_chroma_cosine_mean",
+        "relation_local_chroma_cosine_p10",
+        "relation_local_chroma_cosine_std",
+    }
+
+    assert features["relation_harmony_valid_cell_ratio"] == 0.0
+    assert all(np.isnan(features[field]) for field in nullable_fields)
+
+
 def test_track_selection_is_semantic_and_empty_prompt_is_valid(tmp_path):
     midi = pretty_midi.PrettyMIDI()
     midi.instruments.extend(
@@ -113,6 +183,56 @@ def test_track_selection_is_semantic_and_empty_prompt_is_valid(tmp_path):
     assert name == "aCCOMPaniment"
     assert present is True
     assert len(notes) == 1
+
+
+def test_track_selection_supports_generated_suffix_names(tmp_path):
+    midi = pretty_midi.PrettyMIDI()
+    midi.instruments.extend(
+        [
+            pretty_midi.Instrument(0, name="anime-1213481-rule-s-s:0-acc"),
+            pretty_midi.Instrument(0, name="anime-1213481-rule-s-s:0-mel"),
+        ]
+    )
+    assert select_source_melody(midi).name.endswith("-mel")
+
+    renamed_acc_path = tmp_path / "renamed_acc.mid"
+    _write_midi(
+        renamed_acc_path,
+        [("anime-1213481-rule-s-s:0-acc", [(0.0, 0.5, 48)])],
+    )
+    name, notes, present = load_prompt_accompaniment(renamed_acc_path)
+    assert name == "anime-1213481-rule-s-s:0-acc"
+    assert present is True
+    assert len(notes) == 1
+
+    renamed_empty_path = tmp_path / "renamed_empty_prompt.mid"
+    _write_midi(
+        renamed_empty_path,
+        [("anime-1213481-single-s:1-mel", [(0.0, 0.5, 60)])],
+    )
+    assert load_prompt_accompaniment(renamed_empty_path) == ("", [], False)
+
+
+def test_track_selection_suffix_names_remain_ambiguous_when_duplicated():
+    midi = pretty_midi.PrettyMIDI()
+    midi.instruments.extend(
+        [
+            pretty_midi.Instrument(0, name="Melody"),
+            pretty_midi.Instrument(0, name="anime-1213481-rule-s-s:0-mel"),
+        ]
+    )
+    with pytest.raises(TrackSelectionError, match="multiple Melody tracks"):
+        select_source_melody(midi)
+
+    midi = pretty_midi.PrettyMIDI()
+    midi.instruments.extend(
+        [
+            pretty_midi.Instrument(0, name="Accompaniment"),
+            pretty_midi.Instrument(0, name="anime-1213481-rule-s-s:0-acc"),
+        ]
+    )
+    with pytest.raises(TrackSelectionError, match="expected one Accompaniment track"):
+        select_prompt_accompaniment(midi)
 
 
 def test_end_to_end_tables_preserve_empty_prompt_semantics(tmp_path):

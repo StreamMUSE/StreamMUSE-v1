@@ -57,6 +57,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trim-leading-rest", action="store_true")
 
     parser.add_argument("--prompt-seed", type=int, default=12345)
+    parser.add_argument(
+        "--prompt-selection-mode",
+        choices=["single", "rule_s"],
+        default="single",
+        help="single candidate or batched frozen Rule-S Best-of-N selection",
+    )
+    parser.add_argument("--prompt-batch-candidates", type=int, default=5)
     parser.add_argument("--prompt-temperature", type=float, default=1.1)
     parser.add_argument("--prompt-top-k", type=int, default=0)
     parser.add_argument("--prompt-top-p", type=float, default=0.95)
@@ -137,6 +144,10 @@ def apply_runtime_env(args: argparse.Namespace, *, stage2_log_dir: Path) -> dict
     updates["LEKAI_DTYPE"] = str(rt_dtype)
 
     updates["LEKAI_PROMPT_SEED"] = str(int(args.prompt_seed))
+    updates["LEKAI_PROMPT_SELECTION_MODE"] = str(args.prompt_selection_mode)
+    updates["LEKAI_PROMPT_BATCH_CANDIDATES"] = str(
+        int(args.prompt_batch_candidates)
+    )
     updates["LEKAI_PROMPT_BPM"] = str(int(args.bpm))
     updates["LEKAI_DEFAULT_BPM"] = str(int(args.bpm))
     updates["LEKAI_PROMPT_TEMPERATURE"] = str(float(args.prompt_temperature))
@@ -401,6 +412,8 @@ def run_one(
                 "prompt_dtype": str(args.prompt_dtype or ("float16" if args.prompt_fp16 else args.dtype)),
                 "rt_dtype": str(args.rt_dtype or ("float16" if args.rt_fp16 else args.dtype)),
                 "prompt_seed": int(args.prompt_seed),
+                "prompt_selection_mode": str(args.prompt_selection_mode),
+                "prompt_batch_candidates": int(args.prompt_batch_candidates),
                 "prompt_temperature": float(args.prompt_temperature),
                 "prompt_top_k": int(args.prompt_top_k),
                 "prompt_top_p": float(args.prompt_top_p),
@@ -440,6 +453,8 @@ def run_one(
 
 def main() -> None:
     args = parse_args()
+    if args.prompt_selection_mode == "rule_s" and args.prompt_batch_candidates < 2:
+        raise ValueError("--prompt-batch-candidates must be at least 2 in rule_s mode")
     prompt_checkpoint = require_path(Path(args.prompt_checkpoint), "prompt_checkpoint")
     continuation_checkpoint = require_path(Path(args.continuation_checkpoint), "continuation_checkpoint")
     output_root = Path(args.output_dir).expanduser().resolve()

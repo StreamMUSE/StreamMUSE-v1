@@ -25,26 +25,28 @@ python experiments/lekai_failcase_analysis/build_labels.py \
 
 The default cohort excludes `jazz_blues` by style, the pieces listed in `cohort_exclusions.csv`, and every piece not marked `include_4_4` in `meter_audit.csv`. Outputs are `labels_runs.csv`, `labels_components.csv`, and `cohort_summary.json`.
 
-Meter is a cohort gate, not a prediction feature. Non-4/4 pieces are held for later analysis rather than deleted; a later stage can use them for `meter_mismatch` diagnosis. The current gate is a first-pass audit of NPZ metadata and does not claim that each source MusicXML is purely 4/4 across the full piece. A future MusicXML audit can upgrade that determination.
+Meter is a cohort gate, not a prediction feature. Non-4/4 pieces are held for later analysis rather than deleted; a later stage can use them for `meter_mismatch` diagnosis. When `--musicxml-dir` is supplied, the audit scans every time-signature event in the full source MusicXML and includes a piece only when its set of unique signatures is exactly `{4/4}`. Without `--musicxml-dir`, the audit falls back to the first signature recorded in NPZ metadata; that fallback cannot prove that the full piece is constantly 4/4.
 
-Rebuild the audit from the selection bundle with:
+Rebuild the audit from the selection bundle and full-piece MusicXML files with:
 
 ```bash
 python experiments/lekai_failcase_analysis/build_meter_audit.py \
-  --selection-manifest path/to/metadata/selection_manifest.csv \
+  --selection-manifest <selection-manifest> \
+  --musicxml-dir <musicxml-dir> \
   --output experiments/lekai_failcase_analysis/meter_audit.csv
 ```
 
-The expected clean 4/4 cohort is **14 pieces / 28 piece-seed paired rows / 56 condition outputs**.
+The current clean 4/4 cohort is **13 pieces / 26 piece-seed paired rows / 52 condition outputs**. `142159` (`Bohemian Rhapsody`) is excluded because its full XML contains `2/4 | 4/4 | 5/4`.
 
 ## Feature extraction
 
 `feature_spec.csv` freezes each metric's analysis role, output column or pattern,
 exact formula, unit, and undefined-value policy. `gate` fields define or audit the
 cohort; `primary` fields enter the first KDE analysis; `secondary` full-piece copies
-are diagnostics; `v2` fields are unavailable in the current artifacts. PPL is never
-fabricated from MIDI: it requires selected-sample Prompt Model token log
-probabilities.
+are diagnostics. The symbolic harmony `v2` fields require regenerating feature
+artifacts with the current extractor. PPL is never fabricated from MIDI: it remains
+unavailable unless selected-sample Prompt Model token log probabilities were
+retained.
 
 Beat coordinates use `PrettyMIDI.time_to_tick(time) / resolution`. The model-facing
 grid then intentionally matches `MidiConverter.py`:
@@ -67,13 +69,71 @@ python experiments/lekai_failcase_analysis/extract_features.py \
 ```
 
 The outputs are `melody_features.csv`, `prompt_features.csv`, and
-`feature_audit.json`. Track names are matched case-insensitively. A Prompt MIDI
-containing only a named Melody track is a valid semantically empty accompaniment:
+`feature_audit.json`. Track names are matched case-insensitively using either the
+exact semantic names `Melody` / `Accompaniment` or the generated-name suffixes
+`-mel` / `-acc`. Multiple matches remain an error. A Prompt MIDI containing only a
+semantic Melody track is a valid semantically empty accompaniment:
 `prompt_has_accompaniment=0`; count, density, coverage, and average voice number are
 zero; `empty_beat_rate=1`; mathematically undefined pitch, duration, entropy, and
 groove values remain blank. Melody is never substituted for accompaniment. A Prompt
 containing only a named Accompaniment track is valid because relation features use
 the separate source Melody MIDI.
+
+## Harmony relation feature extraction
+
+The v2 relation family is computed only from the input Melody and selected
+accompaniment Prompt over `[0, 8)` beats. The window contains exactly 32
+`0.25`-beat cells. A cell is harmony-valid only when both tracks have positive
+note-duration overlap in that cell.
+
+- `relation_pcs_{mean|p10}` averages the frozen interval-class scores over all
+  cross-track active-note pairs within each valid cell, then summarizes cells.
+- `relation_mctd_{mean|p90}` uses duration-overlap-weighted 12D PCPs and the frozen
+  six-dimensional tonal-centroid mapping in `feature_spec.csv`.
+- `relation_local_chroma_cosine_{mean|p10|std}` summarizes local PCP cosine
+  similarity and is secondary because it overlaps conceptually with pitch-class
+  divergence.
+- `relation_harmony_valid_cell_ratio` is the primary coverage control: valid cells
+  divided by 32.
+
+PCS, MCTD, and local chroma outputs are `NaN` when there is no valid cell. The
+valid-cell ratio is always defined and equals zero in that case. Regenerate the v2
+feature tables with:
+
+```bash
+python experiments/lekai_failcase_analysis/extract_features.py \
+  --bundle-dir <bundle-root> \
+  --labels-runs experiments/lekai_failcase_analysis/results/4_4_v1/labels_runs.csv \
+  --output-dir experiments/lekai_failcase_analysis/results/4_4_v2
+```
+
+These are strictly pre-continuation features. Continuation notes, continuation
+tokens, output-track statistics, and any other information produced after the
+selected Prompt are forbidden as inputs. Full continuation ratings supply only the
+fail labels and never enter feature calculation.
+
+Screen the harmony relations against the three non-exclusive targets
+`insufficient_output`, `repetition`, and `melody_mismatch` with:
+
+```bash
+python experiments/lekai_failcase_analysis/analyze_harmony_fail_associations.py \
+  --input-dir experiments/lekai_failcase_analysis/results/4_4_v2 \
+  --output-dir experiments/lekai_failcase_analysis/results/4_4_v2/harmony_kde_v2
+```
+
+On the current 13-piece clean cohort, the primary signal is the effective
+Melody--Prompt temporal-overlap ratio: `skill=.378`, `rho=-.490`, `p=.020`,
+`q=.160`. This is suggestive, not FDR-supported. Restricting to the 10 pieces
+whose four runs all have positive overlap gives `skill=.027`, `p=.180`, so the
+association is largely driven by low or zero overlap. PCS, MCTD, and local Chroma
+features are unsupported for `melody_mismatch`; `repetition` remains too small for
+a stable claim.
+
+The analyzer keeps all four runs from a piece together and drops the complete piece
+for a feature when any of its four values is undefined. It warns when a target has
+fewer than 10 positive outputs or fewer than 5 positive pieces. In the current clean
+4/4 cohort, `repetition` has only 4 positive outputs, so its KDE curves and p/q
+values are exploratory and cannot support a stable association claim.
 
 ## KDE screening
 
@@ -88,14 +148,14 @@ leave-one-piece-out evaluation. Strict screening runs 99 label permutations only
 positive-skill primary candidates, applies BH FDR to the resulting p-values, and
 adds 200 group bootstraps for uncertainty. It does not fit any high-dimensional KDE.
 
-Current 14-piece / 56-run / 28-pair findings are:
+Current 13-piece / 52-run / 26-pair findings are:
 
-1. Leading blank diagnostic: skill `.426`, `p=.010`, `q=.030`. This is not music
+1. Leading blank diagnostic: skill `.342`, `rho=.686`, `p=.010`, `q=.030`. This is not music
    law: `technical/metadata/run_condition.sh` omitted `--trim-leading-rest`, so the
    signal is a pipeline segmentation diagnostic.
-2. All-run Prompt density mismatch: skill `.268`, `p=.020`, `q=.240`, falling to
-   `.035` on nonempty-only pieces.
-3. Paired average voice-number delta: skill `.263`, `rho=.443`, `p=.010`,
+2. All-run Prompt density mismatch: skill `.308`, `rho=.407`, `p=.010`, `q=.180`,
+   suggestive only.
+3. Paired average voice-number delta: skill `.241`, `rho=.401`, `p=.010`,
    `q=.180`, suggestive only.
 
 Generated outputs include

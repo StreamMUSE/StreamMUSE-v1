@@ -219,7 +219,19 @@ def test_real_ratings_smoke_when_present(tmp_path):
     if not ratings.exists():
         pytest.skip("real rating.csv not present at the expected path")
 
-    summary = build_labels(ratings, tmp_path / "real", EXCLUSIONS, ["jazz_blues"])
-    assert summary["main_piece_count"] == 14
-    assert summary["main_paired_row_count"] == 28
-    assert summary["main_condition_output_count"] == 56
+    output = tmp_path / "real"
+    summary = build_labels(ratings, output, EXCLUSIONS, ["jazz_blues"])
+    assert summary["main_piece_count"] == 13
+    assert summary["main_paired_row_count"] == 26
+    assert summary["main_condition_output_count"] == 52
+
+    with (output / "labels_runs.csv").open(encoding="utf-8", newline="") as handle:
+        runs = list(csv.DictReader(handle))
+    bohemian_runs = [
+        row for row in runs if row["piece"] == "pop_contemporary_queen_bohemian_rhapsody"
+    ]
+    assert bohemian_runs
+    assert {row["include_main"] for row in bohemian_runs} == {"False"}
+    assert {
+        row["exclusion_reason"] for row in bohemian_runs
+    } == {"musicxml_not_constant_4_4:2/4|4/4|5/4"}
