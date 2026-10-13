@@ -171,6 +171,87 @@
 
 ---
 
+## 4. 老师会后反馈与三段式路线（10/11 追加）
+
+老师听取汇报后给出三项方向，按"防新坏 → 治已坏 → 治根"组织：
+
+### 4.1 事情①（治已坏）：更好的 history recovery model
+
+两条方法路线：
+
+- **方法 1：Inpaint model**——把坏小节当掩码、两侧上下文重建。条件最强但需要新模型和新数据管线。
+- **方法 2（优先）：无偏移 continuation 重训**——去掉 ACC-first 编码中 melody/伴奏的时间错位（生成第 t 拍 acc 时可见第 t 拍自身 melody），从 base 微调。关键性质：**修复场景下不违反因果**——重采样 bar `[64,80)` 发生在 tick 84 后，该小节 melody 已经收到，多用的是系统已有的信息；相当于"用本小节自己的 melody 重新配伴奏"，接缝与和声对齐同时改善，且完全复用现有修复管线（worker/事务校验/门槛接口）。
+
+### 4.2 事情②（防新坏）：强拍三和弦 logit boost（当日已实现并开跑）
+
+现有引擎从累计 melody 估计调性（掩码式"禁出调"）。实验版升级为引导式：**每小节第 1/3 拍（强拍），对估计调的主三和弦 pitch class（覆盖全部八度）加 logit +τ**，从第 3 小节（tick 32，prompt 之后）生效。
+
+实现：`TonalBeatMask` 扩展 boost 参数 + backend 环境变量窗口（`LEKAI_TONAL_BOOST_TAU/START_TICK/END_TICK`，默认关），含单测（tonal 套件 73 通过）。
+
+实验设计（offline，user10 × 3 seed，共享 Prompt，无修复）：
+
+| 臂 | 配置 |
+|---|---|
+| A | τ=0（基线，应与上周六 baseline 逐位一致=确定性校验） |
+| B | τ=2.0，tick [32,256)（第 3–16 小节） |
+| C | τ=2.0，tick [32, 曲末) |
+
+判读：A vs B/C 的 CR/UR + 调性稳定度；若全不动=现有约束已饱和；若只防漂移不提升音乐性=调整预期。
+
+**结果（10/11 晚跑完，n=30/臂）**：
+
+| 臂 | CR ↑ | UR ↓ | 配对 dCR vs A |
+|---|---:|---:|---|
+| A 基线（τ=0） | 0.7304 | 0.0377 | — |
+| B 至 16 小节 | 0.7564 | 0.0484 | +0.026（18 胜 11 负） |
+| **C 全曲** | **0.7987** | **0.0369** | **+0.068（20 胜 10 负）** |
+
+- **C 臂（全曲 boost）正信号**：CR +6.8 点且 UR 微降——谐和提升未付不谐和代价；7/10 首 CR 上升。
+- **B 臂（中途截断）两头不讨好**：CR 只 +2.6 且 UR 恶化 +1.1 点——疑似中途撤掉 boost 本身制造分布切换，与 bar 修复的"断裂"教训呼应：**干预的进入和退出都需要平滑**。
+- 确定性闭环：A 臂 CR 与上周六 30 对 baseline、三臂 bundle 的 offline 臂逐位一致（三批独立运行同 seed 同结果）。
+- 诚实标注：单 τ（2.0）未扫强度；显著性未检验；boost 可能降低音高多样性待查。样本包与分数：`F:\repos\StreamMUSE-v1\remote_results\chord_law_20261008_results\`。
+
+### 4.3 事情③（治根）：ReaLchords RL 后训练
+
+老师目标=让现有模型经后训练提高"对未来的预测能力"，即治 exposure bias（训练见 GT、推理见自己的输出，误差累积）。重读论文带四个问题：①rollout 的 action 边界（一拍=一个 action？polyphonic token 怎么截断）；②offline teacher 架构——**方法 2 的无偏移模型可能兼任**（一砖两用）；③multi-scale 滑窗在全曲 offline 场景的切法；④MLE-likelihood 当 reward 会塌缩的教训（与我们 NLL 循环论证同坑）。实施顺序照旧笔记 Phase A（reward 验证）→ B（KD-only）→ C（REINFORCE）。
+
+### 4.4 更新后的实验队列
+
+| 步骤 | 内容 | 状态 |
+|---|---|---|
+| ②-law | 强拍 boost A/B/C（10 首×3 seed×3 臂，GPU2） | **10/11 已开跑** |
+| ①-oracle | GT history 续写臂（天花板证据 + DPO 正例库） | 待跑（改 history 源即可） |
+| ①-retrain | 方法 2 无偏移重训（需与老师钉死偏移量语义后动工） | 设计中 |
+| E1 | CLaMP2 嵌入评 60 份（裁判验证，②①③共用） | **10/11 已跑完——负结果**：延续一致性余弦对配对条件不敏感（详见 §5） |
+| ③-RL | Phase A rollout 审计（policy 起点=①重训后模型） | 排后 |
+
+---
+
+## 5. E1：CLaMP2 嵌入裁判验证（10/11，负结果）
+
+**设计**：把每份输出在干预点 tick 84 切成上下文半段 `[0,84)` 与后半段，各取 CLaMP2 嵌入，算 cos(上下文, 延续) 作为"延续一致性"分数；配对比较各臂（上下文半段在配对内逐位相同，差异全部来自延续半段）。覆盖两组数据：30 对 baseline/repair + 90 份 law A/B/C，共 150 份 × 2 半段。
+
+**结果**：
+
+| 配对 | dCos 均值 | 偏好胜率 |
+|---|---:|---|
+| bar: repair vs baseline | +0.0051 | 16/30（掷硬币） |
+| law: B vs A | −0.0066 | 12/30 |
+| law: C vs A | −0.0022 | 16/30（打平） |
+
+**判读**：
+
+1. **CLaMP2 全局嵌入对这个粒度的配对差异不敏感**——绝对余弦 ~0.167，臂间差 ±0.005，低两个数量级；而同期 CR 显示 C 臂 +6.8 点的明确改善。嵌入裁判与和声指标**不一致**（对 repair 反而微偏好、对 C 的改善视而不见）。
+2. 与 ReaLchords 的实证互证：**embedding bottleneck 偏全局风格、看不见局部和声细节**——我们 bar/强拍级别的干预恰好都在局部。
+3. 对 DPO 路线的含义：NotaGen 式"嵌入排序产偏好对"在我们场景只能分辨**大质量差**（他们设定是 100 候选取两端），**细粒度配对判断不可用**。偏好对来源应回到：人工盲听（E2）或领域内自训 reward model（ReaLchords 路线 A）。
+4. 附带确定性校验：bar-baseline 与 law-A 是同一条件，两次独立嵌入的绝对余弦一致到小数点后 4 位（0.1670）。
+
+**注意适用范围**：本负结果只否定"延续一致性余弦"这一种用法；"与 GT 质心相似度"变体（NotaGen 原版）因 user10 谱面未对齐尚未测试，待 GT 对齐后可补测。
+
+脚本：masdar `/data/home/yuanxin/experiments/e1_clamp_scores.py`（独立 venv `~/e1_clamp_venv`，未触碰共享环境）；分数 `e1_clamp_scores.json`。
+
+---
+
 ## 附：文件索引
 
 - 修复实现：`worktrees/bar-quality-history-experiment/.../src/streammuse/infrastructure/inference/history_repair.py`、`history_repair_controller.py`
