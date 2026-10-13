@@ -42,32 +42,32 @@ def measure_roll(measure):
     return mel, acc
 
 
+def _scan_one(path):
+    try:
+        z = np.load(path, allow_pickle=True)
+        n = sum(1 for k in z.files if re.match(r'measure_\d+$', k))
+        starts = []
+        for start in range(0, n - WINDOW_MEASURES + 1):
+            ok = True
+            for i in range(start, start + WINDOW_MEASURES):
+                m = z[f'measure_{i}']
+                if m.shape != (6, 88, 96) or m[:3].sum() == 0 or m[3:].sum() == 0:
+                    ok = False
+                    break
+            if ok:
+                starts.append(start)
+        return path, starts
+    except Exception as exc:  # noqa: BLE001
+        print(f'skip {path}: {exc}')
+        return path, []
+
+
 def scan_windows(data_dir, workers=16):
     from multiprocessing import Pool
     paths = sorted(Path(data_dir).glob('*.npz'))
-
-    def scan_one(path):
-        try:
-            z = np.load(path, allow_pickle=True)
-            n = sum(1 for k in z.files if re.match(r'measure_\d+$', k))
-            starts = []
-            for start in range(0, n - WINDOW_MEASURES + 1):
-                ok = True
-                for i in range(start, start + WINDOW_MEASURES):
-                    m = z[f'measure_{i}']
-                    if m.shape != (6, 88, 96) or m[:3].sum() == 0 or m[3:].sum() == 0:
-                        ok = False
-                        break
-                if ok:
-                    starts.append(start)
-            return path, starts
-        except Exception as exc:  # noqa: BLE001
-            print(f'skip {path}: {exc}')
-            return path, []
-
     windows = []
     with Pool(workers) as pool:
-        for k, (path, starts) in enumerate(pool.imap_unordered(scan_one, paths, chunksize=32)):
+        for k, (path, starts) in enumerate(pool.imap_unordered(_scan_one, paths, chunksize=32)):
             windows.extend((path, s) for s in starts)
             if (k + 1) % 1000 == 0:
                 print(f'scanned {k + 1}/{len(paths)} files...', flush=True)
