@@ -16,6 +16,7 @@ from streammuse.infrastructure.inference.runtime_device import (
     resolve_dtype,
 )
 from streammuse.infrastructure.inference.generation_logger import GenerationLogger
+from streammuse.infrastructure.inference.model_output_trace import ModelInputTracer, ModelOutputTracer
 
 
 EventPayload = Dict[str, int | str]
@@ -88,6 +89,8 @@ class LekaiHttpBackend:
         # Logger for generation comparison
         log_dir = os.environ.get("LEKAI_RT_LOG_DIR", "logs/generation")
         self._logger = GenerationLogger(output_dir=log_dir, mode="fake_rt")
+        self._model_input_tracer = ModelInputTracer(mode="streammuse_realtime")
+        self._model_output_tracer = ModelOutputTracer(mode="streammuse_realtime")
         
         # Try to load real model if checkpoint provided
         if checkpoint_path:
@@ -647,12 +650,43 @@ class LekaiHttpBackend:
 
             prompt_tokens = build_standard_offline_prompt(target_beat)
             last_prompt_tokens = prompt_tokens.tolist()
+            self._model_input_tracer.record(
+                input_tokens=last_prompt_tokens,
+                target_beat=target_beat,
+                input_file=str(getattr(self, "_current_input_file", "unknown")),
+                metadata={
+                    "generation_start_tick": int(generation_start_tick),
+                    "generation_length_frames": int(generation_length_frames),
+                    "beat_offset": int(beat_offset),
+                    "slot_kind": "beat",
+                    "attention_mask": None,
+                    "position_ids": None,
+                    "use_cache": bool(getattr(self._model_adapter, "use_cache", True)),
+                    "temperature": rt_temperature,
+                    "top_k": rt_top_k,
+                    "top_p": rt_top_p,
+                    "repetition_penalty": rt_repetition_penalty,
+                },
+            )
             generated_beat_tokens = self._generate_part1_tokens_from_prompt(
                 prompt_tokens,
                 temperature=rt_temperature,
                 top_k=rt_top_k,
                 top_p=rt_top_p,
                 repetition_penalty=rt_repetition_penalty,
+            )
+
+            self._model_output_tracer.record(
+                output_tokens=generated_beat_tokens,
+                target_beat=target_beat,
+                input_file=str(getattr(self, "_current_input_file", "unknown")),
+                prompt_tokens=prompt_tokens.tolist(),
+                metadata={
+                    "generation_start_tick": int(generation_start_tick),
+                    "generation_length_frames": int(generation_length_frames),
+                    "beat_offset": int(beat_offset),
+                    "slot_kind": "beat",
+                },
             )
 
             beat_pianoroll = self._decode_acc_beat_tokens(generated_beat_tokens)

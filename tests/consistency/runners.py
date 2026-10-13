@@ -139,3 +139,39 @@ def run_offline(checkpoint: Path, song: SongSpec, *, out_dir: Path) -> Path:
     if not generated:
         raise RuntimeError(f"no generated MIDI under {offline_dir}")
     return generated[-1]
+
+
+def run_offline_model_output_trace(
+    checkpoint: Path,
+    npz_file: Path,
+    *,
+    trace_path: Path,
+    input_trace_path: Path | None = None,
+    bpm: int = CONDITION_BPM,
+    timeout_s: float = 600,
+) -> None:
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "run_lekai_offline_model_output_trace.py"),
+        "--checkpoint", str(checkpoint),
+        "--npz-file", str(npz_file),
+        "--trace-path", str(trace_path),
+        "--device", "cuda",
+        "--dtype", "float16",
+        "--bpm", str(bpm),
+    ]
+    if input_trace_path is not None:
+        cmd.extend(["--input-trace-path", str(input_trace_path)])
+    result = subprocess.run(
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=_subprocess_env(),
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"offline model-output trace failed (code {result.returncode}).\n"
+            f"stdout tail:\n{result.stdout[-2000:]}\nstderr tail:\n{result.stderr[-2000:]}"
+        )

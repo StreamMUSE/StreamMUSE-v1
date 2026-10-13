@@ -120,6 +120,12 @@ class LekaiPromptContinuationEngine:
             str(prompt_info["warmup_error"]) if prompt_info.get("warmup_error") is not None else None
         )
         info["prompt_is_warmed_up"] = bool(prompt_info.get("is_warmed_up", False))
+        info["prompt_selection_mode"] = str(
+            prompt_info.get("selection_mode", "single")
+        )
+        info["prompt_batch_candidate_count"] = int(
+            prompt_info.get("batch_candidate_count", 1)
+        )
         info.update(self._prefixed_catchup_snapshot())
         scheduler_status = self.scheduler_status()
         info["scheduler_phase"] = str(scheduler_status["phase"])

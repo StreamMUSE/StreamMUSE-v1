@@ -157,17 +157,23 @@ class LekaiServer:
     base_url: str
     generate_url: str
     log_path: Path
+    model_input_trace_path: Path
+    model_output_trace_path: Path
 
 
 @pytest.fixture(scope="session")
 def lekai_server(lekai_checkpoint: Path, artifacts_dir: Path) -> LekaiServer:
     port = _free_port()
     log_path = artifacts_dir / "server.log"
+    model_input_trace_path = artifacts_dir / "streammuse_model_inputs.jsonl"
+    model_output_trace_path = artifacts_dir / "streammuse_model_outputs.jsonl"
 
     env = _subprocess_env()
     env.update(DETERMINISTIC_SERVER_ENV)
     env["LEKAI_CHECKPOINT_PATH"] = str(lekai_checkpoint)
     env["LEKAI_SERVER_PORT"] = str(port)
+    env["LEKAI_MODEL_INPUT_TRACE_PATH"] = str(model_input_trace_path)
+    env["LEKAI_MODEL_OUTPUT_TRACE_PATH"] = str(model_output_trace_path)
 
     base_url = f"http://127.0.0.1:{port}"
     log_file = log_path.open("w")
@@ -188,6 +194,8 @@ def lekai_server(lekai_checkpoint: Path, artifacts_dir: Path) -> LekaiServer:
             base_url=base_url,
             generate_url=f"{base_url}/generate_accompaniment",
             log_path=log_path,
+            model_input_trace_path=model_input_trace_path,
+            model_output_trace_path=model_output_trace_path,
         )
         yield server
     finally:
