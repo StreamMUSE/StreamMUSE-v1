@@ -19,17 +19,23 @@ from experiments.rl_reward.reward_data import NpzWindowDataset, scan_windows
 
 
 @torch.no_grad()
-def val_retrieval(model, loader, device):
+def val_scores(model, loader, device):
+    """(in-batch retrieval R@1, hard-negative accuracy) on held-out songs."""
     model.eval()
-    correct = total = 0
-    for mel, acc, _ in loader:
-        mel, acc = mel.to(device), acc.to(device)
+    correct = total = hard_correct = 0
+    for mel, acc, acc_neg in loader:
+        mel = mel.to(device)
+        acc = acc.to(device)
+        acc_neg = acc_neg.to(device)
         mel_e, acc_e = model.embed(mel, acc)
+        neg_e = model.acc_encoder(acc_neg)
         logits = mel_e @ acc_e.t()
         correct += (logits.argmax(1) == torch.arange(logits.size(0), device=device)).sum().item()
+        hard_correct += ((mel_e * acc_e).sum(-1)
+                         > (mel_e * neg_e).sum(-1)).sum().item()
         total += logits.size(0)
     model.train()
-    return correct / max(1, total)
+    return correct / max(1, total), hard_correct / max(1, total)
 
 
 def main():
@@ -99,23 +105,24 @@ def main():
             running['hard'] += hard_acc
             running['n'] += 1
         sched.step()
-        val_r1 = val_retrieval(model, val_ld, device)
+        val_r1, val_hard = val_scores(model, val_ld, device)
         entry = {'epoch': epoch,
                  'nce': running['nce'] / running['n'],
                  'disc': running['disc'] / running['n'],
                  'train_r1': running['acc'] / running['n'],
                  'hard_acc': running['hard'] / running['n'],
-                 'val_r1': val_r1}
+                 'val_r1': val_r1,
+                 'val_hard_acc': val_hard}
         history.append(entry)
         print(json.dumps(entry), flush=True)
-        if val_r1 > best_val:
-            best_val = val_r1
-            torch.save({'model': model.state_dict(), 'val_r1': val_r1,
+        if val_hard > best_val:
+            best_val = val_hard
+            torch.save({'model': model.state_dict(), 'val_hard_acc': val_hard,
                         'epoch': epoch}, args.output / 'reward_model_best.pt')
     torch.save({'model': model.state_dict(), 'history': history},
                args.output / 'reward_model_final.pt')
     (args.output / 'train_log.json').write_text(json.dumps(history, indent=1))
-    print(f'DONE best_val_r1={best_val:.4f}', flush=True)
+    print(f'DONE best_val_hard_acc={best_val:.4f}', flush=True)
 
 
 if __name__ == '__main__':
