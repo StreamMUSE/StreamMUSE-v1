@@ -664,3 +664,18 @@ def test_independent_choice_generator_returns_explicit_error_batch() -> None:
     assert batch.error_type == "generation_error"
     assert "private-value" not in (batch.error_message or "")
     assert "API_KEY=[REDACTED]" in (batch.error_message or "")
+
+
+def test_syllable_hyphen_prompt_and_join() -> None:
+    from streammuse.infrastructure.rap.generators import _build_independent_messages, _join_syllables
+
+    request = CandidateRequest(
+        request_id="r", target_bar=0, topic="space", flow_template=BUILTIN_TEMPLATES.get("baseline_straight_9"),
+        count=4, context_lines=(), seed=1,
+    )
+    plain = _build_independent_messages(request)[1]["content"]
+    hyphens = _build_independent_messages(request, syllable_hyphens=True)[1]["content"]
+
+    assert "syllable markup" in plain and "joined by hyphens" not in plain
+    assert "joined by hyphens" in hyphens and "exactly 9" in hyphens
+    assert _join_syllables("Float-ing through the end-less dark") == "Floating through the endless dark"

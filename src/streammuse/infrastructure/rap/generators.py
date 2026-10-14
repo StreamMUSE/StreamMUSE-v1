@@ -154,7 +154,10 @@ class IndependentChoiceCandidateGenerator:
         *,
         max_tokens_per_choice: int = 32,
         temperature: float = 1.0,
+        syllable_hyphens: bool = False,
     ) -> None:
+        """``syllable_hyphens``: ask for every word split into hyphen-joined syllables
+        ("riv-er"), which helps a model count them, and join them back."""
         if (
             not isinstance(max_tokens_per_choice, int)
             or isinstance(max_tokens_per_choice, bool)
@@ -171,9 +174,10 @@ class IndependentChoiceCandidateGenerator:
         self._client = client
         self._max_tokens_per_choice = max_tokens_per_choice
         self._temperature = float(temperature)
+        self._syllable_hyphens = syllable_hyphens
 
     def generate(self, request: CandidateRequest) -> CandidateBatch:
-        prompt = _build_independent_messages(request)
+        prompt = _build_independent_messages(request, syllable_hyphens=self._syllable_hyphens)
         try:
             response = self._client.generate_choices(
                 [dict(message) for message in prompt],
@@ -190,7 +194,7 @@ class IndependentChoiceCandidateGenerator:
                 lines = _parse_candidate_lines(choice.text, 1)
                 if not lines:
                     continue
-                line = lines[0]
+                line = _join_syllables(lines[0]) if self._syllable_hyphens else lines[0]
                 identity = normalize_text(line)
                 if not identity or identity in normalized:
                     continue
@@ -309,9 +313,19 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
 
 def _build_independent_messages(
     request: CandidateRequest,
+    *,
+    syllable_hyphens: bool = False,
 ) -> tuple[dict[str, str], ...]:
     history = "\n".join(f"- {line}" for line in request.context_lines) or "- (none)"
     flow = format_flow_for_prompt(request.flow_template)
+    markup = (
+        "Do not include numbering, labels, explanations, syllable "
+        "markup, or alternate lines."
+        if not syllable_hyphens
+        else "Write every word with its spoken syllables joined by hyphens (riv-er, beau-ti-ful, night); "
+        f"count the pieces, there must be exactly {request.required_syllables}. Do not include numbering, "
+        "labels, explanations, or alternate lines."
+    )
     return (
         {
             "role": "system",
@@ -327,12 +341,19 @@ def _build_independent_messages(
                 f"It must contain exactly {request.required_syllables} spoken syllables under normal American "
                 "spoken pronunciation. Match lexical stress to the stronger slots, preserve natural words, and "
                 "close the phrase at the final slot. Spell out every number with words; never emit digits. "
-                "Do not include numbering, labels, explanations, syllable "
-                f"markup, or alternate lines.{_rhyme_instruction(request)}\n{flow}\nRecent frozen lines:\n{history}\n"
+                f"{markup}{_rhyme_instruction(request)}\n{flow}\nRecent frozen lines:\n{history}\n"
                 f"Variation seed: {request.seed}."
             ),
         },
     )
+
+
+_SYLLABLE_JOIN = re.compile(r"(?<=[A-Za-z'])-(?=[A-Za-z])")
+
+
+def _join_syllables(line: str) -> str:
+    """'Float-ing through the end-less dark' -> 'Floating through the endless dark'."""
+    return _SYLLABLE_JOIN.sub("", line)
 
 
 def _rhyme_instruction(request: CandidateRequest) -> str:

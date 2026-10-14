@@ -79,6 +79,7 @@ def main() -> None:
     parser.add_argument("--label", required=True)
     parser.add_argument("--extra-payload", default="", help="JSON merged into every chat request")
     parser.add_argument("--candidates", type=int, default=32)
+    parser.add_argument("--syllable-hyphens", action="store_true", help="prompt for hyphen-split syllables (A2)")
     parser.add_argument("--bars", type=int, default=16)
     parser.add_argument("--samples", default="", help="comma-separated sample ids (default: all)")
     parser.add_argument("--out", type=Path, required=True)
@@ -90,7 +91,10 @@ def main() -> None:
     extra = json.loads(args.extra_payload) if args.extra_payload else None
     config = LocalChatModelClientConfig(base_url=args.vllm_url, model=args.vllm_model, timeout_s=120.0, extra_payload=extra)
     client = LocalChatModelClient(config)
-    generator = _TimedGenerator(IndependentChoiceCandidateGenerator(client, max_tokens_per_choice=32, temperature=1.0))
+    generator = _TimedGenerator(IndependentChoiceCandidateGenerator(
+        client, max_tokens_per_choice=64 if args.syllable_hyphens else 32, temperature=1.0,
+        syllable_hyphens=args.syllable_hyphens,
+    ))
     analyzer = CmuProsodyAnalyzer()
     writer = SequentialLyricWriter(generator, analyzer, ScoreWeights(), LyricWriterPolicy(candidates=args.candidates))
 
