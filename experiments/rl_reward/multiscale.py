@@ -295,9 +295,9 @@ def exam(args):
                             vals.append(float((me * ae).sum()))
                         total += float(np.mean(vals))
                     pens = penalties(acc)
-                    total -= sum(args.w_sil * pens['silence'],
-                                 args.w_end * pens['early_end'],
-                                 args.w_rep * pens['repetition'])
+                    total -= (args.w_sil * pens['silence']
+                              + args.w_end * pens['early_end']
+                              + args.w_rep * pens['repetition'])
                     arms[arm] = total
                 if len(arms) == 2:
                     rows.append({'root': root.name, 'piece_id': pid, 'seed': seed, **arms})
