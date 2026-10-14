@@ -269,6 +269,7 @@ class RapRenderServerConfig:
     lyric_candidates: int = 32
     lyric_rhyme_scheme: str = "couplet"
     lyric_continuation: bool = False
+    vllm_extra_payload: Mapping[str, object] | None = None
 
 
 @dataclass
@@ -1778,6 +1779,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--lyric-rhyme-scheme", choices=("couplet", "chain", "none"), default="couplet"
     )
     parser.add_argument(
+        "--vllm-extra-payload",
+        default="",
+        help=(
+            "JSON merged into every lyric chat request, e.g. "
+            "'{\"chat_template_kwargs\": {\"enable_thinking\": false}}' for Qwen3.5 and later"
+        ),
+    )
+    parser.add_argument(
         "--lyric-continuation",
         action="store_true",
         help=(
@@ -1853,6 +1862,15 @@ def main(
     finally:
         composition.close()
     return 0
+
+
+def _json_object(text: str, flag: str) -> dict[str, object] | None:
+    if not text:
+        return None
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise ValueError(f"{flag} must be a JSON object")
+    return value
 
 
 def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
@@ -2023,6 +2041,7 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         lyric_candidates=args.lyric_candidates,
         lyric_rhyme_scheme=args.lyric_rhyme_scheme,
         lyric_continuation=args.lyric_continuation,
+        vllm_extra_payload=_json_object(args.vllm_extra_payload, "--vllm-extra-payload"),
     )
 
 
@@ -2111,6 +2130,7 @@ def _compose_real_worker(
             base_url=config.vllm_url,
             model=config.vllm_model,
             timeout_s=30.0,
+            extra_payload=dict(config.vllm_extra_payload) if config.vllm_extra_payload else None,
         )
         client = dependencies.LocalChatModelClient(client_config)
         _register_close(resources, client)
