@@ -77,3 +77,16 @@ applies on top of the latency patch, so it identifies both). Measured on the
 H200 (2026-10-12): the new part's length follows `token_count` as without a
 prefix, the returned prefix correlates 0.96–0.98 with the original, and a
 2.7 s prefix adds 35–65 ms per bar.
+
+## `sglang-omni-0.1.8-moss-local-continuation.patch`
+
+The continuation patch above, ported to SGLang-Omni **0.1.8** (`870d77446`,
+apply with `git apply` in a source checkout) for **MOSS-TTS-Local-Transformer
+v1.5** (model-upgrade plan, `developing-logs/plans/2026-10-14-rap-model-upgrade-plan.md`).
+Same request fields (`prefix_audio` data URI, `prefix_text`) and the same
+`token_count` meaning (new audio only). One difference from the Delay model:
+the Local AR stage returns only the generated codes, so the patch keeps the
+prefix codes in a wire field (`prefix_codes`), prepends them to the generated
+codes before the vocoder (the response again starts with the decoded prefix,
+which StreamMUSE checks and cuts), and clears the field so later stages do
+not carry the tensor (the vocoder's msgpack result cannot serialize it).
