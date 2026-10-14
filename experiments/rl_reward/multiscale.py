@@ -60,13 +60,12 @@ def _scan_one(job):
 
 
 def scan_windows(data_dir, measures, workers=16):
-    from functools import partial
     from multiprocessing import Pool
     paths = sorted(Path(data_dir).glob('*.npz'))
     windows = []
     with Pool(workers) as pool:
         for k, (path, starts) in enumerate(
-                pool.imap_unordered(partial(_scan_one, measures=measures),
+                pool.imap_unordered(_scan_one,
                                     [(p, measures) for p in paths], chunksize=32)):
             windows.extend((path, s) for s in starts)
             if (k + 1) % 1000 == 0:
