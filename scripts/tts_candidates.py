@@ -56,7 +56,8 @@ def _references(request, voice: Voice, seed: int, **sampling) -> dict:
 
 PROFILES = {
     # name: (payload builder, supports our continuation prefix)
-    "moss_local": (_moss, False),
+    # Continuation needs the StreamMUSE prefix patch on the server (ported to 0.1.8 for MOSS-Local).
+    "moss_local": (_moss, True),
     "higgs": (lambda r, v, s: _references(r, v, s, temperature=0.8, top_k=50, max_new_tokens=200), False),
     "fish_s2_pro": (lambda r, v, s: _references(r, v, s, temperature=0.8, top_p=0.8, top_k=30), False),
     "fish_drama3": (lambda r, v, s: _references(r, v, s, temperature=0.8, top_p=0.8, top_k=30), False),
@@ -100,11 +101,21 @@ class HttpTtsSynthesizer:
     def synthesize(self, request, output_wav: Path, *, execution=None, prefix=None):
         from streammuse.infrastructure.rap.moss_tts import MossPhraseResult
 
-        if prefix is not None:
+        from streammuse.infrastructure.rap.sglang_moss_tts import (
+            _cut_prefix,
+            _padded_prefix_samples,
+            _prefix_payload,
+        )
+
+        if prefix is not None and not self.supports_prefix:
             raise ValueError(f"{self._profile} does not support continuation")
         seed = self._base_seed + request.chunk_index * 7 + request.start_bar
         payload = {"model": self._model_id, "voice": "default", "response_format": "wav", "stream": False,
                    **self._build(request, self._voice, seed)}
+        padded = None
+        if prefix is not None:
+            payload.update(_prefix_payload(prefix))
+            padded = _padded_prefix_samples(prefix)
         started = time.perf_counter()
         response = self._client.post("/v1/audio/speech", json=payload)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
@@ -118,6 +129,10 @@ class HttpTtsSynthesizer:
         output_wav = Path(output_wav)
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         output_wav.write_bytes(pcm)
+        if padded is not None:
+            # The response is the decoded prefix followed by the new speech: check, then cut the prefix.
+            _cut_prefix(output_wav, padded, maximum_frame_count=padded.size + 24_000 * 30)
+            frames = (output_wav.stat().st_size - 44) // 2
         return MossPhraseResult(
             output_wav=output_wav, model_id=self._model_id, model_revision=self._profile,
             reference_voice_sha256=hashlib.sha256(self._voice.audio_path.read_bytes()).hexdigest(),
