@@ -270,6 +270,7 @@ class RapRenderServerConfig:
     lyric_rhyme_scheme: str = "couplet"
     lyric_continuation: bool = False
     vllm_extra_payload: Mapping[str, object] | None = None
+    moss_sglang_resample_output: bool = False
 
 
 @dataclass
@@ -1779,6 +1780,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--lyric-rhyme-scheme", choices=("couplet", "chain", "none"), default="couplet"
     )
     parser.add_argument(
+        "--moss-sglang-resample-output",
+        action="store_true",
+        help="convert the sglang-omni MOSS response to 24 kHz mono (MOSS-TTS-Local returns 48 kHz stereo)",
+    )
+    parser.add_argument(
         "--vllm-extra-payload",
         default="",
         help=(
@@ -2042,6 +2048,7 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         lyric_rhyme_scheme=args.lyric_rhyme_scheme,
         lyric_continuation=args.lyric_continuation,
         vllm_extra_payload=_json_object(args.vllm_extra_payload, "--vllm-extra-payload"),
+        moss_sglang_resample_output=args.moss_sglang_resample_output,
     )
 
 
@@ -2585,6 +2592,7 @@ def _load_sglang_moss_synthesizer(
         request_timeout_seconds=config.moss_request_timeout_s,
         cancellation_grace_seconds=config.moss_cancellation_grace_s,
         runtime_config_sha256=str(config.moss_runtime_config_sha256),
+        resample_output=config.moss_sglang_resample_output,
     )
     return SglangMossSynthesizer(client_config)
 

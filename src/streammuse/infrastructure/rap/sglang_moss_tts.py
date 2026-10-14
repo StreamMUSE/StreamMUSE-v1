@@ -76,6 +76,8 @@ class SglangMossConfig:
     response_byte_limit: int = 64 * 1024 * 1024
     maximum_audio_seconds: float = 30.0
     base_seed: int = DEFAULT_BASE_SEED
+    # Convert any response (e.g. MOSS-TTS-Local's 48 kHz stereo) to 24 kHz mono PCM16.
+    resample_output: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base_url", _validated_base_url(self.base_url))
@@ -394,6 +396,8 @@ class SglangMossSynthesizer:
                 download_finished = self._clock()
             response = None
             execution.checkpoint()
+            if self._config.resample_output:
+                _to_24k_mono_pcm16(partial_path)
             if padded_prefix is not None:
                 _cut_prefix(
                     partial_path,
@@ -753,3 +757,27 @@ def _cut_prefix(path: Path, prefix: np.ndarray, *, maximum_frame_count: int) -> 
             "MOSS output does not start with the prefix; is the continuation patch installed?"
         )
     wavfile.write(path, sample_rate_hz, samples[prefix.size :])
+
+
+def _to_24k_mono_pcm16(path: Path) -> None:
+    """Rewrite a WAV of any rate and channel count as 24 kHz mono PCM16."""
+    from math import gcd
+
+    from scipy.signal import resample_poly
+
+    try:
+        rate, samples = wavfile.read(path)
+    except Exception as exc:
+        raise MossInvalidOutput("MOSS output is not a readable WAV") from exc
+    audio = np.asarray(samples, dtype=np.float64)
+    if samples.dtype == np.int16:
+        audio /= 32768.0
+    elif samples.dtype == np.int32:
+        audio /= 2147483648.0
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)
+    if rate != 24_000:
+        factor = gcd(int(rate), 24_000)
+        audio = resample_poly(audio, 24_000 // factor, int(rate) // factor)
+    wavfile.write(path, 24_000, np.clip(np.round(audio * 32767.0), -32768, 32767).astype(np.int16))
+

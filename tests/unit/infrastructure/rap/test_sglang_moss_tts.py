@@ -764,3 +764,24 @@ def test_continuation_output_without_the_prefix_is_invalid(tmp_path: Path, retur
             _request(), tmp_path / "source.wav", execution=_execution(),
             prefix=SpeechPrefix("previous line", prefix_wav.getvalue()),
         )
+
+
+def test_resample_output_turns_48k_stereo_into_24k_mono(tmp_path: Path) -> None:
+    stereo = np.column_stack([np.full(4_800, 1_000, dtype=np.int16), np.full(4_800, 3_000, dtype=np.int16)])
+    body = io.BytesIO()
+    wavfile.write(body, 48_000, stereo)
+    client = httpx.Client(
+        base_url="http://127.0.0.1:30000",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, headers={"content-type": "audio/wav"}, content=body.getvalue())
+        ),
+    )
+    synthesizer = SglangMossSynthesizer(_config(tmp_path, resample_output=True), client=client)
+    output = tmp_path / "source.wav"
+
+    result = synthesizer.synthesize(_request(), output, execution=_execution())
+
+    rate, written = wavfile.read(output)
+    assert rate == 24_000 and written.ndim == 1 and written.dtype == np.int16
+    assert result.frame_count == 2_400
+    assert abs(int(np.median(written)) - 2_000) <= 2
