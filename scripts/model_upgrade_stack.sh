@@ -1,6 +1,7 @@
 #!/bin/bash
 # Protocol v3 stacks for the model-upgrade sessions (plan 2026-10-14, A3/B2), all on one GPU.
-# usage: model_upgrade_stack.sh start <qwen25|qwen38> <moss014|mosslocal> <gpu> | stop
+# usage: model_upgrade_stack.sh start <qwen25|qwen38> <moss014|mosslocal> <gpu> [writer-gpu] | stop
+#   writer-gpu: put the lyric model on another GPU (default: the same one)
 #   qwen25:    Qwen2.5-7B-Instruct (v1.0's lyric model)
 #   qwen38:    Qwen3.8-27B-FP8, thinking disabled
 #   moss014:   MOSS-TTS v1.5 on SGLang-Omni 0.1.4 with the latency and continuation patches (v1.0)
@@ -35,9 +36,9 @@ stop_all() {
   done
 }
 if [ "$1" = stop ]; then stop_all; exit 0; fi
-writer=$2; tts=$3; gpu=$4
+writer=$2; tts=$3; gpu=$4; wgpu=${5:-$4}
 stop_all
-echo "$writer $tts gpu=$gpu $(git -C $R rev-parse HEAD)" > $E/current.txt
+echo "$writer $tts gpu=$gpu writer_gpu=$wgpu $(git -C $R rev-parse HEAD)" > $E/current.txt
 
 case $writer in
   qwen25) model=Qwen/Qwen2.5-7B-Instruct; vargs="--gpu-memory-utilization 0.25"; payload= ;;
@@ -45,7 +46,7 @@ case $writer in
           payload='{"chat_template_kwargs": {"enable_thinking": false}}' ;;
   *) echo "unknown writer $writer"; exit 1 ;;
 esac
-launch vllm env HF_HOME=$H/models/huggingface HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=$gpu \
+launch vllm env HF_HOME=$H/models/huggingface HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=$wgpu \
   PATH=$H/llm-serving/.venv/bin:/usr/local/cuda/bin:/usr/bin:/bin \
   $H/llm-serving/.venv/bin/vllm serve $model --host 127.0.0.1 --port 8601 --served-model-name qwen-rap \
   --max-model-len 2048 --max-num-seqs 48 $vargs
@@ -92,4 +93,4 @@ launch render bash -c "source $P/env.sh; export CUDA_VISIBLE_DEVICES=$gpu PYTHON
   --aligner-device cuda:0 --candidate-profile realtime --moss-warp-policy gentle_sparse_r3 \
   --wire-audio-codec opus --opus-compression-level 5 --lyric-stream --lyric-candidates 32 --lyric-continuation"
 wait_http http://127.0.0.1:8620/health $E/render.pid 900 || { echo "render failed"; tail -30 $E/render.log; stop_all; exit 1; }
-echo "stack $writer + $tts ready on GPU $gpu"
+echo "stack $writer (GPU $wgpu) + $tts (GPU $gpu) ready"
