@@ -91,9 +91,17 @@ def _bars(events, server_outcomes):
     return bars
 
 
+def _startup_wait_seconds(events):
+    """Session start to the first bar's playback: the wait before any sound (bar 0 has no beat deadline)."""
+    started = next((e["monotonic_ns"] for e in events if e["event_type"] == "session_started"), None)
+    first = next((e["monotonic_ns"] for e in events if e["event_type"] == "bar_playback_started" and e["bar"] == 0), None)
+    return None if started is None or first is None else round((first - started) / 1e9, 3)
+
+
 def _stats(events, summary):
     timings = [e["payload"].get("stage_timings_ms") or {} for e in events if e["event_type"] == "chunk_remote_completed"]
     return {
+        "startup_wait_s": _startup_wait_seconds(events),
         "underruns": (summary.get("audio") or {}).get("underruns"),
         "remote_units": len(timings),
         "server_moss_ms_p50": _median([t.get("moss") for t in timings]),

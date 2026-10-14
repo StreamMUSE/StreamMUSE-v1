@@ -45,6 +45,7 @@ def summarize(session: Path) -> dict[str, object]:
     )
     summary = json.loads((session / "summary.json").read_text()) if (session / "summary.json").exists() else {}
     playback = {e["bar"]: e["monotonic_ns"] for e in events if e["event_type"] == "bar_playback_started"}
+    started = next((e["monotonic_ns"] for e in events if e["event_type"] == "session_started"), None)
     reactions = []
     for edit in (e for e in events if e["event_type"] == "plan_edited"):
         payload = edit["payload"]
@@ -73,6 +74,9 @@ def summarize(session: Path) -> dict[str, object]:
     return {
         "session": session.name,
         "bars": len(frozen),
+        # Bar 0 has no beat deadline: playback starts once it is ready, so this wait is outside every other number.
+        "startup_wait_ms": round((playback[0] - started) / 1e6) if started is not None and 0 in playback else None,
+        "first_bar_choice": frozen[0]["payload"].get("choice") if frozen else None,
         "choices": dict(choices),
         "remote_latest_rate": round(choices.get("remote_latest", 0) / max(1, len(frozen)), 3),
         "lyric_lead_ms": {"p5": _pct(lyric_lead, 0.05), "p50": _pct(lyric_lead, 0.5)},

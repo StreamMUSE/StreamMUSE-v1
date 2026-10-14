@@ -224,7 +224,7 @@ for (const v of VERSIONS) {
 
 // Summary table.
 const table = document.getElementById("summary");
-table.append(el("thead", {}, el("tr", {}, ...["Version", "Mode", "Bars by source", "Server", "Older", "eSpeak", "Underruns", "MOSS p50 ms", "Round trip p50 ms", "Network p50 s"].map(h => el("th", { text: h })))));
+table.append(el("thead", {}, el("tr", {}, ...["Version", "Mode", "Bars by source", "Server", "Older", "eSpeak", "Underruns", "Startup wait p50 s", "MOSS p50 ms", "Round trip p50 ms", "Network p50 s"].map(h => el("th", { text: h })))));
 const tbody = el("tbody");
 for (const v of VERSIONS) for (const [m, label] of MODES) {
   const rs = RUNS.filter(r => r.version === v.id && r.mode === m);
@@ -240,6 +240,7 @@ for (const v of VERSIONS) for (const [m, label] of MODES) {
     el("td", { text: v.id }), el("td", { text: label }), el("td", {}, bar),
     el("td", { text: fmt(pct("remote"), 1) + "%" }), el("td", { text: fmt(pct("remote_older"), 1) + "%" }), el("td", { text: fmt(pct("espeak"), 1) + "%" }),
     el("td", { text: String(rs.reduce((a, r) => a + (r.stats.underruns || 0), 0)) }),
+    el("td", { text: live ? fmt(med(rs.map(r => r.stats.startup_wait_s)), 1) : "–" }),
     el("td", { text: live ? fmt(med(rs.map(r => r.stats.server_moss_ms_p50))) : "–" }),
     el("td", { text: live ? fmt(med(rs.map(r => r.stats.remote_total_ms_p50))) : "–" }),
     el("td", { text: live ? fmt(med(rs.map(r => r.rtt_seconds_p50)), 2) : "–" })));
@@ -289,6 +290,7 @@ function take(r, label) {
     el("span", { text: `${r.counts.remote}/${r.bars.length} server` }),
     r.counts.remote_older ? el("span", { text: `${r.counts.remote_older} older` }) : null,
     r.counts.espeak ? el("span", { text: `${r.counts.espeak} eSpeak (${reasons.join(", ")})`, title: details }) : null,
+    r.mode === "realtime" && r.stats.startup_wait_s != null ? el("span", { text: `startup wait ${fmt(r.stats.startup_wait_s, 1)} s` }) : null,
     r.mode === "realtime" && r.rtt_seconds_p50 != null ? el("span", { text: `network ${fmt(r.rtt_seconds_p50, 2)} s` }) : null);
   const box = el("div", { class: "take", "data-label": label }, audio, pads, now, meta, el("details", {}, el("summary", { text: "All 16 lines" }), list));
   const cells = [...pads.children], items = [...list.children];
