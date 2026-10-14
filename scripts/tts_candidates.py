@@ -132,7 +132,8 @@ class HttpTtsSynthesizer:
         if padded is not None:
             # The response is the decoded prefix followed by the new speech: check, then cut the prefix.
             _cut_prefix(output_wav, padded, maximum_frame_count=padded.size + 24_000 * 30)
-            frames = (output_wav.stat().st_size - 44) // 2
+            pcm = output_wav.read_bytes()
+            frames = int(wavfile.read(io.BytesIO(pcm))[1].size)
         return MossPhraseResult(
             output_wav=output_wav, model_id=self._model_id, model_revision=self._profile,
             reference_voice_sha256=hashlib.sha256(self._voice.audio_path.read_bytes()).hexdigest(),
