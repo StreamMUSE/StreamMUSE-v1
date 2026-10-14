@@ -43,7 +43,7 @@ class Voice:
 
 def _moss(request, voice: Voice, seed: int) -> dict:
     return {
-        "input": request.text, "ref_audio": voice.uri, "ref_text": voice.text, "language": "English",
+        "input": request.text, "ref_audio": str(voice.audio_path), "ref_text": voice.text, "language": "English",
         "instructions": RAP_INSTRUCTION, "token_count": round(request.duration_seconds * 12.5),
         "max_new_tokens": 256, "seed": seed,
     }
@@ -60,7 +60,7 @@ PROFILES = {
     "higgs": (lambda r, v, s: _references(r, v, s, temperature=0.8, top_k=50, max_new_tokens=200), False),
     "fish_s2_pro": (lambda r, v, s: _references(r, v, s, temperature=0.8, top_p=0.8, top_k=30), False),
     "fish_drama3": (lambda r, v, s: _references(r, v, s, temperature=0.8, top_p=0.8, top_k=30), False),
-    "qwen3_tts": (lambda r, v, s: {"input": r.text, "ref_audio": v.uri, "ref_text": v.text, "language": "English",
+    "qwen3_tts": (lambda r, v, s: {"input": r.text, "ref_audio": str(v.audio_path), "ref_text": v.text, "language": "English",
                                    "task_type": "Base", "seed": s}, False),
     "indextts": (lambda r, v, s: {"input": r.text, "ref_audio": str(v.audio_path), "seed": s}, False),
 }
