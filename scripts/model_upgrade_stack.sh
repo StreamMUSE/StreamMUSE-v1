@@ -1,8 +1,9 @@
 #!/bin/bash
 # Protocol v3 stacks for the model-upgrade sessions (plan 2026-10-14, A3/B2), all on one GPU.
-# usage: model_upgrade_stack.sh start <qwen25|qwen38> <moss014|mosslocal> <gpu> [writer-gpu] | stop
+# usage: model_upgrade_stack.sh start <qwen25|qwen35|qwen38> <moss014|mosslocal> <gpu> [writer-gpu] | stop
 #   writer-gpu: put the lyric model on another GPU (default: the same one)
 #   qwen25:    Qwen2.5-7B-Instruct (v1.0's lyric model)
+#   qwen35:    Qwen3.5-9B, thinking disabled
 #   qwen38:    Qwen3.8-27B-FP8, thinking disabled
 #   moss014:   MOSS-TTS v1.5 on SGLang-Omni 0.1.4 with the latency and continuation patches (v1.0)
 #   mosslocal: MOSS-TTS-Local-Transformer v1.5 on SGLang-Omni 0.1.8 with the ported continuation patch
@@ -42,6 +43,8 @@ echo "$writer $tts gpu=$gpu writer_gpu=$wgpu $(git -C $R rev-parse HEAD)" > $E/c
 
 case $writer in
   qwen25) model=Qwen/Qwen2.5-7B-Instruct; vargs="--gpu-memory-utilization 0.25"; payload= ;;
+  qwen35) model=Qwen/Qwen3.5-9B; vargs="--gpu-memory-utilization 0.22 --limit-mm-per-prompt {\"image\":0,\"video\":0}"
+          payload='{"chat_template_kwargs": {"enable_thinking": false}}' ;;
   qwen38) model=Qwen/Qwen3.8-27B-FP8; vargs="--gpu-memory-utilization 0.45 --limit-mm-per-prompt {\"image\":0,\"video\":0}"
           payload='{"chat_template_kwargs": {"enable_thinking": false}}' ;;
   *) echo "unknown writer $writer"; exit 1 ;;
