@@ -2130,7 +2130,7 @@ def _compose_real_worker(
             base_url=config.vllm_url,
             model=config.vllm_model,
             timeout_s=30.0,
-            extra_payload=dict(config.vllm_extra_payload) if config.vllm_extra_payload else None,
+            **({"extra_payload": dict(config.vllm_extra_payload)} if config.vllm_extra_payload else {}),
         )
         client = dependencies.LocalChatModelClient(client_config)
         _register_close(resources, client)
