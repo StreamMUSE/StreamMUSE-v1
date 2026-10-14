@@ -19,12 +19,12 @@ model=$2; gpu=$3; shift 3
 stop
 tag=$(echo $model | tr '/' '_')
 cd $S
-setsid env HF_HOME=$H/models/huggingface CUDA_VISIBLE_DEVICES=$gpu \
+setsid env HF_HOME=$H/models/huggingface CUDA_VISIBLE_DEVICES=$gpu SGLANG_OMNI_STARTUP_TIMEOUT=2400 SGLANG_OMNI_WARMUP_TIMEOUT=2400 \
   PATH=$S/.venv/bin:/usr/local/cuda/bin:/usr/bin:/bin \
   $S/.venv/bin/sgl-omni serve --model-path $model --host 127.0.0.1 --port 8501 \
   --allowed-local-media-path $B/media "$@" > $E/$tag.log 2>&1 < /dev/null &
 pid=$!; echo "$pid $(ps -o pgid= -p $pid | tr -d ' ') $(id -un)" > $E/server.pid
-for i in $(seq 1 180); do
+for i in $(seq 1 540); do
   [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:8501/health)" = 200 ] && { echo "ready $model"; exit 0; }
   kill -0 $pid 2>/dev/null || { echo "server exited"; tail -40 $E/$tag.log; exit 1; }; sleep 5
 done
