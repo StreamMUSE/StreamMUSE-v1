@@ -77,7 +77,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", default="http://127.0.0.1:8030")
     parser.add_argument("--bench", type=Path, default=profile.DEFAULT_BENCH)
-    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--config", type=Path, help="MOSS runtime config (required unless --tts-profile)")
+    parser.add_argument("--tts-profile", help="model-upgrade candidates: a profile from scripts/tts_candidates.py")
+    parser.add_argument("--tts-model-id", default="", help="the model name the candidate server expects")
     parser.add_argument("--aligner-device", default="cuda:0")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--units", default="phrase,bars", help="comma-separated: phrase, bars, continued")
@@ -88,7 +90,19 @@ def main() -> None:
         parser.error("--units takes phrase, bars and continued")
     args.out.mkdir(parents=True, exist_ok=False)
 
-    synthesizer = profile.make_synthesizer(args)
+    if args.tts_profile:
+        from tts_candidates import HttpTtsSynthesizer, Voice
+
+        synthesizer = HttpTtsSynthesizer(
+            profile=args.tts_profile, base_url=args.url, model_id=args.tts_model_id,
+            voice=Voice(args.bench / "media" / "reference.wav", (args.bench / "reference.txt").read_text().strip()),
+        )
+        if "continued" in units and not synthesizer.supports_prefix:
+            parser.error(f"{args.tts_profile} has no continuation; drop the continued unit")
+    else:
+        if args.config is None:
+            parser.error("--config is required for the MOSS synthesizer")
+        synthesizer = profile.make_synthesizer(args)
     renderer = MossAlignedPhraseRenderer(
         synthesizer=synthesizer,
         aligner=MmsForcedAligner.load(device=args.aligner_device),
@@ -102,8 +116,11 @@ def main() -> None:
             continue
         requests.append(request)
     # Warm the service and the aligner once per unit before measuring.
-    renderer.render_source(requests[0], args.out / "warmup-phrase")
-    renderer.render_source(split_into_bars(requests[0])[0], args.out / "warmup-bar")
+    # Warm the service and the aligner before measuring.
+    if "phrase" in units:
+        renderer.render_source(requests[0], args.out / "warmup-phrase")
+    for index in range(3):
+        renderer.render_source(split_into_bars(requests[index])[0], args.out / f"warmup-bar-{index}")
 
     records = []
     for round_index in range(args.rounds):

@@ -42,6 +42,7 @@ import statistics
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("compare_out", type=Path)
+    parser.add_argument("--reference", type=Path, help="reference voice WAV: adds each take's similarity to it")
     parser.add_argument("--whisper-model", default="small.en")
     args = parser.parse_args()
 
@@ -81,6 +82,7 @@ def main() -> None:
         values = f0[voiced & np.isfinite(f0)]
         return float(12 * np.log2(np.median(values) / 55.0)) if values.size else None
 
+    reference_embedding = embedding(load16k(args.reference)) if args.reference else None
     manifest = json.loads((args.compare_out / "warped" / "manifest.json").read_text())
     rows = []
     for entry in manifest:
@@ -101,6 +103,9 @@ def main() -> None:
                 "words": len(reference.split()),
                 "hypothesis": hypothesis,
                 "speaker_similarity": float(np.dot(embedding(audio[:half]), embedding(audio[half:]))),
+                "reference_similarity": (
+                    None if reference_embedding is None else float(np.dot(embedding(audio), reference_embedding))
+                ),
                 "seam_loudness_jump_db": abs(voiced_rms_db(before) - voiced_rms_db(after)),
                 "seam_pitch_jump_semitones": (
                     None if pitch_before is None or pitch_after is None else abs(pitch_before - pitch_after)
@@ -117,6 +122,10 @@ def main() -> None:
             "wer": sum(item["errors"] for item in values) / sum(item["words"] for item in values),
             "speaker_similarity_median": statistics.median(item["speaker_similarity"] for item in values),
             "speaker_similarity_min": min(item["speaker_similarity"] for item in values),
+            "reference_similarity_median": (
+                statistics.median(item["reference_similarity"] for item in values)
+                if values[0]["reference_similarity"] is not None else None
+            ),
             "seam_loudness_jump_db_median": statistics.median(item["seam_loudness_jump_db"] for item in values),
             "seam_loudness_jump_db_p90": sorted(item["seam_loudness_jump_db"] for item in values)[int(0.9 * len(values)) - 1],
             "seam_pitch_jump_semitones_median": statistics.median(pitch) if pitch else None,

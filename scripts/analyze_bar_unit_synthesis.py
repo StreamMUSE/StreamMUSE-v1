@@ -84,27 +84,39 @@ def main() -> None:
             path = out / f"r{round_index}-{item:02d}-{unit}.wav"
             _write(path, np.concatenate(pieces))
             rendered[unit] = path.name
-        phrase_parts = units["phrase"]["parts"]
-        bar_parts = units["bars"]["parts"]
-        timing["phrase_moss"].append(phrase_parts[0]["stage_timings_ms"]["moss"])
-        timing["bar0_moss"].append(bar_parts[0]["stage_timings_ms"]["moss"])
-        timing["bar1_moss"].append(bar_parts[1]["stage_timings_ms"]["moss"])
-        timing["bars_moss_total"].append(sum(part["stage_timings_ms"]["moss"] for part in bar_parts))
+        reference = units.get("phrase") or units.get("bars") or units.get("continued")
+        bar_unit = units.get("bars") or units.get("continued")
+        if "phrase" in units:
+            timing["phrase_moss"].append(units["phrase"]["parts"][0]["stage_timings_ms"]["moss"])
+        if "bars" in units:
+            bar_parts = units["bars"]["parts"]
+            timing["bar0_moss"].append(bar_parts[0]["stage_timings_ms"]["moss"])
+            timing["bar1_moss"].append(bar_parts[1]["stage_timings_ms"]["moss"])
+            timing["bars_moss_total"].append(sum(part["stage_timings_ms"]["moss"] for part in bar_parts))
         if "continued" in units:
             timing.setdefault("continued_bar1_moss", []).append(units["continued"]["parts"][1]["stage_timings_ms"]["moss"])
+        # Natural length of each bar's source against its slot: how far R3 has to stretch.
+        for part in bar_unit["parts"]:
+            target = _request(part["request"]).duration_seconds
+            timing.setdefault("source_to_target_ratio", []).append(part["frame_count"] / 24_000 / target)
         manifest.append(
             {
                 "round": round_index,
                 "item": item,
-                "text": units["phrase"]["parts"][0]["request"]["text"],
-                "bar_texts": [part["request"]["text"] for part in bar_parts],
+                "text": " ".join(part["request"]["text"] for part in reference["parts"]),
+                "bar_texts": [part["request"]["text"] for part in bar_unit["parts"]],
                 **rendered,
             }
         )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
     print(
         json.dumps(
-            {name: {"median": round(statistics.median(values), 1), "max": round(max(values), 1)} for name, values in timing.items()},
+            {
+                name: {"median": round(statistics.median(values), 3 if name.endswith("ratio") else 1),
+                       "p95": round(sorted(values)[max(0, int(0.95 * len(values)) - 1)], 3 if name.endswith("ratio") else 1),
+                       "max": round(max(values), 3 if name.endswith("ratio") else 1)}
+                for name, values in timing.items() if values
+            },
             indent=1,
         )
     )
