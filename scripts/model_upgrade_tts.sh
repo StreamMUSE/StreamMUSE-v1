@@ -19,7 +19,7 @@ model=$2; gpu=$3; shift 3
 stop
 tag=$(echo $model | tr '/' '_')
 cd $S
-setsid env HF_HOME=$H/models/huggingface HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=$gpu \
+setsid env HF_HOME=$H/models/huggingface CUDA_VISIBLE_DEVICES=$gpu \
   PATH=$S/.venv/bin:/usr/local/cuda/bin:/usr/bin:/bin \
   $S/.venv/bin/sgl-omni serve --model-path $model --host 127.0.0.1 --port 8501 \
   --allowed-local-media-path $B/media "$@" > $E/$tag.log 2>&1 < /dev/null &
