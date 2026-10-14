@@ -33,6 +33,8 @@ VERSIONS = {
     "v0.1": {"tree": PROJECTS / "StreamMUSE-rap-v0.1", "tag": "rap-v0.1", "url": "http://127.0.0.1:18220", "extra": []},
     "v0.2": {"tree": PROJECTS / "StreamMUSE-rap-v0.2", "tag": "rap-v0.2", "url": "http://127.0.0.1:18320", "extra": ["--rap-protocol", "v2"]},
     "v1.0": {"tree": ROOT, "tag": "rap-v1.0", "url": "http://127.0.0.1:18020", "extra": ["--rap-protocol", "v3"]},
+    # Model upgrade (plan 2026-10-14): the v1.0 client with a newer lyric model and MOSS-TTS-Local on the server.
+    "v1.1": {"tree": ROOT, "tag": "rap-v1.1", "url": "http://127.0.0.1:18620", "extra": ["--rap-protocol", "v3"]},
 }
 FAKE_TIMEOUTS = ["--rap-render-startup-timeout", "600", "--rap-render-rolling-timeout", "60"]
 
