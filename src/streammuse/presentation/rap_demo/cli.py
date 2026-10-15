@@ -559,6 +559,7 @@ def _build_audio_demo(
                 planning_bar_limit=planning_bar_limit,
                 startup_timeout_seconds=args.rap_render_startup_timeout,
                 monotonic=clock,
+                audio_format=audio_format,
             )
             if args.rap_scripted_edits:
                 _install_scripted_edits(controller, args.rap_scripted_edits, tempo)

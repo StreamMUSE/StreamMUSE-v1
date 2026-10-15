@@ -189,7 +189,7 @@ class LyricStreamSession:
         with self._condition:
             state = self._state(bar)
             record = self._by_id.get(lyric_id) if lyric_id else None
-            state.committed_text = text
+            state.committed_text = text or None  # a silent bar has no line to follow
             state.committed_template = record.flow_template if record is not None else self._plan.for_bar(bar).flow_template
             if bar > self._playhead:
                 self._playhead = bar

@@ -26,13 +26,14 @@ import time
 from typing import Protocol
 
 from streammuse.application.rap.alignment import align_exact
+from streammuse.application.rap.audio_rendering import bar_frame_count
 from streammuse.application.rap.audio_service import RapBarRenderer
 from streammuse.application.rap.live_plan import LivePlan
 from streammuse.application.rap.monitoring_payloads import bounded_chunk_event_payload, flow_template_payload
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.application.rap.service import ProsodyAnalyzer
 from streammuse.domain.rap import CandidateRequest, RapScenario, ScenarioSegment, materialize_flow
-from streammuse.domain.rap.audio import PreparedRapBar
+from streammuse.domain.rap.audio import AudioFormat, PcmAudio, PreparedRapBar
 from streammuse.domain.rap.events import RapEventType
 from streammuse.domain.rap.lyric_stream import (
     LYRIC_STREAM_SCHEMA_VERSION,
@@ -47,6 +48,8 @@ SOURCE_REMOTE_LATEST = "remote_latest"
 SOURCE_REMOTE_OLDER = "remote_older"
 SOURCE_ESPEAK_STREAM = "espeak_stream_lyric"
 SOURCE_ESPEAK_LOCAL = "espeak_local_lyric"
+# Last resort when nothing at all is ready at commit (should not happen while local fallbacks render).
+SOURCE_SILENCE = "silence"
 _RETRY_SLEEP_SECONDS = 0.05
 
 
@@ -136,6 +139,7 @@ class BarStreamController:
         fetch_executor: Executor | None = None,
         render_executor: Executor | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        audio_format: AudioFormat | None = None,
     ) -> None:
         if tempo.ticks_per_beat != 4 or tempo.beats_per_bar != 4:
             raise ValueError("lyric stream bars require 4/4 with four ticks per beat")
@@ -163,6 +167,7 @@ class BarStreamController:
         self._fetch_executor = fetch_executor or ThreadPoolExecutor(max_workers=3, thread_name_prefix="rap-bar-fetch")
         self._render_executor = render_executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="rap-bar-espeak")
         self._clock = monotonic
+        self._audio_format = audio_format or AudioFormat()
         self._lock = RLock()
         self._epoch = 0
         self._started = False
@@ -505,11 +510,21 @@ class BarStreamController:
                     self._slot(record.bar).espeak[record.lyric_id] = prepared
 
     def _render_local_fallback(self, epoch: int, bar: int) -> None:
+        try:
+            self._render_local_fallback_unguarded(epoch, bar)
+        except Exception as error:  # an executor would swallow it; the commit then has no local line
+            self._emit(RapEventType.PRESENTATION_ERROR, bar=bar, payload={
+                "component": "local_fallback", "message": f"{type(error).__name__}: {error}"[:512],
+            })
+
+    def _render_local_fallback_unguarded(self, epoch: int, bar: int) -> None:
         with self._lock:
             entry = self._plan.for_bar(bar)
             context = tuple(text for _, text in self._history[-4:])
         segment = ScenarioSegment(bar, 1, entry.topic, entry.flow_template.template_id, ())
-        line = self._fallback_catalog.line_for(
+        # After a live edit the bar's topic or template may not be in the scenario's catalog.
+        lookup = getattr(self._fallback_catalog, "line_for_any", self._fallback_catalog.line_for)
+        line = lookup(
             CandidateRequest(
                 request_id=f"{self._base_session_id}-bar-{bar}-local",
                 target_bar=bar,
@@ -580,15 +595,18 @@ class BarStreamController:
         elif slot.local is not None:
             choice, prepared = SOURCE_ESPEAK_LOCAL, slot.local
         if prepared is None:
+            # Nothing at all is ready: commit a silent bar so playback, the playhead and the
+            # server's lyric window still move on (a missing bar would stall all of them).
             self._emit(RapEventType.PRESENTATION_ERROR, bar=bar, payload={
-                "component": "bar_stream", "message": "no audio of any kind was ready at commit",
+                "component": "bar_stream", "message": "no audio of any kind was ready at commit; playing silence",
             })
-            return None
+            choice, prepared = SOURCE_SILENCE, self._silent_bar(bar)
         fallback_reason = None if choice == SOURCE_REMOTE_LATEST else choice
         prepared = replace(prepared, fallback_reason=fallback_reason)
         slot.committed, slot.committed_choice = prepared, choice
         self._playhead = max(self._playhead, bar)
-        self._history.append((bar, prepared.text))
+        if prepared.text:
+            self._history.append((bar, prepared.text))
         lyric_id = record.lyric_id if record is not None else None
         payload = {
             "text": prepared.text,
@@ -626,6 +644,15 @@ class BarStreamController:
         return prepared
 
     # -- helpers ----------------------------------------------------------------------
+
+    def _silent_bar(self, bar: int) -> PreparedRapBar:
+        frames = bar_frame_count(bar, self._tempo, self._audio_format)
+        width = self._audio_format.channels * self._audio_format.sample_width_bytes
+        return PreparedRapBar(
+            bar=bar, text="", source=SOURCE_SILENCE, fallback_reason=SOURCE_SILENCE, scheduled=(),
+            audio=PcmAudio(self._audio_format, frames, bytes(frames * width)),
+            diagnostics=(), warnings=(), render_latency_ms=0.0,
+        )
 
     def _base_plan(self) -> LivePlan:
         def base(bar: int):

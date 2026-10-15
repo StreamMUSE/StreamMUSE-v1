@@ -396,7 +396,7 @@ class SglangMossSynthesizer:
                 download_finished = self._clock()
             response = None
             execution.checkpoint()
-            if self._config.resample_output:
+            if getattr(self._config, "resample_output", False):  # MLX configs have no such option
                 _to_24k_mono_pcm16(partial_path)
             if padded_prefix is not None:
                 _cut_prefix(

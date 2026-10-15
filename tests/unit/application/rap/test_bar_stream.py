@@ -15,6 +15,7 @@ from streammuse.application.rap.bar_stream import (
     BarStreamController,
 )
 from streammuse.domain.rap import ProsodyAnalysis, Syllable, materialize_flow, normalize_text
+from streammuse.application.rap.audio_rendering import bar_frame_count
 from streammuse.domain.rap.audio import AudioFormat, PcmAudio, PreparedRapBar
 from streammuse.domain.rap.lyric_stream import BarAudioManifest, BarLyricRecord
 from streammuse.domain.timing import Tempo
@@ -290,5 +291,70 @@ def test_an_older_revision_already_fetched_is_not_fetched_again() -> None:
 
         assert source.calls == [(1, bar1_new.lyric_id, False)]
         assert enqueued[-1].source == "remote:1"
+    finally:
+        controller.close()
+
+
+class _FailingCatalog:
+    def line_for(self, request):
+        raise ValueError("no prevalidated fallback for this topic")
+
+
+def test_nothing_ready_at_commit_plays_silence_and_keeps_moving() -> None:
+    stream, source, enqueued, publisher = _Stream(), _Source(), [], _Publisher()
+    bar0 = _record(0)
+    source.ready[bar0.lyric_id] = _fetch(bar0)
+    controller = _controller(stream, source, enqueued, publisher)
+    controller._fallback_catalog = _FailingCatalog()
+    thread = threading.Thread(target=controller.start)
+    thread.start()
+    deadline = time.monotonic() + 2
+    while stream.handler is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    _push(stream, bar0)
+    thread.join(5)
+    try:
+        # bar 1: no lyric, no remote audio and the local fallback fails.
+        controller.on_tick(15)
+
+        silent = enqueued[-1]
+        assert silent.bar == 1 and silent.source == "silence" and not any(silent.audio.data)
+        assert silent.audio.frame_count == bar_frame_count(1, Tempo(90.0, 4, 4), AudioFormat())
+        assert stream.sent[-1] == {"type": "committed", "bar": 1, "lyric_id": None, "source": "silence", "text": ""}
+        assert controller.next_editable_bar == 2  # the playhead moved on
+        errors = [kwargs["payload"]["component"] for kind, kwargs in publisher.events if kind.value == "presentation_error"]
+        assert "local_fallback" in errors and "bar_stream" in errors
+    finally:
+        controller.close()
+
+
+def test_local_fallback_after_an_edit_to_a_new_topic_uses_any_matching_line() -> None:
+    class _EditAwareCatalog(_Catalog):
+        def line_for(self, request):
+            if request.topic != "space":
+                raise ValueError("no prevalidated fallback for this topic")
+            return super().line_for(request)
+
+        def line_for_any(self, request):
+            return super().line_for(request)
+
+    stream, source, enqueued = _Stream(), _Source(), []
+    bar0 = _record(0)
+    source.ready[bar0.lyric_id] = _fetch(bar0)
+    controller = _controller(stream, source, enqueued)
+    controller._fallback_catalog = _EditAwareCatalog()
+    thread = threading.Thread(target=controller.start)
+    thread.start()
+    deadline = time.monotonic() + 2
+    while stream.handler is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    _push(stream, bar0)
+    thread.join(5)
+    try:
+        controller.update_plan(from_bar=1, topic="volcano")
+        controller.on_tick(15)
+
+        assert enqueued[-1].bar == 1 and enqueued[-1].source.startswith("espeak:local")
+        assert stream.sent[-1]["source"] == SOURCE_ESPEAK_LOCAL
     finally:
         controller.close()

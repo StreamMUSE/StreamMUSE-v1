@@ -80,6 +80,33 @@ class PrevalidatedFallbackCatalog:
         return PrevalidatedFallbackLine(analysis=analysis)
 
 
+    def line_for_any(self, bar_context: CandidateRequest) -> PrevalidatedFallbackLine:
+        """``line_for``, else a line of the same template under any topic, else any line with the
+        template's syllable count, so a live edit to a new topic or template still has a fallback."""
+        try:
+            return self.line_for(bar_context)
+        except ValueError:
+            pass
+        needed = bar_context.required_syllables
+        same_template = [
+            analysis
+            for (_, template_id), lines in sorted(self._lines.items())
+            if template_id == bar_context.template_id
+            for analysis in lines
+            if len(analysis.syllables) == needed
+        ]
+        same_count = [
+            analysis
+            for _, lines in sorted(self._lines.items())
+            for analysis in lines
+            if len(analysis.syllables) == needed
+        ]
+        for pool in (same_template, same_count):
+            if pool:
+                return PrevalidatedFallbackLine(analysis=pool[bar_context.target_bar % len(pool)])
+        raise ValueError(f"no prevalidated fallback line has {needed} syllables")
+
+
 def normalize_topic(topic: str) -> str:
     """Normalize a scenario or request topic at the fallback lookup boundary."""
     if not isinstance(topic, str):

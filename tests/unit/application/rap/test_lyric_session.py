@@ -274,3 +274,17 @@ def test_edit_seq_must_increase() -> None:
             session.apply_edit(PlanEdit(edit_seq=2, from_bar=0, topic="code"))
     finally:
         session.close()
+
+
+def test_a_silent_commit_leaves_no_line_to_follow() -> None:
+    listener = _Listener()
+    session = _session(listener=listener)
+    try:
+        _wait(lambda: len(listener.lyrics) >= 1)
+        session.committed(0, None, "")
+
+        assert session._bars[0].committed_text is None
+        # The next line follows the line written for bar 0, never an empty one.
+        assert session._line_for_locked(0, session._bars[0]) == listener.lyrics[0].text
+    finally:
+        session.close()
