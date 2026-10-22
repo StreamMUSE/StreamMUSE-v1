@@ -22,6 +22,7 @@ class PrevalidatedFallbackLine:
 
     analysis: ProsodyAnalysis
     source: str = "prevalidated_fallback"
+    topic: str | None = None
 
     @property
     def text(self) -> str:
@@ -77,7 +78,7 @@ class PrevalidatedFallbackCatalog:
                 "fallback request syllable count does not match configured template: "
                 f"{bar_context.required_syllables}!={len(analysis.syllables)}"
             )
-        return PrevalidatedFallbackLine(analysis=analysis)
+        return PrevalidatedFallbackLine(analysis=analysis, topic=bar_context.topic)
 
 
     def line_for_any(self, bar_context: CandidateRequest) -> PrevalidatedFallbackLine:
@@ -89,21 +90,22 @@ class PrevalidatedFallbackCatalog:
             pass
         needed = bar_context.required_syllables
         same_template = [
-            analysis
-            for (_, template_id), lines in sorted(self._lines.items())
+            (topic, analysis)
+            for (topic, template_id), lines in sorted(self._lines.items())
             if template_id == bar_context.template_id
             for analysis in lines
             if len(analysis.syllables) == needed
         ]
         same_count = [
-            analysis
-            for _, lines in sorted(self._lines.items())
+            (topic, analysis)
+            for (topic, _), lines in sorted(self._lines.items())
             for analysis in lines
             if len(analysis.syllables) == needed
         ]
         for pool in (same_template, same_count):
             if pool:
-                return PrevalidatedFallbackLine(analysis=pool[bar_context.target_bar % len(pool)])
+                topic, analysis = pool[bar_context.target_bar % len(pool)]
+                return PrevalidatedFallbackLine(analysis=analysis, topic=topic)
         raise ValueError(f"no prevalidated fallback line has {needed} syllables")
 
 

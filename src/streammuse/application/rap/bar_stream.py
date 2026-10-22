@@ -29,7 +29,11 @@ from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.audio_rendering import bar_frame_count
 from streammuse.application.rap.audio_service import RapBarRenderer
 from streammuse.application.rap.live_plan import LivePlan
-from streammuse.application.rap.monitoring_payloads import bounded_chunk_event_payload, flow_template_payload
+from streammuse.application.rap.monitoring_payloads import (
+    bounded_chunk_event_payload,
+    flow_template_payload,
+    scheduled_syllables_payload,
+)
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.application.rap.service import ProsodyAnalyzer
 from streammuse.domain.rap import CandidateRequest, RapScenario, ScenarioSegment, materialize_flow
@@ -104,6 +108,7 @@ class _Slot:
     remote_continued: dict[str, bool] = field(default_factory=dict)
     espeak: dict[str, PreparedRapBar] = field(default_factory=dict)
     local: PreparedRapBar | None = None
+    local_plan: PlannedRapBar | None = None
     local_requested: bool = False
     fetching: set[str] = field(default_factory=set)
     espeak_requested: set[str] = field(default_factory=set)
@@ -181,6 +186,7 @@ class BarStreamController:
         self._history: list[tuple[int, str]] = []
         self._plan = self._base_plan()
         self._edit_seq = 0
+        self._latest_plan_edit: dict[str, object] | None = None
 
     # -- public lifecycle (same surface as RollingRapChunkController) ------------------
 
@@ -197,6 +203,15 @@ class BarStreamController:
         """The first bar a listener edit can still change."""
         with self._lock:
             return self._playhead + 1
+
+    @property
+    def plan_control_state(self) -> dict[str, object]:
+        """An atomic control snapshot, including the original target of the last edit."""
+        with self._lock:
+            return {
+                "next_editable_bar": self._playhead + 1,
+                "last_edit": dict(self._latest_plan_edit) if self._latest_plan_edit else None,
+            }
 
     @property
     def session_id(self) -> str:
@@ -270,16 +285,22 @@ class BarStreamController:
             effective = max(from_bar, self._playhead + 1)
             for bar, slot in self._slots.items():
                 if bar >= effective and slot.committed is None:
-                    slot.local = None
+                    # Keep playable audio until its replacement is fully rendered.
                     slot.local_requested = False
             self._ensure_window_locked()
-            self._emit(RapEventType.PLAN_EDITED, bar=effective, tick=self._last_tick if self._last_tick >= 0 else None, payload={
+            self._latest_plan_edit = {
+                "coordinator_epoch": self._epoch,
                 "edit_seq": edit.edit_seq,
                 "from_bar": from_bar,
                 "effective_from_bar": effective,
                 "topic": topic,
                 "template_id": template_id,
-            })
+            }
+            self._emit(
+                RapEventType.PLAN_EDITED, bar=effective,
+                tick=self._last_tick if self._last_tick >= 0 else None,
+                payload=dict(self._latest_plan_edit),
+            )
         self._lyric_stream.send({"type": "update", "edit": edit.to_payload()})
         return edit
 
@@ -330,6 +351,7 @@ class BarStreamController:
             self._history.clear()
             self._plan = self._base_plan()
             self._edit_seq = 0
+            self._latest_plan_edit = None
             epoch = self._epoch
         self._close_stream()
         return epoch
@@ -519,28 +541,51 @@ class BarStreamController:
 
     def _render_local_fallback_unguarded(self, epoch: int, bar: int) -> None:
         with self._lock:
+            if epoch != self._epoch or self._closed:
+                return
             entry = self._plan.for_bar(bar)
             context = tuple(text for _, text in self._history[-4:])
-        segment = ScenarioSegment(bar, 1, entry.topic, entry.flow_template.template_id, ())
-        # After a live edit the bar's topic or template may not be in the scenario's catalog.
-        lookup = getattr(self._fallback_catalog, "line_for_any", self._fallback_catalog.line_for)
-        line = lookup(
-            CandidateRequest(
-                request_id=f"{self._base_session_id}-bar-{bar}-local",
-                target_bar=bar,
-                topic=entry.topic,
-                flow_template=entry.flow_template,
-                count=1,
-                context_lines=context,
-                seed=self._seed + bar,
-            )
+        request = CandidateRequest(
+            request_id=f"{self._base_session_id}-bar-{bar}-local",
+            target_bar=bar,
+            topic=entry.topic,
+            flow_template=entry.flow_template,
+            count=1,
+            context_lines=context,
+            seed=self._seed + bar,
         )
+        topic, template = entry.topic, entry.flow_template
+        try:
+            line = self._fallback_catalog.line_for(request)
+        except ValueError as error:
+            # Live topics are open-ended; preserve the catalogue line's real topic
+            # rather than label safety audio as a successful listener edit.
+            lookup = getattr(self._fallback_catalog, "line_for_any", self._fallback_catalog.line_for)
+            try:
+                line = lookup(request)
+                topic = getattr(line, "topic", None) or "prevalidated fallback"
+            except ValueError:
+                base = self._scenario.segment_for_bar(bar)
+                base_template = self._templates.get(base.template_id)
+                line = self._fallback_catalog.line_for(replace(
+                    request, topic=base.topic, flow_template=base_template,
+                ))
+                topic = base.topic
+                if len(line.analysis.syllables) != len(template.slots):
+                    template = base_template
+            self._emit(RapEventType.PRESENTATION_ERROR, bar=bar, payload={
+                "component": "fallback_catalog", "recoverable": True,
+                "message": (
+                    f"{error}; safety audio uses a prevalidated {topic!r} line "
+                    "until generated lyrics are ready."
+                )[:512],
+            })
         plan = PlannedRapBar(
             bar=bar,
-            segment=segment,
-            template=entry.flow_template,
+            segment=ScenarioSegment(bar, 1, topic, template.template_id, ()),
+            template=template,
             analysis=line.analysis,
-            scheduled=align_exact(line.analysis, materialize_flow(entry.flow_template, bar)),
+            scheduled=align_exact(line.analysis, materialize_flow(template, bar)),
             text=line.text,
             source=line.source,
             fallback_reason="lyric_missing",
@@ -548,8 +593,10 @@ class BarStreamController:
         prepared = self._render_plan(epoch, plan)
         if prepared is not None:
             with self._lock:
-                if epoch == self._epoch:
-                    self._slot(bar).local = prepared
+                slot = self._slots.get(bar)
+                if (epoch == self._epoch and not self._closed and slot is not None
+                        and slot.committed is None and self._plan.for_bar(bar) == entry):
+                    slot.local, slot.local_plan = prepared, plan
 
     def _render_plan(self, epoch: int, plan: PlannedRapBar) -> PreparedRapBar | None:
         with self._lock:
@@ -608,6 +655,11 @@ class BarStreamController:
         if prepared.text:
             self._history.append((bar, prepared.text))
         lyric_id = record.lyric_id if record is not None else None
+        local_plan = slot.local_plan
+        played_flow = (record.flow_template if record is not None else
+                       local_plan.template if local_plan is not None else self._plan.for_bar(bar).flow_template)
+        played_topic = (record.topic if record is not None else
+                        local_plan.segment.topic if local_plan is not None else self._plan.for_bar(bar).topic)
         payload = {
             "text": prepared.text,
             "source": prepared.source,
@@ -617,8 +669,12 @@ class BarStreamController:
             "lyric_id": lyric_id,
             "revision": record.revision if record is not None else None,
             "latest_revision": latest.revision if latest is not None else None,
-            "topic": record.topic if record is not None else self._plan.for_bar(bar).topic,
-            "template_id": (record.flow_template if record is not None else self._plan.for_bar(bar).flow_template).template_id,
+            "topic": played_topic,
+            "template_id": played_flow.template_id,
+            "flow": flow_template_payload(played_flow),
+            "scheduled_syllables": scheduled_syllables_payload(
+                record.scheduled if record is not None else prepared.scheduled, bar=bar,
+            ),
             "remote_ready_lead_ms": (
                 (self._commit_time_locked(bar) - slot.remote_ready_at[lyric_id]) * 1000.0
                 if lyric_id is not None and lyric_id in slot.remote_ready_at and self._clock_origin is not None

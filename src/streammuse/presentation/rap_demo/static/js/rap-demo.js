@@ -19,6 +19,7 @@ const monitor = {
 };
 
 const element = (id) => document.getElementById(id);
+const planControls = window.StreamMuseRapPlan?.mount(document);
 
 function setText(id, value, fallback = "--") {
   const node = element(id);
@@ -768,6 +769,7 @@ function render() {
   renderAudio(snapshot);
   renderHistory(snapshot);
   renderEvents();
+  planControls?.update(snapshot, monitor.events, current, barViews(snapshot));
 }
 
 async function refreshSnapshot() {
@@ -802,6 +804,7 @@ function scheduleSnapshotRefresh() {
 function connectionState(state, label) {
   element("connection").dataset.state = state;
   setText("connection-label", label);
+  planControls?.connection(state === "live");
 }
 
 function connect() {
@@ -862,6 +865,7 @@ async function sendControl(action) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.detail || `Control request failed (${response.status})`);
     if (monitor.snapshot && monitor.snapshot.audio && body.state) monitor.snapshot.audio.state = body.state;
+    if (action === "reset") planControls?.reset();
     setText("last-error", "none");
     element("last-error").classList.remove("has-error");
     render();

@@ -20,6 +20,9 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from streammuse.application.rap.monitoring_payloads import flow_template_payload
+from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
+
 
 STATIC_DIR = Path(__file__).parent / "static"
 _POLL_INTERVAL_S = 0.02
@@ -163,24 +166,61 @@ class _MonitorLifecycle:
             reset()
         return {"state": "stopped"}
 
-    def plan_control(self, payload: dict[str, Any]) -> dict[str, object]:
+    def plan_control_options(self) -> dict[str, object]:
+        """Describe live-edit capabilities without starting the runtime."""
+        controller = getattr(self.runtime, "controller", None)
+        supported = callable(getattr(controller, "update_plan", None))
+        result: dict[str, object] = {
+            "supported": supported,
+            "templates": [],
+            "next_editable_bar": None,
+            "state": self._runtime_state() or "unknown",
+        }
+        if supported:
+            state = _controller_plan_state(controller)
+            result["next_editable_bar"] = state["next_editable_bar"]
+            if "last_edit" in state:
+                result["last_edit"] = _json_safe(state["last_edit"])
+            # TemplateCatalog currently exposes lookup only, not enumeration.
+            catalog = getattr(controller, "_templates", BUILTIN_TEMPLATES)
+            templates = catalog if isinstance(catalog, Mapping) else getattr(catalog, "_by_id", {})
+            result["templates"] = [flow_template_payload(template) for template in templates.values()]
+        return result
+
+    def plan_control(self, payload: object) -> dict[str, object]:
         """A listener's live theme/flow edit (protocol v3 controllers only)."""
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="plan edit must be a JSON object")
         controller = getattr(self.runtime, "controller", None)
         update_plan = getattr(controller, "update_plan", None)
         if not callable(update_plan):
             raise HTTPException(status_code=404, detail="runtime does not support live plan edits")
         topic = payload.get("topic")
         template_id = payload.get("template_id")
+        for name, value in (("topic", topic), ("template_id", template_id)):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise HTTPException(status_code=422, detail=f"{name} must be a non-empty string")
         if topic is None and template_id is None:
             raise HTTPException(status_code=422, detail="plan edit needs a topic or a template_id")
+        next_editable_bar = _controller_plan_state(controller)["next_editable_bar"]
         from_bar = payload.get("from_bar")
         if from_bar is None:
-            from_bar = getattr(controller, "next_editable_bar", 0)
+            from_bar = next_editable_bar
+        if isinstance(from_bar, bool) or not isinstance(from_bar, (int, str)):
+            raise HTTPException(status_code=422, detail="from_bar must be a non-negative integer")
         try:
-            edit = update_plan(from_bar=int(from_bar), topic=topic, template_id=template_id)
-        except ValueError as error:
+            from_bar = int(from_bar)
+            if from_bar < 0:
+                raise ValueError("from_bar must be a non-negative integer")
+            edit = update_plan(from_bar=from_bar, topic=topic, template_id=template_id)
+        except (ValueError, KeyError, TypeError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        return {"edit_seq": edit.edit_seq, "from_bar": edit.from_bar}
+        state = _controller_plan_state(controller)
+        effective_from_bar = max(edit.from_bar, state["next_editable_bar"])
+        last_edit = state.get("last_edit")
+        if isinstance(last_edit, Mapping) and last_edit.get("edit_seq") == edit.edit_seq:
+            effective_from_bar = last_edit.get("effective_from_bar", effective_from_bar)
+        return {"edit_seq": edit.edit_seq, "from_bar": edit.from_bar, "effective_from_bar": effective_from_bar}
 
     async def connect(self, websocket: WebSocket) -> None:
         """Send an authoritative snapshot plus its ordered live-event catch-up."""
@@ -353,9 +393,17 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
     async def reset_runtime() -> object:
         return lifecycle.reset_control()
 
+    @app.get("/api/control/plan")
+    async def plan_options() -> object:
+        return lifecycle.plan_control_options()
+
     @app.post("/api/control/plan")
     async def plan_runtime(request: Request) -> object:
-        return lifecycle.plan_control(await request.json())
+        try:
+            payload = await request.json()
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="plan edit must contain valid JSON") from error
+        return lifecycle.plan_control(payload)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
@@ -371,6 +419,13 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
             await lifecycle.connections.remove(websocket)
 
     return app
+
+
+def _controller_plan_state(controller: object) -> Mapping[str, Any]:
+    state = getattr(controller, "plan_control_state", None)
+    if isinstance(state, Mapping):
+        return state
+    return {"next_editable_bar": getattr(controller, "next_editable_bar", 0)}
 
 
 def _event_payload(value: object) -> object:

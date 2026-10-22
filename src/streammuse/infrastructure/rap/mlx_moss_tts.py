@@ -56,6 +56,7 @@ class MlxMossConfig:
     response_byte_limit: int = 64 * 1024 * 1024
     maximum_audio_seconds: float = 30.0
     base_seed: int = DEFAULT_BASE_SEED
+    resample_output: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base_url", _validated_base_url(self.base_url))

@@ -96,12 +96,49 @@ report `developing-logs/reports/2026-10-12-rap-lyric-stream-implementation-repor
 ```bash
 uv run streammuse-rap-demo --rap-audio-renderer moss_aligned_remote \
   --rap-protocol v3 --rap-audio-transport opus \
-  --rap-render-url http://127.0.0.1:18020 --tempo 90
+  --rap-render-url http://127.0.0.1:18020 --tempo 90 \
+  --audio-output composite --max-bars 0 --port 8012
 ```
 
-Live edits: while v3 runs, `POST /api/control/plan` on the demo website with
+Open `http://127.0.0.1:8012/` on the Mac and press **Start**. In **Direct upcoming
+bars**, enter a topic, choose a flow, or both, then press **Apply**. Blank topic
+and **Keep current flow** leave that field unchanged. Selecting a flow previews
+its syllable timing and stress; it does not submit an edit.
+
+Changes are **ASAP**, not delayed by a fixed number of bars. The browser omits
+`from_bar`; the controller chooses the next uncommitted bar at submission time.
+The displayed target uses human-readable, one-based bar numbers. **Requested**
+is not a guarantee that the replacement will meet its audio deadline: the
+status reports queued audio, the settings actually played, eSpeak vocals, or
+an older/local fallback. Playback and the existing diagnostics remain live.
+Controls are disabled while stopped/disconnected and for non-v3 runtimes.
+
+For a slower v3 trial, use `--tempo 50` (4.8 seconds per bar). This gives
+generation more time but does not cure a stalled SSH connection. After a topic
+edit, the client retains prepared safety audio until its replacement is ready.
+If no generated lyric is available for a new topic, it can use a clearly
+reported, prevalidated line from the original scenario rather than go silent;
+that safety line is not counted as the requested topic having applied.
+If all audio preparation fails, v3 advances with a silent bar instead of
+stalling the session. The edit status reports silence and keeps the change
+pending; it does not count a silent bar as a successfully played edit.
+
+If the page loads but remote vocals do not arrive, test the render service
+through the same forwarded port as `--rap-render-url`, for example:
+
+```bash
+curl --fail --max-time 10 http://127.0.0.1:18420/health
+```
+
+The current GPU1 test deployment uses local port `18420` forwarded to H200 port
+`8620`; other launches in this guide use different ports. A healthy website
+alone does not establish that the H200 connection is working.
+
+The same API is available for scripts: `POST /api/control/plan` on the demo website with
 `{"topic": "volcano"}`, `{"template_id": "baseline_straight_9"}` or both
-(optional `"from_bar"`, default the next editable bar). For headless runs,
+(optional zero-based `"from_bar"`, default the next editable bar).
+`GET /api/control/plan` reports editing capability, available templates, and the
+last edit. For headless runs,
 `--rap-scripted-edits "12:topic=volcano;20@1:template=baseline_straight_9"`
 applies each edit in the middle of the bar `notice` bars before it (`bar@notice`,
 default notice 2). Summarize a session with

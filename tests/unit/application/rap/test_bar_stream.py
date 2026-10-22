@@ -18,7 +18,9 @@ from streammuse.domain.rap import ProsodyAnalysis, Syllable, materialize_flow, n
 from streammuse.application.rap.audio_rendering import bar_frame_count
 from streammuse.domain.rap.audio import AudioFormat, PcmAudio, PreparedRapBar
 from streammuse.domain.rap.lyric_stream import BarAudioManifest, BarLyricRecord
+from streammuse.domain.rap.events import RapEventType
 from streammuse.domain.timing import Tempo
+from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
 from streammuse.infrastructure.rap.scenarios import default_scenario
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 
@@ -34,6 +36,19 @@ class _Inline(Executor):
             future.set_result(fn(*args, **kwargs))
         except BaseException as error:
             future.set_exception(error)
+        return future
+
+
+class _Pausable(_Inline):
+    def __init__(self):
+        self.paused = False
+        self.pending = []
+
+    def submit(self, fn, /, *args, **kwargs):
+        if not self.paused:
+            return super().submit(fn, *args, **kwargs)
+        future = Future()
+        self.pending.append((future, fn, args, kwargs))
         return future
 
 
@@ -139,8 +154,8 @@ class _Publisher:
         self.events.append((event_type, kwargs))
 
 
-def _controller(stream, source, enqueued, publisher=None, clock=time.monotonic):
-    return BarStreamController(
+def _controller(stream, source, enqueued, publisher=None, clock=time.monotonic, **overrides):
+    options = dict(
         tempo=Tempo(90.0, 4, 4),
         scenario=default_scenario(),
         templates=BUILTIN_TEMPLATES,
@@ -160,14 +175,16 @@ def _controller(stream, source, enqueued, publisher=None, clock=time.monotonic):
         render_executor=_Inline(),
         monotonic=clock,
     )
+    options.update(overrides)
+    return BarStreamController(**options)
 
 
 def _push(stream, record):
     stream.handler({"type": "lyric", "record": record.to_payload()})
 
 
-def _start_with(stream, source, enqueued, *records, publisher=None):
-    controller = _controller(stream, source, enqueued, publisher)
+def _start_with(stream, source, enqueued, *records, publisher=None, **options):
+    controller = _controller(stream, source, enqueued, publisher, **options)
     thread = threading.Thread(target=controller.start)
     thread.start()
     deadline = time.monotonic() + 2
@@ -257,6 +274,84 @@ def test_listener_edit_is_sent_and_resets_local_fallbacks_for_uncommitted_bars()
         assert update["type"] == "update" and update["edit"]["topic"] == "deep sea"
         assert update["edit"]["edit_seq"] == edit.edit_seq == 1
         assert update["edit"]["flow_template"]["template_id"] == "baseline_straight_9"
+        assert controller.plan_control_state["last_edit"]["effective_from_bar"] == 2
+        assert controller.plan_control_state["next_editable_bar"] == 1
+        controller.reset()
+        assert controller.plan_control_state["last_edit"] is None
+    finally:
+        controller.close()
+
+
+def test_unknown_live_topic_keeps_local_safety_audio_for_new_bars() -> None:
+    scenario = default_scenario()
+    analysis = _Analyzer().analyze(" ".join(["local"] * 9))
+    catalog = PrevalidatedFallbackCatalog({
+        (segment.topic, segment.template_id): (analysis,) for segment in scenario.segments
+    })
+    stream, source, enqueued, publisher = _Stream(), _Source(), [], _Publisher()
+    bar0 = _record(0)
+    source.ready[bar0.lyric_id] = _fetch(bar0)
+    controller = _start_with(stream, source, enqueued, bar0, publisher=publisher, fallback_catalog=catalog)
+    try:
+        controller.update_plan(from_bar=1, topic="rainbows", template_id="baseline_straight_9")
+        stream.handler({"type": "superseded", "bars": [1, 2, 3]})
+        # No new lyric or remote audio arrives. Cross the original prepared window.
+        for bar in range(1, 8):
+            controller.on_tick(bar * 16 - 1)
+
+        assert [audio.bar for audio in enqueued] == list(range(8))
+        frozen = [data["payload"] for kind, data in publisher.events if kind == RapEventType.BAR_FROZEN]
+        assert all(item["choice"] == SOURCE_ESPEAK_LOCAL for item in frozen[1:])
+        assert all(item["topic"] != "rainbows" for item in frozen[1:])
+        assert all(item["template_id"] == "baseline_straight_9" for item in frozen[1:])
+        assert any(kind == RapEventType.PRESENTATION_ERROR and data["payload"]["component"] == "fallback_catalog"
+                   for kind, data in publisher.events)
+    finally:
+        controller.close()
+
+
+def test_live_edit_retains_ready_fallback_while_replacement_is_pending() -> None:
+    stream, source, enqueued, publisher = _Stream(), _Source(), [], _Publisher()
+    executor = _Pausable()
+    bar0 = _record(0)
+    source.ready[bar0.lyric_id] = _fetch(bar0)
+    controller = _start_with(stream, source, enqueued, bar0, publisher=publisher, render_executor=executor)
+    try:
+        executor.paused = True
+        controller.update_plan(from_bar=1, topic="rainbows", template_id="baseline_straight_9")
+        stream.handler({"type": "superseded", "bars": [1, 2, 3]})
+        controller.on_tick(15)
+
+        assert [audio.bar for audio in enqueued] == [0, 1]
+        frozen = [data["payload"] for kind, data in publisher.events if kind == RapEventType.BAR_FROZEN][-1]
+        assert frozen["choice"] == SOURCE_ESPEAK_LOCAL
+        assert frozen["topic"] == "space"
+        assert frozen["template_id"] == "baseline_syncopated_9"
+    finally:
+        controller.close()
+
+
+def test_committed_flow_is_the_played_revision_not_the_latest_reserved_flow() -> None:
+    from dataclasses import replace
+    from streammuse.domain.rap.events import RapEventType
+
+    stream, source, enqueued, publisher = _Stream(), _Source(), [], _Publisher()
+    bar0 = _record(0)
+    source.ready[bar0.lyric_id] = _fetch(bar0)
+    controller = _start_with(stream, source, enqueued, bar0, publisher=publisher)
+    try:
+        old = _record(1)
+        template = BUILTIN_TEMPLATES.get("baseline_staggered_9")
+        new = replace(_record(1, 1), flow_template=template,
+                      scheduled=align_exact(_Analyzer().analyze(old.text), materialize_flow(template, 1)))
+        source.ready[old.lyric_id] = _fetch(old)
+        _push(stream, old)
+        _push(stream, new)
+        controller.on_tick(15)
+        frozen = [data for kind, data in publisher.events if kind == RapEventType.BAR_FROZEN][-1]["payload"]
+        assert frozen["choice"] == SOURCE_REMOTE_OLDER
+        assert frozen["flow"]["template_id"] == old.flow_template.template_id
+        assert len(frozen["scheduled_syllables"]) == len(old.scheduled)
     finally:
         controller.close()
 

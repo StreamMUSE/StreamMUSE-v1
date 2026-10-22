@@ -19,6 +19,7 @@ from streammuse.application.rap.runtime import RapAudioDemoDependencies
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
 from streammuse.domain.rap import PlaybackState
 from streammuse.domain.timing import Tempo
+from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES, TemplateCatalog
 from streammuse.presentation.rap_demo.server import _ConnectionPool, _MonitorLifecycle, create_app
 
 
@@ -667,7 +668,7 @@ def test_plan_control_forwards_live_edits_to_a_v3_controller(tmp_path: Path) -> 
     with TestClient(app) as client:
         response = client.post("/api/control/plan", json={"topic": "deep sea"})
         assert response.status_code == 200
-        assert response.json() == {"edit_seq": 1, "from_bar": 7}
+        assert response.json() == {"edit_seq": 1, "from_bar": 7, "effective_from_bar": 7}
         assert runtime.controller.edits == [(7, "deep sea", None)]
         assert client.post("/api/control/plan", json={}).status_code == 422
         assert client.post("/api/control/plan", json={"template_id": "missing"}).status_code == 422
@@ -677,3 +678,237 @@ def test_plan_control_is_unavailable_without_a_v3_controller(tmp_path: Path) -> 
     app, _, _ = _app(tmp_path)
     with TestClient(app) as client:
         assert client.post("/api/control/plan", json={"topic": "x"}).status_code == 404
+
+
+def test_plan_controls_are_discoverable_before_start_with_full_flow_previews(tmp_path: Path) -> None:
+    runtime = ControllableFakeRuntime(tmp_path)
+    runtime.controller = _PlanController()
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    with TestClient(app) as client:
+        response = client.get("/api/control/plan")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["supported"] is True
+        assert payload["state"] == "stopped"
+        assert payload["next_editable_bar"] == 7
+        assert payload.get("last_edit") is None
+        assert "current_plan" not in payload
+        assert runtime.start_calls == 0
+        templates = {item["template_id"]: item for item in payload["templates"]}
+        assert set(templates) == {
+            "baseline_straight_9", "baseline_syncopated_9", "baseline_staggered_9",
+        }
+        flow = templates["baseline_syncopated_9"]
+        assert flow["name"] == "Syncopated nine-slot baseline"
+        assert flow["ticks_per_beat"] == flow["beats_per_bar"] == 4
+        assert [slot["tick_in_bar"] for slot in flow["slots"]] == [0, 2, 3, 5, 7, 8, 10, 13, 15]
+        assert flow["slots"][-1] == {
+            "slot_index": 8, "tick_in_bar": 15, "duration_ticks": 1,
+            "target_stress": 0.9, "boundary_strength": 3, "rhyme_group": "A",
+        }
+        assert flow["provenance"] == {
+            "kind": "hand_authored_mcflow_inspired", "source": "StreamMUSE baseline",
+            "source_hash": None, "quantization_error_ticks": 0.0,
+        }
+
+
+def test_plan_controls_list_the_controller_catalog_not_unavailable_builtins(tmp_path: Path) -> None:
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = _PlanController()
+    runtime.controller._templates = TemplateCatalog((BUILTIN_TEMPLATES.get("baseline_straight_9"),))
+
+    with TestClient(app) as client:
+        response = client.get("/api/control/plan")
+
+    assert response.status_code == 200
+    assert [item["template_id"] for item in response.json()["templates"]] == ["baseline_straight_9"]
+
+
+@pytest.mark.parametrize("controller", [None, SimpleNamespace(), SimpleNamespace(update_plan=None)])
+def test_plan_discovery_disables_unsupported_controllers(tmp_path: Path, controller: object) -> None:
+    runtime = ControllableFakeRuntime(tmp_path)
+    runtime.controller = controller
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    with TestClient(app) as client:
+        response = client.get("/api/control/plan")
+        assert response.status_code == 200
+        assert response.json() == {
+            "supported": False, "templates": [], "next_editable_bar": None, "state": "stopped",
+        }
+        assert client.post("/api/control/plan", json={"topic": "deep sea"}).status_code == 404
+
+
+def test_plan_discovery_uses_the_atomic_controller_snapshot(tmp_path: Path) -> None:
+    class Controller(_PlanController):
+        @property
+        def plan_control_state(self):
+            return {
+                "next_editable_bar": 10,
+                "last_edit": {"edit_seq": 2, "from_bar": 7, "effective_from_bar": 8,
+                              "topic": "deep sea", "template_id": None},
+            }
+
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = Controller()
+    runtime.control_state = PlaybackState.RUNNING
+
+    with TestClient(app) as client:
+        response = client.get("/api/control/plan")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "running"
+    assert response.json()["next_editable_bar"] == 10
+    assert response.json()["last_edit"] == {
+        "edit_seq": 2, "from_bar": 7, "effective_from_bar": 8,
+        "topic": "deep sea", "template_id": None,
+    }
+
+
+@pytest.mark.parametrize("body", [b"", b"{", b'{"topic":', b'\xff', b"null", b"[]", b'"topic"', b"3", b"true"])
+def test_plan_control_rejects_malformed_or_nonobject_json(tmp_path: Path, body: bytes) -> None:
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = _PlanController()
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/control/plan", content=body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"]
+    assert runtime.controller.edits == []
+
+
+@pytest.mark.parametrize("field", ["topic", "template_id"])
+@pytest.mark.parametrize("value", ["", " \t\n", 1, 1.5, True, False, [], {}])
+def test_plan_control_rejects_invalid_topic_or_template(tmp_path: Path, field: str, value: object) -> None:
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = _PlanController()
+    payload = {"topic": "deep sea", "template_id": "baseline_straight_9", field: value}
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/control/plan", json=payload)
+
+    assert response.status_code == 422
+    assert runtime.controller.edits == []
+
+
+@pytest.mark.parametrize("value", [True, False, -1, 1.5, 2.0, [], {}, "", "later", "1.5", "-2"])
+def test_plan_control_rejects_invalid_from_bar(tmp_path: Path, value: object) -> None:
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = _PlanController()
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/control/plan", json={"topic": "deep sea", "from_bar": value})
+
+    assert response.status_code == 422
+    assert runtime.controller.edits == []
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_plan_control_rejects_nonfinite_from_bar(tmp_path: Path, value: str) -> None:
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = _PlanController()
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/control/plan", content='{"topic":"deep sea","from_bar":' + value + '}',
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 422
+    assert runtime.controller.edits == []
+
+
+@pytest.mark.parametrize("error_type", [ValueError, KeyError, TypeError])
+def test_plan_control_converts_controller_validation_errors_to_422(tmp_path: Path, error_type: type) -> None:
+    class Controller(_PlanController):
+        def update_plan(self, **kwargs):
+            raise error_type("unknown flow template: missing")
+
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = Controller()
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/control/plan", json={"template_id": "missing"})
+
+    assert response.status_code == 422
+    assert "unknown flow template" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("from_bar, requested, effective", [(None, 7, 7), (0, 0, 7), (12, 12, 12), ("9", 9, 9)])
+def test_plan_control_preserves_explicit_bar_and_partial_edit_compatibility(
+    tmp_path: Path, from_bar: object, requested: int, effective: int,
+) -> None:
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = _PlanController()
+
+    with TestClient(app) as client:
+        response = client.post("/api/control/plan", json={
+            "topic": None, "template_id": "baseline_straight_9", "from_bar": from_bar,
+        })
+
+    assert response.status_code == 200
+    assert response.json() == {"edit_seq": 1, "from_bar": requested, "effective_from_bar": effective}
+    assert runtime.controller.edits == [(requested, None, "baseline_straight_9")]
+
+
+def test_plan_control_returns_matching_effective_target_not_the_later_playhead(tmp_path: Path) -> None:
+    class Controller(_PlanController):
+        last_edit = None
+
+        @property
+        def plan_control_state(self):
+            return {"next_editable_bar": self.next_editable_bar, "last_edit": self.last_edit}
+
+        def update_plan(self, **kwargs):
+            edit = super().update_plan(**kwargs)
+            self.last_edit = {"edit_seq": edit.edit_seq, "from_bar": edit.from_bar,
+                              "effective_from_bar": 9, "topic": kwargs["topic"], "template_id": None}
+            self.next_editable_bar = 12
+            return edit
+
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = Controller()
+
+    with TestClient(app) as client:
+        response = client.post("/api/control/plan", json={"topic": "deep sea"})
+        discovery = client.get("/api/control/plan")
+
+    assert response.status_code == 200
+    assert response.json() == {"edit_seq": 1, "from_bar": 7, "effective_from_bar": 9}
+    assert discovery.json()["next_editable_bar"] == 12
+    assert discovery.json()["last_edit"]["effective_from_bar"] == 9
+
+
+def test_plan_control_falls_back_to_the_updated_bar_without_a_control_snapshot(tmp_path: Path) -> None:
+    class Controller(_PlanController):
+        def update_plan(self, **kwargs):
+            self.next_editable_bar = 9
+            return super().update_plan(**kwargs)
+
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = Controller()
+
+    with TestClient(app) as client:
+        response = client.post("/api/control/plan", json={"topic": "deep sea"})
+
+    assert response.status_code == 200
+    assert response.json() == {"edit_seq": 1, "from_bar": 7, "effective_from_bar": 9}
+
+
+def test_plan_control_does_not_use_an_unrelated_last_edit_target(tmp_path: Path) -> None:
+    class Controller(_PlanController):
+        @property
+        def plan_control_state(self):
+            return {"next_editable_bar": 8,
+                    "last_edit": {"edit_seq": 99, "from_bar": 20, "effective_from_bar": 20}}
+
+    app, runtime, _ = _app(tmp_path)
+    runtime.controller = Controller()
+
+    with TestClient(app) as client:
+        response = client.post("/api/control/plan", json={"topic": "deep sea"})
+
+    assert response.status_code == 200
+    assert response.json() == {"edit_seq": 1, "from_bar": 8, "effective_from_bar": 8}

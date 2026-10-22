@@ -4,9 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>StreamMUSE Rap Lab</title>
-    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20260821-1">
+    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20261014-1">
     <script src="/static/js/rap-demo-state.js?v=20260821-1" defer></script>
-    <script src="/static/js/rap-demo.js?v=20260815-1" defer></script>
+    <script src="/static/js/rap-plan.js?v=20261014-1" defer></script>
+    <script src="/static/js/rap-demo.js?v=20261014-1" defer></script>
   </head>
   <body>
     <header class="app-header">
@@ -49,6 +50,31 @@
         <div class="telemetry-wide"><span>Flow template</span><strong id="template">--</strong></div>
         <div><span>Generator</span><strong id="generator-state">idle</strong></div>
         <div><span>Session limit</span><strong id="max-bars">--</strong></div>
+      </section>
+
+      <section class="plan-band" aria-labelledby="plan-heading">
+        <div class="plan-heading">
+          <h2 id="plan-heading">Direct upcoming bars</h2>
+          <span id="plan-mode" class="plan-mode">ASAP</span>
+          <span id="plan-target">Loading...</span>
+        </div>
+        <form id="plan-form" class="plan-form">
+          <label class="plan-topic-field" for="plan-topic">Topic
+            <input id="plan-topic" type="text" maxlength="512" placeholder="Keep current topic" autocomplete="off" disabled>
+          </label>
+          <label class="plan-flow-field" for="plan-template">Flow template
+            <select id="plan-template" disabled><option value="">Keep current flow</option></select>
+          </label>
+          <div class="plan-preview-field">
+            <span id="plan-flow-detail">Current flow unchanged</span>
+            <div id="plan-preview" class="plan-preview" role="img" hidden></div>
+          </div>
+          <button id="plan-apply" type="submit" disabled>Apply</button>
+        </form>
+        <div class="plan-feedback">
+          <span id="plan-status" role="status" aria-live="polite" data-state="idle">Loading editing controls...</span>
+          <span id="plan-request"></span>
+        </div>
       </section>
 
       <div class="workspace-grid">

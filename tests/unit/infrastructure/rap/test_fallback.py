@@ -134,5 +134,8 @@ def test_line_for_any_survives_live_edits_to_a_new_topic_or_template() -> None:
     assert catalog.line_for_any(_request(0)).text == "one"  # the exact key still wins
     assert catalog.line_for_any(_request(0, topic="ocean")).text == "one"  # new topic, same template
     assert catalog.line_for_any(request("ocean", other_one_slot)).text == "one"  # new template, same count
+    assert catalog.line_for_any(_request(0)).topic == "space"
+    assert catalog.line_for_any(_request(0, topic="ocean")).topic == "space"
+    assert catalog.line_for_any(request("ocean", other_one_slot)).topic == "space"
     with pytest.raises(ValueError, match="has 2 syllables"):
         catalog.line_for_any(request("ocean", two_slots))
