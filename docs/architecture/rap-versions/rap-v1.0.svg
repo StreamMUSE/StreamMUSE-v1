@@ -1,0 +1,206 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1150" viewBox="0 0 1440 1150">
+  <defs><style>
+    text { font-family: "PingFang SC", "Hiragino Sans GB", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2430; }
+    .title { font-size: 28px; font-weight: 700; }
+    .subtitle { font-size: 15px; fill: #5B6170; }
+    .panel-title { font-size: 19px; font-weight: 700; }
+    .panel-tag { font-size: 12px; font-weight: 700; letter-spacing: 1px; fill: #FFFFFF; }
+    .box-title { font-size: 16px; font-weight: 600; }
+    .box-sub { font-size: 13px; fill: #5B6170; }
+    .small { font-size: 12px; fill: #6B7180; }
+    .label { font-size: 13px; font-weight: 600; }
+    .time { font-size: 13px; font-weight: 600; fill: #3A3F4B; }
+    .section-title { font-size: 18px; font-weight: 700; }
+    .change { font-size: 14px; fill: #7A3A0C; }
+    .pill { font-size: 13px; font-weight: 700; }
+</style><marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6B7180"/></marker><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2F6BDB"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7448D1"/></marker><marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2E9B5F"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#D08A00"/></marker><marker id="arrow-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#A9B3C6"/></marker><filter id="shadow" x="-5%" y="-5%" width="110%" height="120%"><feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#1F2430" flood-opacity="0.10"/></filter></defs>
+  <rect width="1440" height="1150" fill="#FFFFFF"/>
+  <text x="40.0" y="52.0" class="title">StreamMUSE 实时 Rap · v1.0</text>
+  <text x="40.0" y="82.0" class="subtitle">tag rap-v1.0 · commit 19526512 · 2026-10-12 · 协议 v3 · 歌词流 + 逐 bar MOSS 续写 · 每 bar 32 条候选</text>
+  <rect x="1046.0" y="30.0" width="66.0" height="28.0" rx="14" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="1079.0" y="49.0" class="pill" text-anchor="middle" style="fill:#2F6BDB">v0.0</text>
+  <rect x="1118.0" y="30.0" width="66.0" height="28.0" rx="14" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="1151.0" y="49.0" class="pill" text-anchor="middle" style="fill:#2F6BDB">v0.1</text>
+  <rect x="1190.0" y="30.0" width="66.0" height="28.0" rx="14" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="1223.0" y="49.0" class="pill" text-anchor="middle" style="fill:#2F6BDB">v0.2</text>
+  <rect x="1262.0" y="30.0" width="66.0" height="28.0" rx="14" fill="#2F6BDB" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="1295.0" y="49.0" class="pill" text-anchor="middle" style="fill:#FFFFFF">v1.0</text>
+  <rect x="1334.0" y="30.0" width="66.0" height="28.0" rx="14" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="1367.0" y="49.0" class="pill" text-anchor="middle" style="fill:#2F6BDB">v1.1</text>
+  <rect x="40.0" y="96.0" width="1360.0" height="58.0" rx="10" fill="#FFF4EC" stroke="#F3C6A5" stroke-width="1.0"/>
+  <rect x="56.0" y="108.0" width="74.0" height="22.0" rx="11" fill="#E8590C"/>
+  <text x="93.0" y="124.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">本版变化</text>
+  <text x="144.0" y="124.0" class="change">架构重写（协议 v3）：服务器持续写歌词流（播放头前 3 bar）并逐 bar 续写合成（前 2 bar），Mac 按歌词 ID 取音频；</text>
+  <text x="144.0" y="145.0" class="change">支持实时修改主题 / flow；修复歌词结尾念出 “A” 的问题。不再有“一个请求包两小节”的截止竞赛。</text>
+  <g transform="translate(0,70)">
+  <rect x="40.0" y="110.0" width="620.0" height="625.0" rx="16" fill="#F1F6FF" stroke="#2F6BDB" stroke-width="1.5"/>
+  <rect x="64.0" y="128.0" width="56.0" height="22.0" rx="11" fill="#2F6BDB"/>
+  <text x="92.0" y="144.0" class="panel-tag" text-anchor="middle">MAC</text>
+  <text x="132.0" y="146.0" class="panel-title">本地：时钟 · 兜底 · 混音播放</text>
+  <rect x="64.0" y="170.0" width="360.0" height="66.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="80.0" y="196.0" class="box-title">① 节拍时钟 Rap Clock</text>
+  <text x="80.0" y="218.0" class="box-sub">90 BPM · 每小节 16 tick · 唯一的时间权威</text>
+  <path d="M244,236 L244,260" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <rect x="448.0" y="170.0" width="188.0" height="66.0" rx="10" fill="#FFFFFF" stroke="#A9B3C6" stroke-width="1.0" stroke-dasharray="4 3"/>
+  <text x="462.0" y="193.0" class="label">实时监控 + 修改</text>
+  <text x="462.0" y="213.0" class="small">Web :8012 · 改主题 / flow</text>
+  <text x="462.0" y="229.0" class="small">POST /api/control/plan</text>
+  <rect x="588.0" y="178.0" width="38.0" height="20.0" rx="10" fill="#E8590C"/>
+  <text x="607.0" y="192.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">NEW</text>
+  <path d="M424,203 L446,203" fill="none" stroke="#A9B3C6" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow-line)"/>
+  <rect x="64.0" y="262.0" width="360.0" height="88.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="80.0" y="288.0" class="box-title">② 逐 bar 控制器 BarStream</text>
+  <text x="80.0" y="310.0" class="box-sub">收到歌词 → 取接下来 2 个 bar 的音频</text>
+  <text x="80.0" y="328.0" class="box-sub">回报播放头（committed）</text>
+  <text x="80.0" y="346.0" class="box-sub">把听众的修改（update）发给服务器</text>
+  <rect x="376.0" y="270.0" width="38.0" height="20.0" rx="10" fill="#E8590C"/>
+  <text x="395.0" y="284.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">NEW</text>
+  <path d="M244,350 L244,378" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <rect x="64.0" y="380.0" width="360.0" height="150.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="80.0" y="406.0" class="box-title">③ 提交时按顺序选择</text>
+  <circle cx="86" cy="428" r="5" fill="#2E9B5F"/>
+  <text x="98.0" y="432.0" class="box-sub" style="fill:#1F2430">1  最新版本的服务器人声</text>
+  <text x="410.0" y="432.0" class="small" text-anchor="end">remote_latest</text>
+  <circle cx="86" cy="452" r="5" fill="#2F6BDB"/>
+  <text x="98.0" y="456.0" class="box-sub" style="fill:#1F2430">2  旧版本人声（修改来不及时）</text>
+  <text x="410.0" y="456.0" class="small" text-anchor="end">remote_older</text>
+  <circle cx="86" cy="476" r="5" fill="#D08A00"/>
+  <text x="98.0" y="480.0" class="box-sub" style="fill:#1F2430">3  服务器歌词 + 本地 eSpeak</text>
+  <text x="410.0" y="480.0" class="small" text-anchor="end">espeak_stream</text>
+  <circle cx="86" cy="500" r="5" fill="#B36B00"/>
+  <text x="98.0" y="504.0" class="box-sub" style="fill:#1F2430">4  本地歌词 + 本地 eSpeak</text>
+  <text x="410.0" y="504.0" class="small" text-anchor="end">espeak_local</text>
+  <rect x="376.0" y="388.0" width="38.0" height="20.0" rx="10" fill="#E8590C"/>
+  <text x="395.0" y="402.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">NEW</text>
+  <rect x="448.0" y="417.0" width="188.0" height="76.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="462.0" y="440.0" class="label">解码 Opus + 本地 R3</text>
+  <text x="462.0" y="460.0" class="small">每个 bar 单独取、单独对拍</text>
+  <text x="462.0" y="476.0" class="small">解码 · 对拍 · 混音 ≈ 35 ms</text>
+  <path d="M448,455 L428,455" fill="none" stroke="#7448D1" stroke-width="1.8" marker-end="url(#arrow-purple)"/>
+  <rect x="448.0" y="522.0" width="188.0" height="88.0" rx="10" fill="#FFF6E5" stroke="#D08A00" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="462.0" y="545.0" class="label">本地兜底</text>
+  <text x="462.0" y="565.0" class="small">本地 eSpeak + 本地歌词</text>
+  <text x="462.0" y="581.0" class="small">只在没有服务器音频时用</text>
+  <text x="462.0" y="597.0" class="small">（对应第 3、4 级）</text>
+  <path d="M448,566 L428,510" fill="none" stroke="#D08A00" stroke-width="1.8" marker-end="url(#arrow-amber)"/>
+  <path d="M244,530 L244,543" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <rect x="64.0" y="545.0" width="360.0" height="60.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="80.0" y="571.0" class="box-title">④ 冻结小节 Freeze</text>
+  <text x="80.0" y="593.0" class="box-sub">冻结后不可再改；听众修改只影响未冻结的 bar</text>
+  <path d="M244,605 L244,633" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <rect x="64.0" y="635.0" width="360.0" height="70.0" rx="10" fill="#2F6BDB" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="80.0" y="661.0" class="box-title" style="fill:#FFFFFF">⑤ 本地鼓 + 混音 → 扬声器</text>
+  <text x="80.0" y="683.0" class="box-sub" style="fill:#DCE7FF">人声与鼓按 tick 精确对齐后播放并录制</text>
+  <rect x="448.0" y="635.0" width="188.0" height="70.0" rx="10" fill="#FFFFFF" stroke="#A9B3C6" stroke-width="1.0" stroke-dasharray="4 3"/>
+  <text x="462.0" y="658.0" class="label">会话产物 logs/rap/</text>
+  <text x="462.0" y="678.0" class="small">mixed.wav · events.jsonl</text>
+  <text x="462.0" y="694.0" class="small">bars.csv · plan_edited 事件</text>
+  <path d="M424,670 L446,670" fill="none" stroke="#A9B3C6" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow-line)"/>
+  <rect x="672.0" y="176.0" width="96.0" height="490.0" rx="12" fill="#F7F7F9" stroke="#A9B3C6" stroke-width="1.0" stroke-dasharray="6 4"/>
+  <text x="720.0" y="690.0" class="label" text-anchor="middle">SSH 隧道</text>
+  <text x="720.0" y="708.0" class="small" text-anchor="middle">只转发 :8020</text>
+  <path d="M428,290 H800" fill="none" stroke="#2F6BDB" stroke-width="2.2" marker-end="url(#arrow-blue)" marker-start="url(#arrow-blue)"/>
+  <text x="436.0" y="262.0" class="small">WebSocket /v1/rap/sessions/{id}</text>
+  <text x="436.0" y="282.0" class="label" style="fill:#2F6BDB">歌词流（双向）</text>
+  <text x="436.0" y="310.0" class="small">→ start · update · committed · stop</text>
+  <text x="436.0" y="326.0" class="small">← lyric · superseded · audio_ready</text>
+  <path d="M636,440 H704 V620 H800" fill="none" stroke="#2F6BDB" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrow-blue)"/>
+  <path d="M804,648 H736 V470 H640" fill="none" stroke="#7448D1" stroke-width="2.2" marker-end="url(#arrow-purple)"/>
+  <rect x="676.0" y="360.0" width="88.0" height="56.0" rx="6" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="720.0" y="378.0" class="small" text-anchor="middle" style="fill:#2F6BDB;font-weight:600">GET …/bars/</text>
+  <text x="720.0" y="393.0" class="small" text-anchor="middle" style="fill:#2F6BDB;font-weight:600">{bar}/audio</text>
+  <text x="720.0" y="408.0" class="small" text-anchor="middle" style="fill:#2F6BDB">长轮询</text>
+  <rect x="672.0" y="520.0" width="96.0" height="40.0" rx="6" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0"/>
+  <text x="720.0" y="537.0" class="small" text-anchor="middle" style="fill:#7448D1;font-weight:600">返回 Opus 包</text>
+  <text x="720.0" y="553.0" class="small" text-anchor="middle" style="fill:#7448D1">1 个 bar</text>
+  <rect x="780.0" y="110.0" width="620.0" height="625.0" rx="16" fill="#F6F2FF" stroke="#7448D1" stroke-width="1.5"/>
+  <rect x="804.0" y="128.0" width="62.0" height="22.0" rx="11" fill="#7448D1"/>
+  <text x="835.0" y="144.0" class="panel-tag" text-anchor="middle">H200</text>
+  <text x="878.0" y="146.0" class="panel-title">GPU 服务器 :8020：歌词流 + 逐 bar 合成</text>
+  <text x="1196.0" y="164.0" class="small">real-time 中位数</text>
+  <rect x="804.0" y="170.0" width="376.0" height="68.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="820.0" y="196.0" class="box-title">A  写词线程 · Qwen2.5-7B</text>
+  <text x="820.0" y="218.0" class="box-sub">每 bar 32 条候选 → 过滤 → 选一句（对句押韵）</text>
+  <rect x="1132.0" y="178.0" width="38.0" height="20.0" rx="10" fill="#E8590C"/>
+  <text x="1151.0" y="192.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">NEW</text>
+  <path d="M992,238 L992,254" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <text x="1196.0" y="198.0" class="time" style="fill:#3A3F4B">≈ 0.1 s / 行</text>
+  <rect x="1196.0" y="206.0" width="6.0" height="10.0" rx="3" fill="#7448D1"/>
+  <rect x="804.0" y="256.0" width="376.0" height="68.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="820.0" y="282.0" class="box-title">B  歌词记录 BarLyricRecord</text>
+  <text x="820.0" y="304.0" class="box-sub">lyric_id = sha256 · 版本号 · 修改后版本 +1</text>
+  <rect x="1132.0" y="264.0" width="38.0" height="20.0" rx="10" fill="#E8590C"/>
+  <text x="1151.0" y="278.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">NEW</text>
+  <path d="M992,324 L992,340" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <rect x="804.0" y="342.0" width="376.0" height="68.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="820.0" y="368.0" class="box-title">C  合成线程 · MOSS-TTS v1.5 续写</text>
+  <text x="820.0" y="390.0" class="box-sub">SGLang-Omni（延迟 + 续写补丁）· 上一 bar 做前缀</text>
+  <rect x="1132.0" y="350.0" width="38.0" height="20.0" rx="10" fill="#E8590C"/>
+  <text x="1151.0" y="364.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">NEW</text>
+  <path d="M992,410 L992,426" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <text x="1196.0" y="370.0" class="time" style="fill:#3A3F4B">0.62 s / bar</text>
+  <rect x="1196.0" y="378.0" width="37.1" height="10.0" rx="3" fill="#7448D1"/>
+  <rect x="804.0" y="428.0" width="376.0" height="68.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="820.0" y="454.0" class="box-title">D  MMS 强制对齐</text>
+  <text x="820.0" y="476.0" class="box-sub">每个音节的 source onset</text>
+  <path d="M992,496 L992,512" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <text x="1196.0" y="456.0" class="time" style="fill:#3A3F4B">≈ 0.015 s</text>
+  <rect x="1196.0" y="464.0" width="3.0" height="10.0" rx="3" fill="#7448D1"/>
+  <rect x="804.0" y="514.0" width="376.0" height="68.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="820.0" y="540.0" class="box-title">E  打包 + Opus（level 5）</text>
+  <text x="820.0" y="562.0" class="box-sub">原始人声 + onsets · 1 个 bar</text>
+  <path d="M992,582 L992,598" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <text x="1196.0" y="542.0" class="time" style="fill:#3A3F4B">≈ 0.056 s</text>
+  <rect x="1196.0" y="550.0" width="3.4" height="10.0" rx="3" fill="#7448D1"/>
+  <rect x="804.0" y="600.0" width="376.0" height="68.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="820.0" y="626.0" class="box-title">F  音频缓存（按 lyric_id）</text>
+  <text x="820.0" y="648.0" class="box-sub">ready / older_version / pending / failed …</text>
+  <rect x="1132.0" y="608.0" width="38.0" height="20.0" rx="10" fill="#E8590C"/>
+  <text x="1151.0" y="622.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:700">NEW</text>
+  <line x1="1196" y1="684" x2="1376" y2="684" stroke="#C9BEEA"/>
+  <text x="1196.0" y="708.0" class="label">音频提前到 Mac：3.8 s</text>
+  <text x="820.0" y="708.0" class="small">vLLM · SGLang-Omni · render server 三个服务在同一张 GPU</text>
+  <rect x="40.0" y="760.0" width="1360.0" height="296.0" rx="16" fill="#FAFAFB" stroke="#E3E5EA" stroke-width="1.0"/>
+  <text x="64.0" y="795.0" class="section-title">时间线：歌词提前 3 个 bar 写好，音频提前 2 个 bar 合成好</text>
+  <text x="600.0" y="795.0" class="small">（90 BPM，1 小节 ≈ 2.67 s）</text>
+  <text x="64.0" y="837.0" class="label">Mac 正在播放</text>
+  <rect x="240.0" y="812.0" width="268.0" height="40.0" rx="6" fill="#2F6BDB"/>
+  <text x="375.0" y="837.0" class="label" text-anchor="middle" style="fill:#FFFFFF">bar N</text>
+  <rect x="510.0" y="812.0" width="268.0" height="40.0" rx="6" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" stroke-dasharray="5 3"/>
+  <text x="645.0" y="837.0" class="label" text-anchor="middle" style="fill:#2F6BDB">bar N+1（正在准备）</text>
+  <rect x="780.0" y="812.0" width="268.0" height="40.0" rx="6" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" stroke-dasharray="5 3"/>
+  <text x="915.0" y="837.0" class="label" text-anchor="middle" style="fill:#2F6BDB">bar N+2（正在准备）</text>
+  <rect x="1050.0" y="812.0" width="268.0" height="40.0" rx="6" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" stroke-dasharray="5 3"/>
+  <text x="1185.0" y="837.0" class="label" text-anchor="middle" style="fill:#2F6BDB">bar N+3（正在准备）</text>
+  <line x1="330.0" y1="806" x2="330.0" y2="958" stroke="#1F2430" stroke-width="2"/>
+  <text x="336.0" y="866.0" class="small" style="fill:#1F2430;font-weight:700">播放头</text>
+  <text x="64.0" y="885.0" class="label">服务器歌词</text>
+  <text x="64.0" y="902.0" class="small">写到播放头前 3 bar</text>
+  <text x="64.0" y="937.0" class="label">服务器音频</text>
+  <text x="64.0" y="954.0" class="small">合成到播放头前 2 bar</text>
+  <rect x="520.0" y="866.0" width="248.0" height="30.0" rx="6" fill="#E3ECFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="644.0" y="886.0" class="small" text-anchor="middle" style="fill:#2F6BDB;font-weight:600">N+1 歌词已推给 Mac</text>
+  <rect x="520.0" y="918.0" width="248.0" height="30.0" rx="6" fill="#7448D1"/>
+  <text x="644.0" y="938.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:600">N+1 音频已合成（续写 N）</text>
+  <rect x="790.0" y="866.0" width="248.0" height="30.0" rx="6" fill="#E3ECFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="914.0" y="886.0" class="small" text-anchor="middle" style="fill:#2F6BDB;font-weight:600">N+2 歌词已推给 Mac</text>
+  <rect x="790.0" y="918.0" width="248.0" height="30.0" rx="6" fill="#7448D1"/>
+  <text x="914.0" y="938.0" class="small" text-anchor="middle" style="fill:#FFFFFF;font-weight:600">N+2 音频已合成（续写 N+1）</text>
+  <rect x="1060.0" y="866.0" width="248.0" height="30.0" rx="6" fill="#E3ECFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="1184.0" y="886.0" class="small" text-anchor="middle" style="fill:#2F6BDB;font-weight:600">N+3 歌词已推给 Mac</text>
+  <rect x="1060.0" y="918.0" width="248.0" height="30.0" rx="6" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" stroke-dasharray="5 3"/>
+  <text x="1184.0" y="938.0" class="small" text-anchor="middle" style="fill:#7448D1;font-weight:600">N+3 等播到 N+1 再合成</text>
+  <rect x="240.0" y="972.0" width="250.0" height="34.0" rx="17" fill="#E7F6EE" stroke="#2E9B5F" stroke-width="1.0"/>
+  <text x="365.0" y="994.0" class="label" text-anchor="middle" style="fill:#1F7A48">real-time 服务器人声 100%</text>
+  <rect x="506.0" y="972.0" width="190.0" height="34.0" rx="17" fill="#FFFFFF" stroke="#A9B3C6" stroke-width="1.0"/>
+  <text x="601.0" y="994.0" class="label" text-anchor="middle" style="fill:#3A3F4B">fake real-time 100%</text>
+  <rect x="712.0" y="972.0" width="190.0" height="34.0" rx="17" fill="#E7F6EE" stroke="#2E9B5F" stroke-width="1.0"/>
+  <text x="807.0" y="994.0" class="label" text-anchor="middle" style="fill:#1F7A48">0 兜底 · 0 underrun</text>
+  <rect x="918.0" y="972.0" width="150.0" height="34.0" rx="17" fill="#FFFFFF" stroke="#A9B3C6" stroke-width="1.0"/>
+  <text x="993.0" y="994.0" class="label" text-anchor="middle" style="fill:#3A3F4B">开场等待 3.7 s</text>
+  <rect x="1084.0" y="972.0" width="220.0" height="34.0" rx="17" fill="#FFFFFF" stroke="#A9B3C6" stroke-width="1.0"/>
+  <text x="1194.0" y="994.0" class="label" text-anchor="middle" style="fill:#3A3F4B">改主题后 2.8–5.5 s 听到</text>
+  <text x="64.0" y="1028.0" class="small">数据：2026-10-12 版本对比 demo 页（同一张 H200 + SSH 隧道，15 段 × 16 bar，90 BPM，real-time 中位数）。</text>
+  <text x="64.0" y="1046.0" class="small">音频 / 歌词提前量（中位数 3.8 s / 7.4 s）与改主题反应时间取自 10-12 歌词流实施报告的 96 bar 会话（中途 8 次修改）。</text>
+  </g>
+</svg>

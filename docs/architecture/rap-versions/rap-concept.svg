@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+  <defs><style>
+    text { font-family: "PingFang SC", "Hiragino Sans GB", -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #1F2430; }
+    .title { font-size: 28px; font-weight: 700; }
+    .subtitle { font-size: 15px; fill: #5B6170; }
+    .panel-title { font-size: 19px; font-weight: 700; }
+    .panel-tag { font-size: 12px; font-weight: 700; letter-spacing: 1px; fill: #FFFFFF; }
+    .box-title { font-size: 16px; font-weight: 600; }
+    .box-sub { font-size: 13px; fill: #5B6170; }
+    .small { font-size: 12px; fill: #6B7180; }
+    .label { font-size: 13px; font-weight: 600; }
+    .time { font-size: 13px; font-weight: 600; fill: #3A3F4B; }
+    .section-title { font-size: 18px; font-weight: 700; }
+    .change { font-size: 14px; fill: #7A3A0C; }
+    .pill { font-size: 13px; font-weight: 700; }
+</style><marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6B7180"/></marker><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2F6BDB"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7448D1"/></marker><marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2E9B5F"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#D08A00"/></marker><marker id="arrow-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#A9B3C6"/></marker><filter id="shadow" x="-5%" y="-5%" width="110%" height="120%"><feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#1F2430" flood-opacity="0.10"/></filter></defs>
+  <rect width="1440" height="900" fill="#FFFFFF"/>
+  <text x="40.0" y="52.0" class="title">StreamMUSE 实时 Rap：歌词流架构（概念图）</text>
+  <text x="40.0" y="82.0" class="subtitle">服务器一直往前写歌词、往前合成音频，结果分别存进 Lyric Pool 和 Audio Bank；客户端只发主题和 flow，并按需取回音频。对应 v1.0 / v1.1（协议 v3）。</text>
+  <rect x="40.0" y="104.0" width="1360.0" height="436.0" rx="16" fill="#F6F2FF" stroke="#7448D1" stroke-width="1.5"/>
+  <rect x="64.0" y="122.0" width="76.0" height="22.0" rx="11" fill="#7448D1"/>
+  <text x="102.0" y="138.0" class="panel-tag" text-anchor="middle">SERVER</text>
+  <text x="152.0" y="140.0" class="panel-title">H200：持续写词 → 持续合成</text>
+  <rect x="80.0" y="280.0" width="270.0" height="120.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.8" filter="url(#shadow)"/>
+  <text x="215.0" y="316.0" class="box-title" text-anchor="middle">写词模型 Lyric Writer</text>
+  <text x="215.0" y="342.0" class="box-sub" text-anchor="middle">LLM · 每 bar 生成多条候选</text>
+  <text x="215.0" y="362.0" class="box-sub" text-anchor="middle">过滤 + 打分 → 选出一句</text>
+  <text x="215.0" y="384.0" class="small" text-anchor="middle" style="fill:#2F6BDB;font-weight:600">一直写到播放头前 3 个 bar</text>
+  <path d="M320,280 C320,202 110,202 110,276" fill="none" stroke="#2F6BDB" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+  <text x="215.0" y="172.0" class="label" text-anchor="middle" style="fill:#2F6BDB">自回归：一句接一句往下写</text>
+  <text x="215.0" y="190.0" class="small" text-anchor="middle">上一句（和押韵）作为下一句的上下文</text>
+  <rect x="430.0" y="262.0" width="250.0" height="156.0" rx="10" fill="#EEF4FF" stroke="#2F6BDB" stroke-width="1.8" filter="url(#shadow)"/>
+  <text x="555.0" y="290.0" class="box-title" text-anchor="middle">Lyric Pool 歌词池</text>
+  <rect x="446.0" y="304.0" width="218.0" height="30.0" rx="6" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="456.0" y="324.0" class="small" style="fill:#2F6BDB;font-weight:700">bar 7 · v1</text>
+  <text x="530.0" y="324.0" class="small" style="fill:#3A3F4B">rising through the dark</text>
+  <rect x="446.0" y="340.0" width="218.0" height="30.0" rx="6" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="456.0" y="360.0" class="small" style="fill:#2F6BDB;font-weight:700">bar 8 · v1</text>
+  <text x="530.0" y="360.0" class="small" style="fill:#3A3F4B">stars align and spark</text>
+  <rect x="446.0" y="376.0" width="218.0" height="30.0" rx="6" fill="#FFFFFF" stroke="#E8590C" stroke-width="1.0"/>
+  <text x="456.0" y="396.0" class="small" style="fill:#E8590C;font-weight:700">bar 9 · v2</text>
+  <text x="530.0" y="396.0" class="small" style="fill:#3A3F4B">（主题修改后已重写）</text>
+  <rect x="760.0" y="280.0" width="270.0" height="120.0" rx="10" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.8" filter="url(#shadow)"/>
+  <text x="895.0" y="316.0" class="box-title" text-anchor="middle">TTS 模型</text>
+  <text x="895.0" y="342.0" class="box-sub" text-anchor="middle">MOSS · 每次合成 1 个 bar</text>
+  <text x="895.0" y="362.0" class="box-sub" text-anchor="middle">对齐每个音节的起点</text>
+  <text x="895.0" y="384.0" class="small" text-anchor="middle" style="fill:#7448D1;font-weight:600">一直合成到播放头前 2 个 bar</text>
+  <path d="M1000,280 C1000,202 790,202 790,276" fill="none" stroke="#7448D1" stroke-width="2.2" marker-end="url(#arrow-purple)"/>
+  <text x="895.0" y="172.0" class="label" text-anchor="middle" style="fill:#7448D1">自回归续写：一个 bar 接一个 bar</text>
+  <text x="895.0" y="190.0" class="small" text-anchor="middle">上一个 bar 的音频作为前缀，声音连贯</text>
+  <rect x="1110.0" y="262.0" width="270.0" height="156.0" rx="10" fill="#F3EEFF" stroke="#7448D1" stroke-width="1.8" filter="url(#shadow)"/>
+  <text x="1245.0" y="290.0" class="box-title" text-anchor="middle">Audio Bank 音频库</text>
+  <rect x="1126.0" y="304.0" width="238.0" height="30.0" rx="6" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0"/>
+  <text x="1136.0" y="324.0" class="small" style="fill:#7448D1;font-weight:700">bar 7</text>
+  <rect x="1186.0" y="317.0" width="3.5" height="4.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1192.0" y="314.5" width="3.5" height="9.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1198.0" y="312.0" width="3.5" height="14.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1204.0" y="315.5" width="3.5" height="7.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1210.0" y="311.0" width="3.5" height="16.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1216.0" y="313.5" width="3.5" height="11.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1222.0" y="316.5" width="3.5" height="5.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1228.0" y="312.5" width="3.5" height="13.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1234.0" y="310.0" width="3.5" height="18.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1240.0" y="315.0" width="3.5" height="8.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1246.0" y="313.0" width="3.5" height="12.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1252.0" y="316.0" width="3.5" height="6.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1258.0" y="311.5" width="3.5" height="15.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1264.0" y="314.0" width="3.5" height="10.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1270.0" y="317.0" width="3.5" height="4.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1276.0" y="314.5" width="3.5" height="9.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1282.0" y="312.5" width="3.5" height="13.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1288.0" y="315.5" width="3.5" height="7.0" rx="1.5" fill="#7448D1"/>
+  <text x="1354.0" y="324.0" class="small" text-anchor="end" style="fill:#2E9B5F;font-weight:700">✓</text>
+  <rect x="1126.0" y="340.0" width="238.0" height="30.0" rx="6" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0"/>
+  <text x="1136.0" y="360.0" class="small" style="fill:#7448D1;font-weight:700">bar 8</text>
+  <rect x="1186.0" y="349.5" width="3.5" height="11.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1192.0" y="352.5" width="3.5" height="5.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1198.0" y="348.5" width="3.5" height="13.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1204.0" y="346.0" width="3.5" height="18.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1210.0" y="351.0" width="3.5" height="8.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1216.0" y="349.0" width="3.5" height="12.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1222.0" y="352.0" width="3.5" height="6.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1228.0" y="347.5" width="3.5" height="15.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1234.0" y="350.0" width="3.5" height="10.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1240.0" y="353.0" width="3.5" height="4.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1246.0" y="350.5" width="3.5" height="9.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1252.0" y="348.5" width="3.5" height="13.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1258.0" y="351.5" width="3.5" height="7.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1264.0" y="353.0" width="3.5" height="4.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1270.0" y="350.5" width="3.5" height="9.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1276.0" y="348.0" width="3.5" height="14.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1282.0" y="351.5" width="3.5" height="7.0" rx="1.5" fill="#7448D1"/>
+  <rect x="1288.0" y="347.0" width="3.5" height="16.0" rx="1.5" fill="#7448D1"/>
+  <text x="1354.0" y="360.0" class="small" text-anchor="end" style="fill:#2E9B5F;font-weight:700">✓</text>
+  <rect x="1126.0" y="376.0" width="238.0" height="30.0" rx="6" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0" stroke-dasharray="5 3"/>
+  <text x="1136.0" y="396.0" class="small" style="fill:#7448D1;font-weight:700">bar 9</text>
+  <text x="1255.0" y="396.0" class="small" text-anchor="middle" style="fill:#7448D1">排队（只提前 2 bar）</text>
+  <path d="M350,340 L426,340" fill="none" stroke="#2F6BDB" stroke-width="2.4" marker-end="url(#arrow-blue)"/>
+  <path d="M680,340 L756,340" fill="none" stroke="#7448D1" stroke-width="2.4" marker-end="url(#arrow-purple)"/>
+  <text x="718.0" y="330.0" class="small" text-anchor="middle" style="fill:#7448D1;font-weight:600">歌词</text>
+  <path d="M1030,340 L1106,340" fill="none" stroke="#7448D1" stroke-width="2.4" marker-end="url(#arrow-purple)"/>
+  <text x="1068.0" y="330.0" class="small" text-anchor="middle" style="fill:#7448D1;font-weight:600">音频</text>
+  <rect x="40.0" y="640.0" width="1360.0" height="190.0" rx="16" fill="#F1F6FF" stroke="#2F6BDB" stroke-width="1.5"/>
+  <rect x="64.0" y="788.0" width="72.0" height="22.0" rx="11" fill="#2F6BDB"/>
+  <text x="100.0" y="804.0" class="panel-tag" text-anchor="middle">CLIENT</text>
+  <text x="148.0" y="806.0" class="panel-title">Mac：时钟 · 播放 · 兜底</text>
+  <rect x="80.0" y="660.0" width="270.0" height="100.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="96.0" y="686.0" class="box-title">听众 / Web 控制</text>
+  <text x="96.0" y="708.0" class="box-sub">选择 theme 和 flow template</text>
+  <text x="96.0" y="726.0" class="box-sub">播放中随时修改</text>
+  <rect x="430.0" y="660.0" width="250.0" height="100.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="446.0" y="686.0" class="box-title">收到的歌词</text>
+  <text x="446.0" y="708.0" class="box-sub">知道下一个 bar 唱什么</text>
+  <text x="446.0" y="726.0" class="box-sub">以及它的 lyric_id</text>
+  <rect x="760.0" y="660.0" width="270.0" height="100.0" rx="10" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="776.0" y="686.0" class="box-title">逐 bar 控制器</text>
+  <text x="776.0" y="708.0" class="box-sub">按节拍时钟决定</text>
+  <text x="776.0" y="726.0" class="box-sub">该取哪个 bar 的音频</text>
+  <rect x="1110.0" y="660.0" width="270.0" height="100.0" rx="10" fill="#2F6BDB" stroke="#2F6BDB" stroke-width="1.0" filter="url(#shadow)"/>
+  <text x="1126.0" y="686.0" class="box-title" style="fill:#FFFFFF">对拍 + 混音 → 扬声器</text>
+  <text x="1126.0" y="708.0" class="box-sub" style="fill:#DCE7FF">没拿到音频就用 eSpeak 兜底</text>
+  <text x="1126.0" y="726.0" class="box-sub" style="fill:#DCE7FF">节奏永不中断</text>
+  <path d="M680,710 L756,710" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <path d="M1030,710 L1106,710" fill="none" stroke="#6B7180" stroke-width="1.8" marker-end="url(#arrow-gray)"/>
+  <path d="M215,658 L215,404" fill="none" stroke="#2F6BDB" stroke-width="2.6" marker-end="url(#arrow-blue)"/>
+  <rect x="232.0" y="564.0" width="172.0" height="52.0" rx="8" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="318.0" y="586.0" class="label" text-anchor="middle" style="fill:#2F6BDB">theme · flow template</text>
+  <text x="318.0" y="605.0" class="small" text-anchor="middle">（以及实时修改）</text>
+  <path d="M555,420 L555,656" fill="none" stroke="#2F6BDB" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+  <rect x="572.0" y="564.0" width="112.0" height="52.0" rx="8" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="628.0" y="586.0" class="label" text-anchor="middle" style="fill:#2F6BDB">lyric 推送</text>
+  <text x="628.0" y="605.0" class="small" text-anchor="middle">写好就发</text>
+  <path d="M1200,658 L1200,422" fill="none" stroke="#2F6BDB" stroke-width="2.0" stroke-dasharray="7 5" marker-end="url(#arrow-blue)"/>
+  <path d="M1300,420 L1300,656" fill="none" stroke="#7448D1" stroke-width="2.6" marker-end="url(#arrow-purple)"/>
+  <rect x="1034.0" y="558.0" width="150.0" height="64.0" rx="8" fill="#FFFFFF" stroke="#2F6BDB" stroke-width="1.0"/>
+  <text x="1109.0" y="580.0" class="label" text-anchor="middle" style="fill:#2F6BDB">request</text>
+  <text x="1109.0" y="598.0" class="small" text-anchor="middle">bar + lyric_id</text>
+  <text x="1109.0" y="614.0" class="small" text-anchor="middle">（client 发请求时）</text>
+  <rect x="1316.0" y="564.0" width="72.0" height="52.0" rx="8" fill="#FFFFFF" stroke="#7448D1" stroke-width="1.0"/>
+  <text x="1352.0" y="586.0" class="label" text-anchor="middle" style="fill:#7448D1">音频</text>
+  <text x="1352.0" y="605.0" class="small" text-anchor="middle">才发回</text>
+  <text x="40.0" y="868.0" class="small">两个模型各自不停地往前生成，彼此只通过 Lyric Pool 衔接；客户端不等任何一次生成，只在需要某个 bar 时取回已经准备好的音频。</text>
+</svg>
