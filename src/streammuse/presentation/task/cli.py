@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
@@ -24,15 +25,28 @@ from streammuse.application.tasks import (
     TerminalIO,
 )
 from streammuse.application.tasks.human_input import HumanInputConfig, VoiceInputConfig
-from streammuse.domain.tasks import AnimalNamingTask, DeadlineMode, InteractiveTask, RealtimeTask, ZipZapZopTask
+from streammuse.domain.tasks import (
+    AnimalNamingTask,
+    CharacterGuessingTask,
+    DeadlineMode,
+    InteractiveTask,
+    RealtimeTask,
+    ZipZapZopTask,
+    get_character_scope,
+)
 from streammuse.infrastructure.inference.local_chat_client import (
     LocalChatModelClient,
     LocalChatModelClientConfig,
 )
 
 
-TASKS = {"animal_naming": AnimalNamingTask, "zip_zap_zop": ZipZapZopTask}
-INTERACTIVE_TASKS = {"animal_naming", "zip_zap_zop"}
+RUN_TASKS = {"animal_naming", "zip_zap_zop"}
+INTERACTIVE_TASKS = {
+    "animal_naming",
+    "character_guessing",
+    "zip_zap_zop",
+}
+TASKS = RUN_TASKS | INTERACTIVE_TASKS
 RUNNERS = {"offline_benchmark", "realtime_loop"}
 
 
@@ -152,6 +166,17 @@ def build_parser() -> argparse.ArgumentParser:
     play.add_argument("--web-host", default=None)
     play.add_argument("--web-port", type=int, default=None)
     play.add_argument("--web-allow-remote", action="store_true")
+    play.add_argument(
+        "--character-scope",
+        default=None,
+        help="built-in Character Guessing catalog",
+    )
+    play.add_argument(
+        "--max-rounds",
+        type=int,
+        default=None,
+        help="maximum complete question/answer rounds for Character Guessing",
+    )
 
     subcommands.add_parser("voice-devices", help="List microphone input devices without loading a model")
     subcommands.add_parser(
@@ -174,9 +199,69 @@ def _add_common_task_args(parser: argparse.ArgumentParser, *, max_tokens_default
     parser.add_argument("--start-number", type=int, default=1)
 
 
+def _option_was_supplied(argv: list[str], option: str) -> bool:
+    return any(
+        value == option or value.startswith(f"{option}=")
+        for value in argv
+    )
+
+
+def _resolve_interactive_task_options(
+    args: argparse.Namespace,
+    argv: list[str],
+) -> dict[str, object]:
+    if args.task != "character_guessing":
+        if args.character_scope is not None or args.max_rounds is not None:
+            raise ValueError(
+                "--character-scope and --max-rounds require "
+                "--task character_guessing"
+            )
+        return {
+            "max_turns": int(args.max_turns),
+            "max_tokens": int(args.max_tokens),
+            "human_first": bool(args.human_first),
+            "character_scope": "world_historical_figures_en",
+            "max_rounds": 20,
+        }
+
+    if _option_was_supplied(argv, "--human-first"):
+        raise ValueError("Character Guessing must start with the LLM")
+    if _option_was_supplied(argv, "--start-number"):
+        raise ValueError(
+            "--start-number does not apply to Character Guessing"
+        )
+    if _option_was_supplied(argv, "--max-turns"):
+        raise ValueError(
+            "use --max-rounds for Character Guessing; "
+            "--max-turns counts actor attempts"
+        )
+    max_rounds = 20 if args.max_rounds is None else int(args.max_rounds)
+    if max_rounds <= 0:
+        raise ValueError("max_rounds must be > 0")
+    scope_id = (
+        "world_historical_figures_en"
+        if args.character_scope is None
+        else str(args.character_scope)
+    )
+    get_character_scope(scope_id)
+    max_tokens = (
+        int(args.max_tokens)
+        if _option_was_supplied(argv, "--max-tokens")
+        else 64
+    )
+    return {
+        "max_turns": max_rounds * 6,
+        "max_tokens": max_tokens,
+        "human_first": False,
+        "character_scope": scope_id,
+        "max_rounds": max_rounds,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
     if args.command == "voice-devices":
         return _list_voice_devices()
     if args.command == "speaker-devices":
@@ -186,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.task not in TASKS:
         print(f"unsupported task: {args.task}")
+        return 2
+    if args.command == "run" and args.task not in RUN_TASKS:
+        print(f"unsupported benchmark task: {args.task}")
         return 2
     if args.command == "play" and args.task not in INTERACTIVE_TASKS:
         print(f"unsupported interactive task: {args.task}")
@@ -218,9 +306,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
+        interactive_options = _resolve_interactive_task_options(
+            args,
+            raw_argv,
+        )
         _validate_interactive_turn_count(
             task_name=args.task,
-            max_turns=int(args.max_turns),
+            max_turns=int(interactive_options["max_turns"]),
         )
     except ValueError as exc:
         print(f"invalid interactive task configuration: {exc}")
@@ -230,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         _validate_voice_game_range(
             task_name=args.task,
             start_number=int(args.start_number),
-            max_turns=int(args.max_turns),
+            max_turns=int(interactive_options["max_turns"]),
             config=human_input_config,
         )
     except (TypeError, ValueError) as exc:
@@ -238,6 +330,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         speech_output_config = _speech_output_config_from_args(args)
+        if (
+            args.task == "character_guessing"
+            and speech_output_config.mode == "audio"
+            and speech_output_config.cache_miss == "skip"
+        ):
+            raise ValueError(
+                "Character Guessing uses dynamic speech; "
+                "--speech-cache-miss must be synthesize"
+            )
     except (TypeError, ValueError) as exc:
         print(f"invalid speech output configuration: {exc}")
         return 2
@@ -250,16 +351,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = play_task(
             task_name=args.task,
-            max_turns=int(args.max_turns),
+            max_turns=int(interactive_options["max_turns"]),
             model_url=args.model_url,
             model=args.model,
             timeout_s=float(args.timeout_s),
-            max_tokens=int(args.max_tokens),
+            max_tokens=int(interactive_options["max_tokens"]),
             temperature=float(args.temperature),
             deadline_ms=float(args.deadline_ms),
             output_dir=args.output_dir,
             start_number=int(args.start_number),
-            human_first=bool(args.human_first),
+            human_first=bool(interactive_options["human_first"]),
             show_expected=bool(args.show_expected),
             history_limit=int(args.history_limit),
             deadline_mode=args.deadline_mode,
@@ -268,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
             human_input_config=human_input_config,
             speech_output_config=speech_output_config,
             task_web_config=task_web_config,
+            character_scope=str(interactive_options["character_scope"]),
+            max_rounds=int(interactive_options["max_rounds"]),
         )
     except KeyboardInterrupt:
         print("interactive session interrupted")
@@ -362,18 +465,45 @@ def play_task(
     human_input_config: HumanInputConfig | None = None,
     speech_output_config: SpeechOutputConfig | None = None,
     task_web_config: TaskWebConfig | None = None,
+    character_scope: str = "world_historical_figures_en",
+    max_rounds: int = 20,
 ) -> InteractiveTaskRunResult:
-    task = create_task(task_name, start_number=start_number, history_limit=history_limit)
-    _validate_interactive_turn_count(task_name=task_name, max_turns=max_turns)
+    task = create_task(
+        task_name,
+        start_number=start_number,
+        history_limit=history_limit,
+        character_scope=character_scope,
+        max_rounds=max_rounds,
+    )
+    attempt_limit = (
+        int(max_rounds) * 6
+        if task_name == "character_guessing"
+        else int(max_turns)
+    )
+    _validate_interactive_turn_count(
+        task_name=task_name,
+        max_turns=attempt_limit,
+    )
     run_dir = _new_run_dir(output_dir, task_name=task.name, runner_kind="interactive")
     active_terminal = terminal or StdTerminalIO()
     input_config = human_input_config or HumanInputConfig()
     output_config = speech_output_config or SpeechOutputConfig()
     web_config = task_web_config or TaskWebConfig()
+    if task_name == "character_guessing":
+        human_first = False
+    if (
+        task_name == "character_guessing"
+        and output_config.mode == "audio"
+        and output_config.cache_miss == "skip"
+    ):
+        raise ValueError(
+            "Character Guessing uses dynamic speech; "
+            "cache_miss must be synthesize"
+        )
     _validate_voice_game_range(
         task_name=task_name,
         start_number=start_number,
-        max_turns=max_turns,
+        max_turns=attempt_limit,
         config=input_config,
     )
     runtime_config = _interactive_runtime_config(
@@ -422,7 +552,7 @@ def play_task(
                 _best_effort_startup_manifest(
                     run_dir,
                     task_name=task.name,
-                    max_turns=max_turns,
+                    max_turns=attempt_limit,
                     config=input_config,
                     speech_config=output_config,
                     runtime_config=runtime_config,
@@ -442,7 +572,7 @@ def play_task(
             _best_effort_startup_manifest(
                 run_dir,
                 task_name=task.name,
-                max_turns=max_turns,
+                max_turns=attempt_limit,
                 config=input_config,
                 speech_config=output_config,
                 runtime_config=runtime_config,
@@ -489,7 +619,7 @@ def play_task(
             _best_effort_startup_manifest(
                 run_dir,
                 task_name=task.name,
-                max_turns=max_turns,
+                max_turns=attempt_limit,
                 config=input_config,
                 speech_config=output_config,
                 runtime_config=runtime_config,
@@ -501,7 +631,7 @@ def play_task(
                 else None,
             )
             raise
-        return runtime.play(task, max_turns=max_turns)
+        return runtime.play(task, max_turns=attempt_limit)
 
 
 def create_task(
@@ -510,6 +640,8 @@ def create_task(
     start_number: int,
     history_limit: int = 8,
     oracle_history: bool = False,
+    character_scope: str = "world_historical_figures_en",
+    max_rounds: int = 20,
 ) -> RealtimeTask | InteractiveTask:
     if task_name == "animal_naming":
         return AnimalNamingTask()
@@ -518,6 +650,11 @@ def create_task(
             start_number=start_number,
             history_limit=history_limit,
             oracle_history=oracle_history,
+        )
+    if task_name == "character_guessing":
+        return CharacterGuessingTask(
+            scope=get_character_scope(character_scope),
+            max_rounds=max_rounds,
         )
     raise ValueError(f"unsupported task: {task_name}")
 

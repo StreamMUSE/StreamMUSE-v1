@@ -151,7 +151,14 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 
 以下参数属于 `streammuse-task play`，与音乐实时入口 `streammuse-cli` 的输入参数相互独立：
 
-`play` 当前支持 `zip_zap_zop` 和 `animal_naming`。Animal Naming 使用 91 项 exact whitelist，`--max-turns` 不能超过 whitelist size；`--start-number` 对该任务没有作用。
+`play` 当前支持 `zip_zap_zop`、`animal_naming` 和 `character_guessing`。Animal Naming 使用 91 项 exact whitelist，`--max-turns` 不能超过 whitelist size；`--start-number` 对该任务没有作用。Character Guessing 是 play-only task，固定由 LLM 先手，并按 logical round 而不是 actor turn 计数。
+
+| Character Guessing 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `--character-scope` | `str` | `world_historical_figures_en` | 内置人物范围 |
+| `--max-rounds` | `int` | `20` | 完整 LLM action + Human answer 的最大轮数 |
+
+Character Guessing 禁止显式传入 `--human-first`、`--start-number` 或 `--max-turns`。如果没有显式设置，`--max-tokens` 对该游戏解析为 64；其他游戏仍保留原默认值。完整规则见 [Character Guessing 交互游戏](../user-guide/character-guessing.md)。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -164,7 +171,7 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `--voice-model-revision` | `str` | `None` | 固定模型版本的 commit 或 tag |
 | `--voice-local-files-only` | flag | `False` | 禁止联网下载模型 |
 | `--voice-save-audio` | flag | `False` | 将每回合发言保存到运行产物目录 |
-| `--voice-max-utterance-ms` | `float` | `5000` | 首个 VAD 语音帧之后的最大采集时长；Animal Naming 初始建议 1500 ms |
+| `--voice-max-utterance-ms` | `float` | `5000` | 首个 VAD 语音帧之后的最大采集时长；Animal Naming 初始建议 1500 ms，Character Guessing 可从 1000 ms 开始 |
 
 `streammuse-task voice-devices` 可以在不提供 `--task`、不连接聊天模型服务器且不加载 Whisper 的情况下列出麦克风。语音参数只能和 `--human-input voice` 一起使用。完整说明见[交互式游戏语音输入](../user-guide/voice-input.md)。
 
@@ -191,7 +198,7 @@ Injection 当前仅支持 `--input-mode midi_file`。CLI 会先调用 server 的
 | `--speech-save-audio` | flag | `False` | 保存每个 LLM 回合的合成 WAV |
 | `--llm-deadline-basis` | `text/audio_end` | `text` | 机器回合计分口径 |
 
-`streammuse-task speaker-devices` 不需要任务或模型服务器。关闭语音输出时禁止传入 `--speech-*` 参数；`audio_end` 必须同时启用音频输出。Kokoro 在当前版本必须显式提供模型和 revision。完整说明见[交互式游戏语音输出](../user-guide/speech-output.md)。
+`streammuse-task speaker-devices` 不需要任务或模型服务器。关闭语音输出时禁止传入 `--speech-*` 参数；`audio_end` 必须同时启用音频输出。Kokoro 在当前版本必须显式提供模型和 revision。Character Guessing 的问句是动态内容，启用音频时必须使用 `--speech-cache-miss synthesize`。完整说明见[交互式游戏语音输出](../user-guide/speech-output.md)。
 
 ### 交互式任务 Web 观察界面
 

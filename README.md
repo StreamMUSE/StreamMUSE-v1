@@ -93,7 +93,7 @@ logs/YYYY-MM-DD/session_HHMMSS/
 
 ### Interactive Voice Input
 
-Zip-Zap-Zop can capture each human turn from a microphone and transcribe it locally with a resident `faster-whisper tiny.en` CPU/int8 model:
+Interactive games, including Character Guessing, can capture each human turn from a microphone and transcribe it locally with a resident `faster-whisper tiny.en` CPU/int8 model:
 
 ```bash
 uv sync --extra voice
@@ -146,6 +146,7 @@ Start from [`docs/index.md`](docs/index.md). Key pages:
 - [`docs/user-guide/music-injection.md`](docs/user-guide/music-injection.md)
 - [`docs/user-guide/speech-output.md`](docs/user-guide/speech-output.md)
 - [`docs/user-guide/animal-naming.md`](docs/user-guide/animal-naming.md)
+- [`docs/user-guide/character-guessing.md`](docs/user-guide/character-guessing.md)
 - [`docs/architecture/application/service.md`](docs/architecture/application/service.md)
 
 ## Dataset / Training Notes

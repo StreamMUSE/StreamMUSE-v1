@@ -13,12 +13,14 @@ from streammuse.application.tasks import (
 )
 from streammuse.domain.tasks import (
     AnimalNamingTask,
+    CharacterGuessingTask,
     ChatModelResponse,
     HumanResponse,
     SpeechPlayback,
     SpeechRequest,
     TaskViewEvent,
     ZipZapZopTask,
+    WORLD_HISTORICAL_FIGURES_EN,
 )
 from streammuse.infrastructure.voice import SpeechOutputError
 
@@ -73,6 +75,12 @@ class FakeTerminal:
 
     def prompt_with_timeout(self, text: str, timeout_s: float):
         raise AssertionError((text, timeout_s))
+
+
+class SetupTerminal(FakeTerminal):
+    def prompt(self, text: str) -> str:
+        self.outputs.append(text)
+        return ""
 
 
 class FakeSpeechSink:
@@ -299,6 +307,54 @@ def test_animal_naming_uses_on_demand_speech_without_vocabulary_prewarm(
     assert record["metadata"]["referee_metadata"] == {
         "normalized_animal": "lion"
     }
+
+
+def test_character_question_uses_safe_dynamic_speech_without_prewarm(
+    tmp_path: Path,
+) -> None:
+    clock = ManualClock()
+    sink = FakeSpeechSink(
+        clock,
+        playback=SpeechPlayback(
+            status="cache_miss_synthesized",
+            spoken_text="Was this person born before 1900?",
+            cached=False,
+            completed_normally=True,
+            first_dac_sample_offset_ms=20.0,
+            playback_drained_offset_ms=400.0,
+            stream_inactive_offset_ms=400.0,
+        ),
+    )
+    runtime = InteractiveTaskRuntime(
+        config=InteractiveTaskRuntimeConfig(
+            output_dir=str(tmp_path),
+            deadline_mode="soft",
+            max_tokens=64,
+        ),
+        model_client=FakeModel(
+            clock,
+            text="ASK: Was this person born before 1900?",
+        ),
+        terminal=SetupTerminal(),
+        speech_output_sink=sink,
+        now=clock.now,
+    )
+    task = CharacterGuessingTask(
+        scope=WORLD_HISTORICAL_FIGURES_EN,
+        max_rounds=20,
+    )
+
+    runtime.play(task, max_turns=1)
+
+    record = _trace(tmp_path)[0]
+    assert sink.prepared == ()
+    assert sink.requests[0].text == "Was this person born before 1900?"
+    assert sink.requests[0].source_text == (
+        "ASK: Was this person born before 1900?"
+    )
+    assert record["metadata"]["display_text"] == (
+        "Was this person born before 1900?"
+    )
 
 
 def test_llm_turn_emits_session_aligned_timing_breakdown(

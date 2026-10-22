@@ -62,6 +62,10 @@ def test_frontend_uses_text_content_and_has_no_inline_script() -> None:
     assert ".textContent" in script
     assert "<script src=" in html
     assert "<script>" not in html
+    assert 'id="setup-panel"' in html
+    assert 'id="candidate-list"' in html
+    assert 'id="round-progress"' in html
+    assert "replaceChildren" in script
 
 
 def test_wrong_origin_or_token_is_rejected() -> None:

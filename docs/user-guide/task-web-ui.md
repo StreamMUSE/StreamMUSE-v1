@@ -1,6 +1,6 @@
 # 交互式任务 Web 观察界面
 
-`streammuse-task play` 可以启用一个只读浏览器界面，用于显示当前回合、最近应答、判定结果和 deadline 时间轴。它同时支持 `zip_zap_zop` 与 `animal_naming`，但不接受浏览器作答或游戏命令。
+`streammuse-task play` 可以启用一个只读浏览器界面，用于显示当前回合、最近应答、判定结果和 deadline 时间轴。它支持 `zip_zap_zop`、`animal_naming` 与 `character_guessing`，但不接受浏览器作答或游戏命令。
 
 ## 启动
 
@@ -31,6 +31,8 @@ Viewer ready. Initializing game...
 ```
 
 等待期间可按 `Ctrl-C` 取消；该局写入 `user_interrupt` startup manifest，并返回 130。
+
+Character Guessing 会在 ready 之前显示 scope 名称和完整人物名单；人物只由玩家私下选择，不通过网页提交。开局后页面显示 logical round、pending action、最近问题/猜测和最终猜中结果。setup 仍位于首个 Web render 之后，且不启动 turn deadline。
 
 ## 参数
 

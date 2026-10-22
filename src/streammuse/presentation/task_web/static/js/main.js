@@ -5,6 +5,9 @@
   const elements = {
     task: byId("task-name"), connection: byId("connection-state"),
     connectionLabel: byId("connection-label"), turnLabel: byId("turn-label"),
+    setupPanel: byId("setup-panel"), setupTitle: byId("setup-title"),
+    setupPrompt: byId("setup-prompt"), candidateList: byId("candidate-list"),
+    playfield: byId("playfield"), roundProgress: byId("round-progress"),
     prompt: byId("prompt"), display: byId("display-value"),
     timeline: byId("timeline"), fill: byId("timeline-fill"),
     humanResponse: byId("human-response"), humanResult: byId("human-result"),
@@ -57,24 +60,58 @@
     const text = actor === "human" ? elements.humanResponse : elements.llmResponse;
     const result = actor === "human" ? elements.humanResult : elements.llmResult;
     if (!response) return;
-    text.textContent = response.response || "[no response]";
+    text.textContent = response.display_text || response.response || "[no response]";
     result.textContent = response.is_valid ? "OK" : "MISS";
     result.className = `result ${response.is_valid ? "ok" : "miss"}`;
   }
 
   function render(snapshot) {
     const state = snapshot.payload || {};
+    const setup = state.setup || {};
+    const progress = state.progress || {};
+    const publicState = progress.public_state || {};
     currentSession = snapshot.session_id;
     sessionFinished = state.status === "finished";
-    elements.task.textContent = state.task || "Interactive task";
+    elements.task.textContent = publicState.scope_title || state.task || "Interactive task";
+
+    const showingSetup = state.status === "setup";
+    elements.setupPanel.hidden = !showingSetup;
+    elements.playfield.hidden = showingSetup;
+    if (showingSetup) {
+      elements.setupTitle.textContent = setup.title || publicState.scope_title || "Character scope";
+      elements.setupPrompt.textContent = setup.prompt || "Choose one person privately.";
+      elements.candidateList.replaceChildren();
+      const choices = Array.isArray(setup.choices) ? setup.choices : [];
+      choices.forEach((choice) => {
+        const item = document.createElement("li");
+        item.textContent = String(choice);
+        elements.candidateList.appendChild(item);
+      });
+    }
+
     const turn = state.current_turn || {};
     if (turn.actor) {
-      elements.turnLabel.textContent = `${turn.actor === "human" ? "Your" : "LLM"} turn`;
+      const pending = publicState.pending_action || {};
+      if (turn.actor === "human" && pending.kind === "guess") {
+        elements.turnLabel.textContent = "Confirm the guess";
+      } else if (turn.actor === "human") {
+        elements.turnLabel.textContent = "Answer the question";
+      } else {
+        elements.turnLabel.textContent = "LLM asking or guessing";
+      }
       elements.prompt.textContent = turn.prompt || "Thinking";
     } else {
       elements.turnLabel.textContent = state.status === "initializing" ? "Initializing game" : "Waiting for game";
       elements.prompt.textContent = state.status === "initializing" ? "Preparing audio and model resources" : "Viewer is ready";
     }
+    const maxRounds = Number(publicState.max_rounds || 0);
+    const currentRound = Number(
+      turn.logical_round || publicState.current_round || 0
+    );
+    elements.roundProgress.hidden = maxRounds <= 0;
+    elements.roundProgress.textContent = maxRounds > 0
+      ? `Round ${currentRound} / ${maxRounds}`
+      : "";
     const hasDisplay = turn.display_value !== null && turn.display_value !== undefined;
     elements.display.hidden = !hasDisplay;
     elements.display.textContent = hasDisplay ? String(turn.display_value) : "";
@@ -95,8 +132,19 @@
     const stageText = stage.stage_index === null || stage.stage_index === undefined ? "" : ` · stage ${Number(stage.stage_index) + 1}`;
     elements.mode.textContent = `${config.deadline_mode || "waiting"}${stageText}`;
     const stats = state.stats || {};
-    elements.stats.textContent = `${stats.turn_count || 0} turns · ${stats.valid_count || 0} ok · ${stats.deadline_miss_count || 0} deadline misses`;
-    elements.session.textContent = state.status === "finished" ? `Finished: ${(state.session_result || {}).stop_reason || "completed"}` : state.status || "waiting";
+    const roundStats = Number(stats.logical_round_count || 0);
+    const rounds = maxRounds > 0 ? `${roundStats} rounds · ` : "";
+    elements.stats.textContent = `${rounds}${stats.turn_count || 0} turns · ${stats.valid_count || 0} ok · ${stats.deadline_miss_count || 0} deadline misses`;
+    const result = state.session_result || {};
+    if (state.status === "finished" && result.successful_character_id) {
+      const name = publicState.successful_character_name
+        || result.successful_character_id;
+      elements.session.textContent = `${name} guessed in round ${result.successful_guess_round}`;
+    } else {
+      elements.session.textContent = state.status === "finished"
+        ? `Finished: ${result.stop_reason || "completed"}`
+        : state.status || "waiting";
+    }
   }
 
   function connect() {

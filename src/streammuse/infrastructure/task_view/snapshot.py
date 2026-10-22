@@ -13,10 +13,12 @@ from streammuse.infrastructure.serialization import json_safe
 class TaskViewSnapshot:
     session_id: str
     task: str
-    schema_version: int = 1
+    schema_version: int = 2
     event_seq: int = 0
     status: str = "waiting_for_game"
     config: dict[str, Any] = field(default_factory=dict)
+    setup: dict[str, Any] | None = None
+    progress: dict[str, Any] = field(default_factory=dict)
     current_turn: dict[str, Any] | None = None
     stage: dict[str, Any] = field(default_factory=dict)
     stats: dict[str, Any] = field(
@@ -78,6 +80,19 @@ def reduce_task_view_snapshot(
         payload = {}
     updated = replace(snapshot, event_seq=int(event.event_seq))
 
+    if event.type == "session_setup":
+        public_state = payload.get("public_state")
+        return replace(
+            updated,
+            task=str(payload.get("task") or snapshot.task),
+            status="setup",
+            setup=dict(payload),
+            progress=(
+                {"public_state": dict(public_state)}
+                if isinstance(public_state, dict)
+                else snapshot.progress
+            ),
+        )
     if event.type == "session_config":
         return replace(
             updated,
@@ -122,6 +137,15 @@ def reduce_task_view_snapshot(
             current_turn=current,
             responses=responses,
             stats=dict(stats) if isinstance(stats, dict) else snapshot.stats,
+        )
+    if event.type == "task_progress":
+        stats = payload.get("stats")
+        return replace(
+            updated,
+            progress=dict(payload),
+            stats=(
+                dict(stats) if isinstance(stats, dict) else snapshot.stats
+            ),
         )
     if event.type == "stage_changed":
         return replace(updated, stage=dict(payload))

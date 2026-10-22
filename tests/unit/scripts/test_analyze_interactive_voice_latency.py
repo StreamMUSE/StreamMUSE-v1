@@ -230,3 +230,69 @@ def test_analyzer_rejects_reversed_derived_anchors(
 
     with pytest.raises(ValueError, match="reversed anchors"):
         analyzer.analyze_traces((trace,))
+
+
+def test_analyzer_aggregates_only_valid_complete_logical_rounds(
+    load_script,
+    tmp_path: Path,
+) -> None:
+    analyzer = load_script("analyze_interactive_voice_latency")
+    trace = tmp_path / "response_trace.jsonl"
+
+    def record(
+        turn_id: int,
+        actor: str,
+        latency_ms: float,
+        *,
+        valid: bool,
+        round_completed: bool,
+    ) -> dict[str, object]:
+        return {
+            "turn_id": turn_id,
+            "actor": actor,
+            "is_valid": valid,
+            "deadline_missed": False,
+            "latency_ms": latency_ms,
+            "metadata": {
+                "logical_round": 1,
+                "phase_before": (
+                    "awaiting_llm" if actor == "llm" else "awaiting_human"
+                ),
+                "phase_after": (
+                    "awaiting_human" if actor == "llm" else "awaiting_llm"
+                ),
+                "action_kind": "ask",
+                "round_completed": round_completed,
+                "timing_breakdown": _breakdown(
+                    actor=actor,
+                    session_offset_ms=float(turn_id * 100),
+                    anchors={"pipeline": latency_ms},
+                ),
+            },
+        }
+
+    trace.write_text(
+        "\n".join(
+            json.dumps(item)
+            for item in (
+                record(0, "llm", 50.0, valid=False, round_completed=False),
+                record(1, "llm", 100.0, valid=True, round_completed=False),
+                record(2, "human", 300.0, valid=True, round_completed=True),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = analyzer.analyze_traces((trace,))
+    analyzer.write_outputs(tmp_path / "analysis", result)
+
+    assert result["logical_round_count"] == 1
+    assert result["round_rows"][0]["round.total_latency_ms"] == 400.0
+    assert result["round_metrics"]["round.total_latency_ms"]["p50"] == 400.0
+    with (tmp_path / "analysis" / "breakdown_rounds.csv").open(
+        encoding="utf-8",
+        newline="",
+    ) as handle:
+        output = next(csv.DictReader(handle))
+    assert output["round.total_latency_ms"] == "400.0"

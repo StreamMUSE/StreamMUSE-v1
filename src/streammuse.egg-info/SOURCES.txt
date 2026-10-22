@@ -29,6 +29,7 @@ src/streammuse/application/tasks/human_input.py
 src/streammuse/application/tasks/interactive_runtime.py
 src/streammuse/application/tasks/runtime.py
 src/streammuse/application/tasks/speech_output.py
+src/streammuse/application/tasks/task_events.py
 src/streammuse/domain/__init__.py
 src/streammuse/domain/debug/__init__.py
 src/streammuse/domain/debug/canonical.py
@@ -49,6 +50,8 @@ src/streammuse/domain/musical/converters.py
 src/streammuse/domain/musical/events.py
 src/streammuse/domain/tasks/__init__.py
 src/streammuse/domain/tasks/animal_naming.py
+src/streammuse/domain/tasks/character_guessing.py
+src/streammuse/domain/tasks/character_scopes.py
 src/streammuse/domain/tasks/models.py
 src/streammuse/domain/tasks/zip_zap_zop.py
 src/streammuse/domain/timing/__init__.py
@@ -58,6 +61,7 @@ src/streammuse/experiments/__init__.py
 src/streammuse/experiments/melody_robustness.py
 src/streammuse/experiments/robustness_metrics.py
 src/streammuse/infrastructure/__init__.py
+src/streammuse/infrastructure/serialization.py
 src/streammuse/infrastructure/debug/__init__.py
 src/streammuse/infrastructure/debug/trace_recorder.py
 src/streammuse/infrastructure/inference/__init__.py
@@ -112,6 +116,9 @@ src/streammuse/infrastructure/output/session_logger.py
 src/streammuse/infrastructure/output/websocket.py
 src/streammuse/infrastructure/storage/__init__.py
 src/streammuse/infrastructure/storage/prompt_repository.py
+src/streammuse/infrastructure/task_view/__init__.py
+src/streammuse/infrastructure/task_view/snapshot.py
+src/streammuse/infrastructure/task_view/websocket.py
 src/streammuse/infrastructure/voice/__init__.py
 src/streammuse/infrastructure/voice/audio.py
 src/streammuse/infrastructure/voice/faster_whisper.py
@@ -129,5 +136,10 @@ src/streammuse/presentation/debug/cli.py
 src/streammuse/presentation/debug/server.py
 src/streammuse/presentation/task/__init__.py
 src/streammuse/presentation/task/cli.py
+src/streammuse/presentation/task_web/__init__.py
+src/streammuse/presentation/task_web/server.py
+src/streammuse/presentation/task_web/static/index.html
+src/streammuse/presentation/task_web/static/css/style.css
+src/streammuse/presentation/task_web/static/js/main.js
 src/streammuse/presentation/web/__init__.py
 src/streammuse/presentation/web/server.py

@@ -121,3 +121,62 @@ def test_queue_is_bounded_and_overflow_replaces_backlog_with_latest_snapshot() -
     assert pending[-1]["event_seq"] == 5
     assert pending[-1]["payload"]["dropped_event_count"] > 0
     assert sink.snapshot.asr["raw_transcript"] == "5"
+
+
+def test_character_setup_and_progress_survive_snapshot_reconnect() -> None:
+    snapshot = TaskViewSnapshot(
+        session_id="session",
+        task="character_guessing",
+    )
+    snapshot = reduce_task_view_snapshot(
+        snapshot,
+        event(
+            "session_setup",
+            1,
+            task="character_guessing",
+            title="World Historical Figures",
+            prompt="Choose privately",
+            choices=["Ada Lovelace", "Albert Einstein"],
+            public_state={
+                "scope_title": "World Historical Figures",
+                "max_rounds": 20,
+            },
+        ),
+    )
+    snapshot = reduce_task_view_snapshot(
+        snapshot,
+        event(
+            "task_progress",
+            2,
+            next_actor="human",
+            logical_round=0,
+            public_state={
+                "phase": "awaiting_human",
+                "current_round": 1,
+                "max_rounds": 20,
+                "pending_action": {
+                    "kind": "ask",
+                    "display_text": "Was this person born before 1900?",
+                },
+            },
+            stats={
+                "turn_count": 1,
+                "logical_round_count": 0,
+                "valid_count": 1,
+                "invalid_count": 0,
+                "deadline_miss_count": 0,
+            },
+        ),
+    )
+
+    envelope = snapshot.envelope(now_ms=0.0)
+    payload = envelope["payload"]
+    assert envelope["schema_version"] == 2
+    assert payload["setup"]["choices"] == [
+        "Ada Lovelace",
+        "Albert Einstein",
+    ]
+    assert payload["progress"]["public_state"]["pending_action"][
+        "kind"
+    ] == "ask"
+    assert payload["stats"]["logical_round_count"] == 0

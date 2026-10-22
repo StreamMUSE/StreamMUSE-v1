@@ -7,7 +7,11 @@ from unittest.mock import patch
 import pytest
 
 from streammuse.application.tasks import InteractiveTaskRunResult, TaskRunResult, TaskWebConfig
-from streammuse.domain.tasks import AnimalNamingTask, ZipZapZopTask
+from streammuse.domain.tasks import (
+    AnimalNamingTask,
+    CharacterGuessingTask,
+    ZipZapZopTask,
+)
 from streammuse.infrastructure.voice import MicrophoneDevice, VoiceDependencyError
 from streammuse.presentation.task.cli import build_parser, create_task, main, play_task
 
@@ -85,6 +89,129 @@ def test_task_cli_runs_animal_naming_benchmark(tmp_path, capsys) -> None:
     assert run_task.call_args.kwargs["runner_kind"] == "offline_benchmark"
     assert run_task.call_args.kwargs["live_output"] is False
     assert "offline_benchmark completed: 2 turns" in capsys.readouterr().out
+
+
+def test_character_guessing_is_play_only(capsys) -> None:
+    exit_code = main(["run", "--task", "character_guessing"])
+
+    assert exit_code == 2
+    assert "unsupported benchmark task" in capsys.readouterr().out
+
+
+def test_character_guessing_resolves_task_specific_play_defaults(
+    tmp_path,
+    capsys,
+) -> None:
+    result = InteractiveTaskRunResult(
+        output_dir=str(tmp_path / "play"),
+        task_name="character_guessing",
+        turn_count=4,
+        human_turn_count=2,
+        llm_turn_count=2,
+        valid_count=4,
+        invalid_count=0,
+        deadline_miss_count=0,
+        logical_round_count=2,
+    )
+
+    with patch(
+        "streammuse.presentation.task.cli.play_task",
+        return_value=result,
+    ) as mocked:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "character_guessing",
+                "--deadline-mode",
+                "soft",
+                "--output-dir",
+                str(tmp_path),
+            ]
+        )
+
+    assert exit_code == 0
+    assert mocked.call_args.kwargs["human_first"] is False
+    assert mocked.call_args.kwargs["max_tokens"] == 64
+    assert mocked.call_args.kwargs["max_turns"] == 120
+    assert mocked.call_args.kwargs["max_rounds"] == 20
+    assert mocked.call_args.kwargs["character_scope"] == (
+        "world_historical_figures_en"
+    )
+    assert "interactive completed: 4 turns" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--human-first"], "must start with the LLM"),
+        (["--start-number", "3"], "does not apply"),
+        (["--max-turns", "20"], "use --max-rounds"),
+        (["--max-rounds", "0"], "max_rounds must be > 0"),
+        (["--character-scope", "unknown"], "unknown character scope"),
+    ],
+)
+def test_character_guessing_rejects_incompatible_options(
+    extra: list[str],
+    message: str,
+    capsys,
+) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as mocked:
+        exit_code = main(
+            ["play", "--task", "character_guessing", *extra]
+        )
+
+    assert exit_code == 2
+    mocked.assert_not_called()
+    assert message in capsys.readouterr().out
+
+
+def test_character_options_are_rejected_for_legacy_tasks(capsys) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as mocked:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "animal_naming",
+                "--max-rounds",
+                "5",
+            ]
+        )
+
+    assert exit_code == 2
+    mocked.assert_not_called()
+    assert "require --task character_guessing" in capsys.readouterr().out
+
+
+def test_character_guessing_rejects_skipped_dynamic_speech(capsys) -> None:
+    with patch("streammuse.presentation.task.cli.play_task") as mocked:
+        exit_code = main(
+            [
+                "play",
+                "--task",
+                "character_guessing",
+                "--speech-output",
+                "audio",
+                "--speech-cache-miss",
+                "skip",
+            ]
+        )
+
+    assert exit_code == 2
+    mocked.assert_not_called()
+    assert "must be synthesize" in capsys.readouterr().out
+
+
+def test_create_character_guessing_task_uses_scope_and_round_limit() -> None:
+    created = create_task(
+        "character_guessing",
+        start_number=1,
+        max_rounds=7,
+    )
+
+    assert isinstance(created, CharacterGuessingTask)
+    assert created.max_rounds == 7
+    assert created.scope.scope_id == "world_historical_figures_en"
 
 
 def test_task_cli_plays_zip_zap_zop_interactive(tmp_path, capsys) -> None:

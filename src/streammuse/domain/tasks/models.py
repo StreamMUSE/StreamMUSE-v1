@@ -12,10 +12,12 @@ DeadlineMode = Literal["menu", "soft", "hard", "challenge"]
 HumanInputMode = Literal["terminal", "voice"]
 SpeechOutputMode = Literal["silent", "audio"]
 TaskViewEventType = Literal[
+    "session_setup",
     "session_config",
     "turn_attempt_started",
     "asr",
     "turn_finished",
+    "task_progress",
     "stage_changed",
     "speech_output",
     "session_finished",
@@ -193,6 +195,26 @@ class InteractiveTurnRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class InteractiveFlowDecision:
+    """Task-owned scheduling and completion state for non-parity games."""
+
+    next_actor: InteractiveActor | None
+    logical_round: int
+    is_complete: bool = False
+    stop_reason: str | None = None
+    winner: InteractiveActor | None = None
+    loser: InteractiveActor | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class InteractiveTaskSetup:
+    title: str
+    prompt: str
+    choices: tuple[str, ...] = ()
+
+
 class LocalChatModel(Protocol):
     def generate(
         self,
@@ -269,6 +291,37 @@ class InteractiveTask(Protocol):
         state: TaskState,
         transcript: list[InteractiveTurnRecord],
     ) -> str | None: ...
+
+
+@runtime_checkable
+class FlowControlledInteractiveTask(Protocol):
+    def flow_decision(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> InteractiveFlowDecision: ...
+
+
+@runtime_checkable
+class SetupAwareInteractiveTask(Protocol):
+    def build_setup(self, state: TaskState) -> InteractiveTaskSetup: ...
+
+
+@runtime_checkable
+class PublicTaskStateProvider(Protocol):
+    def public_state(self, state: TaskState) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class InteractiveResponsePresenter(Protocol):
+    def build_display_text(
+        self,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        response_text: str,
+        *,
+        actor: InteractiveActor,
+    ) -> str: ...
 
 
 @runtime_checkable

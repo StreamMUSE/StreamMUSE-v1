@@ -18,9 +18,20 @@ FIXED_COLUMNS = (
     "turn_id",
     "actor",
     "number",
+    "logical_round",
+    "phase_before",
+    "phase_after",
+    "action_kind",
+    "round_completed",
     "is_valid",
     "deadline_missed",
     "latency_ms",
+)
+ROUND_FIXED_COLUMNS = (
+    "source",
+    "run_id",
+    "logical_round",
+    "complete_pair",
 )
 
 
@@ -70,6 +81,7 @@ def discover_traces(inputs: Iterable[Path]) -> tuple[Path, ...]:
 
 def analyze_traces(traces: Iterable[Path]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
+    round_rows: list[dict[str, Any]] = []
     startup: list[dict[str, Any]] = []
     skipped_turn_count = 0
     sources: list[str] = []
@@ -90,6 +102,7 @@ def analyze_traces(traces: Iterable[Path]) -> dict[str, Any]:
             timed_rows.append(row)
         _add_cross_turn_metrics(timed_rows)
         rows.extend(timed_rows)
+        round_rows.extend(_logical_round_rows(timed_rows))
         manifest = trace.parent / "manifest.json"
         if manifest.is_file():
             startup.append(_startup_row(manifest))
@@ -99,10 +112,16 @@ def analyze_traces(traces: Iterable[Path]) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "sources": sources,
         "turn_count": len(rows),
+        "logical_round_count": len(round_rows),
         "skipped_turn_count": skipped_turn_count,
         "startup": startup,
         "metrics": metrics,
+        "round_metrics": _summarize_rows(
+            round_rows,
+            fixed_columns=ROUND_FIXED_COLUMNS,
+        ),
         "rows": rows,
+        "round_rows": round_rows,
     }
 
 
@@ -126,7 +145,32 @@ def write_outputs(output_dir: Path, result: dict[str, Any]) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    summary = {key: value for key, value in result.items() if key != "rows"}
+    round_rows = result.get("round_rows") or []
+    round_metric_columns = sorted(
+        {
+            key
+            for row in round_rows
+            for key in row
+            if key not in ROUND_FIXED_COLUMNS
+        }
+    )
+    with (output_dir / "breakdown_rounds.csv").open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[*ROUND_FIXED_COLUMNS, *round_metric_columns],
+        )
+        writer.writeheader()
+        writer.writerows(round_rows)
+
+    summary = {
+        key: value
+        for key, value in result.items()
+        if key not in {"rows", "round_rows"}
+    }
     (output_dir / "breakdown_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -229,6 +273,7 @@ def _turn_row(
     breakdown: dict[str, Any],
 ) -> dict[str, Any]:
     run_id = None
+    metadata = record.get("metadata")
     manifest = trace.parent / "manifest.json"
     if manifest.is_file():
         value = json.loads(manifest.read_text(encoding="utf-8"))
@@ -240,6 +285,31 @@ def _turn_row(
         "turn_id": record.get("turn_id"),
         "actor": record.get("actor"),
         "number": record.get("number"),
+        "logical_round": (
+            metadata.get("logical_round")
+            if isinstance(metadata, dict)
+            else None
+        ),
+        "phase_before": (
+            metadata.get("phase_before")
+            if isinstance(metadata, dict)
+            else None
+        ),
+        "phase_after": (
+            metadata.get("phase_after")
+            if isinstance(metadata, dict)
+            else None
+        ),
+        "action_kind": (
+            metadata.get("action_kind")
+            if isinstance(metadata, dict)
+            else None
+        ),
+        "round_completed": bool(
+            metadata.get("round_completed")
+            if isinstance(metadata, dict)
+            else False
+        ),
         "is_valid": record.get("is_valid"),
         "deadline_missed": record.get("deadline_missed"),
         "latency_ms": record.get("latency_ms"),
@@ -256,6 +326,45 @@ def _turn_row(
     )
     row["_anchors_ms"] = breakdown.get("anchors_ms")
     return row
+
+
+def _logical_round_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[int, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        logical_round = row.get("logical_round")
+        actor = row.get("actor")
+        if (
+            not row.get("is_valid")
+            or isinstance(logical_round, bool)
+            or not isinstance(logical_round, int)
+            or logical_round <= 0
+            or actor not in {"human", "llm"}
+        ):
+            continue
+        grouped.setdefault(logical_round, {})[str(actor)] = row
+
+    result: list[dict[str, Any]] = []
+    for logical_round, actors in sorted(grouped.items()):
+        llm = actors.get("llm")
+        human = actors.get("human")
+        if llm is None or human is None:
+            continue
+        llm_latency = float(llm.get("latency_ms") or 0.0)
+        human_latency = float(human.get("latency_ms") or 0.0)
+        result.append(
+            {
+                "source": llm.get("source"),
+                "run_id": llm.get("run_id"),
+                "logical_round": logical_round,
+                "complete_pair": True,
+                "round.llm_latency_ms": llm_latency,
+                "round.human_latency_ms": human_latency,
+                "round.total_latency_ms": llm_latency + human_latency,
+            }
+        )
+    return result
 
 
 def _flatten_durations(
@@ -518,11 +627,15 @@ def _startup_row(path: Path) -> dict[str, Any]:
     }
 
 
-def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _summarize_rows(
+    rows: list[dict[str, Any]],
+    *,
+    fixed_columns: tuple[str, ...] = FIXED_COLUMNS,
+) -> dict[str, Any]:
     values: dict[str, list[float]] = {}
     for row in rows:
         for key, value in row.items():
-            if key in FIXED_COLUMNS or isinstance(value, bool):
+            if key in fixed_columns or isinstance(value, bool):
                 continue
             if isinstance(value, (int, float)) and math.isfinite(float(value)):
                 values.setdefault(key, []).append(float(value))
@@ -564,6 +677,7 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         "# Interactive Voice Latency Breakdown",
         "",
         f"- Timed turns: {summary['turn_count']}",
+        f"- Complete logical rounds: {summary.get('logical_round_count', 0)}",
         f"- Skipped turns without timing: {summary['skipped_turn_count']}",
         f"- Trace files: {len(summary['sources'])}",
         "",
@@ -577,6 +691,23 @@ def _render_markdown(summary: dict[str, Any]) -> str:
             f"{values['p90']:.3f} | {values['p95']:.3f} | "
             f"{values['p99']:.3f} | {values['max']:.3f} |"
         )
+    if summary.get("round_metrics"):
+        lines.extend(
+            [
+                "",
+                "## Logical Round Metrics",
+                "",
+                "| Metric | n | mean | p50 | p90 | p95 | p99 | max |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for name, values in summary["round_metrics"].items():
+            lines.append(
+                f"| `{name}` | {values['count']} | "
+                f"{values['mean']:.3f} | {values['p50']:.3f} | "
+                f"{values['p90']:.3f} | {values['p95']:.3f} | "
+                f"{values['p99']:.3f} | {values['max']:.3f} |"
+            )
     lines.append("")
     return "\n".join(lines)
 

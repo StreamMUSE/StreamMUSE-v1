@@ -24,18 +24,23 @@ from streammuse.application.tasks.task_events import NullTaskEventSink
 from streammuse.domain.tasks import (
     ChatModelResponse,
     DeadlineMode,
+    FlowControlledInteractiveTask,
     HumanResponse,
     HumanResponseRequest,
     HumanResponseSource,
     InteractiveActor,
+    InteractiveResponsePresenter,
+    InteractiveTaskSetup,
     InteractiveTask,
     InteractiveTurnRecord,
     LocalChatModel,
+    PublicTaskStateProvider,
     SpeechAwareInteractiveTask,
     SpeechOutputSink,
     SpeechPlayback,
     SpeechRenderableTask,
     SpeechRequest,
+    SetupAwareInteractiveTask,
     TaskRefereeResult,
     TaskEventSink,
     TaskState,
@@ -97,6 +102,13 @@ class InteractiveTaskRunResult:
     stop_reason: str = "completed"
     deadline_misses: tuple[dict[str, Any], ...] = ()
     invalid_responses: tuple[dict[str, Any], ...] = ()
+    logical_round_count: int = 0
+    question_count: int = 0
+    guess_count: int = 0
+    rejected_guess_count: int = 0
+    successful_guess: bool = False
+    successful_character_id: str | None = None
+    successful_guess_round: int | None = None
 
 
 @dataclass
@@ -109,6 +121,13 @@ class _InteractiveStats:
     human_turn_count: int = 0
     quit_requested: bool = False
     audio_end_fallback_reasons: dict[str, int] = field(default_factory=dict)
+    logical_round_count: int = 0
+    question_count: int = 0
+    guess_count: int = 0
+    rejected_guess_count: int = 0
+    successful_guess: bool = False
+    successful_character_id: str | None = None
+    successful_guess_round: int | None = None
 
     @property
     def turn_count(self) -> int:
@@ -132,6 +151,7 @@ class _DeadlineSessionState:
     winner: InteractiveActor | None = None
     loser: InteractiveActor | None = None
     stop_reason: str | None = None
+    consecutive_invalid_count: int = 0
 
 
 class InteractiveTaskRuntime:
@@ -220,30 +240,57 @@ class InteractiveTaskRuntime:
             manifest_written = True
             startup_complete = True
 
-            self._emit_task_event(
-                "session_config",
-                {
-                    "task": task.name,
-                    "deadline_mode": deadline_state.mode,
-                    "deadline_ms": float(deadline_state.current_deadline_ms),
-                    "challenge_deadline_ms_list": list(self._challenge_schedule()),
-                    "stage_index": int(deadline_state.stage_index),
-                    "max_turns": turn_limit,
-                    "human_first": bool(self.config.human_first),
-                    "human_input_mode": self.human_response_source.mode,
-                    "speech_output_mode": self.speech_output_sink.mode,
-                    "show_expected": bool(self.config.show_expected),
-                },
-            )
+            if isinstance(task, SetupAwareInteractiveTask):
+                setup = task.build_setup(state)
+                public_state = self._public_task_state(task, state)
+                self._emit_task_event(
+                    "session_setup",
+                    {
+                        **asdict(setup),
+                        "task": task.name,
+                        "public_state": public_state,
+                    },
+                )
+                if not self._run_task_setup(setup):
+                    stats.quit_requested = True
 
-            self._write_banner(task.name, deadline_state)
+            if not stats.quit_requested:
+                self._emit_task_event(
+                    "session_config",
+                    {
+                        "task": task.name,
+                        "deadline_mode": deadline_state.mode,
+                        "deadline_ms": float(
+                            deadline_state.current_deadline_ms
+                        ),
+                        "challenge_deadline_ms_list": list(
+                            self._challenge_schedule()
+                        ),
+                        "stage_index": int(deadline_state.stage_index),
+                        "max_turns": turn_limit,
+                        "human_first": bool(self.config.human_first),
+                        "flow_controlled": isinstance(
+                            task,
+                            FlowControlledInteractiveTask,
+                        ),
+                        "human_input_mode": self.human_response_source.mode,
+                        "speech_output_mode": self.speech_output_sink.mode,
+                        "show_expected": bool(self.config.show_expected),
+                    },
+                )
+                self._emit_task_progress(
+                    task,
+                    state,
+                    transcript,
+                    stats,
+                )
+                self._write_banner(task.name, deadline_state)
             while (
                 stats.turn_count < turn_limit
                 and not stats.quit_requested
                 and deadline_state.stop_reason is None
             ):
-                is_human_turn = (stats.turn_count % 2 == 0) if self.config.human_first else (stats.turn_count % 2 == 1)
-                actor: InteractiveActor = "human" if is_human_turn else "llm"
+                actor = self._next_actor(task, state, transcript, stats)
                 if actor == "human":
                     next_state = self._run_human_turn(
                         task=task,
@@ -265,7 +312,15 @@ class InteractiveTaskRuntime:
                         deadline_state=deadline_state,
                     )
 
-            status = deadline_state.stop_reason or ("user_quit" if stats.quit_requested else "completed")
+            status = deadline_state.stop_reason
+            if status is None and stats.quit_requested:
+                status = "user_quit"
+            if status is None and isinstance(
+                task,
+                FlowControlledInteractiveTask,
+            ):
+                status = "attempt_limit_reached"
+            status = status or "completed"
             source_close_attempted = True
             self._close_interactive_resources()
             result = self._result(run_dir, task.name, stats, deadline_state, stop_reason=status)
@@ -364,9 +419,139 @@ class InteractiveTaskRuntime:
             self._task_event_error_count += 1
 
     @staticmethod
+    def _public_task_state(
+        task: InteractiveTask,
+        state: TaskState,
+    ) -> dict[str, Any]:
+        if not isinstance(task, PublicTaskStateProvider):
+            return {}
+        return deepcopy(task.public_state(state))
+
+    def _run_task_setup(self, setup: InteractiveTaskSetup) -> bool:
+        self.terminal.write(setup.title)
+        if setup.choices:
+            self.terminal.write(
+                "Candidates:\n"
+                + "\n".join(
+                    f"  {index:>2}. {choice}"
+                    for index, choice in enumerate(setup.choices, start=1)
+                )
+            )
+        response = self.terminal.prompt(f"{setup.prompt}\n> ")
+        if response.strip().lower() in {":quit", ":q", ":exit"}:
+            self.terminal.write("Stopping interactive session.")
+            return False
+        if response.strip():
+            self.terminal.write(
+                "Setup input was ignored. Keep the selected person private."
+            )
+        return True
+
+    def _next_actor(
+        self,
+        task: InteractiveTask,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        stats: _InteractiveStats,
+    ) -> InteractiveActor:
+        if isinstance(task, FlowControlledInteractiveTask):
+            decision = task.flow_decision(state, transcript)
+            if decision.is_complete or decision.next_actor is None:
+                raise RuntimeError(
+                    "flow-controlled task has no actor before runtime completion"
+                )
+            return decision.next_actor
+        is_human = (
+            stats.turn_count % 2 == 0
+            if self.config.human_first
+            else stats.turn_count % 2 == 1
+        )
+        return "human" if is_human else "llm"
+
+    def _emit_task_progress(
+        self,
+        task: InteractiveTask,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        stats: _InteractiveStats,
+        deadline_state: _DeadlineSessionState | None = None,
+    ) -> None:
+        if not isinstance(task, FlowControlledInteractiveTask):
+            return
+        decision = task.flow_decision(state, transcript)
+        runtime_stop_reason = (
+            deadline_state.stop_reason
+            if deadline_state is not None
+            else None
+        )
+        public_state = self._public_task_state(task, state)
+        if runtime_stop_reason is not None:
+            public_state.update(
+                {
+                    "completed": True,
+                    "stop_reason": runtime_stop_reason,
+                    "winner": (
+                        deadline_state.winner
+                        if deadline_state is not None
+                        else None
+                    ),
+                }
+            )
+            if runtime_stop_reason != "character_guessed":
+                if "successful_character_id" in public_state:
+                    public_state["successful_character_id"] = None
+                if "successful_character_name" in public_state:
+                    public_state["successful_character_name"] = None
+        self._emit_task_event(
+            "task_progress",
+            {
+                "next_actor": decision.next_actor,
+                "logical_round": decision.logical_round,
+                "is_complete": (
+                    decision.is_complete
+                    or runtime_stop_reason is not None
+                ),
+                "stop_reason": runtime_stop_reason or decision.stop_reason,
+                "winner": (
+                    deadline_state.winner
+                    if runtime_stop_reason is not None
+                    and deadline_state is not None
+                    else decision.winner
+                ),
+                "loser": (
+                    deadline_state.loser
+                    if runtime_stop_reason is not None
+                    and deadline_state is not None
+                    else decision.loser
+                ),
+                "public_state": public_state,
+                "stats": self._event_stats(stats),
+            },
+        )
+
+    @staticmethod
+    def _display_response(
+        task: InteractiveTask,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        response_text: str,
+        *,
+        actor: InteractiveActor,
+    ) -> str:
+        if not isinstance(task, InteractiveResponsePresenter):
+            return response_text
+        return task.build_display_text(
+            state,
+            transcript,
+            response_text,
+            actor=actor,
+        )
+
+    @staticmethod
     def _event_stats(stats: _InteractiveStats) -> dict[str, int]:
         return {
             "turn_count": stats.turn_count,
+            "logical_round_count": stats.logical_round_count,
             "valid_count": stats.valid_count,
             "invalid_count": stats.invalid_count,
             "deadline_miss_count": stats.deadline_miss_count,
@@ -381,10 +566,16 @@ class InteractiveTaskRuntime:
                 "loser": result.loser,
                 "stats": {
                     "turn_count": result.turn_count,
+                    "logical_round_count": result.logical_round_count,
                     "valid_count": result.valid_count,
                     "invalid_count": result.invalid_count,
                     "deadline_miss_count": result.deadline_miss_count,
+                    "question_count": result.question_count,
+                    "guess_count": result.guess_count,
                 },
+                "successful_guess": result.successful_guess,
+                "successful_character_id": result.successful_character_id,
+                "successful_guess_round": result.successful_guess_round,
             },
         )
 
@@ -518,7 +709,7 @@ class InteractiveTaskRuntime:
         attempt_index = 0
         while True:
             prompt = (
-                f"[{number if number is not None else state.turn_index + 1}] "
+                f"{self._turn_heading(task, state, transcript)} "
                 f"You > {prompt_text} {self._deadline_suffix(deadline_state)} "
             )
             speech_context = None
@@ -535,6 +726,11 @@ class InteractiveTaskRuntime:
                     "actor": "human",
                     "prompt": prompt_text,
                     "display_value": number,
+                    "logical_round": self._logical_round_for_display(
+                        task,
+                        state,
+                        transcript,
+                    ),
                     "deadline_ms": float(deadline_state.current_deadline_ms),
                     "stage_index": int(deadline_state.stage_index),
                     "started_server_ms": self._timing_now() * 1000.0,
@@ -1034,7 +1230,7 @@ class InteractiveTaskRuntime:
         number = self._number_from_state(state)
         self._mark_timing(timing, "llm_prompt_render_started")
         self.terminal.write(
-            f"[{number if number is not None else state.turn_index + 1}] "
+            f"{self._turn_heading(task, state, transcript)} "
             f"LLM thinking... {self._deadline_suffix(deadline_state)}"
         )
         self._mark_timing(timing, "llm_prompt_render_completed")
@@ -1052,6 +1248,11 @@ class InteractiveTaskRuntime:
                 "actor": "llm",
                 "prompt": "LLM thinking...",
                 "display_value": number,
+                "logical_round": self._logical_round_for_display(
+                    task,
+                    state,
+                    transcript,
+                ),
                 "deadline_ms": float(deadline_state.current_deadline_ms),
                 "stage_index": int(deadline_state.stage_index),
                 "started_server_ms": self._timing_now() * 1000.0,
@@ -1114,7 +1315,14 @@ class InteractiveTaskRuntime:
         elapsed_ms = text_ready_ms
         try:
             self._mark_timing(timing, "llm_output_render_started")
-            self.terminal.write(f"    LLM > {response_text}")
+            display_text = self._display_response(
+                task,
+                state,
+                transcript,
+                response_text,
+                actor="llm",
+            )
+            self.terminal.write(f"    LLM > {display_text}")
             self._mark_timing(timing, "llm_output_render_completed")
             if self.speech_output_sink.mode == "audio":
                 self._mark_timing(timing, "spoken_text_render_started")
@@ -1445,8 +1653,29 @@ class InteractiveTaskRuntime:
         )
         if timing_context is not None:
             self._mark_timing(timing_context, "game_validation_completed")
-        deadline_missed = forced_deadline_missed or elapsed_ms > float(deadline_state.current_deadline_ms)
+        deadline_missed = forced_deadline_missed or elapsed_ms > float(
+            deadline_state.current_deadline_ms
+        )
         number = self._number_from_state(state)
+        logical_round = self._logical_round_for_display(
+            task,
+            state,
+            transcript,
+        )
+        next_state = task.advance_state(
+            state,
+            referee,
+            response_text,
+            actor=actor,
+            transcript=transcript,
+        )
+        display_text = self._display_response(
+            task,
+            state,
+            transcript,
+            response_text,
+            actor=actor,
+        )
         metadata: dict[str, Any] = {
             "failure_reason": referee.failure_reason,
             "referee_metadata": deepcopy(referee.metadata),
@@ -1457,6 +1686,20 @@ class InteractiveTaskRuntime:
             "challenge_stage_index": deadline_state.stage_index,
             "challenge_stage_turn_count": deadline_state.stage_turn_count,
             "model_error": model_error,
+            "logical_round": logical_round,
+            "phase_before": state.data.get("phase"),
+            "phase_after": next_state.data.get("phase"),
+            "action_kind": referee.metadata.get("action_kind"),
+            "canonical_character_id": referee.metadata.get(
+                "canonical_character_id"
+            ),
+            "canonical_answer": referee.metadata.get("canonical_answer"),
+            "round_completed": bool(
+                referee.metadata.get("round_completed")
+            ),
+            "task_completed": bool(next_state.data.get("completed")),
+            "task_stop_reason": next_state.data.get("stop_reason"),
+            "display_text": display_text,
         }
         if human_input_metadata is not None:
             metadata["human_input"] = deepcopy(human_input_metadata)
@@ -1477,13 +1720,6 @@ class InteractiveTaskRuntime:
             latency_ms=float(elapsed_ms),
             deadline_missed=bool(deadline_missed),
             metadata=metadata,
-        )
-        next_state = task.advance_state(
-            state,
-            referee,
-            response_text,
-            actor=actor,
-            transcript=transcript,
         )
         artifact_path = self._turn_artifact_path(run_dir, record.turn_id)
         self._write_turn_artifact(
@@ -1510,6 +1746,11 @@ class InteractiveTaskRuntime:
             "turn_id": record.turn_id,
             "actor": record.actor,
             "response": record.response,
+            "display_text": display_text,
+            "logical_round": logical_round,
+            "action_kind": metadata.get("action_kind"),
+            "canonical_answer": metadata.get("canonical_answer"),
+            "round_completed": metadata.get("round_completed"),
             "is_valid": record.is_valid,
             "failure_reason": referee.failure_reason,
             "latency_ms": record.latency_ms,
@@ -1521,7 +1762,27 @@ class InteractiveTaskRuntime:
         self._emit_task_event("turn_finished", turn_payload)
         old_stage_index = deadline_state.stage_index
         old_deadline_ms = deadline_state.current_deadline_ms
-        self._handle_turn_outcome(record, deadline_state)
+        self._handle_turn_outcome(
+            record,
+            deadline_state,
+            flow_controlled=isinstance(
+                task,
+                FlowControlledInteractiveTask,
+            ),
+        )
+        self._apply_task_completion(
+            task,
+            next_state,
+            transcript,
+            deadline_state,
+        )
+        self._emit_task_progress(
+            task,
+            next_state,
+            transcript,
+            stats,
+            deadline_state,
+        )
         if deadline_state.stage_index != old_stage_index:
             self._emit_task_event(
                 "stage_changed",
@@ -1538,12 +1799,55 @@ class InteractiveTaskRuntime:
             self.terminal.write(loss_text)
         return next_state
 
-    def _handle_turn_outcome(self, record: InteractiveTurnRecord, deadline_state: _DeadlineSessionState) -> None:
+    def _apply_task_completion(
+        self,
+        task: InteractiveTask,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+        deadline_state: _DeadlineSessionState,
+    ) -> None:
+        if deadline_state.stop_reason is not None:
+            return
+        if not isinstance(task, FlowControlledInteractiveTask):
+            return
+        decision = task.flow_decision(state, transcript)
+        if not decision.is_complete:
+            return
+        if not decision.stop_reason:
+            raise ValueError(
+                "completed flow decision must provide a stop_reason"
+            )
+        deadline_state.stop_reason = decision.stop_reason
+        deadline_state.winner = decision.winner
+        deadline_state.loser = decision.loser
+
+    def _handle_turn_outcome(
+        self,
+        record: InteractiveTurnRecord,
+        deadline_state: _DeadlineSessionState,
+        *,
+        flow_controlled: bool,
+    ) -> None:
         if record.deadline_missed:
-            deadline_state.deadline_misses.append(self._deadline_miss_detail(record, deadline_state))
+            deadline_state.deadline_misses.append(
+                self._deadline_miss_detail(record, deadline_state)
+            )
         if not record.is_valid:
-            deadline_state.invalid_responses.append(self._invalid_response_detail(record, deadline_state))
+            deadline_state.invalid_responses.append(
+                self._invalid_response_detail(record, deadline_state)
+            )
+            if flow_controlled:
+                deadline_state.consecutive_invalid_count += 1
+        else:
+            deadline_state.consecutive_invalid_count = 0
         if deadline_state.mode == "soft":
+            if (
+                flow_controlled
+                and deadline_state.consecutive_invalid_count >= 3
+            ):
+                deadline_state.loser = record.actor
+                deadline_state.winner = self._opponent(record.actor)
+                deadline_state.stop_reason = "retry_limit_reached"
             return
         if record.deadline_missed:
             deadline_state.loser = record.actor
@@ -1555,7 +1859,11 @@ class InteractiveTaskRuntime:
             deadline_state.winner = self._opponent(record.actor)
             deadline_state.stop_reason = "invalid_response_loss"
             return
-        if deadline_state.mode == "challenge":
+        progress_completed = record.is_valid and (
+            not flow_controlled
+            or bool(record.metadata.get("round_completed"))
+        )
+        if deadline_state.mode == "challenge" and progress_completed:
             deadline_state.stage_turn_count += 1
             stage_turns = max(1, int(self.config.challenge_stage_turns))
             schedule = self._challenge_schedule()
@@ -1566,7 +1874,9 @@ class InteractiveTaskRuntime:
                     deadline_state.stage_turn_count = 0
                     deadline_state.current_deadline_ms = schedule[deadline_state.stage_index]
                     self.terminal.write(
-                        f"Stage passed: {stage_turns} turns under {self._format_ms(old_deadline)}."
+                        f"Stage passed: {stage_turns} "
+                        f"{'rounds' if flow_controlled else 'turns'} under "
+                        f"{self._format_ms(old_deadline)}."
                     )
                     self.terminal.write(f"New deadline: {self._format_ms(deadline_state.current_deadline_ms)}.")
                 else:
@@ -1674,6 +1984,41 @@ class InteractiveTaskRuntime:
             stats.invalid_count += 1
         if record.deadline_missed:
             stats.deadline_miss_count += 1
+        if record.is_valid and record.metadata.get("round_completed"):
+            stats.logical_round_count += 1
+        action_kind = record.metadata.get("action_kind")
+        if record.is_valid and record.actor == "llm":
+            if action_kind == "ask":
+                stats.question_count += 1
+            elif action_kind == "guess":
+                stats.guess_count += 1
+        if (
+            record.is_valid
+            and record.actor == "human"
+            and action_kind == "guess"
+        ):
+            answer = record.metadata.get("canonical_answer")
+            if answer == "no":
+                stats.rejected_guess_count += 1
+            elif answer == "yes":
+                deadline_mode = record.metadata.get("deadline_mode")
+                if (
+                    not record.deadline_missed
+                    or deadline_mode == "soft"
+                ):
+                    stats.successful_guess = True
+                    character_id = record.metadata.get(
+                        "canonical_character_id"
+                    )
+                    stats.successful_character_id = (
+                        str(character_id) if character_id else None
+                    )
+                    logical_round = record.metadata.get("logical_round")
+                    stats.successful_guess_round = (
+                        int(logical_round)
+                        if isinstance(logical_round, int)
+                        else None
+                    )
         if record.actor == "human":
             stats.human_turn_count += 1
         else:
@@ -1694,9 +2039,17 @@ class InteractiveTaskRuntime:
         latency = f"  {float(record.latency_ms or 0.0):.1f} ms"
         deadline = " deadline_missed" if record.deadline_missed else ""
         if record.is_valid:
+            detail = ""
+            if record.metadata.get("action_kind"):
+                detail = f" action={str(record.metadata['action_kind']).upper()}"
+            if record.metadata.get("canonical_answer"):
+                detail += f" answer={record.metadata['canonical_answer']}"
             if self.config.show_expected and record.expected is not None:
-                return f"OK expected={record.expected}{deadline}{latency}"
-            return f"OK{deadline}{latency}"
+                return (
+                    f"OK expected={record.expected}{detail}"
+                    f"{deadline}{latency}"
+                )
+            return f"OK{detail}{deadline}{latency}"
         actual = record.response or self._empty_voice_response_label(record)
         if record.expected is not None:
             return f"MISS expected={record.expected} actual={actual}{deadline}{latency}"
@@ -1748,6 +2101,11 @@ class InteractiveTaskRuntime:
                 f"Wrong answer: {record.actor} answered {actual}, expected {record.expected}\n"
                 f"Winner: {deadline_state.winner}."
             )
+        if deadline_state.stop_reason == "retry_limit_reached":
+            return (
+                f"Retry limit reached after repeated invalid responses from "
+                f"{record.actor}.\nWinner: {deadline_state.winner}."
+            )
         return None
 
     def _summary_text(self, result: InteractiveTaskRunResult, stats: _InteractiveStats) -> str:
@@ -1758,6 +2116,18 @@ class InteractiveTaskRuntime:
             f"{result.invalid_count} invalid, {result.deadline_miss_count} deadline misses, "
             f"avg LLM latency {avg_text}"
         ]
+        if result.logical_round_count:
+            lines.append(
+                f"Logical rounds: {result.logical_round_count}; "
+                f"questions: {result.question_count}; guesses: "
+                f"{result.guess_count}; rejected guesses: "
+                f"{result.rejected_guess_count}"
+            )
+        if result.successful_guess:
+            lines.append(
+                f"Human-confirmed guess: {result.successful_character_id} "
+                f"in round {result.successful_guess_round}"
+            )
         lines.append(f"Stop reason: {result.stop_reason}")
         if stats.audio_end_fallback_reasons:
             lines.append(
@@ -1798,6 +2168,33 @@ class InteractiveTaskRuntime:
         if "current_number" not in state.data:
             return None
         return int(state.data.get("current_number", 0)) + 1
+
+    @staticmethod
+    def _logical_round_for_display(
+        task: InteractiveTask,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> int | None:
+        if not isinstance(task, FlowControlledInteractiveTask):
+            return None
+        decision = task.flow_decision(state, transcript)
+        return int(decision.logical_round) + 1
+
+    def _turn_heading(
+        self,
+        task: InteractiveTask,
+        state: TaskState,
+        transcript: list[InteractiveTurnRecord],
+    ) -> str:
+        logical_round = self._logical_round_for_display(
+            task,
+            state,
+            transcript,
+        )
+        if logical_round is not None:
+            return f"[Round {logical_round}]"
+        number = self._number_from_state(state)
+        return f"[{number if number is not None else state.turn_index + 1}]"
 
     def _append_response_trace(self, run_dir: Path, record: InteractiveTurnRecord) -> None:
         path = run_dir / "response_trace.jsonl"
@@ -1915,6 +2312,15 @@ class InteractiveTaskRuntime:
             "response_trace_path": "response_trace.jsonl",
             "artifact_root": "artifacts",
             "human_input": deepcopy(human_input),
+            "flow_controlled": isinstance(
+                task,
+                FlowControlledInteractiveTask,
+            ),
+            "task_public_state": (
+                self._public_task_state(task, task.initial_state())
+                if isinstance(task, PublicTaskStateProvider)
+                else {}
+            ),
         }
         speech_output = self._safe_speech_output_provenance()
         if speech_output is not None:
@@ -1950,6 +2356,13 @@ class InteractiveTaskRuntime:
                 "valid_count": result.valid_count,
                 "invalid_count": result.invalid_count,
                 "deadline_miss_count": result.deadline_miss_count,
+                "logical_round_count": result.logical_round_count,
+                "question_count": result.question_count,
+                "guess_count": result.guess_count,
+                "rejected_guess_count": result.rejected_guess_count,
+                "successful_guess": result.successful_guess,
+                "successful_character_id": result.successful_character_id,
+                "successful_guess_round": result.successful_guess_round,
                 "deadline_mode": result.deadline_mode,
                 "final_deadline_ms": result.final_deadline_ms,
                 "winner": result.winner,
@@ -1998,6 +2411,13 @@ class InteractiveTaskRuntime:
             stop_reason=stop_reason,
             deadline_misses=tuple(deadline_state.deadline_misses),
             invalid_responses=tuple(deadline_state.invalid_responses),
+            logical_round_count=stats.logical_round_count,
+            question_count=stats.question_count,
+            guess_count=stats.guess_count,
+            rejected_guess_count=stats.rejected_guess_count,
+            successful_guess=stats.successful_guess,
+            successful_character_id=stats.successful_character_id,
+            successful_guess_round=stats.successful_guess_round,
         )
 
     @staticmethod

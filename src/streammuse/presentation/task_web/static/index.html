@@ -19,8 +19,18 @@
         </div>
       </header>
 
-      <section class="playfield" aria-labelledby="prompt">
+      <section class="setup-panel" id="setup-panel" hidden>
+        <div class="setup-copy">
+          <p class="turn-label">Choose privately</p>
+          <h2 class="setup-title" id="setup-title">Character scope</h2>
+          <p id="setup-prompt"></p>
+        </div>
+        <ol class="candidate-list" id="candidate-list"></ol>
+      </section>
+
+      <section class="playfield" id="playfield" aria-labelledby="prompt">
         <p class="turn-label" id="turn-label">Waiting for game</p>
+        <p class="round-progress" id="round-progress" hidden></p>
         <h2 id="prompt">Open this page before the first turn begins.</h2>
         <p class="display-value" id="display-value" hidden></p>
         <div class="timeline" id="timeline" aria-label="Turn deadline progress">
