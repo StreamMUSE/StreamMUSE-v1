@@ -1,6 +1,6 @@
 # RAP 各版本系统图
 
-每个 tag 一张图，风格一致；由 `build_diagrams.py` 生成（`python3 docs/architecture/rap-versions/build_diagrams.py`），改图请改脚本里的 `CONFIGS` 再重新生成。
+每个 tag 一张图，风格一致；由 `build_diagrams.py` 生成（`python3 docs/architecture/rap-versions/build_diagrams.py`），改图请改脚本里的 `CONFIGS` 再重新生成。脚本同时生成幻灯片 `developing-logs/slides/2026-10-22-rap-system-versions-slides.html`（所有图按顺序内嵌，单文件可直接打开）。
 
 概念图：[rap-concept.svg](rap-concept.svg)，上面是 server（写词模型 → Lyric Pool → TTS → Audio Bank，两个模型都自回归地一直往前生成），下面是 client（发 theme / flow template，收歌词，按需取音频）。对应 v1.x 的歌词流架构。
 

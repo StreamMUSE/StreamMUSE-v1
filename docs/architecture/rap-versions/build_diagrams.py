@@ -10,6 +10,7 @@ from html import escape
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent
+SLIDES_PATH = OUT.parents[2] / "developing-logs" / "slides" / "2026-10-22-rap-system-versions-slides.html"
 VERSIONS = ("v0.0", "v0.1", "v0.2", "v1.0", "v1.1")
 
 BLUE = "#2F6BDB"
@@ -782,6 +783,159 @@ def edit_timeline_series() -> str:
     return svg.render()
 
 
+# ---------------------------------------------------------------- slides
+
+SLIDES_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #FFFFFF; overflow: hidden;
+  font-family: "PingFang SC", "Hiragino Sans GB", -apple-system, "Helvetica Neue", Arial, sans-serif; color: #1F2430; }
+.slide { position: absolute; inset: 0 0 44px 0; display: flex; align-items: center; justify-content: center;
+  padding: 16px 24px; opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+.slide.active { opacity: 1; pointer-events: auto; }
+.slide img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.cover { width: min(1240px, 92vw); }
+.summary { width: min(1440px, 94vw); }
+.summary td:nth-child(2) { white-space: nowrap; }
+.cover h1 { font-size: clamp(32px, 4.4vw, 60px); font-weight: 700; letter-spacing: .5px; }
+.cover .sub { margin-top: 14px; font-size: clamp(16px, 1.6vw, 22px); color: #5B6170; }
+.cover .track { margin-top: 56px; display: flex; gap: 14px; flex-wrap: wrap; }
+.cover .step { flex: 1 1 0; min-width: 170px; border: 1.5px solid #2F6BDB; border-radius: 14px; padding: 18px 18px 20px; background: #F1F6FF; }
+.cover .step b { display: inline-block; font-size: 15px; color: #FFFFFF; background: #2F6BDB; border-radius: 12px; padding: 3px 12px; }
+.cover .step p { margin-top: 12px; font-size: 15px; line-height: 1.55; color: #3A3F4B; }
+.cover .step.v1 { border-color: #7448D1; background: #F6F2FF; }
+.cover .step.v1 b { background: #7448D1; }
+.cover .extra { margin-top: 28px; font-size: 15px; color: #6B7180; }
+.summary h2 { font-size: clamp(24px, 2.6vw, 36px); font-weight: 700; }
+.summary .sub { margin-top: 8px; font-size: 15px; color: #5B6170; }
+.summary table { margin-top: 28px; width: 100%; border-collapse: separate; border-spacing: 0; font-size: clamp(14px, 1.25vw, 18px); }
+.summary th { white-space: nowrap; text-align: left; font-weight: 600; color: #5B6170; font-size: .85em; padding: 10px 14px; border-bottom: 1.5px solid #D8DCE4; }
+.summary td { padding: 14px; border-bottom: 1px solid #ECEEF2; vertical-align: middle; }
+.summary td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.summary th.num { text-align: right; }
+.summary .tag { display: inline-block; font-weight: 700; color: #FFFFFF; background: #2F6BDB; border-radius: 11px; padding: 2px 10px; font-size: .85em; }
+.summary .tag.v1 { background: #7448D1; }
+.summary .bad { color: #B3362B; font-weight: 700; }
+.summary .good { color: #1F7A48; font-weight: 700; }
+.summary .muted { color: #9AA0AC; }
+.summary .bar { display: inline-block; height: 10px; border-radius: 3px; background: #7448D1; vertical-align: middle; margin-left: 8px; }
+.summary .note { margin-top: 22px; font-size: 13px; color: #6B7180; line-height: 1.6; }
+footer { position: fixed; left: 0; right: 0; bottom: 0; height: 44px; display: flex; align-items: center; gap: 16px;
+  padding: 0 24px; font-size: 13px; color: #6B7180; border-top: 1px solid #ECEEF2; background: #FFFFFF; }
+footer .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+footer button { border: 1px solid #D8DCE4; background: #FFFFFF; border-radius: 8px; width: 34px; height: 28px; font-size: 15px;
+  color: #3A3F4B; cursor: pointer; }
+footer button:hover { background: #F1F6FF; border-color: #2F6BDB; }
+.progress { position: fixed; left: 0; bottom: 44px; height: 3px; background: #2F6BDB; transition: width .25s ease; }
+"""
+
+SLIDES_JS = """
+const slides = [...document.querySelectorAll('.slide')];
+const counter = document.getElementById('counter');
+const title = document.getElementById('slide-title');
+const progress = document.querySelector('.progress');
+let current = 0;
+function show(i) {
+  current = Math.max(0, Math.min(slides.length - 1, i));
+  slides.forEach((s, k) => s.classList.toggle('active', k === current));
+  counter.textContent = `${current + 1} / ${slides.length}`;
+  title.textContent = slides[current].dataset.title;
+  progress.style.width = `${(current + 1) / slides.length * 100}%`;
+  history.replaceState(null, '', `#${current + 1}`);
+}
+document.addEventListener('keydown', (e) => {
+  if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); show(current + 1); }
+  else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); show(current - 1); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(slides.length - 1);
+  else if (e.key === 'f') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+});
+document.getElementById('prev').onclick = () => show(current - 1);
+document.getElementById('next').onclick = () => show(current + 1);
+document.getElementById('fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+"""
+
+COVER_HTML = """
+<div class="cover">
+  <h1>StreamMUSE 实时 Rap 系统</h1>
+  <div class="sub">从“一个请求包两小节”到“歌词流 + 逐 bar 续写”：五个版本的系统结构与实时表现</div>
+  <div class="track">
+    <div class="step"><b>v0.0</b><p>进程内 HF MOSS<br>两小节 chunk · 服务器 R3</p></div>
+    <div class="step"><b>v0.1</b><p>MOSS 改用<br>SGLang-Omni 服务</p></div>
+    <div class="step"><b>v0.2</b><p>R3 移到 Mac<br>并发写词 · 延迟补丁</p></div>
+    <div class="step v1"><b>v1.0</b><p>歌词流 + 逐 bar 续写<br>支持实时修改</p></div>
+    <div class="step v1"><b>v1.1</b><p>换模型：Qwen3.5-9B<br>+ MOSS-TTS-Local</p></div>
+  </div>
+  <div class="extra">之后两页：v1.x 歌词流架构的概念图，以及中途修改 theme / flow template 时的时间线。← → 或空格翻页，F 全屏。</div>
+</div>
+"""
+
+SUMMARY_ROWS = (
+    # tag, class, architecture, MOSS ms, wait ms (label), real-time %, fake %, samples with fallback
+    ("v0.0", "", "进程内 HF MOSS · 两小节 chunk", 2765, "4667 ms", "24.2%", "95.8%", "15 / 15", "bad"),
+    ("v0.1", "", "SGLang-Omni MOSS（未打补丁）", 833, "2667 ms", "92.5%", "97.5%", "5 / 15", ""),
+    ("v0.2", "", "+ Mac 端 R3 · 并发写词 · 延迟补丁", 765, "2617 ms", "92.5%", "97.5%", "5 / 15", ""),
+    ("v1.0", "v1", "歌词流 + 逐 bar 续写（1 个 bar）", 619, "1816 ms（长轮询）", "100%", "100%", "0 / 15", "good"),
+)
+
+
+def _summary_html() -> str:
+    rows = []
+    for tag, cls, arch, moss, wait, rt, fake, samples, tone in SUMMARY_ROWS:
+        bar = f'<span class="bar" style="width:{moss / 2765 * 120:.0f}px"></span>'
+        rows.append(
+            f'<tr><td><span class="tag {cls}">{tag}</span></td><td>{escape(arch)}</td>'
+            f'<td class="num">{moss} ms{bar}</td><td class="num">{escape(wait)}</td>'
+            f'<td class="num {tone}">{rt}</td><td class="num">{fake}</td><td class="num">{samples}</td></tr>'
+        )
+    rows.append(
+        '<tr><td><span class="tag v1">v1.1</span></td><td>只换模型：Qwen3.5-9B + MOSS-TTS-Local v1.5</td>'
+        '<td class="num muted" colspan="5">实测数字在 model-upgrade 听测页面，未入库</td></tr>'
+    )
+    return (
+        '<div class="summary"><h2>五个版本的实时表现</h2>'
+        '<div class="sub">同一张 H200 + SSH 隧道 · 15 段 × 16 bar · 90 BPM · real-time 中位数</div>'
+        '<table><thead><tr><th>版本</th><th>结构</th><th class="num">MOSS / 请求</th><th class="num">Mac 等一个请求</th>'
+        '<th class="num">real-time 服务器人声</th><th class="num">fake real-time</th><th class="num">有兜底的 sample</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>'
+        '<div class="note">real-time 与 fake real-time（服务器工作时时钟停住）之差就是“实时”带来的损失：v0.0 损失 72 个百分点，v0.1 / v0.2 各 5 个，v1.0 为 0。'
+        '<br>v0.2 服务器更快，但 Mac 端等待只从 2.67 s 降到 2.62 s，大头是网络；v1.0 的等待是长轮询，可能在音频合成前就发出，不能直接和 v0.x 比。'
+        '<br>数据：developing-logs/reports/2026-10-12-rap-version-demo-page-report.md。</div></div>'
+    )
+
+
+def build_slides() -> str:
+    import base64
+
+    def image(name: str) -> str:
+        data = base64.b64encode((OUT / name).read_bytes()).decode("ascii")
+        return f'<img alt="{escape(name)}" src="data:image/svg+xml;base64,{data}">'
+
+    slides = (
+        ("StreamMUSE 实时 Rap 系统", COVER_HTML),
+        ("v0.0 · 进程内 HF MOSS，两小节 chunk", image("rap-v0.0.svg")),
+        ("v0.1 · SGLang-Omni MOSS", image("rap-v0.1.svg")),
+        ("v0.2 · R3 移到 Mac，延迟优化", image("rap-v0.2.svg")),
+        ("v1.0 · 歌词流 + 逐 bar 续写", image("rap-v1.0.svg")),
+        ("v1.1 · 换模型", image("rap-v1.1.svg")),
+        ("五个版本的实时表现", _summary_html()),
+        ("歌词流架构（概念图）", image("rap-concept.svg")),
+        ("中途修改 theme / flow template 的时间线", image("rap-edit-timeline.svg")),
+    )
+    body = "\n".join(
+        f'<section class="slide" data-title="{escape(title)}">{content}</section>' for title, content in slides
+    )
+    return (
+        '<!doctype html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>StreamMUSE 实时 Rap 系统</title><style>{SLIDES_CSS}</style></head><body>\n{body}\n"
+        '<div class="progress"></div><footer><span class="title" id="slide-title"></span>'
+        '<span id="counter"></span><button id="prev" title="上一页（←）">‹</button>'
+        '<button id="next" title="下一页（→）">›</button><button id="fs" title="全屏（F）">⤢</button></footer>'
+        f"<script>{SLIDES_JS}</script></body></html>\n"
+    )
+
+
 def main() -> None:
     for version, cfg in CONFIGS.items():
         svg = chunk_diagram(cfg) if version.startswith("v0") else stream_diagram(cfg)
@@ -794,6 +948,8 @@ def main() -> None:
     path = OUT / "rap-edit-timeline.svg"
     path.write_text(edit_timeline_series(), encoding="utf-8")
     print(path)
+    SLIDES_PATH.write_text(build_slides(), encoding="utf-8")
+    print(SLIDES_PATH)
 
 
 if __name__ == "__main__":
