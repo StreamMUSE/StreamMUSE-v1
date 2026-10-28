@@ -62,10 +62,42 @@ The repeated run is in `output/rap_settings_20261028/final_acceptance/`.
 In both runs, all three alignment edits changed exactly the next uncommitted
 bar (bars 1, 2, 3); previous committed text and warp evidence remained unchanged.
 The local gain request finished while the tempo request was still pending.
-Topic, delayed MCFlow template, chord loop, and tempo changes reached playback.
+Chord-loop and tempo changes reached playback. Topic/flow requests were accepted,
+but the scripted ten-second window did not confirm matching playback; see the
+trace correction below.
 A final post-review smoke test confirmed the stopped bulk-update gain fix on
 the real sink, three further MOSS commits, matching callback gain targets, and
 zero underruns.
+
+### Topic/Flow Trace Correction
+
+The subsequent response-latency audit found a gap in this acceptance script:
+after the topic/flow POST it sleeps ten seconds and checks only underruns, not
+whether the requested revision played. Its overall `passed` status must not be
+interpreted as validation of timely topic/flow application.
+
+| Time from edit POST start | Initial run | Repeated run |
+| --- | --- | --- |
+| HTTP acceptance | 4.13 ms | 4.40 ms |
+| Changed bar-8 lyric received | 0.788 s | 0.438 s |
+| Changed bar-8 eSpeak render ready | 1.514 s | 1.236 s |
+| Bar 8 starts with old topic/flow | 4.326 s | 4.340 s |
+| Bar 9 starts with old topic/flow | 8.693 s | 8.691 s |
+
+The commit preference is latest MOSS, older MOSS, then latest streamed eSpeak.
+Consequently, fresh edited lyrics/audio can be ready while old MOSS still wins
+the next playback slot. At the tested 55 BPM, each missed bar adds 4.364 seconds.
+These event times are software scheduling observations, not acoustic recordings.
+They were obtained by deduplicating `recent_events` by sequence and comparing
+their monotonic timestamps with the recorded HTTP request start. No matching
+played revision was present in either ten-second snapshot. Later matching
+playback occurred after the scripted Stop/Start, so it does not establish an
+uninterrupted live-edit latency.
+
+The next acceptance revision should explicitly await a played bar whose topic,
+flow, and revision match the edit. No responsiveness policy was changed in this
+audit; this correction supersedes the earlier claim that all edits reached
+playback within the observed continuous run.
 
 Bar numbers in this report are zero-based; GUI bar numbers are one-based.
 Alignment response times acknowledge scheduling, not completion of the warp or
