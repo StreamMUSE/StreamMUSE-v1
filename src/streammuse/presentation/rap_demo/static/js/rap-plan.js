@@ -11,7 +11,9 @@
 
   function editStatus(edit, bars, currentBar) {
     const target = edit.effective_from_bar ?? edit.from_bar;
-    const committed = bars.filter((bar) => bar.frozen && bar.bar >= target).sort((a, b) => a.bar - b.bar);
+    const nonLyric = (bar) => [bar.choice, bar.source].some((source) => ["drums_idle", "flow_echo", "capture_transition"].includes(source));
+    const deliveries = bars.filter((bar) => bar.frozen && bar.bar >= target);
+    const committed = deliveries.filter((bar) => !nonLyric(bar)).sort((a, b) => a.bar - b.bar);
     const matches = (bar) => (!edit.topic || bar.topic === edit.topic)
       && (!edit.template_id || bar.template_id === edit.template_id)
       && bar.choice !== "espeak_local_lyric" && bar.choice !== "silence";
@@ -19,9 +21,10 @@
     const applied = played.find(matches);
     if (applied) return { state: "applied", text: `Requested settings played in bar ${applied.bar + 1}${applied.choice === "espeak_stream_lyric" ? " (eSpeak vocals)" : ""}.` };
     const ready = committed.find(matches);
-    if (ready) return { state: "ready", text: `Updated audio queued for bar ${ready.bar + 1}.` };
+    if (ready) return { state: "ready", text: `Scheduled for bar ${ready.bar + 1}. Awaiting playback.` };
     const missed = played.at(-1);
     if (missed) return { state: "delayed", text: `Bar ${missed.bar + 1} used ${missed.choice === "silence" ? "silence" : missed.choice === "espeak_local_lyric" ? "local fallback lyrics" : "an older setting"}. Change still pending.` };
+    if (deliveries.some(nonLyric)) return { state: "pending", text: `Change requested from bar ${target + 1}. Awaiting model response.` };
     return { state: "pending", text: `Change requested from bar ${target + 1}. Awaiting updated audio.` };
   }
 
@@ -34,25 +37,38 @@
       info: null, edit: null, busy: false, connected: false, runtime: "stopped",
       bars: [], bar: null, epoch: null, session: null, error: null, errorKind: null,
       preview: null, loading: false, reloadPending: false, revision: 0,
-      lastSequence: 0, eventFloor: -1,
+      lastSequence: 0, eventFloor: -1, mode: null,
     };
     const set = (id, text) => { if (get(id).textContent !== text) get(id).textContent = text; };
 
     function render() {
       const supported = state.info?.supported === true;
       const active = supported && state.connected && state.runtime === "running";
-      topic.disabled = select.disabled = !active || state.busy;
-      button.disabled = !active || state.busy || (!topic.value.trim() && !select.value);
-      set("plan-mode", supported ? "ASAP" : "Unavailable");
+      const alternating = state.mode === "alternating";
+      topic.disabled = !active || state.busy;
+      select.disabled = topic.disabled || state.mode !== "continuous";
+      button.disabled = !active || state.busy || (!topic.value.trim() && (state.mode !== "continuous" || !select.value));
+      const reason = !state.connected ? "Connecting" : !state.info ? "Checking availability"
+        : !supported ? "Unavailable for this backend" : state.runtime === "priming" ? "Wait for playback"
+          : ["stopping", "stop_requested"].includes(state.runtime) ? "Wait for stop"
+            : state.runtime !== "running" ? "Start playback to change" : state.busy ? "Waiting for server" : null;
+      const topicHint = reason || (alternating ? "Next capture" : "Server-coordinated");
+      const flowHint = reason || (alternating ? "Captured in alternating mode" : "Server-coordinated");
+      set("plan-topic-hint", topicHint); set("plan-template-hint", flowHint);
+      topic.title = topicHint; select.title = flowHint;
+      button.title = reason || (button.disabled ? alternating ? "Enter a topic" : "Enter a topic or choose a flow" : "Apply upcoming changes");
+      set("plan-mode", supported ? alternating ? "Next capture" : "ASAP" : "Unavailable");
       const frozen = state.bars.filter((bar) => bar.frozen).map((bar) => bar.bar + 1);
       const next = Math.max(state.info?.next_editable_bar ?? 0, ...frozen);
-      set("plan-target", supported ? `Next editable: bar ${next + 1}` : "Live editing requires v3");
-      set("plan-apply", state.busy ? "Sending..." : "Apply");
+      set("plan-target", supported ? alternating ? "Topic applies to next capture" : `Next editable: bar ${next + 1}` : "Live editing requires v3");
+      set("plan-apply", state.busy ? "Waiting..." : "Apply");
       let status = { state: "idle", text: state.info ? "No pending change." : "Loading editing controls..." };
       if (state.edit) status = editStatus(state.edit, state.bars, state.bar);
+      if (alternating && status.state === "pending") status.text = "Topic requested for next capture. Awaiting model response.";
       if (!supported && state.info) status = { state: "idle", text: "This session does not support live edits." };
       else if (!state.connected) status = { state: "idle", text: "Waiting for connection." };
       else if (state.runtime !== "running") status = { state: "idle", text: state.runtime === "priming" ? "Preparing playback..." : "Start playback to edit upcoming bars." };
+      else if (state.busy) status = { state: "pending", text: "Waiting for server..." };
       if (state.error) status = { state: "error", text: state.error };
       get("plan-status").dataset.state = status.state;
       set("plan-status", status.text);
@@ -68,7 +84,7 @@
       const track = get("plan-preview");
       track.replaceChildren();
       track.hidden = !flow;
-      set("plan-flow-detail", flow ? `${flow.slots.length} syllables / ${flow.beats_per_bar} beats` : "Current flow unchanged");
+      set("plan-flow-detail", flow ? `${flow.name?.includes("UNTESTED") ? "UNTESTED / " : ""}${flow.slots.length} syllables / ${flow.beats_per_bar} beats` : state.mode === "alternating" ? "Captured flow" : "Current flow unchanged");
       if (!flow) return;
       const ticks = flow.beats_per_bar * flow.ticks_per_beat;
       track.style.setProperty("--plan-ticks", ticks);
@@ -108,7 +124,7 @@
           const option = document.createElement("option");
           option.value = flow.template_id; option.textContent = `${flow.name} (${flow.slots.length})`; select.append(option);
         }
-        select.value = previous;
+        select.value = state.mode === "continuous" ? previous : "";
         state.preview = null;
         preview();
       } catch (error) {
@@ -123,7 +139,7 @@
       event.preventDefault();
       if (button.disabled || state.busy) return;
       let payload;
-      try { payload = makePayload(topic.value, select.value); }
+      try { payload = makePayload(topic.value, state.mode === "continuous" ? select.value : ""); }
       catch (error) { state.error = error.message; state.errorKind = "submit"; render(); return; }
       state.busy = true; state.error = null;
       const revision = state.revision;
@@ -146,6 +162,12 @@
     select.addEventListener("change", () => { state.error = null; preview(); render(); });
     return {
       load,
+      settings(info) {
+        const mode = info?.values?.mode;
+        if (!["continuous", "alternating"].includes(mode) || mode === state.mode) return;
+        state.mode = mode;
+        select.value = ""; state.preview = null; preview(); render();
+      },
       connection(connected) { state.connected = connected; if (connected) load(); render(); },
       update(snapshot, events, current, bars) {
         const epoch = `${snapshot.session_id || ""}:${snapshot.coordinator_epoch ?? 0}`;

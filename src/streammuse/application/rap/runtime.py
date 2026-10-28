@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -164,8 +165,15 @@ class RapAudioDemoDependencies:
     projector: Any | None = None
     websocket_queue: Any | None = None
     configured_max_bars: int = 0
+    settings_service: Any | None = None
+    controller_factory: Callable[[Any, int], Any] | None = None
     _closed: bool = field(default=False, init=False)
     _restart_requires_reset: bool = field(default=False, init=False)
+    _starting: bool = field(default=False, init=False)
+    _device_starting: bool = field(default=False, init=False)
+    _cancel_start: bool = field(default=False, init=False)
+    _settings_updating: bool = field(default=False, init=False)
+    _settings_groups: set[str] = field(default_factory=set, init=False, repr=False)
     _lifecycle_lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -181,11 +189,95 @@ class RapAudioDemoDependencies:
 
     @property
     def control_state(self) -> PlaybackState:
+        if self._starting:
+            return PlaybackState.STOP_REQUESTED if self._cancel_start else PlaybackState.PRIMING
         return self.playback.state
 
     @property
     def restart_requires_reset(self) -> bool:
         return self._restart_requires_reset
+
+    def settings_state(self, group: str | None = None) -> dict[str, Any]:
+        if self.settings_service is None:
+            return {"supported": False, "values": {}, "capabilities": {}, "devices": []}
+        if group is None:
+            return self.settings_service.snapshot()
+        from streammuse.application.rap.settings import SETTINGS_GROUPS
+        if group not in SETTINGS_GROUPS:
+            raise ValueError("unknown settings group")
+        return self.settings_service.snapshot(group=group, discover_devices=group == "session")
+
+    def record_audio_device(self, name: str) -> None:
+        """Keep resumed-session metadata consistent with a successful device switch."""
+        with self._lifecycle_lock:
+            metadata = _thaw_metadata(self.session_metadata)
+            metadata.setdefault("audio", {})["audio_device"] = name
+            self.session_metadata = _freeze_metadata(metadata)
+            self.publisher.emit(RapEventType.AUDIO_SETTINGS_CHANGED, payload={"audio_device": name})
+
+    def update_settings(self, payload: object, *, group: str | None = None) -> dict[str, Any]:
+        if self.settings_service is None:
+            raise NotImplementedError("runtime does not support settings changes")
+        from streammuse.application.rap.settings import settings_group
+        selected_group = settings_group(payload, group, allow_combined=self.control_state == PlaybackState.STOPPED)
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("rap audio runtime is closed")
+            independent_live_update = (
+                self.control_state == PlaybackState.RUNNING
+                and selected_group != "session" and "session" not in self._settings_groups
+                and selected_group not in self._settings_groups
+            )
+            if self._starting or (self._settings_updating and not independent_live_update):
+                raise RuntimeError("wait for startup or the pending settings update")
+            self._settings_groups.add(selected_group)
+            self._settings_updating = True
+        try:
+            # Capability discovery and tempo acknowledgement can block on I/O.
+            # Stop must remain available while reset/start are fenced out.
+            return (self.settings_service.update(payload) if group is None
+                    else self.settings_service.update(payload, group=group))
+        finally:
+            with self._lifecycle_lock:
+                self._settings_groups.discard(selected_group)
+                self._settings_updating = bool(self._settings_groups)
+
+    def interaction_state(self) -> dict[str, Any]:
+        method = getattr(self.controller, "interaction_state", None)
+        result = dict(method()) if callable(method) else {"supported": False, "mode": "continuous"}
+        result.setdefault("supported", callable(method))
+        result["state"] = self.control_state.value
+        result["current_tick"] = self.playback.current_tick
+        return result
+
+    def arm_capture(self) -> dict[str, Any]:
+        with self._lifecycle_lock:
+            if self.control_state != PlaybackState.RUNNING:
+                raise RuntimeError("start alternating playback before arming capture")
+            method = getattr(self.controller, "arm_capture", None)
+            if not callable(method):
+                raise NotImplementedError("capture is available only in alternating mode")
+            return method()
+
+    def record_tap(self, **payload) -> dict[str, Any]:
+        with self._lifecycle_lock:
+            if self.control_state != PlaybackState.RUNNING:
+                raise RuntimeError("playback is not running")
+            method = getattr(self.controller, "record_tap", None)
+            if not callable(method):
+                raise NotImplementedError("capture is available only in alternating mode")
+            return method(**payload)
+
+    def replace_controller(self, factory: Callable[[int], Any]) -> None:
+        """Switch stopped interaction modes in a fresh monotonically versioned epoch."""
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("rap audio runtime is closed")
+            if self.control_state != PlaybackState.STOPPED:
+                raise RuntimeError("interaction mode changes require stopped playback")
+            if len(self._settings_groups) > 1:
+                raise RuntimeError("wait for the pending local settings update before rebuilding playback")
+            self._reset_locked(factory)
 
     def start(self) -> None:
         """Start audio playback and block until a requested or automatic stop."""
@@ -193,31 +285,97 @@ class RapAudioDemoDependencies:
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("rap audio runtime is closed")
+            if self._starting:
+                return
+            if self._settings_updating:
+                raise RuntimeError("wait for the pending settings update before starting")
             if self._restart_requires_reset:
-                raise RuntimeError("reset is required before restarting a completed finite scenario")
+                self.reset()
             if self.playback.state not in (PlaybackState.STOPPED, PlaybackState.PRIMING):
                 return
+            self._starting = True
+            self._cancel_start = False
+        try:
             payload = _thaw_metadata(self.session_metadata)
+            timeline = getattr(self.controller, "timeline", None)
+            current_tempo = (
+                timeline.snapshot(self.playback.next_start_bar, 48_000).bpm
+                if timeline is not None else self.tempo.bpm
+            )
             payload.update(
                 {
-                    "tempo_bpm": self.tempo.bpm,
+                    "tempo_bpm": current_tempo,
                     "ticks_per_beat": self.tempo.ticks_per_beat,
                     "beats_per_bar": self.tempo.beats_per_bar,
                     "max_bars": self.configured_max_bars,
                     "playback_state": PlaybackState.PRIMING.value,
                 }
             )
+            if self.settings_service is not None:
+                settings = self.settings_service.values
+                payload["interaction_mode"] = settings.mode
+                payload["response_bars"] = settings.response_bars
+                audio = payload.setdefault("audio", {})
+                audio.update(interaction_mode=settings.mode, response_bars=settings.response_bars,
+                             audio_device=settings.output_device)
+                audio.setdefault("mix", {}).update(
+                    drum_gain=settings.drum_gain, vocal_gain=settings.vocal_gain,
+                    chord_loop=settings.chord_loop, chord_gain=settings.chord_gain,
+                )
+                if self.controller_factory is not None or "local_warp" in audio:
+                    audio.setdefault("local_warp", {})["policy"] = settings.alignment_policy
             self.publisher.emit(RapEventType.SESSION_STARTED, payload=payload)
             self.controller.start()
-            if self.playback.state == PlaybackState.STOPPED:
-                # A prior bar-quantized stop retains an immutable reserved
-                # successor. Commit it here, then prime exactly the next
-                # complete musical bar after stale queue data is cleared.
-                self.controller.resume_audio(self.playback.next_start_bar)
-                self.controller.resume_after_stop()
-            if self.playback.state == PlaybackState.STOPPED:
-                raise RuntimeError("audio controller did not prepare a playback bar")
+            with self._lifecycle_lock:
+                if self._cancel_start or self._closed:
+                    if not self._closed:
+                        if self.playback.state == PlaybackState.PRIMING:
+                            self.playback.request_stop()
+                        self._reset_locked(self._settings_factory())
+                    return
+                if self.playback.state == PlaybackState.STOPPED:
+                    # Manual Stop retains the next immutable bar for resume.
+                    self.controller.resume_audio(self.playback.next_start_bar)
+                    self.controller.resume_after_stop()
+                if self.playback.state == PlaybackState.STOPPED:
+                    raise RuntimeError("audio controller did not prepare a playback bar")
+                self._device_starting = True
+            # Device open/start may block while holding playback's own gate.
+            # Keep the runtime gate available to record Stop or permanent Close.
             self.playback.start()
+            with self._lifecycle_lock:
+                self._device_starting = False
+                if self._closed:
+                    return
+                canceled_device_start = self._cancel_start
+                if canceled_device_start:
+                    self._restart_requires_reset = True
+                    if self.playback.state in (PlaybackState.PRIMING, PlaybackState.RUNNING):
+                        self.playback.request_stop()
+                    self.controller.request_stop(successor_bar=None)
+            if canceled_device_start:
+                while self.playback.state == PlaybackState.STOP_REQUESTED:
+                    self.playback.wait(timeout=0.01)
+                with self._lifecycle_lock:
+                    if not self._closed:
+                        self._reset_locked(self._settings_factory())
+                return
+        except BaseException:
+            with self._lifecycle_lock:
+                if not self._closed:
+                    self._restart_requires_reset = True
+                    try:
+                        if self.playback.state == PlaybackState.PRIMING:
+                            self.playback.request_stop()
+                        if self.playback.state == PlaybackState.STOPPED:
+                            self._reset_locked(self._settings_factory())
+                    except Exception:
+                        logging.getLogger(__name__).exception("failed to reset after audio startup failure")
+            raise
+        finally:
+            with self._lifecycle_lock:
+                self._device_starting = False
+                self._starting = False
 
         maximum_tick = self.configured_max_bars * self.tempo.ticks_per_bar - 1
         while self.playback.state in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
@@ -235,6 +393,13 @@ class RapAudioDemoDependencies:
     def _request_stop_locked(self) -> None:
         if self._closed:
             return
+        if self._device_starting:
+            self._cancel_start = True
+            return
+        if self._starting and self.playback.state in (PlaybackState.STOPPED, PlaybackState.PRIMING):
+            self._cancel_start = True
+            self.controller.request_stop(successor_bar=None)
+            return
         if self.playback.state not in (PlaybackState.PRIMING, PlaybackState.RUNNING):
             return
         successor_bar = self.playback.request_stop()
@@ -244,6 +409,11 @@ class RapAudioDemoDependencies:
         terminal_bar_limit = getattr(self.controller, "terminal_bar_limit", None)
         if terminal_bar_limit is None and scenario is not None and not scenario.loop:
             terminal_bar_limit = scenario.total_bars
+        if self.configured_max_bars:
+            terminal_bar_limit = (
+                self.configured_max_bars if terminal_bar_limit is None
+                else min(terminal_bar_limit, self.configured_max_bars)
+            )
         terminal = terminal_bar_limit is not None and successor_bar >= terminal_bar_limit
         self.controller.request_stop(successor_bar=None if terminal else successor_bar)
         if terminal:
@@ -255,16 +425,63 @@ class RapAudioDemoDependencies:
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("rap audio runtime is closed")
+            if self._starting:
+                raise RuntimeError("rap audio runtime is still preparing; stop it before reset")
+            if self._settings_updating:
+                raise RuntimeError("wait for the pending settings update before reset")
             if self.playback.state != PlaybackState.STOPPED:
                 raise RuntimeError("rap audio runtime can reset only while stopped")
-            quiesce = getattr(self.playback, "quiesce_for_reset", None)
-            if callable(quiesce):
-                quiesce()
-            coordinator_epoch = self.controller.reset()
-            if not isinstance(coordinator_epoch, int) or isinstance(coordinator_epoch, bool):
-                raise RuntimeError("audio controller reset did not establish a coordinator epoch")
-            self.playback.reset(coordinator_epoch=coordinator_epoch)
-            self._restart_requires_reset = False
+            self._reset_locked(self._settings_factory())
+
+    def _settings_factory(self) -> Callable[[int], Any] | None:
+        if self.controller_factory is None or self.settings_service is None:
+            return None
+        values = self.settings_service.values
+        return lambda epoch: self.controller_factory(values, epoch)
+
+    def _install_controller_timeline(self, controller: Any) -> None:
+        timeline = getattr(controller, "timeline", None)
+        if timeline is not None:
+            self.playback.set_timeline(timeline)
+
+    def _reset_locked(self, factory: Callable[[int], Any] | None = None) -> None:
+        # Playback is stopped: serialize teardown against starts, not active audio.
+        self._restart_requires_reset = True
+        quiesce = getattr(self.playback, "quiesce_for_reset", None)
+        if callable(quiesce):
+            quiesce()
+        old = self.controller
+        epoch = old.reset()
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+            raise RuntimeError("audio controller reset did not establish a coordinator epoch")
+        if self.settings_service is not None:
+            self.settings_service.reset_acceptance(epoch, applied=False)
+        self.playback.reset(coordinator_epoch=epoch)
+        self._install_controller_timeline(old)
+        if factory is not None:
+            replacement = None
+            try:
+                replacement = factory(epoch)
+                self._install_controller_timeline(replacement)
+            except BaseException:
+                # Existing factories may install their timeline before returning.
+                self._install_controller_timeline(old)
+                if replacement is not None:
+                    try:
+                        replacement.close()
+                    except Exception:
+                        logging.getLogger(__name__).exception("failed to close rejected audio controller")
+                raise
+            self.controller = replacement
+            try:
+                old.close()
+            except Exception:
+                # The replacement is already committed. Rejecting its settings
+                # now would falsely report that the old values are still active.
+                logging.getLogger(__name__).exception("failed to close retired audio controller")
+        if self.settings_service is not None:
+            self.settings_service.reset_acceptance(epoch)
+        self._restart_requires_reset = False
 
     def close(self) -> None:
         """Permanently close audio, planning, publication, and recording once."""

@@ -38,7 +38,6 @@ from streammuse.experiments.rap_audio_protocols.contracts import TwoBarRenderReq
 from streammuse.experiments.rap_audio_protocols.warp import (
     RubberBandTimeMapStretcher,
     VowelAnchor,
-    continuous_pitch_preserving_warp,
 )
 from streammuse.infrastructure.rap.mms_forced_alignment import (
     MmsAlignmentResult,
@@ -53,11 +52,9 @@ from streammuse.infrastructure.rap.phrase_warp import (
     R3_STRETCHER_OPTIONS,
     FullChunkStretcher as _FullChunkStretcher,
     WarpPlan as _WarpPlan,
-    prepare_warp_input as _prepare_warp_input,
-    resolve_warp_plan as _resolve_warp_plan,
-    effective_diagnostic_anchors as _effective_diagnostic_anchors,
+    WarpPreparation as _WarpPreparation,
+    warp_phrase,
     to_float32 as _to_float32,
-    validate_output_samples as _validate_output_samples,
     encode_pcm16_wav as _encode_pcm16_wav,
     validate_pcm16_wav as _validate_pcm16_wav,
 )
@@ -285,61 +282,46 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 _OUTPUT_SAMPLE_RATE_HZ,
                 bars=request.bar_count,
             )
-            warp_input = _prepare_warp_input(
-                source_samples,
-                mapped.anchors,
-                sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
-                source_sha256=moss_result.source_wav_sha256,
-            )
-            warp_plan = _resolve_warp_plan(
-                request,
-                warp_input,
-                target_frame_count=target_frame_count,
-                sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
-                requested_policy=self._warp_policy,
-            )
-            research_warnings = tuple(
-                dict.fromkeys(
-                    (*moss_result.warnings, *mapped.warnings, *warp_plan.warnings)
+
+            def record_warp_plan(warp_input: _WarpPreparation, warp_plan: _WarpPlan) -> None:
+                _renderer_checkpoint(execution)
+                _write_json_atomic(
+                    alignment_path,
+                    _complete_alignment_artifact(
+                        request=request,
+                        moss_result=moss_result,
+                        alignment=alignment,
+                        mapped=mapped,
+                        diagnostic_anchors=warp_input.diagnostic_anchors,
+                        effective_anchors=(),
+                        warp_plan=warp_plan,
+                        endpoint_policy=warp_input.endpoint_policy,
+                        stretch_ratios=(),
+                        output_wav=None,
+                        output_metrics=None,
+                        target_frame_count=target_frame_count,
+                        warnings=tuple(dict.fromkeys(
+                            (*moss_result.warnings, *mapped.warnings, *warp_plan.warnings)
+                        )),
+                        warp_status="pending",
+                    ),
                 )
-            )
-            _write_json_atomic(
-                alignment_path,
-                _complete_alignment_artifact(
-                    request=request,
-                    moss_result=moss_result,
-                    alignment=alignment,
-                    mapped=mapped,
-                    diagnostic_anchors=warp_input.diagnostic_anchors,
-                    effective_anchors=(),
-                    warp_plan=warp_plan,
-                    endpoint_policy=warp_input.endpoint_policy,
-                    stretch_ratios=(),
-                    output_wav=None,
-                    output_metrics=None,
-                    target_frame_count=target_frame_count,
-                    warnings=research_warnings,
-                    warp_status="pending",
-                ),
-            )
+
             with execution.uninterruptible():
-                warped = continuous_pitch_preserving_warp(
-                    warp_input.samples,
+                warped = warp_phrase(
+                    request,
+                    source_samples,
+                    mapped.anchors,
                     sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
-                    anchors=warp_plan.anchors,
                     target_frame_count=target_frame_count,
-                    stretch_full_chunk=self._stretcher,
-                    source_sha256=warp_input.source_sha256,
+                    stretcher=self._stretcher,
+                    source_sha256=moss_result.source_wav_sha256,
+                    policy=self._warp_policy,
+                    on_plan_ready=record_warp_plan,
                 )
             _renderer_checkpoint(execution)
-            output_samples = _validate_output_samples(
-                warped.samples,
-                expected_frame_count=target_frame_count,
-            )
-            vocal_wav, output_metrics = _encode_pcm16_wav(
-                output_samples,
-                sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
-            )
+            warp_input, warp_plan = warped.preparation, warped.plan
+            vocal_wav, output_metrics = warped.vocal_wav, warped.output_metrics
             vocal_partial_path.write_bytes(vocal_wav)
             _validate_pcm16_wav(
                 vocal_partial_path,
@@ -349,9 +331,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             _renderer_checkpoint(execution)
             stage_timings["warp"] = _elapsed_ms(self._clock, started)
 
-            stretch_ratios = tuple(
-                region.stretch_ratio for region in warped.stretch_regions
-            )
+            stretch_ratios = warped.stretch_ratios
             research_warnings = tuple(
                 dict.fromkeys(
                     (
@@ -373,7 +353,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
                 alignment=alignment,
                 mapped=mapped,
                 diagnostic_anchors=warp_input.diagnostic_anchors,
-                effective_anchors=warped.anchor_map,
+                effective_anchors=warped.effective_anchors,
                 warp_plan=warp_plan,
                 endpoint_policy=warp_input.endpoint_policy,
                 stretch_ratios=stretch_ratios,
@@ -385,14 +365,7 @@ class MossAlignedPhraseRenderer(PhraseVocalRenderer):
             )
             alignment_diagnostics = _alignment_diagnostics(
                 mapped=mapped,
-                diagnostic_anchors=_effective_diagnostic_anchors(
-                    warp_input,
-                    warp_plan,
-                    warped.anchor_map,
-                    source_frame_count=len(warp_input.samples),
-                    target_frame_count=target_frame_count,
-                    sample_rate_hz=_OUTPUT_SAMPLE_RATE_HZ,
-                ),
+                diagnostic_anchors=warped.diagnostic_anchors,
                 stretch_ratios=stretch_ratios,
             )
             audio_diagnostics = {
@@ -806,6 +779,7 @@ def _complete_alignment_artifact(
     warp_status: str,
 ) -> Mapping[str, object]:
     character_spans, word_spans = _alignment_span_payload(alignment)
+    source_offset = int(endpoint_policy.get("crop_start_source_sample", 0))
     anchors = tuple(
         {
             **dict(diagnostic),
@@ -817,8 +791,8 @@ def _complete_alignment_artifact(
             "anchor_kind": anchor.anchor_kind,
             "source_boundary_adjusted": anchor.source_boundary_adjusted,
             "target_boundary_adjusted": anchor.boundary_adjusted,
-            "warp_source_seconds": diagnostic_anchor.source_seconds,
-            "warp_source_sample": diagnostic_anchor.source_sample,
+            "warp_source_seconds": (diagnostic_anchor.source_sample - source_offset) / _OUTPUT_SAMPLE_RATE_HZ,
+            "warp_source_sample": diagnostic_anchor.source_sample - source_offset,
             "endpoint_role": (
                 "boundary" if endpoint_policy["applied"] and index == 0 else "interior"
             ),
@@ -880,7 +854,10 @@ def _complete_alignment_artifact(
             "status": warp_status,
             "engine": "r3",
             "smoothing": False,
-            "stress_applied": False,
+            "stress_applied": (
+                warp_status == "complete"
+                and warp_plan.resolved_policy is MossWarpPolicy.ALL_ONSETS_STRESS_R3
+            ),
             "policy_requested": warp_plan.requested_policy.value,
             "policy_resolved": warp_plan.resolved_policy.value,
             "timing_regularization_applied": (

@@ -1,8 +1,280 @@
 # Real-Time Rap Audio Demo Quick Start
 
+## Flow And Audio Update (2026-10-28)
+
+The latest [flow/audio guide](rap-flow-audio-controls.md) covers the six curated
+MCFlow choices, local chord loops, live vocal alignment policy selector,
+preserved leading rests, and approximate syllable fragments. Synthetic choices
+are hidden from the picker; legacy saved scenarios still load.
+
+The isolated test deployment for this update uses **H200 GPU0 for Qwen**, **GPU1
+for MOSS/MMS**, remote render port **18720**, and Mac GUI **8018**. See the
+[deployment record](../reports/2026-10-28-rap-flow-audio-deployment.md) for owned
+service launch/health/shutdown commands. Do not restart unrelated model jobs.
+
+### Local Terminal A: Website Client Forward
+
+If the existing test forward is healthy, reuse it. Otherwise, with local 18720
+unused, keep this command running:
+
+```bash
+ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -N \
+  -L 18720:127.0.0.1:18720 H200
+```
+
+### Local Terminal B: Mac Client
+
+Reuse the current client when 8018 is already occupied. For a new client:
+
+```bash
+cd "/Users/andrewyang/Library/CloudStorage/OneDrive-UCSanDiego Real/Stuff/UGRIP/StreamMUSE-NewSystem/.worktrees/real_rap"
+PYTHONPATH=src .venv/bin/python -m streammuse.presentation.rap_demo.cli \
+  --rap-audio-renderer moss_aligned_remote --rap-protocol v3 \
+  --rap-render-url http://127.0.0.1:18720 --rap-audio-transport pcm \
+  --rap-warp-policy gentle_sparse_r3 --chord-loop off \
+  --tempo 60 --audio-output composite --audio-device "MacBook Pro Speakers" \
+  --max-bars 0 --port 8018 --log-dir logs/rap/flow_audio_20261028
+```
+
+Open **http://127.0.0.1:8018/**. Alignment choices are relaxed, strict syllable
+timing, and strict timing plus stress. Local gains change smoothly during playback;
+alignment changes reuse cached speech for the earliest uncommitted bar and chord
+loops change at a bar boundary. Generation and Session setup have independent
+controls and status. The UI remains a diagnostic research
+tool: requested timing and rendered alignment estimates are not acoustic proof.
+
+## Previous Feature Trial (2026-10-22)
+
+The current integration target is the **Mac protocol-v3 client with H200 model
+services**, not an H200-hosted website. Use the per-terminal
+[current-session launch guide](rap-demo-current-session-2026-10-22.md) for the
+isolated render service on **18620**, its H200-local live Qwen dependency on
+**18611**, and the actual Mac test GUI at **http://127.0.0.1:8018/**. Preserve the
+existing **8012 client** as a rollback reference; do not run a second process
+on either occupied port. Its old **18420 remote endpoint is dead**, so the
+preserved GUI is not a fully working remote-audio rollback.
+
+This guide describes the implemented controls. Check the
+[feature delivery report](../reports/2026-10-22-feature-delivery.md)
+for integration acceptance. The
+[research service handoff](../reports/2026-10-22-scheduling-research.md#service-handoff)
+records real-model smoke evidence on baseline source; that does not validate
+the new controls, Mac audio device, or acoustic timing.
+
+### Continuous Mode
+
+Select **Continuous** while stopped, apply settings, then **Start**. The model
+produces successive lyric bars while drums continue. In **Direct upcoming
+bars**, edit the topic, flow template, or both and press **Apply**. Blank topic
+and **Keep current flow** leave their fields unchanged. Edits target the next
+eligible uncommitted bar, not the bar already playing. A request acknowledgement
+does not guarantee its audio will be ready: inspect the played identity and
+fallback diagnostics for the bar that actually arrives.
+
+The current catalogue contains [six MCFlow-extracted patterns](rap-curated-flow-catalog.md).
+The previous three baseline grids and six handcrafted stress variants are
+lookup-only compatibility entries, no longer visible choices. Structural/fallback
+validation is not listening validation.
+The current-flow strip displays weak/medium/strong stress with distinct fills,
+heights, and W/M/S symbols.
+
+### Alternating Mode
+
+While stopped, select **Alternating**, choose **1-8 response bars** (default 2),
+and apply settings. Then Start:
+
+1. **DRUMS_IDLE:** drums play without model vocals. Focus the capture surface;
+   the first Space or Enter arms the **next complete bar**, not the remainder
+   of this bar. The arming press is not an onset.
+2. **ARMED / CAPTURING:** wait for the capture bar, then tap within its full
+   4-beat, 16-tick window. Held-key repeats are ignored; typing in editable
+   fields is not captured. Taps use calibrated browser event times, quantize to
+   the nearest valid tick (ties earlier), merge collisions, and carry neutral
+   stress `0.5`. Raw timing and collision data remain available in diagnostics.
+3. At the bar end, allow **100 ms of arrival grace** for taps whose event times
+   were inside the capture bar. This is not 100 ms of extra musical input.
+   Finalization occurs on the coordinator tick after that grace. **One full
+   drums-only transition bar** follows capture before any echo/model response;
+   it is not a missing response or a partial captured bar.
+4. **WAIT_REPLAY:** replay the captured rhythm as a distinct percussion echo
+   while waiting for the first compatible model bar. Generation starts only
+   after full-bar capture is finalized. A ready response can start at the next
+   legal boundary after the transition; it need not wait for all response bars.
+5. **MODEL_PLAY:** deliver distinct generated lyrics progressively, using the
+   captured flow for each response bar. If a later bar is unavailable, echo
+   while waiting for that same logical response bar. Echo and drums-only bars
+   consume playback time but do **not** count toward the response length.
+6. Return to drums idle after the requested response; arm again explicitly.
+
+An empty capture returns to idle with an error and does not request generation.
+The first response waits for primary audio within a 30-second budget; a ready,
+matching generated-lyric eSpeak fallback can be used at expiry. Later bars can
+use matching eSpeak sooner. A blocked response has a bounded wait; a timeout or
+fatal generation failure is visible and can end the turn incomplete. Neither
+echo nor unrelated fallback text is presented as a successful model response.
+There is no immediate audible key monitor during capture; the captured rhythm
+is echoed afterward. Topic edits in this mode apply to the next capture;
+preset flow selection belongs to Continuous mode because capture supplies the
+alternating flow.
+
+Arbitrary captured flows are not guaranteed to yield valid lyrics. In the
+final ten-pattern device run, nine turns completed and a four-slot turn ended
+after one response because no valid second line was found. A separate six-slot
+keyboard turn also ended after one response. The rhythm echo remains audible,
+the error is visible, and another turn can be armed; it is not a permanent
+playback stall. Start a showcase with roughly eight or nine distinct taps, but
+do not present that as a measured universal success guarantee.
+
+### Start, Stop, Resume, And Reset
+
+- **Start** begins a stopped audio session. Opening the website does not start
+  audio; closing it does not stop the Mac process.
+- **Stop** finishes the current bar, then stops. Wait for `stopped`, rather
+  than treating the HTTP acknowledgement as completed shutdown. Stop during
+  priming cancels preparation.
+- **Start after manual Stop** resumes at the next playback bar without Reset.
+  Alternating Stop cancels the armed capture/in-flight turn; resume returns to
+  drums idle and requires a new arm, not an old asynchronous response.
+- **Start after natural finite completion** starts over automatically in a new
+  epoch; a manual Reset is no longer required. `--max-bars 0` requests an
+  unbounded run for the looping default scenario.
+- **Reset**, available while stopped, explicitly discards current capture,
+  turn, queued work, and playback position. The next Start begins at API bar 0
+  (displayed bar 1). Preserve needed session evidence before resetting/replaying.
+- Changing **mode**, **response length**, or **tempo while stopped** rebuilds
+  the coordinator in a fresh epoch. These changes start from the beginning,
+  rather than preserving the previous mode's resume position.
+
+**Archive audio before starting a new epoch.** The sink resets/truncates
+`mixed.wav` on Reset or a coordinator rebuild (including mode/response-length
+changes, stopped-state tempo changes, and automatic replay after finite
+completion). It contains only the latest epoch, while `events.jsonl` remains
+cumulative across restarts. A cumulative bar count therefore does not imply
+that every logged bar is present in the current WAV. After Stop reaches
+`stopped`, copy `mixed.wav` to a distinct run-specific filename before Reset,
+a rebuilding settings change, or finite replay if you need all runs. Preserve
+the final showcase WAV before any further Reset.
+
+### Settings And Playback Evidence
+
+Controls follow `GET /api/control/settings` capabilities. Disabled controls can
+mean an older remote server or unsupported runtime, not a broken browser. New
+tempo/alternating capabilities require the matching deployed server code.
+
+| Setting | Range / identity | Application |
+|---|---|---|
+| Tempo | 30-180 BPM | Future bar boundary while running; no mid-bar ramp |
+| Mode | Continuous / Alternating | Stopped only; fresh epoch |
+| Response bars | Integer 1-8 | Stopped only; fresh epoch |
+| Output device | Host API/name stable ID, or system default | Stopped only |
+| Drum / vocal / chord gain | Linear 0-2, independently | Smoothed live adjustment on the Mac |
+| Alignment policy | Relaxed / strict / strict + stress | Earliest uncommitted bar, locally rerendered |
+| Chord loop | Off / minor / major cycle | Eligible future bar boundary |
+
+**Live audio** controls auto-apply; **Generation** and **Session setup** have independent
+submissions. The settings response contains requested
+`values`, capabilities, application rules, and an effective bar/revision when
+available, plus per-group acknowledgements. **Accepted is not playing.** For BPM,
+alignment, and chord-loop changes, the UI waits for
+the current played bar's `audio.timing_evidence` to match at or beyond
+`effective_from_bar` before showing playback confirmation. API bar numbers are
+zero-based; the GUI displays them one-based. An armed/capturing bar retains its
+original timing even if tempo changes are accepted for later bars. Live gain
+evidence comes from the device callback, independently of a bar's original mix.
+Requested
+settings may coexist with an older committed bar or explicit fallback.
+
+Labels beside controls identify their timing: **Immediate**, **Next eligible
+bar**, **Server-coordinated**, or **Stop to change**. Unavailable controls show
+why they are disabled. Each group has its own pending/applied status, so a
+server request does not make a local audio edit appear blocked.
+
+**Live tempo is not next-bar ASAP.** In continuous mode, the controller
+reserves the full **10-second** tempo-ACK window plus local preparation margin,
+then selects a future bar boundary. The effective change can therefore be
+roughly 10 seconds or more ahead even when the ACK arrives quickly; use the
+returned `effective_from_bar`, not the next visible bar, as the target. In
+alternating mode, the current armed/capturing bar is immutable: local timing
+changes at an eligible future boundary, while remote response timing is
+negotiated separately for its logical destination. Both controllers use a
+10-second remote ACK budget. Alternating background negotiation can first
+wait up to 10 seconds for stream readiness; a successful local settings
+response does not mean remote response audio is ready. Topic/flow edits in
+**Direct upcoming bars** retain their separate ASAP policy below.
+
+Settings updates also have operation-group restrictions, checked **before any
+effects**:
+
+- While running, apply **tempo separately from gains**. A single patch that
+  changes BPM and either gain is rejected without applying either operation.
+- Apply **output-device selection separately from every other change**, even
+  while stopped.
+- Both gains can change together. A stopped update that rebuilds the
+  coordinator can combine mode, response length, tempo, and gains; device
+  selection must still be a separate update.
+
+The GUI separates these operations and keeps local controls enabled while
+generation updates wait. API clients can send separate patches to
+`POST /api/control/settings/local`, `/generation`, and `/session`. The legacy
+endpoint remains supported. Alignment and mix are separate local operations;
+the GUI queues these independently.
+
+The Generation UI retains a **35-second** request budget. A generation update
+can wait for remote capability discovery and the **10-second total** tempo-ACK
+window. Local changes do not perform that discovery, and snapshots use cached
+capabilities refreshed in the background. The backend may replay the same idempotent tempo request once
+after 5 seconds, within that same 10-second ACK budget; the browser does not
+repeat the settings POST. This
+HTTP budget is not a promise about when the changed tempo becomes audible.
+A lost HTTP response has an **unknown outcome**, not a confirmed rejection:
+do not immediately repeat the update.
+Polling reconciles matching authoritative values and then waits for actual
+played evidence; it never automatically retries the POST. Explicit validation
+or rejection errors are preserved. If the backend reports uncertain tempo or
+requires Reset, Stop, wait for `stopped`, Reset, then Start before another
+tempo change. Increasing the browser timeout does not fix a lost backend ACK.
+
+Select devices by the API-provided `id`, not the transient device `index`.
+Unavailable options are disabled with their error; a vanished device or failed
+audio startup is reported visibly. `output_device: null` selects the system
+default; the CLI also accepts a device name such as `MacBook Pro Speakers`.
+If output falls back to a timed clock, it is **not speaker playback**. Stop,
+wait for stopped, optionally select another available device, then Reset and
+Start to retry hardware. The originating error stays visible until recovery;
+Reset restores the hardware sink rather than permanently retaining timed output.
+The v3 drum default is approximately **0.776896** (+3 dB over legacy 0.55),
+displayed as **0.78x**; vocal gain remains **0.80x**. Sliders step by 0.01 and
+do not silently write their rounded display value when another field changes.
+Peak limiting still applies; this is not a calibrated loudness setting.
+
+The three timing rows have deliberately different meanings:
+
+- **Requested:** target onset positions in the selected flow.
+- **Rendered estimate:** source-alignment onsets propagated through the actual
+  warp map, with available confidence and drift. Missing/partial estimates
+  remain labeled; they are not duplicated requested positions.
+- **Playback cursor:** device/software clock position, not a measured syllable
+  onset at the speakers.
+
+There is **no acoustic/loopback onset measurement** in these traces. Likewise,
+`audio_output.audible` describes sink state, not acoustic verification. When
+playback runs with a timed/no-device fallback, or output reports an error, the
+GUI warns instead of implying that speakers are producing sound. Check the
+visible runtime error if startup appears stuck in priming.
+Recoverable fallback-catalog messages appear as warnings, not sticky generator
+errors. A newer relevant successful response can restore READY after an old
+generation failure; the historical error remains visible. Cross-session or
+stale-epoch responses cannot clear it. Reset-required and runtime errors remain
+active. During Start, a stale stopped-state output observation is labeled
+"Checking audio output..." instead of being mistaken for a new device failure.
+
 ## Split Architecture
 
-The normal remote-MOSS runtime runs a loopback-bound chunk orchestrator on the
+For the current v3 trial, the Mac owns the clock, capture, local R3 warping,
+drums, playback, and website; H200 owns lyric generation and MOSS/MMS source
+audio. In-process MOSS is the current test default, with no SGLang continuation.
+
+The retained v1/v2 remote-MOSS runtime runs a loopback-bound chunk orchestrator on the
 H200. That one service calls the H200-local vLLM process, selects two lines,
 renders one connected MOSS phrase, aligns it, applies Rubber Band R3, and
 returns an exact two-bar vocal package. The default warp keeps first/last,
@@ -13,8 +285,9 @@ clock, local eSpeak fallback, drum rendering, playback, WAV recording, session
 logging, and the web monitor. The browser never owns audio; closing it does not
 stop the Mac process.
 
-The local website is always `http://127.0.0.1:8012/` for the commands below.
-For the normal runtime, forward only H200 port `8020`. The H200-local vLLM port
+The legacy v1/v2 commands below use `http://127.0.0.1:8012/`; they are not the
+isolated 8018 feature trial. For that legacy runtime, forward only H200 port
+`8020`. The H200-local vLLM port
 is not a Mac runtime dependency, and the website is never forwarded from the
 H200.
 
@@ -70,7 +343,7 @@ server whose `/health` does not list `streammuse.rap_chunk.v2` in
 `supported_schema_versions`. v1 and v2 requests have different request IDs, so
 their server caches never mix.
 
-### Protocol v3: Lyric Stream (H200 Only)
+### Protocol v3: Mac Client And Lyric Stream Service
 
 `--rap-protocol v3` replaces the two-bar request/response loop with a per-bar
 lyric stream (plan `developing-logs/plans/2026-10-08-rap-lyric-stream-plan.md`,
@@ -91,7 +364,15 @@ report `developing-logs/reports/2026-10-12-rap-lyric-stream-implementation-repor
   `patches/sglang-omni-0.1.4-af3ab61-moss-continuation.patch` (see
   `patches/README.md`), and `--moss-runtime-patch-sha256` set to the
   continuation patch's hash.
-- The Mac local runtime does not support v3 yet; it keeps v2.
+- The Mac client supports v3 against a compatible lyric-stream service. The
+  all-on-Mac MLX launcher below still starts a v2-only service by default;
+  changing only its `RAP_PROTOCOL` variable does not add `--lyric-stream` to
+  that server. Do not confuse that launcher limitation with Mac-client support.
+
+The example below is a retained deployment example, not the isolated current
+session. Use it only with its matching service/tunnel and an unused GUI port;
+do not overwrite the existing 8012 process. Prefer the
+[current-session commands](rap-demo-current-session-2026-10-22.md) for today's trial.
 
 ```bash
 uv run streammuse-rap-demo --rap-audio-renderer moss_aligned_remote \
@@ -105,13 +386,15 @@ bars**, enter a topic, choose a flow, or both, then press **Apply**. Blank topic
 and **Keep current flow** leave that field unchanged. Selecting a flow previews
 its syllable timing and stress; it does not submit an edit.
 
-Changes are **ASAP**, not delayed by a fixed number of bars. The browser omits
+Topic/flow changes are **ASAP**, not delayed by a fixed number of bars. This
+does not describe live tempo's separate ACK reservation. The browser omits
 `from_bar`; the controller chooses the next uncommitted bar at submission time.
 The displayed target uses human-readable, one-based bar numbers. **Requested**
 is not a guarantee that the replacement will meet its audio deadline: the
 status reports queued audio, the settings actually played, eSpeak vocals, or
 an older/local fallback. Playback and the existing diagnostics remain live.
-Controls are disabled while stopped/disconnected and for non-v3 runtimes.
+These topic/flow controls are disabled while stopped/disconnected and for
+non-v3 runtimes; the separate settings controls use their own capabilities.
 
 For a slower v3 trial, use `--tempo 50` (4.8 seconds per bar). This gives
 generation more time but does not cure a stalled SSH connection. After a topic
@@ -130,8 +413,9 @@ through the same forwarded port as `--rap-render-url`, for example:
 curl --fail --max-time 10 http://127.0.0.1:18420/health
 ```
 
-The current GPU1 test deployment uses local port `18420` forwarded to H200 port
-`8620`; other launches in this guide use different ports. A healthy website
+The older GPU1 deployment used local port `18420` forwarded to H200 port
+`8620`; the 2026-10-22 isolated service uses `18620` on both hosts. Test the
+actual `--rap-render-url` for your launch, not an old example. A healthy website
 alone does not establish that the H200 connection is working.
 
 The same API is available for scripts: `POST /api/control/plan` on the demo website with
@@ -148,7 +432,11 @@ When gentle regularization is mathematically infeasible for an outlier MOSS
 source duration, the warp falls back to the legacy all-onsets policy for that
 one chunk and emits a visible warning instead of dropping the vocal.
 
-## Normal Runtime: Start H200 Services
+## Legacy v1/v2: Start H200 Services
+
+Retained setup instructions for a separate, unused deployment. The current
+isolated services are already provisioned; do not relaunch them with these
+generic commands or reinstall their verified environments.
 
 Connect to the H200, enter the accepted checkout, and record the revision. Pick
 two unused physical GPUs immediately before launch. Do not stop or reuse GPUs
@@ -255,7 +543,7 @@ curl --fail --silent --show-error http://127.0.0.1:8020/health \
   | python -m json.tool
 ```
 
-## Normal Runtime: Mac Tunnel, Demo, And Website
+## Legacy v1/v2: Mac Tunnel, Demo, And Website
 
 Install the local fallback and audio dependencies from a Mac terminal:
 
@@ -305,8 +593,9 @@ uv run streammuse-rap-demo \
   --port 8012
 ```
 
-Open `http://127.0.0.1:8012/` in the Mac browser. Start, Stop, and Reset are the
-only runtime actions. They can also be invoked from another Mac terminal:
+Open the matching Mac browser URL. Start, Stop, and Reset are the lifecycle
+actions; additional settings appear only when supported by this runtime.
+The legacy lifecycle endpoints can also be invoked from another Mac terminal:
 
 ```bash
 curl --fail --silent --show-error -X POST http://127.0.0.1:8012/api/control/start
@@ -370,7 +659,7 @@ Mac flag to `--rap-audio-transport pcm`. To disable Opus generation entirely,
 start the server with `--wire-audio-codec pcm`; the remaining commands are
 unchanged.
 
-## Mac Local Runtime (Apple Silicon, No H200)
+## Mac Local Runtime (Apple Silicon, No H200; v2 Launcher)
 
 The whole server side can also run on one Apple Silicon Mac (measured on a Mac
 Studio M5 Max, 64 GB). Everything stays on loopback; no SSH tunnel is needed.
@@ -444,7 +733,12 @@ Measured on 2026-09-30 (24 chunks, 90 BPM, 2-bar chunks): end-to-end p50
 bars with zero underruns. Details and open decisions are in
 `developing-logs/plans/2026-09-30-rap-mac-local-server-plan.md`.
 
-## Normal Runtime Shutdown
+## Legacy v1/v2 Runtime Shutdown
+
+These steps apply only to processes you started for that legacy session. Do not
+use them to stop the preserved 8012 deployment or shared current-test services;
+follow the [current-session rollback limits](rap-demo-current-session-2026-10-22.md#preserved-8012-and-rollback-limits)
+instead.
 
 1. Select Stop in the Mac website or call the stop endpoint and wait for the
    current bar to complete.
@@ -592,13 +886,13 @@ uv run streammuse-rap-demo \
   --port 8012
 ```
 
-`--max-bars 0` runs until stopped. Candidate count, lookahead, tempo, drums,
-and voice are startup configuration; the website intentionally exposes no
-controls for them.
+For this legacy direct-vLLM/eSpeak path, candidate count, lookahead, and voice
+remain startup configuration. New v3 tempo/mode controls are not implied by
+this command; the website enables only the capabilities reported by its runtime.
 
-### Start, Stop, And Reset
+### Legacy Lifecycle Reference
 
-The website has exactly three runtime controls:
+The lifecycle actions remain:
 
 - **Start** begins a stopped audio session. It is the only way to begin an
   audio-web session after the server is opened.
@@ -607,8 +901,9 @@ The website has exactly three runtime controls:
   current epoch's bars, warnings, metrics, WAV contents, and audio clock so the
   next Start begins again at bar zero.
 
-There are no browser controls for topic, model, tempo, candidate count,
-lookahead, drums, voice, or mixer settings.
+Model, candidate count, lookahead, and voice are still startup choices. The
+current v3 GUI additionally exposes topic/flow edits and capability-gated
+tempo, mode, response length, device, and gain settings described above.
 
 ## Device-Free WAV Fallback
 
@@ -686,7 +981,9 @@ git worktree add --detach <BASELINE_WORKTREE_PATH> 884cd616
 
 ### `uv` Or Virtual Environment
 
-Run commands as `uv run ...` from the repository root. If a shell resolves a
+For a newly provisioned local checkout, run commands as `uv run ...` from the
+repository root. For the current isolated Mac/H200 session, use the existing
+interpreters and launch commands in the session guide. If a shell resolves a
 different executable, compare it with the project environment instead of
 installing packages globally:
 
@@ -697,8 +994,10 @@ uv run streammuse-rap-demo --help
 ```
 
 If `uv` reports a cache permission error, rerun from an authorized terminal or
-use the existing `.venv` executable only for diagnosis. `uv sync` is the normal
-repair after dependency changes.
+use the existing project `.venv` executable. `uv sync` is a local provisioning
+or deliberate dependency-repair step, not a prerequisite for reusing the
+already-provisioned H200 services. Do not sync, upgrade, or reinstall those
+model environments just to launch the current trial.
 
 ### Ports And Tunnels
 
@@ -709,7 +1008,7 @@ lsof -nP -iTCP:8020 -sTCP:LISTEN
 lsof -nP -iTCP:8012 -sTCP:LISTEN
 ```
 
-For the normal split demo, Mac port `8020` maps only to the H200 chunk service.
+For the legacy split demo, Mac port `8020` maps only to the H200 chunk service.
 If it is occupied, choose one unused local port consistently in the SSH `-L`
 left-hand side and `--rap-render-url`; the H200 destination remains `8020`.
 Direct port `8001` forwarding is only for the optional vLLM diagnostic above.

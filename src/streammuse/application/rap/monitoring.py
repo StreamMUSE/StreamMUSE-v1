@@ -404,6 +404,7 @@ class RapStateProjector:
         self._max_candidates = max_candidates
         self._max_recent_events = max_recent_events
         self._segments: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._timing_evidence: OrderedDict[str, tuple[dict[str, Any], bool]] = OrderedDict()
         self._latest_request_id: str | None = None
         self._research_metrics = _CumulativeResearchMetrics()
         self._state: dict[str, Any] = {
@@ -462,6 +463,8 @@ class RapStateProjector:
                 and previous_session_id != event.session_id
             ):
                 self._state["remote_chunk"] = None
+                self._timing_evidence.clear()
+                self._state["audio"].pop("timing_evidence", None)
             self._state["session_id"] = event.session_id
             self._state["last_sequence"] = event.sequence
             if self._is_stale_coordinator_event(event):
@@ -477,6 +480,8 @@ class RapStateProjector:
                 self._update_audio(event)
                 if event.payload.get("playback_state") in {"priming", "running"}:
                     self._state["audio"]["state"] = event.payload["playback_state"]
+            elif event.event_type == RapEventType.AUDIO_SETTINGS_CHANGED:
+                self._update_audio(event, update_current_bar=False)
             elif event.event_type == RapEventType.SESSION_STOPPED:
                 self._state["stopped"] = True
                 if self._state["audio"]["state"] != "disabled":
@@ -588,9 +593,53 @@ class RapStateProjector:
 
     def _update_audio_render(self, event: RapEvent, *, state: str) -> None:
         self._update_audio(event, update_current_bar=False)
+        if event.event_type in (RapEventType.BAR_AUDIO_READY, RapEventType.BAR_AUDIO_COMMITTED):
+            self._remember_timing_evidence(event)
         self._state["audio"]["render_state"] = state
         if event.bar is not None:
             self._state["audio"]["render_bar"] = event.bar
+
+    def _remember_timing_evidence(self, event: RapEvent) -> None:
+        evidence = event.payload.get("timing_evidence")
+        if event.bar is None or not isinstance(evidence, dict) or evidence.get("bar") != event.bar:
+            return
+        key = str(event.bar)
+        committed = event.event_type == RapEventType.BAR_AUDIO_COMMITTED
+        previous = self._timing_evidence.get(key)
+        if previous is not None and previous[1]:
+            return
+        retained = deepcopy(evidence)
+        self._timing_evidence[key] = (retained, committed)
+        self._timing_evidence.move_to_end(key)
+        self._trim_mapping(self._timing_evidence, self._max_recent_bars)
+        bar_state = self._state["bars"].setdefault(key, {"bar": event.bar, "frozen": False})
+        bar_state["timing_evidence"] = deepcopy(retained)
+        self._state["bars"].move_to_end(key)
+        self._trim_mapping(self._state["bars"], self._max_recent_bars)
+        if committed and key in self._state["frozen_bars"]:
+            self._state["frozen_bars"][key]["timing_evidence"] = deepcopy(retained)
+
+    def _activate_timing_evidence(self, event: RapEvent) -> None:
+        audio = self._state["audio"]
+        entry = self._timing_evidence.get(str(event.bar))
+        if entry is None:
+            audio.pop("timing_evidence", None)
+            return
+        evidence = deepcopy(entry[0])
+        timing = evidence.get("timing")
+        absolute_frame = event.payload.get("absolute_frame")
+        rate = evidence.get("sample_rate_hz")
+        frames = evidence.get("frame_count")
+        start = timing.get("start_frame") if isinstance(timing, dict) else None
+        evidence["playback_cursor"] = None
+        if (type(absolute_frame) is int and type(start) is int and type(frames) is int
+                and type(rate) is int and rate > 0 and 0 <= absolute_frame - start <= frames):
+            frame = absolute_frame - start
+            evidence["playback_cursor"] = {
+                "sample": frame, "seconds": frame / rate,
+                "kind": "device_or_software_clock", "is_acoustic_observation": False,
+            }
+        audio["timing_evidence"] = evidence
 
     @staticmethod
     def _aggregate() -> dict[str, int | float | None]:
@@ -708,6 +757,8 @@ class RapStateProjector:
             audio["state"] = state
         if update_current_bar and event.bar is not None:
             audio["current_bar"] = event.bar
+        if event.event_type in (RapEventType.BAR_PLAYBACK_STARTED, RapEventType.BAR_PLAYBACK_COMPLETED):
+            self._activate_timing_evidence(event)
         for key in ("queue_depth", "buffered_seconds", "absolute_frame"):
             value = payload.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -743,6 +794,7 @@ class RapStateProjector:
         recording_path = self._state["audio"]["recording_path"]
         coordinator_epoch = self._coordinator_epoch(event.payload)
         self._segments.clear()
+        self._timing_evidence.clear()
         self._latest_request_id = None
         self._research_metrics = _CumulativeResearchMetrics()
         self._state.update(

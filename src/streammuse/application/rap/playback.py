@@ -9,6 +9,7 @@ from typing import Callable
 from streammuse.application.rap.audio_rendering import bar_start_frame
 from streammuse.application.rap.audio_service import RapAudioSink
 from streammuse.application.rap.monitoring import RapEventPublisher
+from streammuse.application.rap.monitoring_payloads import syllable_display_payload
 from streammuse.domain.rap import (
     AudioPlaybackNotice,
     AudioPlaybackNoticeKind,
@@ -18,6 +19,7 @@ from streammuse.domain.rap import (
     RapEventType,
 )
 from streammuse.domain.timing import Tempo
+from streammuse.domain.rap.timeline import RapTimeline
 
 
 _OBSERVER_INTERVAL_SECONDS = 0.005
@@ -40,8 +42,10 @@ class RapPlaybackService:
         publisher: RapEventPublisher | None,
         on_tick: Callable[[int], None],
         monotonic: Callable[[], float] = time.monotonic,
+        timeline: RapTimeline | None = None,
     ) -> None:
         self._tempo = tempo
+        self._timeline = timeline
         self._sink = sink
         self._publisher = publisher
         self._on_tick = on_tick
@@ -61,6 +65,7 @@ class RapPlaybackService:
         self._emitted_syllables: set[tuple[int, int]] = set()
         self._next_start_bar = 0
         self._sample_origin_frame = 0
+        self._sample_rate_hz: int | None = None
         self._epoch = 0
         self._observer_stop = Event()
         self._observer: Thread | None = None
@@ -70,6 +75,25 @@ class RapPlaybackService:
     def state(self) -> PlaybackState:
         with self._lock:
             return self._state
+
+    def set_timeline(self, timeline: RapTimeline) -> None:
+        """Install future timing only; queued bars are immutable acoustic obligations."""
+        with self._lock:
+            for prepared in self._prepared.values():
+                expected = timeline.snapshot(prepared.bar, prepared.audio.format.sample_rate_hz)
+                prior = (self._timeline or RapTimeline(self._tempo)).snapshot(prepared.bar, prepared.audio.format.sample_rate_hz)
+                if expected != prior:
+                    raise ValueError("timeline would change an already queued bar")
+            if self._current_tick is not None and self._current_tick >= 0:
+                bar = self._current_tick // 16
+                if timeline.snapshot(bar, self._sample_rate()) != (self._timeline or RapTimeline(self._tempo)).snapshot(bar, self._sample_rate()):
+                    raise ValueError("timeline would change the current playback bar")
+            self._timeline = timeline
+
+    @property
+    def timeline(self) -> RapTimeline | None:
+        with self._lock:
+            return self._timeline
 
     @property
     def current_tick(self) -> int | None:
@@ -205,6 +229,7 @@ class RapPlaybackService:
                 self._emitted_syllables.clear()
                 self._next_start_bar = 0
                 self._sample_origin_frame = 0
+                self._sample_rate_hz = None
             payload: dict[str, object] = {"playback_state": PlaybackState.STOPPED.value}
             if isinstance(coordinator_epoch, int) and not isinstance(coordinator_epoch, bool):
                 payload["coordinator_epoch"] = coordinator_epoch
@@ -286,7 +311,7 @@ class RapPlaybackService:
                 completed_bars.append(notice.bar)
                 prepared = self._prepared.get(notice.bar)
                 if prepared is not None:
-                    bar_end = bar_start_frame(prepared.bar, self._tempo, prepared.audio.format) + prepared.audio.frame_count
+                    bar_end = bar_start_frame(prepared.bar, self._timeline or self._tempo, prepared.audio.format) + prepared.audio.frame_count
                     observed_frame = max(observed_frame, bar_end)
             observed_frame = max(observed_frame, self._sample_origin_frame + notice.absolute_frame)
             event_type = _NOTICE_EVENTS.get(notice.kind)
@@ -332,7 +357,7 @@ class RapPlaybackService:
                 continue
             for diagnostic in bar.diagnostics:
                 key = (bar.bar, diagnostic.slot_index)
-                scheduled_sample = bar_start_frame(bar.bar, self._tempo, bar.audio.format) + diagnostic.target_sample
+                scheduled_sample = bar_start_frame(bar.bar, self._timeline or self._tempo, bar.audio.format) + diagnostic.target_sample
                 if key in self._emitted_syllables or scheduled_sample > observed_frame:
                     continue
                 scheduled = next((item for item in bar.scheduled if item.slot.slot_index == diagnostic.slot_index), None)
@@ -343,7 +368,7 @@ class RapPlaybackService:
                     "scheduled_sample": scheduled_sample,
                     "software_error_samples": 0,
                     "observation_delay_ms": (observed_frame - scheduled_sample) / sample_rate * 1000.0,
-                    "word": scheduled.syllable.word,
+                    **syllable_display_payload(scheduled.syllable),
                     "label": scheduled.syllable.label,
                     "stress": scheduled.syllable.stress,
                     "beat": scheduled.slot.beat,
@@ -367,8 +392,13 @@ class RapPlaybackService:
         effects.append(lambda: self._emit(RapEventType.SESSION_STOPPED, payload={"playback_state": PlaybackState.STOPPED.value}))
 
     def _enqueue_locked(self, bar: PreparedRapBar) -> None:
+        if self._timeline is not None:
+            expected = self._timeline.snapshot(bar.bar, bar.audio.format.sample_rate_hz)
+            if bar.timing != expected or bar.audio.frame_count != expected.frame_count:
+                raise ValueError("prepared audio timing does not match the destination snapshot")
         self._sink.enqueue(bar)
         self._prepared[bar.bar] = bar
+        self._sample_rate_hz = bar.audio.format.sample_rate_hz
 
     def _stop_successor_bar_locked(self, snapshot: AudioPlaybackSnapshot | None) -> int:
         if snapshot is not None and snapshot.current_bar is not None:
@@ -389,7 +419,7 @@ class RapPlaybackService:
             # recording remains in the same session artifact.
             self._discard_pending_sink()
             self._prepared.clear()
-            self._sample_origin_frame = bar_start_frame(bar.bar, self._tempo, bar.audio.format)
+            self._sample_origin_frame = bar_start_frame(bar.bar, self._timeline or self._tempo, bar.audio.format)
             self._current_tick = bar.bar * self._tempo.ticks_per_bar - 1
         self._enqueue_locked(bar)
         self._state = PlaybackState.PRIMING
@@ -448,12 +478,12 @@ class RapPlaybackService:
             self._publisher.emit(event_type, bar=bar, tick=tick, payload=payload)
 
     def _tick_sample(self, tick: int) -> int:
-        return round(self._tempo.tick_to_seconds(tick) * self._sample_rate())
+        return round((self._timeline or self._tempo).tick_to_seconds(tick) * self._sample_rate())
 
     def _sample_rate(self) -> int:
         if self._prepared:
             return next(iter(self._prepared.values())).audio.format.sample_rate_hz
-        return 48_000
+        return self._sample_rate_hz or 48_000
 
     def _stop_observer_locked(self) -> Thread | None:
         self._observer_stop.set()

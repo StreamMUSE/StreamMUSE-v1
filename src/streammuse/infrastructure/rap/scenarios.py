@@ -17,9 +17,12 @@ def default_scenario() -> RapScenario:
         tempo_bpm=90.0,
         loop=True,
         segments=(
-            ScenarioSegment(0, 4, "space", "baseline_syncopated_9", ("space dreams rise while bright stars cross dark night",)),
-            ScenarioSegment(4, 4, "deep sea", "baseline_straight_9", ("deep sea winds move while moon lights guide ships",)),
-            ScenarioSegment(8, 4, "code", "baseline_staggered_9", ("code sparks grow as quick hands shape new sound",)),
+            ScenarioSegment(0, 2, "space", "mcflow_4b52a40dac67813b8d53", ("space dreams rise while bright stars cross dark night",)),
+            ScenarioSegment(2, 2, "space", "mcflow_0a782d792d272ce35c37", ("space dreams rise while bright stars cross the dark night",)),
+            ScenarioSegment(4, 2, "deep sea", "mcflow_4fa0466611a111afb52f", ("deep sea winds blow past rocks and ships",)),
+            ScenarioSegment(6, 2, "deep sea", "mcflow_5db8ad408d09359b078d", ("deep sea lights glow while ships drift home",)),
+            ScenarioSegment(8, 2, "code", "mcflow_778c4db0b4f291db7620", ("code sparks grow as quick hands shape new sounds through the night",)),
+            ScenarioSegment(10, 2, "code", "mcflow_522b72072b7907f3288f", ("code sparks grow as quick hands shape new sounds each night",)),
         ),
     )
     _validate_scenario(scenario, BUILTIN_TEMPLATES)

@@ -16,6 +16,7 @@ from typing import Mapping
 
 from streammuse.domain.rap.flow import FlowTemplate, materialize_flow
 from streammuse.domain.rap.models import ScheduledSyllable
+from streammuse.domain.rap.timeline import validate_live_bpm
 from streammuse.domain.rap.remote_chunk import (
     _canonical_json_bytes,
     _flow_from_payload,
@@ -34,6 +35,9 @@ from streammuse.domain.rap.remote_chunk import (
 LYRIC_STREAM_SCHEMA_VERSION = "streammuse.rap_lyric_stream.v3"
 BAR_AUDIO_SCHEMA_VERSION = "streammuse.rap_bar_audio.v3"
 BAR_AUDIO_SAMPLE_RATE_HZ = 24_000
+TEMPO_UPDATES_CAPABILITY = "tempo_updates_v1"
+BOUNDED_TURNS_CAPABILITY = "bounded_turns_v1"
+LYRIC_STREAM_CAPABILITIES = (TEMPO_UPDATES_CAPABILITY, BOUNDED_TURNS_CAPABILITY)
 # A one-bar MOSS source is about 2.7 s at 90 BPM; a generous bound still keeps
 # a corrupt manifest from claiming a huge buffer.
 MAX_BAR_SOURCE_SECONDS = 15.0
@@ -193,6 +197,31 @@ class PlanEdit:
             payload["topic"],  # type: ignore[arg-type]
             None if flow is None else _flow_from_payload(flow),
         )
+
+
+@dataclass(frozen=True)
+class TempoUpdate:
+    """Tempo/render identity changes independently of lyric content identity."""
+
+    edit_seq: int
+    from_bar: int
+    bpm: float
+
+    def __post_init__(self) -> None:
+        for name in ("edit_seq", "from_bar"):
+            value = getattr(self, name)
+            if not _is_int(value) or value < 0:
+                raise ValueError(f"tempo update {name} must be a non-negative integer")
+        validate_live_bpm(self.bpm)
+
+    def to_payload(self) -> dict[str, object]:
+        return {"edit_seq": self.edit_seq, "from_bar": self.from_bar, "bpm": self.bpm}
+
+    @classmethod
+    def from_payload(cls, value: object) -> "TempoUpdate":
+        payload = _mapping(value, "tempo update")
+        _keys(payload, {"edit_seq", "from_bar", "bpm"}, "tempo update")
+        return cls(payload["edit_seq"], payload["from_bar"], payload["bpm"])
 
 
 @dataclass(frozen=True)

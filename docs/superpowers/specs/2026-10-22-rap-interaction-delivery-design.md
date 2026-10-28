@@ -1,6 +1,6 @@
 # Rap Interaction and GUI Delivery Design
 
-Status: implementation-ready design draft for user review; no product code or architecture diagrams changed by writing this document.
+Status: approved for implementation on 2026-10-22. Progress and live acceptance evidence are recorded separately in `docs/reports/2026-10-22-feature-delivery.md`.
 
 Companion research track: [scheduling model](2026-10-22-realtime-scheduling-model-design.md). That model is not a dependency or acceptance gate for shipping these features. The features are required deliverables, not theory-only examples.
 
@@ -12,6 +12,7 @@ Primary integration target: protocol v3 with the selected remote renderer and ex
 
 Confirmed user requirements:
 
+- Continuous model generation with steering and alternating user/model exchange are two separate interaction modes.
 - Drums continue while the user captures a rhythm with keyboard taps.
 - Generate after one complete input bar, not from partial input in this version.
 - Replay the captured rhythm while waiting.
@@ -24,7 +25,7 @@ Confirmed user requirements:
 
 ## 2. Practical Defaults Chosen for Review
 
-These are engineering recommendations, not user-approved preferences or research conclusions:
+These engineering defaults were approved for this delivery. They are not research conclusions:
 
 1. Remain in 4/4 with a 16-tick grid. This delivery does not implement beat/tick-sized lyric generation.
 2. BPM changes are steps at an acknowledged future bar boundary, never a mid-bar ramp. UI range is 30-180 BPM; validation outside that demo range rejects clearly rather than clamping silently. The range is not a promise that primary-model audio meets deadlines at every tempo.

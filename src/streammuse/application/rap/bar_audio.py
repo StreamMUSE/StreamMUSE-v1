@@ -16,21 +16,23 @@ import threading
 import time
 from typing import Protocol
 
-import numpy as np
-
-from streammuse.application.rap.audio_rendering import bar_frame_count, limit_peak, mix_at
+from streammuse.application.rap.audio_rendering import bar_frame_count, tick_frame_in_bar
 from streammuse.application.rap.chunk_audio import (
-    _DRUM_GAIN,
-    _FINAL_PEAK,
-    _VOCAL_GAIN,
+    LocalPhraseWarp,
     _decode_pcm16_mono_wav,
     _resample_to_output,
+    mix_audio_stems,
+    remix_prepared_bar,
 )
 from streammuse.application.rap.chunk_orchestration import PhraseSourceResult
 from streammuse.application.rap.lyric_session import RenderedBarAudio
 from streammuse.domain.rap import RemoteRapChunkRequest
-from streammuse.domain.rap.audio import PcmAudio, PreparedRapBar, SpeechPrefix
+from streammuse.domain.rap.audio import (
+    PcmAudio, PreparedRapBar, RapMixConfig, RapWarpDiagnostics,
+    RenderedOnsetEstimate, SpeechPrefix,
+)
 from streammuse.domain.rap.lyric_stream import BarAudioManifest, BarLyricRecord
+from streammuse.domain.rap.timeline import BarTimingSnapshot
 from streammuse.experiments.rap_audio_protocols.contracts import SyllableTarget, TwoBarRenderRequest
 
 
@@ -97,7 +99,7 @@ class MossBarAudioRenderer:
         self._workspace_root = Path(workspace_root)
         self._continuation = continuation
         self._source_cache_size = source_cache_size
-        self._sources: OrderedDict[str, SpeechPrefix] = OrderedDict()
+        self._sources: OrderedDict[tuple[str, float], SpeechPrefix] = OrderedDict()
         self._sources_lock = threading.Lock()
         self._clock = clock
 
@@ -106,15 +108,15 @@ class MossBarAudioRenderer:
     ) -> RenderedBarAudio:
         started = self._clock()
         request = bar_render_request(record, tempo_bpm)
-        workspace = self._workspace_root / record.session_id / f"bar{record.bar:05d}-{record.lyric_id[:16]}"
-        prefix, continuation = self._prefix_for(previous)
+        workspace = self._workspace_root / record.session_id / f"bar{record.bar:05d}-{record.lyric_id[:16]}-bpm{float(tempo_bpm).hex()}"
+        prefix, continuation = self._prefix_for(previous, tempo_bpm)
         source = (
             self._renderer.render_source(request, workspace)
             if prefix is None
             else self._renderer.render_source(request, workspace, prefix=prefix)
         )
         with self._sources_lock:
-            self._sources[record.lyric_id] = SpeechPrefix(record.text, source.source_wav)
+            self._sources[(record.lyric_id, tempo_bpm)] = SpeechPrefix(record.text, source.source_wav)
             while len(self._sources) > self._source_cache_size:
                 self._sources.popitem(last=False)
         packaging_started = self._clock()
@@ -149,13 +151,13 @@ class MossBarAudioRenderer:
         )
 
 
-    def _prefix_for(self, previous: BarLyricRecord | None) -> tuple[SpeechPrefix | None, dict[str, object]]:
+    def _prefix_for(self, previous: BarLyricRecord | None, tempo_bpm: float) -> tuple[SpeechPrefix | None, dict[str, object]]:
         if not self._continuation:
             return None, {"used": False, "reason": "disabled"}
         if previous is None:
             return None, {"used": False, "reason": "no_previous_line"}
         with self._sources_lock:
-            prefix = self._sources.get(previous.lyric_id)
+            prefix = self._sources.get((previous.lyric_id, tempo_bpm))
         if prefix is None:
             return None, {"used": False, "reason": "previous_not_rendered", "prefix_lyric_id": previous.lyric_id}
         return prefix, {"used": True, "prefix_lyric_id": previous.lyric_id}
@@ -172,37 +174,96 @@ class PreparedBarVocal:
 class BarAudioPreparer:
     """Client side: warp one bar's MOSS line onto its beat and mix the drums."""
 
-    def __init__(self, *, warper, drums, tempo, audio_format) -> None:
+    def __init__(self, *, warper, drums, tempo, audio_format, mix_config: RapMixConfig | None = None) -> None:
         self._warper = warper
         self._drums = drums
         self._tempo = tempo
         self._audio_format = audio_format
+        self.set_mix_config(mix_config or RapMixConfig())
 
-    def prepare(self, record: BarLyricRecord, manifest: BarAudioManifest, source_wav: bytes) -> PreparedRapBar:
+    def set_mix_config(self, config: RapMixConfig) -> None:
+        if not isinstance(config, RapMixConfig):
+            raise ValueError("mix config must be a RapMixConfig")
+        self._mix_config = config
+
+    def with_alignment_policy(self, policy: str) -> BarAudioPreparer:
+        """Return a policy snapshot without changing any in-flight preparation."""
+        switch = getattr(self._warper, "with_policy", None)
+        if not callable(switch):
+            raise ValueError("warper does not support alignment policy changes")
+        return BarAudioPreparer(
+            warper=switch(policy), drums=self._drums, tempo=self._tempo,
+            audio_format=self._audio_format, mix_config=self._mix_config,
+        )
+
+    def remix(self, prepared: PreparedRapBar, config: RapMixConfig | None = None) -> PreparedRapBar:
+        return remix_prepared_bar(prepared, config or self._mix_config)
+
+    def prepare(
+        self, record: BarLyricRecord, manifest: BarAudioManifest, source_wav: bytes,
+        *, timing: BarTimingSnapshot | None = None,
+    ) -> PreparedRapBar:
         if manifest.lyric_id != record.lyric_id or manifest.bar != record.bar:
             raise ValueError("bar audio does not belong to this lyric record")
-        target_frames = RemoteRapChunkRequest.frame_count_for(self._tempo.bpm, bars=1)
+        mix_config = self._mix_config
+        tempo = timing or self._tempo
+        frames = bar_frame_count(record.bar, tempo, self._audio_format)
+        if manifest.tempo_bpm != tempo.bpm:
+            raise ValueError("source tempo does not match destination tempo")
+        if len(manifest.source_onsets) != len(record.scheduled):
+            raise ValueError("source onsets must cover every scheduled syllable")
+        target_frames = RemoteRapChunkRequest.frame_count_for(tempo.bpm, bars=1)
         warp = self._warper.warp(
-            bar_render_request(record, self._tempo.bpm),
+            bar_render_request(record, tempo.bpm),
             source_wav,
             manifest.source_onsets,
             target_frame_count=target_frames,
         )
         vocals = _decode_pcm16_mono_wav(warp.vocal_wav, target_frames)
-        frames = bar_frame_count(record.bar, self._tempo, self._audio_format)
-        mixed = _resample_to_output(vocals, self._audio_format, frames) * np.float32(_VOCAL_GAIN)
-        drum = self._drums.render(record.flow_template, self._tempo, self._audio_format, record.bar)
+        vocal_samples = _resample_to_output(vocals, self._audio_format, frames)
+        first_tick = record.scheduled[0].slot.tick - record.bar * 16
+        first_sample = tick_frame_in_bar(record.bar, first_tick, tempo, self._audio_format)
+        # Keep resampling-filter pre-ringing out of the explicit leading rest.
+        vocal_samples[:first_sample] = 0.0
+        vocal_stem = PcmAudio(self._audio_format, frames, vocal_samples.tobytes())
+        drum = self._drums.render(record.flow_template, tempo, self._audio_format, record.bar)
         if drum.format != self._audio_format or drum.frame_count != frames:
             raise ValueError("local drum render does not match the exact bar format")
-        mix_at(mixed, drum, 0, _DRUM_GAIN)
-        return PreparedRapBar(
+        warp_diagnostics = None
+        if isinstance(warp, LocalPhraseWarp):
+            if len(warp.target_anchors) != len(record.scheduled) or len(warp.source_anchors) != len(record.scheduled):
+                raise ValueError("warp anchors must cover every scheduled syllable")
+            warp_diagnostics = RapWarpDiagnostics(
+                manifest.source_onsets, warp.source_anchors, warp.target_anchors,
+                warp.local_warp_ratios, warp.policy, warp.warp_ms, warp.r3_attempt_deviations,
+            )
+        estimates = tuple(
+            RenderedOnsetEstimate(
+                slot_index=item.slot.slot_index,
+                requested_sample=tick_frame_in_bar(record.bar, item.slot.tick - record.bar * 16, tempo, self._audio_format),
+                estimated_sample=(warp.target_anchors[index] * self._audio_format.sample_rate_hz if warp_diagnostics else None),
+                source_seconds=manifest.source_onsets[index],
+                confidence=manifest.onset_confidence[index],
+                method="source_alignment_warp_estimate" if warp_diagnostics else "unavailable",
+                unavailable_reason=None if warp_diagnostics else "warper did not return applied time-map evidence",
+            )
+            for index, item in enumerate(record.scheduled)
+        )
+        prepared = PreparedRapBar(
             bar=record.bar,
             text=record.text,
             source="moss_lyric_stream",
             fallback_reason=None,
             scheduled=record.scheduled,
-            audio=PcmAudio(self._audio_format, frames, limit_peak(mixed, _FINAL_PEAK).tobytes()),
+            audio=mix_audio_stems(vocal_stem, drum, mix_config),
             diagnostics=(),
             warnings=(),
             render_latency_ms=warp.warp_ms,
+            vocal_stem=vocal_stem,
+            drum_stem=drum,
+            mix_config=mix_config,
+            onset_estimates=estimates,
+            warp_diagnostics=warp_diagnostics,
+            timing=timing,
         )
+        return remix_prepared_bar(prepared, mix_config)

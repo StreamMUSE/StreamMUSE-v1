@@ -1,0 +1,6407 @@
+{
+  "schema_version": "streammuse.scheduling_evidence.summary.v1",
+  "generated_at": "2026-10-22T13:13:05.766006+00:00",
+  "analysis_source_sha256": "5db2af2149217e0418c1b0de1a71c72b4c037d9864256bc47b85167da0970266",
+  "primary_inputs": {
+    "budget_h200": {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/budget-16-32-64-local/rounds.jsonl",
+      "sha256": "94eb68841cbb791eb7fc1541691e41751c53d857ff372a43e7b0ca730537c453"
+    },
+    "budget_mac": {
+      "path": "logs/scheduling_evidence_20261022/budget-16-32-64-mac/rounds.jsonl",
+      "sha256": "c96652a618365cb4c0eee7222fa2c6ed86835ab6b28f96d139f644c2399ee5c5"
+    },
+    "concurrency": {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/bars.json",
+      "sha256": "1aa3ddfb4cfb7f4f27104eefb80a6c10ec49a918c896e32260d90792d9f39fab"
+    },
+    "edits": {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/bars.json",
+      "sha256": "aee91f4606abb9634ac7b9378db25b81dce34a66dfeca4248d8105ecdf83ff54"
+    },
+    "preparation": {
+      "path": "logs/scheduling_evidence_20261022/mac-preparation-measured/rounds.json",
+      "sha256": "0e9f48d0c4ec2582b9961742a2f42df75bcca8e0eea8809d4e4b8c95b05f1c44"
+    },
+    "mac_stream": {
+      "path": "logs/scheduling_evidence_20261022/mac-v3-two-bars/session/rounds.json",
+      "sha256": "d989f565dd1849f4b5445fcf9184f55f46b5bc0ee4ad47b178a49abc0b5ed915"
+    }
+  },
+  "measurement_counts": {
+    "writer_attempts": 72,
+    "source_bars": 44,
+    "preparations": 12,
+    "counterfactual_cells": 90
+  },
+  "budget_h200": {
+    "n16": {
+      "rounds": 12,
+      "success_rate": 0.8333333333333334,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 12,
+      "elapsed_ms_median": 91.23635650030337,
+      "elapsed_ms_max": 368.26920599560253,
+      "valid_count_mean": 4.166666666666667
+    },
+    "n32": {
+      "rounds": 12,
+      "success_rate": 0.8333333333333334,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 12,
+      "elapsed_ms_median": 95.1931585004786,
+      "elapsed_ms_max": 115.1626109785866,
+      "valid_count_mean": 6.5
+    },
+    "n64": {
+      "rounds": 12,
+      "success_rate": 1.0,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 12,
+      "elapsed_ms_median": 155.85476749402005,
+      "elapsed_ms_max": 165.3876730124466,
+      "valid_count_mean": 11.166666666666666
+    }
+  },
+  "budget_mac": {
+    "n16": {
+      "rounds": 12,
+      "success_rate": 0.8333333333333334,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 12,
+      "elapsed_ms_median": 1288.023104018066,
+      "elapsed_ms_max": 1604.7497499966994,
+      "valid_count_mean": 4.166666666666667
+    },
+    "n32": {
+      "rounds": 12,
+      "success_rate": 0.8333333333333334,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 12,
+      "elapsed_ms_median": 1277.7637295075692,
+      "elapsed_ms_max": 1634.8117908928543,
+      "valid_count_mean": 6.416666666666667
+    },
+    "n64": {
+      "rounds": 12,
+      "success_rate": 0.9166666666666666,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 12,
+      "elapsed_ms_median": 1138.0487920250744,
+      "elapsed_ms_max": 3296.0876249708235,
+      "valid_count_mean": 11.083333333333334
+    }
+  },
+  "budget_paired_deltas_ms": {
+    "n32-n16": [
+      -275.75519899255596,
+      4.718901007436216,
+      5.386117030866444,
+      6.635575002292171,
+      23.27822198276408,
+      23.034611978800967,
+      5.191178002860397,
+      1.2022119772154838,
+      18.794141011312604,
+      14.284736011177301,
+      3.390393016161397,
+      4.216270986944437
+    ],
+    "n64-n16": [
+      -220.0170319993049,
+      56.719635031186044,
+      72.29794401791878,
+      70.75469198753126,
+      60.38173197885044,
+      69.39780397806317,
+      75.23743601632304,
+      71.5535240015015,
+      73.76579602714628,
+      56.2775629805401,
+      70.67135602119379,
+      53.75632201321423
+    ]
+  },
+  "stages": {
+    "sequential": {
+      "rounds": 12,
+      "success_rate": 1.0,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 0,
+      "elapsed_ms_median": 2838.2928680075565,
+      "elapsed_ms_max": 3765.6462930026464,
+      "valid_count_mean": null,
+      "stages": {
+        "aligner": {
+          "observed_n": 12,
+          "median_ms": 23.625884015928023,
+          "min_ms": 14.399075007531792,
+          "max_ms": 24.243078019935638
+        },
+        "moss": {
+          "observed_n": 12,
+          "median_ms": 1781.9805730105145,
+          "min_ms": 1766.4324209908955,
+          "max_ms": 1806.5429810085334
+        },
+        "render_total": {
+          "observed_n": 12,
+          "median_ms": 1806.0685969976475,
+          "min_ms": 1783.191384980455,
+          "max_ms": 1834.5092119998299
+        },
+        "render_residual": {
+          "observed_n": 12,
+          "median_ms": 2.93358598719351,
+          "min_ms": 2.222937997430563,
+          "max_ms": 3.8855510065332055
+        }
+      }
+    },
+    "parallel": {
+      "rounds": 12,
+      "success_rate": 1.0,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 0,
+      "elapsed_ms_median": 4749.915911001153,
+      "elapsed_ms_max": 7519.059914018726,
+      "valid_count_mean": null,
+      "stages": {
+        "aligner": {
+          "observed_n": 12,
+          "median_ms": 23.59088401135523,
+          "min_ms": 14.367918978678063,
+          "max_ms": 23.898327024653554
+        },
+        "moss": {
+          "observed_n": 12,
+          "median_ms": 1779.7573515126714,
+          "min_ms": 1763.5621230001561,
+          "max_ms": 1951.1377169983461
+        },
+        "render_total": {
+          "observed_n": 12,
+          "median_ms": 3582.779930497054,
+          "min_ms": 1830.4721159802284,
+          "max_ms": 3646.231152000837
+        },
+        "render_residual": {
+          "observed_n": 12,
+          "median_ms": 1786.3054759945953,
+          "min_ms": 3.4126690006814897,
+          "max_ms": 1827.7161159785464
+        }
+      }
+    }
+  },
+  "edits": {
+    "no_edits": {
+      "rounds": 6,
+      "success_rate": 1.0,
+      "elapsed_ms_observed_n": 6,
+      "valid_count_observed_n": 0,
+      "elapsed_ms_median": 2849.5640969922533,
+      "elapsed_ms_max": 3850.717027002247,
+      "valid_count_mean": null,
+      "stages": {
+        "aligner": {
+          "observed_n": 6,
+          "median_ms": 23.716466006590053,
+          "min_ms": 14.330550999147817,
+          "max_ms": 23.967531975358725
+        },
+        "moss": {
+          "observed_n": 6,
+          "median_ms": 1783.145630499348,
+          "min_ms": 1764.6862130204681,
+          "max_ms": 1862.128944019787
+        },
+        "render_total": {
+          "observed_n": 6,
+          "median_ms": 1810.8376700110966,
+          "min_ms": 1781.130368995946,
+          "max_ms": 1889.5093649916817
+        },
+        "render_residual": {
+          "observed_n": 6,
+          "median_ms": 3.1552994914818555,
+          "min_ms": 2.1136049763299525,
+          "max_ms": 4.042783024488017
+        }
+      }
+    },
+    "one_edit": {
+      "rounds": 6,
+      "success_rate": 1.0,
+      "elapsed_ms_observed_n": 6,
+      "valid_count_observed_n": 0,
+      "elapsed_ms_median": 4664.486928508268,
+      "elapsed_ms_max": 5607.7456820057705,
+      "valid_count_mean": null,
+      "stages": {
+        "aligner": {
+          "observed_n": 6,
+          "median_ms": 14.433545991778374,
+          "min_ms": 14.350129989907146,
+          "max_ms": 14.656810002634302
+        },
+        "moss": {
+          "observed_n": 6,
+          "median_ms": 1781.8291080038762,
+          "min_ms": 1766.796764015453,
+          "max_ms": 1825.5592939967755
+        },
+        "render_total": {
+          "observed_n": 6,
+          "median_ms": 1798.5233940125909,
+          "min_ms": 1783.3405309938826,
+          "max_ms": 1842.5769399909768
+        },
+        "render_residual": {
+          "observed_n": 6,
+          "median_ms": 2.2513359872391447,
+          "min_ms": 2.193636988522485,
+          "max_ms": 2.406073996098712
+        }
+      }
+    },
+    "burst_edits": {
+      "rounds": 6,
+      "success_rate": 1.0,
+      "elapsed_ms_observed_n": 6,
+      "valid_count_observed_n": 0,
+      "elapsed_ms_median": 4707.5844630016945,
+      "elapsed_ms_max": 5694.0517659822945,
+      "valid_count_mean": null,
+      "stages": {
+        "aligner": {
+          "observed_n": 6,
+          "median_ms": 14.552070497302338,
+          "min_ms": 14.220034994650632,
+          "max_ms": 24.73186599672772
+        },
+        "moss": {
+          "observed_n": 6,
+          "median_ms": 1780.3351195034338,
+          "min_ms": 1766.0949180135503,
+          "max_ms": 1838.9721029961947
+        },
+        "render_total": {
+          "observed_n": 6,
+          "median_ms": 1797.0622684952104,
+          "min_ms": 1782.8411050140858,
+          "max_ms": 1867.0477409905288
+        },
+        "render_residual": {
+          "observed_n": 6,
+          "median_ms": 2.4577240110374987,
+          "min_ms": 2.133299974957481,
+          "max_ms": 3.3437719976063818
+        }
+      }
+    }
+  },
+  "edit_first_bar_ms": {
+    "no_edits": [
+      2003.7279319949448,
+      1913.1360549945384,
+      1916.6354899934959
+    ],
+    "one_edit": [
+      3811.535348009784,
+      3798.854790016776,
+      3736.168284987798
+    ],
+    "burst_edits": [
+      3861.9666770100594,
+      3765.3936149727087,
+      3825.5511049937923
+    ]
+  },
+  "preparation": {
+    "mac_warp_mix": {
+      "rounds": 12,
+      "success_rate": 1.0,
+      "elapsed_ms_observed_n": 12,
+      "valid_count_observed_n": 0,
+      "elapsed_ms_median": 49.993124965112656,
+      "elapsed_ms_max": 59.16879198048264,
+      "valid_count_mean": null
+    }
+  },
+  "source_pcm_audit": [
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-parallel-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 23786,
+      "rms_pcm16": 2678.937609791774
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-parallel-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 29790,
+      "rms_pcm16": 2927.855967227287
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-parallel-session1/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 22446,
+      "rms_pcm16": 3375.780027573166
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-parallel-session1/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 20972,
+      "rms_pcm16": 3421.0614432174402
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-sequential-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 31666,
+      "rms_pcm16": 3322.7555260447475
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-sequential-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 23379,
+      "rms_pcm16": 2998.0356570229865
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-sequential-session1/bar-0.wav",
+      "frames": 67200,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.8,
+      "peak_pcm16": 19335,
+      "rms_pcm16": 3198.3481458230717
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair0-sequential-session1/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 23912,
+      "rms_pcm16": 3397.869642014053
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-parallel-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 23133,
+      "rms_pcm16": 3217.598151857247
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-parallel-session0/bar-1.wav",
+      "frames": 67200,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.8,
+      "peak_pcm16": 21038,
+      "rms_pcm16": 3113.147587952585
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-parallel-session1/bar-0.wav",
+      "frames": 67200,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.8,
+      "peak_pcm16": 19335,
+      "rms_pcm16": 3198.3481458230717
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-parallel-session1/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 23381,
+      "rms_pcm16": 3415.09162756477
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-sequential-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 27109,
+      "rms_pcm16": 3067.158281847189
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-sequential-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 24309,
+      "rms_pcm16": 3544.6365127350105
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-sequential-session1/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 25633,
+      "rms_pcm16": 3611.1765975218636
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair1-sequential-session1/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 21313,
+      "rms_pcm16": 2442.7673499089615
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-parallel-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 23133,
+      "rms_pcm16": 3217.598151857247
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-parallel-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 18081,
+      "rms_pcm16": 1925.48901545866
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-parallel-session1/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 22495,
+      "rms_pcm16": 3104.041726461481
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-parallel-session1/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 25876,
+      "rms_pcm16": 3477.536457877918
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-sequential-session0/bar-0.wav",
+      "frames": 67200,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.8,
+      "peak_pcm16": 29649,
+      "rms_pcm16": 3375.575421625672
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-sequential-session0/bar-1.wav",
+      "frames": 67200,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.8,
+      "peak_pcm16": 21758,
+      "rms_pcm16": 2429.202062908822
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-sequential-session1/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 17349,
+      "rms_pcm16": 3034.723319671957
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/pair2-sequential-session1/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 23241,
+      "rms_pcm16": 3835.244365423042
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair0-burst_edits-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 20144,
+      "rms_pcm16": 2875.8746228955433
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair0-burst_edits-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 30672,
+      "rms_pcm16": 3564.203078863135
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair0-no_edits-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 26065,
+      "rms_pcm16": 3436.6418325634045
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair0-no_edits-session0/bar-1.wav",
+      "frames": 69120,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.88,
+      "peak_pcm16": 26195,
+      "rms_pcm16": 3390.578722915546
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair0-one_edit-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 20785,
+      "rms_pcm16": 2597.788817108998
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair0-one_edit-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 12558,
+      "rms_pcm16": 1957.4901042512122
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair1-burst_edits-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 14089,
+      "rms_pcm16": 2437.40025363093
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair1-burst_edits-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 27368,
+      "rms_pcm16": 2807.2822454205475
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair1-no_edits-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 24772,
+      "rms_pcm16": 3471.7984338970027
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair1-no_edits-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 32767,
+      "rms_pcm16": 3523.336413090588
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair1-one_edit-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 22635,
+      "rms_pcm16": 3130.540361169384
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair1-one_edit-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 7950,
+      "rms_pcm16": 1525.6958094796373
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair2-burst_edits-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 13375,
+      "rms_pcm16": 2307.2760576332107
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair2-burst_edits-session0/bar-1.wav",
+      "frames": 69120,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.88,
+      "peak_pcm16": 24167,
+      "rms_pcm16": 2768.290400830527
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair2-no_edits-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 24962,
+      "rms_pcm16": 3125.177724458498
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair2-no_edits-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 17550,
+      "rms_pcm16": 2078.272161209158
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair2-one_edit-session0/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 18631,
+      "rms_pcm16": 3227.2472199497524
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/pair2-one_edit-session0/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 11634,
+      "rms_pcm16": 1754.2659850469918
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/mac-v3-two-bars/session/bar-0.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 26008,
+      "rms_pcm16": 3083.8209783781303
+    },
+    {
+      "path": "logs/scheduling_evidence_20261022/mac-v3-two-bars/session/bar-1.wav",
+      "frames": 65280,
+      "sample_rate_hz": 24000,
+      "source_duration_s": 2.72,
+      "peak_pcm16": 20057,
+      "rms_pcm16": 3274.451495572912
+    }
+  ],
+  "deadline_counterfactuals": [
+    {
+      "condition": "sequential",
+      "bpm": 60,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3750.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -1823.8651089777704
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -4033.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -1780.5906729772687
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -3984.3537069973536
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -1827.355354995234
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -4042.048259987496
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -1825.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -4042.8235910076182
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -1807.3930149839725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -4002.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -1824.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -4036.1080049769953
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 60,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7750.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -5823.86510897777
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -8033.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -5780.590672977269
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -7984.353706997354
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -5827.355354995234
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -8042.048259987496
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -5825.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -8042.823591007618
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -5807.3930149839725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -8002.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -5824.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -8036.108004976995
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 60,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 11750.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -9823.86510897777
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -12033.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -9780.590672977269
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -11984.353706997354
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -9827.355354995234
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -12042.048259987496
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -9825.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -12042.823591007618
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -9807.393014983973
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -12002.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -9824.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -12036.108004976995
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 90,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2500.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -573.8651089777704
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -1450.4781356469412
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -530.5906729772687
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -1401.0203736640196
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -577.3553549952339
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -1458.714926654162
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -575.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -1459.4902576742843
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -557.3930149839725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -1418.677291667942
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -574.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -1452.7746716436613
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 90,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5166.666666666667,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -3240.5317756444374
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -4117.144802313609
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -3197.2573396439357
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -4067.6870403306875
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -3244.022021661901
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -4125.38159332083
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -3242.454235684515
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -4126.156924340952
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -3224.0596816506395
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -4085.34395833461
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -3241.236033655393
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -4119.441338310329
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 90,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7833.333333333333,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -5907.1984423111035
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -6783.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -5863.924006310602
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -6734.353706997354
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -5910.688688328567
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -6792.048259987496
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -5909.120902351181
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -6792.823591007618
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -5890.726348317306
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -6752.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -5907.902700322059
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -6786.108004976995
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 120,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1875.0,
+      "rounds": 12,
+      "misses": 6,
+      "miss_rate": 0.5,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": true,
+          "lateness_ms": 51.13489102222957
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -158.8114689802751
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": true,
+          "lateness_ms": 94.4093270227313
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -109.35370699735358
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": true,
+          "lateness_ms": 47.64464500476606
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -167.04825998749584
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": true,
+          "lateness_ms": 49.212430982152
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -167.82359100761823
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": true,
+          "lateness_ms": 67.60698501602747
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -127.01062500127591
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": true,
+          "lateness_ms": 50.43063301127404
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -161.1080049769953
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 120,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3875.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -1948.8651089777704
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -2158.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -1905.5906729772687
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -2109.3537069973536
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -1952.355354995234
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -2167.048259987496
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -1950.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -2167.8235910076182
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -1932.3930149839725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -2127.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -1949.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -2161.1080049769953
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 120,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5875.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -3948.8651089777704
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -4158.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -3905.5906729772687
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -4109.353706997354
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -3952.355354995234
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -4167.048259987496
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -3950.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -4167.823591007618
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -3932.3930149839725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -4127.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -3949.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -4161.108004976995
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 150,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1500.0,
+      "rounds": 12,
+      "misses": 12,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": true,
+          "lateness_ms": 426.13489102222957
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": true,
+          "lateness_ms": 616.1885310197249
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": true,
+          "lateness_ms": 469.4093270227313
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": true,
+          "lateness_ms": 665.6462930026464
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": true,
+          "lateness_ms": 422.64464500476606
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": true,
+          "lateness_ms": 607.9517400125042
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": true,
+          "lateness_ms": 424.212430982152
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": true,
+          "lateness_ms": 607.1764089923818
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": true,
+          "lateness_ms": 442.60698501602747
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": true,
+          "lateness_ms": 647.9893749987241
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": true,
+          "lateness_ms": 425.43063301127404
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": true,
+          "lateness_ms": 613.8919950230047
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 150,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3100.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -1173.8651089777704
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -983.8114689802751
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -1130.5906729772687
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -934.3537069973536
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -1177.355354995234
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -992.0482599874958
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -1175.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -992.8235910076182
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -1157.3930149839725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -952.0106250012759
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -1174.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -986.1080049769953
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 150,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 4700.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -2773.8651089777704
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -2583.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -2730.5906729772687
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -2534.3537069973536
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -2777.355354995234
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -2592.048259987496
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -2775.787569017848
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -2592.8235910076182
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -2757.3930149839725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -2552.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -2774.569366988726
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -2586.1080049769953
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 180,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1250.0,
+      "rounds": 12,
+      "misses": 12,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": true,
+          "lateness_ms": 676.1348910222296
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3716.188531019725,
+          "miss": true,
+          "lateness_ms": 1132.8551976863919
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": true,
+          "lateness_ms": 719.4093270227313
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": true,
+          "lateness_ms": 1182.3129596693134
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1922.644645004766,
+          "miss": true,
+          "lateness_ms": 672.6446450047661
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3707.951740012504,
+          "miss": true,
+          "lateness_ms": 1124.6184066791711
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1924.212430982152,
+          "miss": true,
+          "lateness_ms": 674.212430982152
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": true,
+          "lateness_ms": 1123.8430756590487
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": true,
+          "lateness_ms": 692.6069850160275
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3747.989374998724,
+          "miss": true,
+          "lateness_ms": 1164.656041665391
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1925.430633011274,
+          "miss": true,
+          "lateness_ms": 675.430633011274
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": true,
+          "lateness_ms": 1130.5586616896717
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 180,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2583.3333333333335,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -657.1984423111039
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -200.47813564694206
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -613.9240063106022
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -151.02037366402055
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -660.6886883285674
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -208.7149266541628
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -659.1209023511815
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -209.4902576742852
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -640.726348317306
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -168.67729166794288
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -657.9027003220594
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -202.77467164366226
+        }
+      ]
+    },
+    {
+      "condition": "sequential",
+      "bpm": 180,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3916.6666666666665,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1926.1348910222296,
+          "miss": false,
+          "lateness_ms": -1990.531775644437
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3716.188531019725,
+          "miss": false,
+          "lateness_ms": -1533.811468980275
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1969.4093270227313,
+          "miss": false,
+          "lateness_ms": -1947.2573396439352
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3765.6462930026464,
+          "miss": false,
+          "lateness_ms": -1484.3537069973536
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1922.644645004766,
+          "miss": false,
+          "lateness_ms": -1994.0220216619005
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3707.951740012504,
+          "miss": false,
+          "lateness_ms": -1542.0482599874958
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1924.212430982152,
+          "miss": false,
+          "lateness_ms": -1992.4542356845145
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3707.1764089923818,
+          "miss": false,
+          "lateness_ms": -1542.8235910076182
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1942.6069850160275,
+          "miss": false,
+          "lateness_ms": -1974.059681650639
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3747.989374998724,
+          "miss": false,
+          "lateness_ms": -1502.010625001276
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1925.430633011274,
+          "miss": false,
+          "lateness_ms": -1991.2360336553925
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3713.8919950230047,
+          "miss": false,
+          "lateness_ms": -1536.1080049769953
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 60,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3750.0,
+      "rounds": 12,
+      "misses": 3,
+      "miss_rate": 0.25,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 190.30878000194207
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": false,
+          "lateness_ms": -230.94008598127402
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -1616.9696360011585
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -2015.9933659888338
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -1758.5277649923228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -2109.687154996209
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": true,
+          "lateness_ms": 66.40636100200936
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": false,
+          "lateness_ms": -311.5286900138017
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -1781.1705030035228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -2190.4769579996355
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": true,
+          "lateness_ms": 26.74639000906609
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": false,
+          "lateness_ms": -400.6247919751331
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 60,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7750.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": false,
+          "lateness_ms": -3809.691219998058
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": false,
+          "lateness_ms": -4230.940085981274
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -5616.9696360011585
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -6015.993365988834
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -5758.527764992323
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -6109.687154996209
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -3933.5936389979906
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": false,
+          "lateness_ms": -4311.528690013802
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -5781.170503003523
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -6190.4769579996355
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -3973.253609990934
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": false,
+          "lateness_ms": -4400.624791975133
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 60,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 11750.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": false,
+          "lateness_ms": -7809.691219998058
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": false,
+          "lateness_ms": -8230.940085981274
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -9616.969636001159
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -10015.993365988834
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -9758.527764992323
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -10109.687154996209
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -7933.593638997991
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": false,
+          "lateness_ms": -8311.528690013802
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -9781.170503003523
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -10190.476957999635
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -7973.253609990934
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": false,
+          "lateness_ms": -8400.624791975133
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 90,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2500.0,
+      "rounds": 12,
+      "misses": 9,
+      "miss_rate": 0.75,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 1440.308780001942
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 2352.39324735206
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -366.9696360011585
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5734.006634011166,
+          "miss": true,
+          "lateness_ms": 567.3399673445001
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -508.5277649923228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5640.312845003791,
+          "miss": true,
+          "lateness_ms": 473.6461783371251
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": true,
+          "lateness_ms": 1316.4063610020094
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 2271.8046433195323
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -531.1705030035228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": true,
+          "lateness_ms": 392.85637533369845
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": true,
+          "lateness_ms": 1276.746390009066
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 2182.708541358201
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 90,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5166.666666666667,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3940.308780001942,
+          "miss": false,
+          "lateness_ms": -1226.357886664725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 7519.059914018726,
+          "miss": false,
+          "lateness_ms": -314.27341931460796
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -3033.6363026678255
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -2099.3266993221678
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -3175.1944316589897
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -2193.020488329543
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -1350.2603056646576
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 7438.471309986198,
+          "miss": false,
+          "lateness_ms": -394.8620233471356
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -3197.8371696701897
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -2273.8102913329694
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -1389.9202766576009
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 7349.375208024867,
+          "miss": false,
+          "lateness_ms": -483.95812530846706
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 90,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7833.333333333333,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3940.308780001942,
+          "miss": false,
+          "lateness_ms": -3893.024553331391
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": false,
+          "lateness_ms": -2980.940085981274
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -5700.3029693344915
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -4765.993365988834
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -5841.861098325656
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -4859.687154996209
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -4016.9269723313237
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": false,
+          "lateness_ms": -3061.5286900138017
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -5864.503836336856
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -4940.4769579996355
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -4056.586943324267
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": false,
+          "lateness_ms": -3150.624791975133
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 120,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1875.0,
+      "rounds": 12,
+      "misses": 12,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 2065.308780001942
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 3644.059914018726
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": true,
+          "lateness_ms": 258.0303639988415
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": true,
+          "lateness_ms": 1859.0066340111662
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": true,
+          "lateness_ms": 116.47223500767723
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": true,
+          "lateness_ms": 1765.3128450037912
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": true,
+          "lateness_ms": 1941.4063610020094
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 3563.4713099861983
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": true,
+          "lateness_ms": 93.82949699647725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": true,
+          "lateness_ms": 1684.5230420003645
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": true,
+          "lateness_ms": 1901.746390009066
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 3474.375208024867
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 120,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3875.0,
+      "rounds": 12,
+      "misses": 4,
+      "miss_rate": 0.3333333333333333,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 65.30878000194207
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 1644.059914018726
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -1741.9696360011585
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -140.99336598883383
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -1883.5277649923228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -234.68715499620885
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -58.59363899799064
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 1563.4713099861983
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -1906.1705030035228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -315.4769579996355
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -98.25360999093391
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 1474.3752080248669
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 120,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5875.0,
+      "rounds": 12,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": false,
+          "lateness_ms": -1934.691219998058
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": false,
+          "lateness_ms": -355.940085981274
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -3741.9696360011585
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -2140.993365988834
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -3883.527764992323
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -2234.687154996209
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -2058.5936389979906
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": false,
+          "lateness_ms": -436.5286900138017
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -3906.1705030035228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -2315.4769579996355
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -2098.253609990934
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": false,
+          "lateness_ms": -525.6247919751331
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 150,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1500.0,
+      "rounds": 12,
+      "misses": 12,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 2440.308780001942
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 4419.059914018726
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": true,
+          "lateness_ms": 633.0303639988415
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": true,
+          "lateness_ms": 2634.006634011166
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": true,
+          "lateness_ms": 491.4722350076772
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": true,
+          "lateness_ms": 2540.312845003791
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": true,
+          "lateness_ms": 2316.4063610020094
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 4338.471309986198
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": true,
+          "lateness_ms": 468.82949699647725
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": true,
+          "lateness_ms": 2459.5230420003645
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": true,
+          "lateness_ms": 2276.746390009066
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 4249.375208024867
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 150,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3100.0,
+      "rounds": 12,
+      "misses": 9,
+      "miss_rate": 0.75,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 840.3087800019421
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 2819.059914018726
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -966.9696360011585
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": true,
+          "lateness_ms": 1034.0066340111662
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -1108.5277649923228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": true,
+          "lateness_ms": 940.3128450037912
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": true,
+          "lateness_ms": 716.4063610020094
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 2738.4713099861983
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -1131.1705030035228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": true,
+          "lateness_ms": 859.5230420003645
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": true,
+          "lateness_ms": 676.7463900090661
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 2649.375208024867
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 150,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 4700.0,
+      "rounds": 12,
+      "misses": 3,
+      "miss_rate": 0.25,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": false,
+          "lateness_ms": -759.6912199980579
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 1219.059914018726
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -2566.9696360011585
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": false,
+          "lateness_ms": -565.9933659888338
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -2708.527764992323
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": false,
+          "lateness_ms": -659.6871549962088
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -883.5936389979906
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 1138.4713099861983
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -2731.1705030035228
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": false,
+          "lateness_ms": -740.4769579996355
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -923.2536099909339
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 1049.3752080248669
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 180,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1250.0,
+      "rounds": 12,
+      "misses": 12,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 2690.308780001942
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 4935.726580685393
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": true,
+          "lateness_ms": 883.0303639988415
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5734.006634011166,
+          "miss": true,
+          "lateness_ms": 3150.673300677833
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": true,
+          "lateness_ms": 741.4722350076772
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5640.312845003791,
+          "miss": true,
+          "lateness_ms": 3056.979511670458
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": true,
+          "lateness_ms": 2566.4063610020094
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 4855.137976652865
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": true,
+          "lateness_ms": 718.8294969964772
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": true,
+          "lateness_ms": 2976.1897086670315
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3776.746390009066,
+          "miss": true,
+          "lateness_ms": 2526.746390009066
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 4766.041874691534
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 180,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2583.3333333333335,
+      "rounds": 12,
+      "misses": 9,
+      "miss_rate": 0.75,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 1356.9754466686086
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 3602.393247352059
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -450.302969334492
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5734.006634011166,
+          "miss": true,
+          "lateness_ms": 1817.3399673444992
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -591.8610983256563
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5640.312845003791,
+          "miss": true,
+          "lateness_ms": 1723.6461783371242
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": true,
+          "lateness_ms": 1233.0730276686759
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 3521.8046433195314
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -614.5038363368562
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": true,
+          "lateness_ms": 1642.8563753336975
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3776.746390009066,
+          "miss": true,
+          "lateness_ms": 1193.4130566757326
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 3432.7085413582
+        }
+      ]
+    },
+    {
+      "condition": "parallel",
+      "bpm": 180,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3916.6666666666665,
+      "rounds": 12,
+      "misses": 7,
+      "miss_rate": 0.5833333333333334,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3940.308780001942,
+          "miss": true,
+          "lateness_ms": 23.642113335275553
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 7519.059914018726,
+          "miss": true,
+          "lateness_ms": 2269.059914018726
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 2133.0303639988415,
+          "miss": false,
+          "lateness_ms": -1783.636302667825
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5734.006634011166,
+          "miss": true,
+          "lateness_ms": 484.00663401116617
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1991.4722350076772,
+          "miss": false,
+          "lateness_ms": -1925.1944316589893
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5640.312845003791,
+          "miss": true,
+          "lateness_ms": 390.31284500379115
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3816.4063610020094,
+          "miss": false,
+          "lateness_ms": -100.26030566465715
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 7438.471309986198,
+          "miss": true,
+          "lateness_ms": 2188.4713099861983
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1968.8294969964772,
+          "miss": false,
+          "lateness_ms": -1947.8371696701893
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5559.5230420003645,
+          "miss": true,
+          "lateness_ms": 309.5230420003645
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3776.746390009066,
+          "miss": false,
+          "lateness_ms": -139.92027665760043
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 7349.375208024867,
+          "miss": true,
+          "lateness_ms": 2099.375208024867
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 60,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3750.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -1746.2720680050552
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -3899.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -1836.8639450054616
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -4054.599738010438
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -1833.3645100065041
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -4049.9029709899332
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 60,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7750.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -5746.272068005055
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -7899.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -5836.863945005462
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -8054.599738010438
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -5833.364510006504
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -8049.902970989933
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 60,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 11750.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -9746.272068005055
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -11899.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -9836.863945005462
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -12054.599738010438
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -9833.364510006504
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -12049.902970989933
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 90,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2500.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -496.2720680050552
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -1315.949639664419
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -586.8639450054616
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -1471.2664046771042
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -583.3645100065041
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -1466.5696376565993
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 90,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5166.666666666667,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -3162.938734671722
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -3982.616306331087
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -3253.5306116721285
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -4137.933071343772
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -3250.031176673171
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -4133.236304323267
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 90,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7833.333333333333,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -5829.605401338388
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -6649.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -5920.197278338795
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -6804.599738010438
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -5916.697843339837
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -6799.902970989933
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 120,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1875.0,
+      "rounds": 6,
+      "misses": 3,
+      "miss_rate": 0.5,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": true,
+          "lateness_ms": 128.7279319949448
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -24.28297299775295
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": true,
+          "lateness_ms": 38.136054994538426
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -179.59973801043816
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": true,
+          "lateness_ms": 41.63548999349587
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -174.90297098993324
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 120,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3875.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -1871.2720680050552
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -2024.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -1961.8639450054616
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -2179.599738010438
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -1958.3645100065041
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -2174.9029709899332
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 120,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5875.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -3871.272068005055
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -4024.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -3961.8639450054616
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -4179.599738010438
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -3958.364510006504
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -4174.902970989933
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 150,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1500.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": true,
+          "lateness_ms": 503.7279319949448
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": true,
+          "lateness_ms": 750.717027002247
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": true,
+          "lateness_ms": 413.1360549945384
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": true,
+          "lateness_ms": 595.4002619895618
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": true,
+          "lateness_ms": 416.63548999349587
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": true,
+          "lateness_ms": 600.0970290100668
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 150,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3100.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -1096.2720680050552
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -849.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -1186.8639450054616
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -1004.5997380104382
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -1183.3645100065041
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -999.9029709899332
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 150,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 4700.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -2696.272068005055
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -2449.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -2786.8639450054616
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -2604.599738010438
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -2783.364510006504
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -2599.9029709899332
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 180,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1250.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": true,
+          "lateness_ms": 753.7279319949448
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3850.717027002247,
+          "miss": true,
+          "lateness_ms": 1267.383693668914
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": true,
+          "lateness_ms": 663.1360549945384
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3695.400261989562,
+          "miss": true,
+          "lateness_ms": 1112.0669286562288
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": true,
+          "lateness_ms": 666.6354899934959
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": true,
+          "lateness_ms": 1116.7636956767337
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 180,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2583.3333333333335,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -579.6054013383887
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -65.94963966441992
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -670.1972783387951
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -221.26640467710513
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -666.6978433398376
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -216.5696376566002
+        }
+      ]
+    },
+    {
+      "condition": "no_edits",
+      "bpm": 180,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3916.6666666666665,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 2003.7279319949448,
+          "miss": false,
+          "lateness_ms": -1912.9387346717217
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3850.717027002247,
+          "miss": false,
+          "lateness_ms": -1399.282972997753
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1913.1360549945384,
+          "miss": false,
+          "lateness_ms": -2003.530611672128
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3695.400261989562,
+          "miss": false,
+          "lateness_ms": -1554.5997380104382
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 1916.6354899934959,
+          "miss": false,
+          "lateness_ms": -2000.0311766731706
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 3700.0970290100668,
+          "miss": false,
+          "lateness_ms": -1549.9029709899332
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 60,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3750.0,
+      "rounds": 6,
+      "misses": 2,
+      "miss_rate": 0.3333333333333333,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": true,
+          "lateness_ms": 61.535348009783775
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -2142.2543179942295
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": true,
+          "lateness_ms": 48.85479001677595
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -2151.992783998139
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -13.83171501220204
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -2232.5614909932483
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 60,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7750.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -3938.464651990216
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -6142.2543179942295
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -3951.145209983224
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -6151.992783998139
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -4013.831715012202
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -6232.561490993248
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 60,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 11750.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -7938.464651990216
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -10142.25431799423
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -7951.145209983224
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -10151.99278399814
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -8013.831715012202
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -10232.561490993248
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 90,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2500.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": true,
+          "lateness_ms": 1311.5353480097838
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": true,
+          "lateness_ms": 441.07901533910444
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": true,
+          "lateness_ms": 1298.854790016776
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5598.007216001861,
+          "miss": true,
+          "lateness_ms": 431.34054933519474
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": true,
+          "lateness_ms": 1236.168284987798
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5517.438509006752,
+          "miss": true,
+          "lateness_ms": 350.77184234008564
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 90,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5166.666666666667,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -1355.1313186568832
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -2225.5876513275634
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -1367.811876649891
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -2235.326117331473
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -1430.498381678869
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -2315.8948243265822
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 90,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7833.333333333333,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -4021.7979853235493
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -4892.2543179942295
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -4034.478543316557
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -4901.992783998139
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -4097.165048345535
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -4982.561490993248
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 120,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1875.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": true,
+          "lateness_ms": 1936.5353480097838
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": true,
+          "lateness_ms": 1732.7456820057705
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": true,
+          "lateness_ms": 1923.854790016776
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": true,
+          "lateness_ms": 1723.0072160018608
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": true,
+          "lateness_ms": 1861.168284987798
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": true,
+          "lateness_ms": 1642.4385090067517
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 120,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3875.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -63.464651990216225
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -267.2543179942295
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -76.14520998322405
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -276.9927839981392
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -138.83171501220204
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -357.5614909932483
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 120,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5875.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -2063.464651990216
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -2267.2543179942295
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -2076.145209983224
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -2276.992783998139
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -2138.831715012202
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -2357.5614909932483
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 150,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1500.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": true,
+          "lateness_ms": 2311.535348009784
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": true,
+          "lateness_ms": 2507.7456820057705
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": true,
+          "lateness_ms": 2298.854790016776
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": true,
+          "lateness_ms": 2498.007216001861
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": true,
+          "lateness_ms": 2236.168284987798
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": true,
+          "lateness_ms": 2417.4385090067517
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 150,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3100.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": true,
+          "lateness_ms": 711.5353480097838
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": true,
+          "lateness_ms": 907.7456820057705
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": true,
+          "lateness_ms": 698.854790016776
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": true,
+          "lateness_ms": 898.0072160018608
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": true,
+          "lateness_ms": 636.168284987798
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": true,
+          "lateness_ms": 817.4385090067517
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 150,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 4700.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -888.4646519902162
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": false,
+          "lateness_ms": -692.2543179942295
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -901.145209983224
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": false,
+          "lateness_ms": -701.9927839981392
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -963.831715012202
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": false,
+          "lateness_ms": -782.5614909932483
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 180,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1250.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3811.535348009784,
+          "miss": true,
+          "lateness_ms": 2561.535348009784
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": true,
+          "lateness_ms": 3024.4123486724375
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3798.854790016776,
+          "miss": true,
+          "lateness_ms": 2548.854790016776
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5598.007216001861,
+          "miss": true,
+          "lateness_ms": 3014.6738826685278
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3736.168284987798,
+          "miss": true,
+          "lateness_ms": 2486.168284987798
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5517.438509006752,
+          "miss": true,
+          "lateness_ms": 2934.1051756734187
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 180,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2583.3333333333335,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3811.535348009784,
+          "miss": true,
+          "lateness_ms": 1228.2020146764503
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": true,
+          "lateness_ms": 1691.0790153391035
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3798.854790016776,
+          "miss": true,
+          "lateness_ms": 1215.5214566834425
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5598.007216001861,
+          "miss": true,
+          "lateness_ms": 1681.3405493351938
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3736.168284987798,
+          "miss": true,
+          "lateness_ms": 1152.8349516544645
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5517.438509006752,
+          "miss": true,
+          "lateness_ms": 1600.7718423400847
+        }
+      ]
+    },
+    {
+      "condition": "one_edit",
+      "bpm": 180,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3916.6666666666665,
+      "rounds": 6,
+      "misses": 3,
+      "miss_rate": 0.5,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3811.535348009784,
+          "miss": false,
+          "lateness_ms": -105.13131865688274
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5607.7456820057705,
+          "miss": true,
+          "lateness_ms": 357.7456820057705
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3798.854790016776,
+          "miss": false,
+          "lateness_ms": -117.81187664989056
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5598.007216001861,
+          "miss": true,
+          "lateness_ms": 348.0072160018608
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3736.168284987798,
+          "miss": false,
+          "lateness_ms": -180.49838167886855
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5517.438509006752,
+          "miss": true,
+          "lateness_ms": 267.4385090067517
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 60,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3750.0,
+      "rounds": 6,
+      "misses": 3,
+      "miss_rate": 0.5,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": true,
+          "lateness_ms": 111.96667701005936
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -2092.47270700871
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": true,
+          "lateness_ms": 15.393614972708747
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -2196.7977510066703
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": true,
+          "lateness_ms": 75.55110499379225
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -2055.9482340177055
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 60,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7750.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -3888.0333229899406
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -6092.47270700871
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -3984.6063850272913
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -6196.79775100667
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -3924.4488950062077
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -6055.9482340177055
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 60,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 11750.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -7888.033322989941
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -10092.47270700871
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -7984.606385027291
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -10196.79775100667
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -7924.448895006208
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -10055.948234017706
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 90,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2500.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": true,
+          "lateness_ms": 1361.9666770100594
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5657.52729299129,
+          "miss": true,
+          "lateness_ms": 490.8606263246238
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": true,
+          "lateness_ms": 1265.3936149727087
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5553.20224899333,
+          "miss": true,
+          "lateness_ms": 386.53558232666364
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": true,
+          "lateness_ms": 1325.5511049937923
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": true,
+          "lateness_ms": 527.3850993156284
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 90,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5166.666666666667,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -1304.6999896566076
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -2175.806040342044
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -1401.2730516939582
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -2280.1310843400042
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -1341.1155616728747
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -2139.2815673510395
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 90,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7833.333333333333,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -3971.3666563232737
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -4842.47270700871
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -4067.9397183606243
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -4946.79775100667
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -4007.782228339541
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -4805.9482340177055
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 120,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1875.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": true,
+          "lateness_ms": 1986.9666770100594
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": true,
+          "lateness_ms": 1782.5272929912899
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": true,
+          "lateness_ms": 1890.3936149727087
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": true,
+          "lateness_ms": 1678.2022489933297
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": true,
+          "lateness_ms": 1950.5511049937923
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": true,
+          "lateness_ms": 1819.0517659822945
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 120,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3875.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -13.033322989940643
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -217.47270700871013
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -109.60638502729125
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -321.7977510066703
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -49.44889500620775
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -180.94823401770554
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 120,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5875.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -2013.0333229899406
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -2217.47270700871
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -2109.6063850272913
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -2321.7977510066703
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -2049.4488950062077
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -2180.9482340177055
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 150,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1500.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": true,
+          "lateness_ms": 2361.9666770100594
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": true,
+          "lateness_ms": 2557.52729299129
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": true,
+          "lateness_ms": 2265.3936149727087
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": true,
+          "lateness_ms": 2453.2022489933297
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": true,
+          "lateness_ms": 2325.5511049937923
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": true,
+          "lateness_ms": 2594.0517659822945
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 150,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3100.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": true,
+          "lateness_ms": 761.9666770100594
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": true,
+          "lateness_ms": 957.5272929912899
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": true,
+          "lateness_ms": 665.3936149727087
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": true,
+          "lateness_ms": 853.2022489933297
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": true,
+          "lateness_ms": 725.5511049937923
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": true,
+          "lateness_ms": 994.0517659822945
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 150,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 4700.0,
+      "rounds": 6,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -838.0333229899406
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": false,
+          "lateness_ms": -642.4727070087101
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -934.6063850272913
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": false,
+          "lateness_ms": -746.7977510066703
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -874.4488950062077
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": false,
+          "lateness_ms": -605.9482340177055
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 180,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1250.0,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": true,
+          "lateness_ms": 2611.9666770100594
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5657.52729299129,
+          "miss": true,
+          "lateness_ms": 3074.193959657957
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": true,
+          "lateness_ms": 2515.3936149727087
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5553.20224899333,
+          "miss": true,
+          "lateness_ms": 2969.8689156599967
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": true,
+          "lateness_ms": 2575.5511049937923
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": true,
+          "lateness_ms": 3110.7184326489614
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 180,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2583.3333333333335,
+      "rounds": 6,
+      "misses": 6,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": true,
+          "lateness_ms": 1278.6333436767259
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5657.52729299129,
+          "miss": true,
+          "lateness_ms": 1740.860626324623
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": true,
+          "lateness_ms": 1182.0602816393753
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5553.20224899333,
+          "miss": true,
+          "lateness_ms": 1636.5355823266627
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": true,
+          "lateness_ms": 1242.2177716604588
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": true,
+          "lateness_ms": 1777.3850993156275
+        }
+      ]
+    },
+    {
+      "condition": "burst_edits",
+      "bpm": 180,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3916.6666666666665,
+      "rounds": 6,
+      "misses": 3,
+      "miss_rate": 0.5,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3861.9666770100594,
+          "miss": false,
+          "lateness_ms": -54.69998965660716
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5657.52729299129,
+          "miss": true,
+          "lateness_ms": 407.52729299128987
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3765.3936149727087,
+          "miss": false,
+          "lateness_ms": -151.27305169395777
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5553.20224899333,
+          "miss": true,
+          "lateness_ms": 303.2022489933297
+        },
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 3825.5511049937923,
+          "miss": false,
+          "lateness_ms": -91.11556167287426
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 5694.0517659822945,
+          "miss": true,
+          "lateness_ms": 444.05176598229446
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 60,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3750.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3750.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 2035.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 43.899624957703054
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 60,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7750.0,
+      "rounds": 2,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7750.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": false,
+          "lateness_ms": -1964.339292026125
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": false,
+          "lateness_ms": -3956.100375042297
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 60,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 11750.0,
+      "rounds": 2,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 11750.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": false,
+          "lateness_ms": -5964.339292026125
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 15750.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": false,
+          "lateness_ms": -7956.100375042297
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 90,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2500.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2500.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 3285.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5166.666666666666,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 2627.232958291037
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 90,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5166.666666666667,
+      "rounds": 2,
+      "misses": 1,
+      "miss_rate": 0.5,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5166.666666666667,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 618.9940413072081
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7833.333333333334,
+          "elapsed_ms": 7793.899624957703,
+          "miss": false,
+          "lateness_ms": -39.433708375630886
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 90,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 7833.333333333333,
+      "rounds": 2,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 7833.333333333333,
+          "elapsed_ms": 5785.660707973875,
+          "miss": false,
+          "lateness_ms": -2047.672625359458
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 10500.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": false,
+          "lateness_ms": -2706.100375042297
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 120,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1875.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1875.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 3910.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 3918.899624957703
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 120,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3875.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3875.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 1910.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 1918.899624957703
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 120,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 5875.0,
+      "rounds": 2,
+      "misses": 0,
+      "miss_rate": 0.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 5875.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": false,
+          "lateness_ms": -89.3392920261249
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 7875.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": false,
+          "lateness_ms": -81.10037504229695
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 150,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1500.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1500.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 4285.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 4693.899624957703
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 150,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3100.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3100.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 2685.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 3093.899624957703
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 150,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 4700.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 4700.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 1085.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 6300.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 1493.899624957703
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 180,
+      "lookahead_bars": 1,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 1250.0,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 1250.0,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 4535.660707973875
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 2583.333333333333,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 5210.56629162437
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 180,
+      "lookahead_bars": 2,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 2583.3333333333335,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 2583.3333333333335,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 3202.3273746405416
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 3916.666666666667,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 3877.232958291036
+        }
+      ]
+    },
+    {
+      "condition": "mac_two_bars",
+      "bpm": 180,
+      "lookahead_bars": 3,
+      "evidence_kind": "trace_counterfactual",
+      "deadline_ms": 3916.6666666666665,
+      "rounds": 2,
+      "misses": 2,
+      "miss_rate": 1.0,
+      "outcomes": [
+        {
+          "bar": 0,
+          "deadline_ms": 3916.6666666666665,
+          "elapsed_ms": 5785.660707973875,
+          "miss": true,
+          "lateness_ms": 1868.9940413072086
+        },
+        {
+          "bar": 1,
+          "deadline_ms": 5250.0,
+          "elapsed_ms": 7793.899624957703,
+          "miss": true,
+          "lateness_ms": 2543.899624957703
+        }
+      ]
+    }
+  ],
+  "counterfactual_assumptions": [
+    "Observed source-ready elapsed times held fixed across tempo and lead; no new model executions",
+    "Original bar deadlines retained after edits; no replay is counted as fresh output",
+    "Deadline for bar j is ((lookahead+j)*16-1)*60000/(4*bpm) ms",
+    "Client warp/mix, enqueue and acoustic playback are not included in source-ready deadlines",
+    "MOSS render_total residual includes lock wait and uninstrumented overhead, not a pure measured queue span"
+  ],
+  "excluded_runs": {
+    "budget-no-rescue": "frozen-mapping serialization bug; interrupted",
+    "stages-edit-churn": "harness confused per-bar revision with plan edit sequence",
+    "mac-preparation": "invalid Tempo constructor before any measurement"
+  },
+  "inference_limits": [
+    "No significance claims or fitted distributions",
+    "No quality-listening evaluation",
+    "No beat/tick generation measurement",
+    "No device/acoustic onset measurement",
+    "API seeds reduce variation but do not guarantee bitwise reproducibility"
+  ]
+}

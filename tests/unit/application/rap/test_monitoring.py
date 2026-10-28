@@ -13,6 +13,15 @@ from streammuse.domain.rap import RapEvent, RapEventType
 from streammuse.infrastructure.rap.recorder import derive_summary
 
 
+def test_output_device_change_updates_monitor_without_starting_playback():
+    projector = RapStateProjector()
+    projector(_event(1, RapEventType.SESSION_STOPPED))
+    projector(_event(2, RapEventType.AUDIO_SETTINGS_CHANGED, payload={"audio_device": "Monitor speakers"}))
+    state = projector.snapshot()
+    assert state["audio"]["device"] == "Monitor speakers"
+    assert state["stopped"] is True
+
+
 def test_publisher_assigns_one_ordered_sequence_to_every_sink() -> None:
     left = []
     right = []
@@ -615,6 +624,62 @@ def test_future_render_events_do_not_overwrite_authoritative_playback_lifecycle(
     assert audio["current_bar"] == 1
     assert audio["render_state"] == "committed"
     assert audio["render_bar"] == 3
+
+
+def _timing_evidence(bar: int, estimated_sample: int = 24_000):
+    return {
+        "bar": bar, "sample_rate_hz": 48_000, "frame_count": 96_000,
+        "timing": {"revision": 1, "bar": bar, "bpm": 120.0, "start_frame": bar * 96_000, "end_frame": (bar + 1) * 96_000},
+        "requested_onsets": [{"slot_index": 0, "sample": 12_000}],
+        "rendered_onset_estimates": [{"slot_index": 0, "estimated_sample": estimated_sample, "method": "source_alignment_warp_estimate"}],
+        "rendered_estimate_status": "available", "acoustic_onsets": None,
+        "acoustic_onset_status": "unavailable", "playback_cursor": None,
+        "warp": {"policy": "gentle_sparse_r3"}, "mix": {"revision": 2},
+    }
+
+
+def test_projector_activates_only_playing_bar_evidence_and_keeps_future_commits_separate():
+    projector = RapStateProjector()
+    first = _timing_evidence(0)
+    projector.apply(_event(1, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"timing_evidence": first}))
+    assert projector.snapshot()["audio"].get("timing_evidence") is None
+    projector.apply(_event(2, RapEventType.BAR_PLAYBACK_STARTED, bar=0, payload={"absolute_frame": 0}))
+    projector.apply(_event(3, RapEventType.BAR_AUDIO_COMMITTED, bar=1, payload={"timing_evidence": _timing_evidence(1, 36_000)}))
+    state = projector.snapshot()
+
+    assert state["audio"]["timing_evidence"]["bar"] == 0
+    assert state["audio"]["timing_evidence"]["rendered_onset_estimates"][0]["estimated_sample"] == 24_000
+    assert state["bars"]["1"]["timing_evidence"]["rendered_onset_estimates"][0]["estimated_sample"] == 36_000
+    assert state["audio"]["timing_evidence"]["playback_cursor"]["sample"] == 0
+    assert state["audio"]["timing_evidence"]["playback_cursor"]["is_acoustic_observation"] is False
+    assert first["playback_cursor"] is None
+
+
+def test_projector_does_not_replace_committed_evidence_with_late_ready_estimates():
+    projector = RapStateProjector()
+    projector.apply(_event(1, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"timing_evidence": _timing_evidence(0)}))
+    projector.apply(_event(2, RapEventType.BAR_AUDIO_READY, bar=0, payload={"timing_evidence": _timing_evidence(0, 36_000)}))
+    projector.apply(_event(3, RapEventType.BAR_PLAYBACK_STARTED, bar=0, payload={"absolute_frame": 0}))
+    assert projector.snapshot()["audio"]["timing_evidence"]["rendered_onset_estimates"][0]["estimated_sample"] == 24_000
+
+
+def test_projector_missing_next_bar_or_reset_never_reuses_previous_timing_estimates():
+    projector = RapStateProjector()
+    projector.apply(_event(1, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"timing_evidence": _timing_evidence(0)}))
+    projector.apply(_event(2, RapEventType.BAR_PLAYBACK_STARTED, bar=0, payload={"absolute_frame": 0}))
+    projector.apply(_event(3, RapEventType.BAR_PLAYBACK_STARTED, bar=1, payload={"absolute_frame": 96_000}))
+    assert projector.snapshot()["audio"].get("timing_evidence") is None
+    projector.apply(_event(4, RapEventType.SESSION_RESET, payload={"coordinator_epoch": 1}))
+    projector.apply(_event(5, RapEventType.BAR_AUDIO_COMMITTED, bar=0, payload={"coordinator_epoch": 0, "timing_evidence": _timing_evidence(0)}))
+    projector.apply(_event(6, RapEventType.BAR_PLAYBACK_STARTED, bar=0, payload={"absolute_frame": 0}))
+    assert projector.snapshot()["audio"].get("timing_evidence") is None
+
+
+def test_projector_rejects_timing_evidence_for_a_different_destination_bar():
+    projector = RapStateProjector()
+    projector.apply(_event(1, RapEventType.BAR_AUDIO_COMMITTED, bar=1, payload={"timing_evidence": _timing_evidence(0)}))
+    projector.apply(_event(2, RapEventType.BAR_PLAYBACK_STARTED, bar=1, payload={"absolute_frame": 96_000}))
+    assert projector.snapshot()["audio"].get("timing_evidence") is None
 
 
 def test_state_projector_bounds_audio_warnings_and_resets_audio_state() -> None:

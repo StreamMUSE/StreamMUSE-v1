@@ -115,6 +115,25 @@ def test_silent_recovery_bar_does_not_confirm_a_topic_edit():
     assert "silence" in result["text"]
 
 
+@pytest.mark.parametrize("source", ["drums_idle", "flow_echo", "capture_transition"])
+@pytest.mark.parametrize("field", ["choice", "source"])
+def test_nonlyric_delivery_waits_for_model_response_instead_of_reporting_old_topic(source, field):
+    result = run_js("const kind = " + json.dumps({field: source}) + ";\n" + '''
+const edit={effective_from_bar:3,topic:"sea"};
+const idle={bar:3,frozen:true,topic:"sea",...kind};
+const model={bar:4,frozen:true,topic:"sea",choice:"remote_latest"};
+process.stdout.write(JSON.stringify([
+ api.editStatus(edit,[idle],3),
+ api.editStatus(edit,[{...idle,topic:undefined}],3),
+ api.editStatus(edit,[idle,model],3),
+ api.editStatus(edit,[idle,model],4),
+]));''')
+    assert [item["state"] for item in result] == ["pending", "pending", "ready", "applied"]
+    for item in result[:2]:
+        assert "Awaiting model response" in item["text"]
+        assert "older" not in item["text"]
+
+
 def test_discovery_recovers_when_initial_snapshot_changes_epoch_during_fetch():
     result = run_controls_js('''
 const h = harness();
@@ -131,6 +150,37 @@ process.stdout.write(JSON.stringify({
 }));
 ''')
     assert result == {"topic_disabled": False, "apply_disabled": False, "mode": "ASAP"}
+
+
+def test_authoritative_alternating_mode_clears_presets_but_keeps_topic_submission():
+    result = run_controls_js('''
+const h = harness();
+h.controls.update(snapshot(0), [], {bar:0}, []);
+h.controls.connection(true); await h.resolveDiscovery();
+h.controls.settings?.({values:{mode:"continuous"}});
+const continuousDisabled=h.get("plan-template").disabled;
+h.get("plan-template").value="baseline_syncopated_9";
+h.get("plan-template").handlers.change();
+h.controls.settings?.({values:{mode:"alternating"}});
+const alternating={disabled:h.get("plan-template").disabled,selection:h.get("plan-template").value,topic_disabled:h.get("plan-topic").disabled,apply_disabled:h.get("plan-apply").disabled,target:h.get("plan-target").textContent};
+h.get("plan-topic").value="deep sea";h.get("plan-topic").handlers.input();
+// A stale/programmatic selection still must not leak into the topic-only POST.
+h.get("plan-template").value="baseline_syncopated_9";
+let submitted;
+global.fetch=async(url,options)=>{submitted=JSON.parse(options.body);return {ok:true,json:async()=>({edit_seq:1,effective_from_bar:1,topic:"deep sea"})};};
+await h.get("plan-form").handlers.submit({preventDefault(){}});
+const pending=h.get("plan-status").textContent;
+h.controls.settings?.({values:{mode:"continuous"}});
+process.stdout.write(JSON.stringify({continuousDisabled,alternating,submitted,pending,restored:h.get("plan-template").disabled}));
+''')
+    assert result["continuousDisabled"] is False
+    assert result["alternating"] == {
+        "disabled": True, "selection": "", "topic_disabled": False,
+        "apply_disabled": True, "target": "Topic applies to next capture",
+    }
+    assert result["submitted"] == {"topic": "deep sea"}
+    assert "next capture" in result["pending"]
+    assert result["restored"] is False
 
 
 @pytest.mark.parametrize("include_epoch", [True, False], ids=["payload-epoch", "legacy-sequence"])

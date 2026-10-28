@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from collections.abc import Iterator, Mapping
+
+import pytest
 
 from streammuse.application.rap.monitoring_payloads import (
     MAX_BOUNDED_CHUNK_EVENT_BYTES,
@@ -18,6 +21,55 @@ from streammuse.domain.rap import (
     Syllable,
 )
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
+
+
+@pytest.mark.parametrize(("chord_loop", "chord_gain"), [("off", 0.0), ("minor_cycle", 0.25), ("major_cycle", 0.4)])
+def test_prepared_timing_payload_distinguishes_warp_estimate_cursor_and_unavailable_acoustics(chord_loop, chord_gain):
+    from streammuse.application.rap.monitoring_payloads import prepared_bar_timing_payload
+    from streammuse.domain.rap.audio import AudioFormat, PcmAudio, PreparedRapBar, RapMixConfig, RenderedOnsetEstimate
+
+    prepared = PreparedRapBar(
+        0, "one", "moss", None, (), PcmAudio(AudioFormat(), 48_000, bytes(48_000 * 8)), (), (), 1.0,
+        mix_config=RapMixConfig(revision=2, chord_loop=chord_loop, chord_gain=chord_gain),
+        onset_estimates=(RenderedOnsetEstimate(0, 12_000, 14_400, 0.1, 0.7, "source_alignment_warp_estimate"),),
+    )
+    payload = prepared_bar_timing_payload(prepared, playback_frame_in_bar=24_000)
+
+    assert payload["rendered_estimate_status"] == "available"
+    assert payload["requested_onsets"][0]["sample"] == 12_000
+    estimate = payload["rendered_onset_estimates"][0]
+    assert estimate["estimated_sample"] == 14_400
+    assert estimate["drift_ms"] == 50.0
+    assert estimate["confidence"] == 0.7
+    assert estimate["method"] == "source_alignment_warp_estimate"
+    assert payload["playback_cursor"] == {"sample": 24_000, "seconds": 0.5, "kind": "device_or_software_clock", "is_acoustic_observation": False}
+    assert payload["acoustic_onset_status"] == "unavailable"
+    assert payload["acoustic_onsets"] is None
+    assert payload["mix"]["revision"] == 2
+    assert payload["mix"].get("chord_loop") == chord_loop
+    assert payload["mix"].get("chord_gain") == chord_gain
+    assert "PCM" not in json.dumps(payload)
+
+    unavailable = prepared_bar_timing_payload(replace(prepared, onset_estimates=()))
+    assert unavailable["rendered_estimate_status"] == "unavailable"
+    assert unavailable["rendered_onset_estimates"] == []
+    assert unavailable["playback_cursor"] is None
+
+
+def test_prepared_timing_payload_keeps_missing_estimates_and_rejects_nonfinite_values():
+    from streammuse.application.rap.monitoring_payloads import prepared_bar_timing_payload
+    from streammuse.domain.rap.audio import AudioFormat, PcmAudio, PreparedRapBar, RenderedOnsetEstimate
+
+    prepared = PreparedRapBar(
+        0, "one", "test", None, (), PcmAudio(AudioFormat(), 1, bytes(8)), (), (), 1.0,
+        onset_estimates=(RenderedOnsetEstimate(0, 0, unavailable_reason="no alignment"), RenderedOnsetEstimate(1, 1, float("nan"))),
+    )
+    payload = prepared_bar_timing_payload(prepared)
+    assert payload["rendered_estimate_status"] == "unavailable"
+    assert payload["rendered_onset_estimates"][0]["unavailable_reason"] == "no alignment"
+    assert all(item["estimated_sample"] is None for item in payload["rendered_onset_estimates"])
+    assert all(item["drift_ms"] is None for item in payload["rendered_onset_estimates"])
+    json.dumps(payload, allow_nan=False)
 
 
 def test_flow_template_payload_preserves_every_alignment_field() -> None:
@@ -47,10 +99,59 @@ def test_scheduled_syllables_payload_uses_relative_alignment_fields() -> None:
             "target_stress": 0.8,
             "label": ".",
             "word": "cosmic",
+            "display_label": "-mic",
+            "display_index": 1,
+            "display_count": 2,
             "stress": 1,
             "stressed": True,
         }
     ]
+
+
+@pytest.mark.parametrize(("word", "count", "labels"), [
+    ("whisper", 2, ["whis-", "-per"]),
+    ("beat", 1, ["beat"]),
+    ("banana", 3, ["ba-", "-na-", "-na"]),
+    ("can't", 1, ["can't"]),
+    ("zorbax", 2, ["zor-", "-bax"]),
+    ("whisper", 1, ["whisper"]),
+])
+def test_scheduled_display_fragments_leave_words_phonemes_and_labels_unchanged(word, count, labels):
+    scheduled = tuple(
+        ScheduledSyllable(
+            BeatSlot(2, 32 + index * 2, 0, index * 2, 0.8, slot_index=index),
+            Syllable(word, index, count, 1, phonemes=("W", "IH1")),
+        )
+        for index in range(count)
+    )
+
+    payload = scheduled_syllables_payload(scheduled, bar=2)
+
+    assert [item.get("display_label") for item in payload] == labels
+    assert [item["display_index"] for item in payload] == list(range(count))
+    assert [item["display_count"] for item in payload] == [count] * count
+    assert [item["word"] for item in payload] == [word] * count
+    assert [item["label"] for item in payload] == [word] + ["."] * (count - 1)
+    assert [item["tick_in_bar"] for item in payload] == list(range(0, count * 2, 2))
+    assert all(item.syllable.phonemes == ("W", "IH1") for item in scheduled)
+    json.dumps(payload)
+
+
+@pytest.mark.parametrize(("word", "count"), [("whisper", 3), ("banana", 2), ("rhythmx", 3), ("o'clock", 2)])
+def test_display_count_mismatch_keeps_all_letters_and_scheduled_slots(word, count):
+    scheduled = tuple(
+        ScheduledSyllable(BeatSlot(0, index, 0, index, 0.5), Syllable(word, index, count, 0))
+        for index in range(count)
+    )
+    payload = scheduled_syllables_payload(scheduled, bar=0)
+    labels = [item.get("display_label") for item in payload]
+
+    assert all(isinstance(label, str) and label.strip("-") for label in labels)
+    assert "".join(label.strip("-") for label in labels) == word
+    assert len(labels) == count
+    assert labels[0].endswith("-")
+    assert labels[-1].startswith("-")
+    assert scheduled_syllables_payload(scheduled, bar=0) == payload
 
 
 def test_chunk_event_payload_keeps_bounded_research_evidence_without_artifact_bodies() -> None:

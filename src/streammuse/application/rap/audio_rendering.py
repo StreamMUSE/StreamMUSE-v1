@@ -16,6 +16,7 @@ from streammuse.domain.rap import (
     PcmAudio,
 )
 from streammuse.domain.timing import Tempo
+from streammuse.domain.rap.timeline import BarTimingSnapshot, RapTimeline
 
 
 @dataclass(frozen=True)
@@ -33,29 +34,48 @@ class FittedSyllable:
     warnings: tuple[AudioWarning, ...]
 
 
-def bar_start_frame(bar: int, tempo: Tempo, audio_format: AudioFormat) -> int:
+def bar_start_frame(bar: int, tempo: Tempo | RapTimeline | BarTimingSnapshot, audio_format: AudioFormat) -> int:
     _validate_bar(bar)
     _require_float32_format(audio_format)
+    if isinstance(tempo, BarTimingSnapshot):
+        _require_snapshot(tempo, bar, audio_format)
+        return tempo.start_frame
+    if isinstance(tempo, RapTimeline):
+        return tempo.snapshot(bar, audio_format.sample_rate_hz).start_frame
     absolute_tick = bar * tempo.ticks_per_bar
     return round(tempo.tick_to_seconds(absolute_tick) * audio_format.sample_rate_hz)
 
 
-def bar_frame_count(bar: int, tempo: Tempo, audio_format: AudioFormat) -> int:
+def bar_frame_count(bar: int, tempo: Tempo | RapTimeline | BarTimingSnapshot, audio_format: AudioFormat) -> int:
+    if isinstance(tempo, BarTimingSnapshot):
+        _require_snapshot(tempo, bar, audio_format)
+        return tempo.frame_count
     return bar_start_frame(bar + 1, tempo, audio_format) - bar_start_frame(bar, tempo, audio_format)
 
 
 def tick_frame_in_bar(
     bar: int,
     tick_in_bar: int,
-    tempo: Tempo,
+    tempo: Tempo | RapTimeline | BarTimingSnapshot,
     audio_format: AudioFormat,
 ) -> int:
     _validate_bar(bar)
     if not 0 <= tick_in_bar < tempo.ticks_per_bar:
         raise ValueError("tick_in_bar must be within the bar")
+    if isinstance(tempo, RapTimeline):
+        tempo = tempo.snapshot(bar, audio_format.sample_rate_hz)
+    if isinstance(tempo, BarTimingSnapshot):
+        _require_snapshot(tempo, bar, audio_format)
+        return tempo.tick_offsets[tick_in_bar]
     absolute_tick = bar * tempo.ticks_per_bar + tick_in_bar
     absolute_frame = round(tempo.tick_to_seconds(absolute_tick) * audio_format.sample_rate_hz)
     return absolute_frame - bar_start_frame(bar, tempo, audio_format)
+
+
+def _require_snapshot(timing: BarTimingSnapshot, bar: int, audio_format: AudioFormat) -> None:
+    _require_float32_format(audio_format)
+    if timing.bar != bar or timing.sample_rate_hz != audio_format.sample_rate_hz:
+        raise ValueError("timing snapshot must match the destination bar and sample rate")
 
 
 def trim_silence(audio: PcmAudio, threshold_dbfs: float, padding_ms: float) -> PcmAudio:

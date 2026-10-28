@@ -4,10 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>StreamMUSE Rap Lab</title>
-    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20261014-1">
+    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20261028-2">
     <script src="/static/js/rap-demo-state.js?v=20260821-1" defer></script>
-    <script src="/static/js/rap-plan.js?v=20261014-1" defer></script>
-    <script src="/static/js/rap-demo.js?v=20261014-1" defer></script>
+    <script src="/static/js/rap-flow.js?v=20261022-1" defer></script>
+    <script src="/static/js/rap-settings.js?v=20261028-2" defer></script>
+    <script src="/static/js/rap-interaction.js?v=20261022-1" defer></script>
+    <script src="/static/js/rap-plan.js?v=20261028-2" defer></script>
+    <script src="/static/js/rap-demo.js?v=20261022-1" defer></script>
   </head>
   <body>
     <header class="app-header">
@@ -41,6 +44,7 @@
     </header>
 
     <main>
+      <p id="runtime-error" class="runtime-error" role="alert" hidden></p>
       <section class="telemetry-band" aria-label="Live session telemetry">
         <div><span>State</span><strong id="session-state">waiting</strong></div>
         <div><span>Tempo</span><strong id="tempo">--</strong></div>
@@ -52,18 +56,88 @@
         <div><span>Session limit</span><strong id="max-bars">--</strong></div>
       </section>
 
-      <section class="plan-band" aria-labelledby="plan-heading">
+      <section id="settings-local-group" class="settings-band" aria-labelledby="settings-heading" aria-busy="false">
+        <div class="plan-heading"><h2 id="settings-heading">Live audio</h2><span class="settings-context">Mac / live</span></div>
+        <div class="settings-form settings-local-fields">
+          <label class="setting-field setting-gain" for="setting-drum-gain"><span>Drums <output id="setting-drum-gain-value" for="setting-drum-gain">0.78x</output></span>
+            <input id="setting-drum-gain" type="range" min="0" max="2" step="0.01" value="0.78" aria-describedby="setting-drum-gain-hint" disabled>
+            <small id="setting-drum-gain-hint">Immediate</small>
+          </label>
+          <label class="setting-field setting-gain" for="setting-vocal-gain"><span>Vocals <output id="setting-vocal-gain-value" for="setting-vocal-gain">0.80x</output></span>
+            <input id="setting-vocal-gain" type="range" min="0" max="2" step="0.01" value="0.8" aria-describedby="setting-vocal-gain-hint" disabled>
+            <small id="setting-vocal-gain-hint">Immediate</small>
+          </label>
+          <label class="setting-field" for="setting-alignment-policy">Vocal alignment
+            <select id="setting-alignment-policy" aria-describedby="setting-alignment-policy-hint" disabled>
+              <option value="gentle_sparse_r3">Relaxed timing</option>
+              <option value="all_onsets_r3">Strict syllable timing</option>
+              <option value="all_onsets_stress_r3">Strict timing + stress</option>
+            </select>
+            <small id="setting-alignment-policy-hint">Next eligible bar</small>
+          </label>
+          <label class="setting-field" for="setting-chord-loop">Chord loop
+            <select id="setting-chord-loop" aria-describedby="setting-chord-loop-hint" disabled>
+              <option value="off">Off</option>
+              <option value="minor_cycle">Am - F - C - G</option>
+              <option value="major_cycle">C - G - Am - F</option>
+            </select>
+            <small id="setting-chord-loop-hint">Next eligible bar</small>
+          </label>
+          <label class="setting-field setting-gain" for="setting-chord-gain"><span>Chords <output id="setting-chord-gain-value" for="setting-chord-gain">0.20x</output></span>
+            <input id="setting-chord-gain" type="range" min="0" max="2" step="0.01" value="0.2" aria-describedby="setting-chord-gain-hint" disabled>
+            <small id="setting-chord-gain-hint">Immediate</small>
+          </label>
+        </div>
+        <p id="settings-local-status" class="control-status" role="status" aria-label="Local audio status" aria-live="polite">Loading settings...</p>
+        <button id="settings-local-retry" class="settings-action" type="button" hidden disabled>Retry local changes</button>
+        <p id="settings-audio-status" class="control-status device-error" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="interaction-band" class="interaction-band" aria-labelledby="interaction-heading" hidden>
+        <div class="capture-controls">
+          <h2 id="interaction-heading">Rhythm exchange</h2>
+          <div id="capture-pad" class="capture-pad" role="button" tabindex="0" aria-label="Capture rhythm: Space or Enter arms the next bar or records an onset" aria-keyshortcuts="Space Enter" aria-disabled="true">
+            <strong id="capture-action">Arm next bar</strong><span id="capture-countdown"></span><span id="capture-pending" aria-live="off"></span>
+          </div>
+          <span id="interaction-phase" class="interaction-phase" role="status" aria-live="polite">DRUMS IDLE</span>
+        </div>
+        <div class="capture-evidence">
+          <div class="stress-caption"><strong>Captured flow</strong><span id="capture-template">0 captured onsets</span></div>
+          <div class="stress-scroll"><div id="capture-grid" class="stress-strip"></div></div>
+          <dl class="interaction-facts">
+            <div><dt>Turn</dt><dd id="interaction-turn">--</dd></div><div><dt>Replays</dt><dd id="interaction-replays">0</dd></div>
+            <div><dt>Response delivered</dt><dd id="interaction-response">0 / 2</dd></div><div><dt>Waiting</dt><dd id="interaction-wait">--</dd></div>
+            <div><dt>Clock uncertainty</dt><dd id="interaction-clock">Uncalibrated</dd></div>
+          </dl>
+          <p id="interaction-status" class="control-status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="plan-band generation-band" aria-labelledby="generation-heading">
+        <div class="plan-heading"><h2 id="generation-heading">Generation</h2><span class="settings-context">Server-coordinated</span></div>
+        <div id="settings-generation-group" class="generation-tempo" aria-busy="false">
+          <form id="settings-form" class="settings-form settings-generation-fields">
+            <label class="setting-field" for="setting-tempo-bpm">Tempo (BPM)
+              <input id="setting-tempo-bpm" type="number" min="30" max="180" step="any" value="90" aria-describedby="setting-tempo-bpm-hint" disabled>
+              <small id="setting-tempo-bpm-hint">Server-coordinated</small>
+            </label>
+            <button id="settings-apply" class="settings-action" type="submit" disabled>Apply tempo</button>
+          </form>
+          <p id="settings-status" class="control-status" role="status" aria-label="Tempo status" aria-live="polite">Loading settings...</p>
+        </div>
         <div class="plan-heading">
-          <h2 id="plan-heading">Direct upcoming bars</h2>
+          <h3 id="plan-heading">Upcoming bars</h3>
           <span id="plan-mode" class="plan-mode">ASAP</span>
           <span id="plan-target">Loading...</span>
         </div>
         <form id="plan-form" class="plan-form">
           <label class="plan-topic-field" for="plan-topic">Topic
-            <input id="plan-topic" type="text" maxlength="512" placeholder="Keep current topic" autocomplete="off" disabled>
+            <input id="plan-topic" type="text" maxlength="512" placeholder="Keep current topic" autocomplete="off" aria-describedby="plan-topic-hint" disabled>
+            <small id="plan-topic-hint">Connecting</small>
           </label>
           <label class="plan-flow-field" for="plan-template">Flow template
-            <select id="plan-template" disabled><option value="">Keep current flow</option></select>
+            <select id="plan-template" aria-describedby="plan-template-hint" disabled><option value="">Keep current flow</option></select>
+            <small id="plan-template-hint">Connecting</small>
           </label>
           <div class="plan-preview-field">
             <span id="plan-flow-detail">Current flow unchanged</span>
@@ -77,6 +151,31 @@
         </div>
       </section>
 
+      <section id="settings-session-group" class="settings-band" aria-labelledby="settings-session-heading" aria-busy="false">
+        <div class="plan-heading"><h2 id="settings-session-heading">Session setup</h2><span id="settings-current"></span></div>
+        <form id="settings-session-form" class="settings-form settings-session-fields">
+          <fieldset class="setting-field setting-mode" aria-describedby="setting-mode-hint">
+            <legend>Interaction mode</legend>
+            <div class="mode-segments">
+              <label><input type="radio" name="interaction-mode" id="setting-mode-continuous" value="continuous" checked disabled><span>Continuous</span></label>
+              <label><input type="radio" name="interaction-mode" id="setting-mode-alternating" value="alternating" disabled><span>Alternating</span></label>
+            </div>
+            <small id="setting-mode-hint">Connecting</small>
+          </fieldset>
+          <label class="setting-field" for="setting-response-bars">Response bars
+            <input id="setting-response-bars" type="number" min="1" max="8" step="1" value="2" aria-describedby="setting-response-bars-hint" disabled>
+            <small id="setting-response-bars-hint">Connecting</small>
+          </label>
+          <button id="settings-session-apply" class="settings-action" type="submit" disabled>Apply setup</button>
+          <label class="setting-field setting-device" for="setting-output-device">Audio output
+            <select id="setting-output-device" aria-describedby="setting-output-device-hint settings-device-error" disabled><option value="">System default</option></select>
+            <small id="setting-output-device-hint">Connecting</small>
+          </label>
+        </form>
+        <p id="settings-session-status" class="control-status" role="status" aria-label="Session setup status" aria-live="polite">Loading settings...</p>
+        <p id="settings-device-error" class="control-status device-error" role="status" aria-live="polite"></p>
+      </section>
+
       <div class="workspace-grid">
         <section class="workspace-panel performance-panel" aria-labelledby="performance-title">
           <div class="panel-heading">
@@ -88,9 +187,11 @@
           </div>
 
           <div class="delivery-line" aria-live="polite">
+            <div class="stress-caption"><strong>Current flow stress</strong><span id="current-stress-name">Unavailable</span><span class="stress-key">W weak / M medium / S strong</span></div>
+            <div class="stress-scroll"><div id="current-stress" class="stress-strip"></div></div>
             <p class="selected-line" id="selected-line">Waiting for the first frozen bar.</p>
             <div class="syllable-readout">
-              <span>Now</span>
+              <span>Scheduled syllable</span>
               <strong id="current-syllable">--</strong>
               <small id="current-syllable-detail">beat -- · stress -- · observation delay --</small>
             </div>
@@ -111,13 +212,22 @@
             </div>
             <div class="flow-legend" aria-label="Flow legend">
               <span><i class="legend-stress"></i>stress</span>
-              <span><i class="legend-playhead"></i>playing</span>
+              <span><i class="legend-playhead"></i>playback cursor</span>
               <span><i class="legend-boundary"></i>boundary</span>
             </div>
           </div>
           <div class="flow-rail" role="region" aria-label="Beat-aligned syllable timeline" tabindex="0">
             <div class="flow-track" id="flow-track"></div>
           </div>
+
+          <section class="timing-evidence" aria-label="Timing evidence">
+            <div class="timing-row"><span>Requested</span><div id="timing-requested" class="timing-track requested-track">Unavailable</div></div>
+            <div class="timing-row"><span>Rendered estimate</span><div id="timing-estimated" class="timing-track estimated-track">Unavailable</div></div>
+            <div class="timing-row"><span>Playback cursor</span><div id="timing-cursor" class="timing-track cursor-track">Unavailable</div></div>
+            <p id="timing-estimate-detail">Rendered alignment estimate unavailable</p>
+            <p>Acoustic onset measurement: unavailable</p>
+            <p id="played-identity">Played revision unavailable</p>
+          </section>
 
           <div class="flow-facts-grid">
             <section class="facts-block" aria-labelledby="flow-exact-title">
@@ -264,7 +374,7 @@
       <section class="status-band" aria-label="Queue and health">
         <div><span>Next reserved bar</span><strong id="next-bar">--</strong></div>
         <div><span>Model health</span><strong id="model-health">waiting</strong></div>
-        <div class="status-error"><span>Last error</span><strong id="last-error">none</strong></div>
+        <div class="status-error"><span id="last-error-label">Last error</span><strong id="last-error">none</strong></div>
       </section>
 
       <section class="audio-band" aria-label="Audio playback evidence">

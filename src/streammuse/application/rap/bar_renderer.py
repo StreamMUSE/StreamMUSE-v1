@@ -11,7 +11,6 @@ from streammuse.application.rap.audio_rendering import (
     FitContext,
     bar_frame_count,
     fit_syllable,
-    limit_peak,
     mix_at,
     tick_frame_in_bar,
     trim_silence,
@@ -21,25 +20,26 @@ from streammuse.application.rap.audio_service import (
     DrumRenderer,
     SpeechSynthesizer,
 )
+from streammuse.application.rap.chunk_audio import mix_audio_stems, remix_prepared_bar
 from streammuse.application.rap.realtime import PlannedRapBar
 from streammuse.domain.rap import (
     AudioFormat,
     AudioWarning,
     AudioWarningCode,
     AudioWarningSeverity,
+    FlowTemplate,
     PcmAudio,
     PreparedRapBar,
     SyllablePlacementDiagnostic,
     SyllableRenderRequest,
 )
 from streammuse.domain.timing import Tempo
+from streammuse.domain.rap.audio import RapMixConfig, RenderedOnsetEstimate
+from streammuse.domain.rap.timeline import BarTimingSnapshot
 
 
 _TRIM_THRESHOLD_DBFS = -45.0
 _TRIM_PADDING_MS = 5.0
-_VOCAL_GAIN = 0.80
-_DRUM_GAIN = 0.55
-_FINAL_PEAK = 0.95
 
 
 class DeterministicRapBarRenderer:
@@ -57,6 +57,7 @@ class DeterministicRapBarRenderer:
         speed_wpm: int = 175,
         pitch: int = 50,
         max_compression: float = 2.0,
+        mix_config: RapMixConfig | None = None,
     ) -> None:
         _validate_format(audio_format)
         self._tempo = tempo
@@ -68,23 +69,51 @@ class DeterministicRapBarRenderer:
         self.speed_wpm = speed_wpm
         self.pitch = pitch
         self.max_compression = max_compression
+        self.set_mix_config(mix_config or RapMixConfig())
 
-    def render(self, plan: PlannedRapBar) -> PreparedRapBar:
+    def set_mix_config(self, config: RapMixConfig) -> None:
+        if not isinstance(config, RapMixConfig):
+            raise ValueError("mix config must be a RapMixConfig")
+        self._mix_config = config
+
+    def remix(self, prepared: PreparedRapBar, config: RapMixConfig | None = None) -> PreparedRapBar:
+        return remix_prepared_bar(prepared, config or self._mix_config)
+
+    def render_drums_only(
+        self, *, bar: int, template: FlowTemplate, timing: BarTimingSnapshot,
+    ) -> PreparedRapBar:
+        """A correctly timed local alternative with no speech/model work."""
         started = perf_counter()
-        frames = bar_frame_count(plan.bar, self._tempo, self._audio_format)
+        config = self._mix_config
+        frames = bar_frame_count(bar, timing, self._audio_format)
+        drums = self._drums.render(template, timing, self._audio_format, bar)
+        vocals = PcmAudio(self._audio_format, frames, bytes(frames * self._audio_format.channels * 4))
+        prepared = PreparedRapBar(
+            bar=bar, text="", source="drums_only", fallback_reason="vocal_unavailable",
+            scheduled=(), audio=mix_audio_stems(vocals, drums, config), diagnostics=(), warnings=(),
+            render_latency_ms=(perf_counter() - started) * 1000.0,
+            vocal_stem=vocals, drum_stem=drums, mix_config=config, timing=timing,
+        )
+        return remix_prepared_bar(prepared, config)
+
+    def render(self, plan: PlannedRapBar, *, timing: BarTimingSnapshot | None = None) -> PreparedRapBar:
+        started = perf_counter()
+        mix_config = self._mix_config
+        tempo = timing or self._tempo
+        frames = bar_frame_count(plan.bar, tempo, self._audio_format)
         mixed = np.zeros((frames, self._audio_format.channels), dtype=np.float32)
         scheduled = tuple(sorted(plan.scheduled, key=lambda item: item.slot.slot_index))
         warnings = []
         diagnostics = []
 
         for index, item in enumerate(scheduled):
-            tick_in_bar = item.slot.tick - plan.bar * self._tempo.ticks_per_bar
-            target_sample = tick_frame_in_bar(plan.bar, tick_in_bar, self._tempo, self._audio_format)
+            tick_in_bar = item.slot.tick - plan.bar * tempo.ticks_per_bar
+            target_sample = tick_frame_in_bar(plan.bar, tick_in_bar, tempo, self._audio_format)
             next_target = (
                 tick_frame_in_bar(
                     plan.bar,
-                    scheduled[index + 1].slot.tick - plan.bar * self._tempo.ticks_per_bar,
-                    self._tempo,
+                    scheduled[index + 1].slot.tick - plan.bar * tempo.ticks_per_bar,
+                    tempo,
                     self._audio_format,
                 )
                 if index + 1 < len(scheduled)
@@ -118,7 +147,7 @@ class DeterministicRapBarRenderer:
             rendered_frames = min(fitted.audio.frame_count, frames - target_sample)
             cropped_frames = fitted.audio.frame_count - rendered_frames
             rendered_audio = _head(fitted.audio, rendered_frames)
-            mix_at(mixed, rendered_audio, target_sample, _VOCAL_GAIN)
+            mix_at(mixed, rendered_audio, target_sample, 1.0)
             diagnostics.append(
                 SyllablePlacementDiagnostic(
                     bar=plan.bar,
@@ -156,11 +185,11 @@ class DeterministicRapBarRenderer:
                     )
                 )
 
-        drum_audio = self._drums.render(plan.template, self._tempo, self._audio_format, plan.bar)
+        drum_audio = self._drums.render(plan.template, tempo, self._audio_format, plan.bar)
         _require_matching_format(drum_audio, self._audio_format)
-        mix_at(mixed, drum_audio, 0, _DRUM_GAIN)
-        audio = PcmAudio(self._audio_format, frames, limit_peak(mixed, _FINAL_PEAK).tobytes())
-        return PreparedRapBar(
+        vocal_stem = PcmAudio(self._audio_format, frames, mixed.tobytes())
+        audio = mix_audio_stems(vocal_stem, drum_audio, mix_config)
+        prepared = PreparedRapBar(
             bar=plan.bar,
             text=plan.text,
             source=plan.source,
@@ -170,7 +199,19 @@ class DeterministicRapBarRenderer:
             diagnostics=tuple(diagnostics),
             warnings=tuple(warnings),
             render_latency_ms=(perf_counter() - started) * 1000.0,
+            vocal_stem=vocal_stem,
+            drum_stem=drum_audio,
+            mix_config=mix_config,
+            timing=timing,
+            onset_estimates=tuple(
+                RenderedOnsetEstimate(
+                    item.slot_index, item.target_sample,
+                    unavailable_reason="isolated syllable placement is not acoustic onset alignment",
+                )
+                for item in diagnostics
+            ),
         )
+        return remix_prepared_bar(prepared, mix_config)
 
 
 def _to_stereo_format(audio: PcmAudio, audio_format: AudioFormat) -> PcmAudio:

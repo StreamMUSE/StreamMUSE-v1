@@ -18,6 +18,7 @@ from streammuse.domain.rap.lyric_stream import (
     BarAudioManifest,
     BarLyricRecord,
     PlanEdit,
+    TempoUpdate,
 )
 
 
@@ -87,6 +88,17 @@ def test_plan_edit_requires_a_change_and_round_trips() -> None:
     assert PlanEdit.from_payload(json.loads(json.dumps(edit.to_payload()))) == edit
     with pytest.raises(ValueError, match="change the topic or the flow"):
         PlanEdit(edit_seq=1, from_bar=2)
+
+
+def test_tempo_update_round_trips_without_changing_lyric_identity():
+    record = _record()
+    update = TempoUpdate(edit_seq=3, from_bar=12, bpm=123.5)
+    assert TempoUpdate.from_payload(json.loads(json.dumps(update.to_payload()))) == update
+    assert record.lyric_id == _record().lyric_id
+    with pytest.raises(ValueError):
+        TempoUpdate.from_payload({'edit_seq': True, 'from_bar': 0, 'bpm': 90})
+    with pytest.raises(ValueError):
+        TempoUpdate.from_payload({'edit_seq': 1, 'from_bar': 0, 'bpm': 180.1})
 
 
 def _manifest(**overrides) -> BarAudioManifest:

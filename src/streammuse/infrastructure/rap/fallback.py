@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from streammuse.domain.rap import CandidateRequest, ProsodyAnalysis, RapScenario, normalize_text
+from streammuse.infrastructure.rap.scenarios import default_scenario
 from streammuse.infrastructure.rap.templates import TemplateCatalog
 
 
@@ -57,6 +58,22 @@ class PrevalidatedFallbackCatalog:
             lines.setdefault(key, []).extend(analyses)
         if not any(lines.values()):
             raise ValueError("prevalidated fallback catalog requires at least one line")
+
+        # Live picker edits can outgrow a legacy scenario's syllable counts.
+        # Fill only missing counts so configured lines keep their existing priority.
+        covered_counts = {len(analysis.syllables) for choices in lines.values() for analysis in choices}
+        selectable = {template.template_id: template for template in templates.values()}
+        for segment in default_scenario().segments:
+            template = selectable.get(segment.template_id)
+            if template is None or len(template.slots) in covered_counts:
+                continue
+            analyses = tuple(analyzer.analyze(line) for line in segment.fallback_lines)
+            invalid = [analysis.text for analysis in analyses if len(analysis.syllables) != len(template.slots)]
+            if invalid:
+                raise ValueError(f"fallback lines do not match {template.template_id}: {invalid}")
+            lines[(normalize_topic(segment.topic), template.template_id)] = list(analyses)
+            covered_counts.add(len(template.slots))
+
         return cls({key: tuple(value) for key, value in lines.items()})
 
     def line_for(self, bar_context: CandidateRequest) -> PrevalidatedFallbackLine:

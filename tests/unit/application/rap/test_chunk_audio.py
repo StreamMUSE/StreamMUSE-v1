@@ -1045,6 +1045,47 @@ def test_v2_chunk_is_warped_locally_onto_the_mac_schedule() -> None:
     assert prepared.diagnostics["local_warp"]["policy"] == "gentle_sparse_r3"
 
 
+def test_remote_chunk_keeps_stems_and_remixes_without_transport_or_warp() -> None:
+    from streammuse.domain.rap.audio import RapMixConfig
+
+    request = _v2_request()
+    warper = _FakeWarper()
+    strategy = _v2_strategy(_v2_package(request), warper=warper)
+    prepared = strategy.prepare(request, deadline_monotonic=10.0)
+    original = prepared.bars[0]
+    original_bytes = original.audio.data
+    config = RapMixConfig(vocal_gain=0.0, drum_gain=0.0, revision=3)
+    strategy.set_mix_config(config)
+    remixed = strategy.remix(original)
+
+    assert len(warper.calls) == 1
+    assert not np.any(np.frombuffer(remixed.audio.data, dtype=np.float32))
+    assert original.audio.data == original_bytes
+    assert remixed.audio.frame_count == original.audio.frame_count == 128_000
+    assert remixed.mix_config == config
+    assert remixed.vocal_stem is original.vocal_stem
+    assert remixed.drum_stem is original.drum_stem
+
+
+def test_v2_chunk_onset_estimates_use_warped_positions_relative_to_each_bar() -> None:
+    class DriftWarper(_FakeWarper):
+        def warp(self, *args, **kwargs):
+            warped = super().warp(*args, **kwargs)
+            targets = list(warped.target_anchors)
+            targets[-1] += 0.125
+            return replace(warped, target_anchors=tuple(targets))
+
+    request = _v2_request()
+    prepared = _v2_strategy(_v2_package(request), warper=DriftWarper()).prepare(request, deadline_monotonic=10.0)
+    first, second = prepared.bars
+
+    assert [item.requested_sample for item in first.onset_estimates] == [0, 64_000]
+    assert [item.estimated_sample for item in second.onset_estimates] == pytest.approx([0, 70_000])
+    assert [item.confidence for item in second.onset_estimates] == [0.9, 0.9]
+    assert all(item.method == "source_alignment_warp_estimate" for item in second.onset_estimates)
+    assert second.warp_diagnostics.policy == "gentle_sparse_r3"
+
+
 @pytest.mark.parametrize(
     ("onsets", "warper", "message"),
     (

@@ -13,7 +13,10 @@ from streammuse.domain.rap import (
     REMOTE_CHUNK_ARTIFACT_IDS,
     RemoteRapChunkRequest,
     ScheduledSyllable,
+    Syllable,
 )
+from streammuse.domain.rap.audio import PreparedRapBar
+from streammuse.domain.rap.syllable_display import syllable_display_label
 
 
 _MAX_CHUNK_LINES = 2
@@ -46,6 +49,84 @@ _CHUNK_TIMING_ALIASES = {
 }
 
 
+def prepared_bar_timing_payload(
+    prepared: PreparedRapBar, *, playback_frame_in_bar: int | None = None,
+) -> dict[str, Any]:
+    """Bounded evidence with source-warp estimates separate from clock position."""
+    rate = prepared.audio.format.sample_rate_hz
+    requested = []
+    estimates = []
+    for item in prepared.onset_estimates[:_MAX_FLOW_SLOTS]:
+        target = _nonnegative_integer(item.requested_sample)
+        estimated = _finite_number(item.estimated_sample)
+        drift = estimated - target if estimated is not None and target is not None else None
+        requested.append({
+            "slot_index": item.slot_index, "sample": target,
+            "seconds": target / rate if target is not None else None,
+        })
+        estimates.append({
+            "slot_index": item.slot_index,
+            "estimated_sample": estimated,
+            "estimated_seconds": estimated / rate if estimated is not None else None,
+            "source_seconds": _nonnegative_number(item.source_seconds),
+            "confidence": _normalized_number(item.confidence),
+            "drift_samples": drift,
+            "drift_ms": drift / rate * 1000.0 if drift is not None else None,
+            "method": _bounded_text(item.method, _MAX_NAME_BYTES) if estimated is not None else "unavailable",
+            "unavailable_reason": (
+                None if estimated is not None else
+                _bounded_text(item.unavailable_reason, _MAX_WARNING_BYTES) or "applied time-map estimate unavailable"
+            ),
+        })
+    if not requested:
+        requested = [
+            {"slot_index": item.slot_index, "sample": item.target_sample, "seconds": item.target_sample / rate}
+            for item in prepared.diagnostics[:_MAX_FLOW_SLOTS]
+        ]
+    if not requested:
+        for item in prepared.scheduled[:_MAX_FLOW_SLOTS]:
+            tick = item.slot.tick - prepared.bar * 16
+            sample = prepared.timing.tick_offsets[tick] if prepared.timing and 0 <= tick < 16 else None
+            requested.append({
+                "slot_index": item.slot.slot_index, "tick_in_bar": tick,
+                "sample": sample, "seconds": sample / rate if sample is not None else None,
+            })
+    available = sum(item["estimated_sample"] is not None for item in estimates)
+    cursor = _nonnegative_integer(playback_frame_in_bar)
+    warp = prepared.warp_diagnostics
+    config = prepared.mix_config
+    return {
+        "bar": prepared.bar,
+        "sample_rate_hz": rate,
+        "frame_count": prepared.audio.frame_count,
+        "timing": prepared.timing.to_payload() if prepared.timing else None,
+        "mix": ({
+            "vocal_gain": config.vocal_gain, "drum_gain": config.drum_gain,
+            "master_gain": config.master_gain, "peak_limit": config.peak_limit, "revision": config.revision,
+            "chord_loop": config.chord_loop, "chord_gain": config.chord_gain,
+        } if config else None),
+        "requested_onsets": requested,
+        "rendered_onset_estimates": estimates,
+        "rendered_estimate_status": "unavailable" if not available else "available" if available == len(estimates) else "partial",
+        "acoustic_onsets": None,
+        "acoustic_onset_status": "unavailable",
+        "playback_cursor": ({
+            "sample": cursor, "seconds": cursor / rate,
+            "kind": "device_or_software_clock", "is_acoustic_observation": False,
+        } if cursor is not None and cursor <= prepared.audio.frame_count else None),
+        "warp": ({
+            "policy": _bounded_text(warp.policy, _MAX_NAME_BYTES),
+            "warp_ms": _nonnegative_number(warp.warp_ms),
+            "source_onsets_seconds": [_nonnegative_number(value) for value in warp.source_onsets[:_MAX_FLOW_SLOTS]],
+            "source_anchors_seconds": [_nonnegative_number(value) for value in warp.source_anchors[:_MAX_FLOW_SLOTS]],
+            "target_anchors_seconds": [_finite_number(value) for value in warp.target_anchors[:_MAX_FLOW_SLOTS]],
+            "local_warp_ratios": [_nonnegative_number(value) for value in warp.local_warp_ratios[:_MAX_FLOW_SLOTS]],
+            "r3_attempt_deviations": _bounded_signed_integers(warp.r3_attempt_deviations, _MAX_R3_ATTEMPTS),
+            "anchor_time_basis": "original_source_audio_and_output_phrase_relative",
+        } if warp else None),
+    }
+
+
 def flow_template_payload(template: FlowTemplate) -> dict[str, Any]:
     """Return every flow alignment field used to make a planning decision."""
 
@@ -74,6 +155,16 @@ def flow_template_payload(template: FlowTemplate) -> dict[str, Any]:
     }
 
 
+def syllable_display_payload(syllable: Syllable) -> dict[str, Any]:
+    """Display-only spelling metadata; index/count follow the source syllable."""
+    return {
+        "word": syllable.word,
+        "display_label": syllable_display_label(syllable),
+        "display_index": syllable.index_in_word,
+        "display_count": syllable.syllable_count,
+    }
+
+
 def scheduled_syllables_payload(
     scheduled: tuple[ScheduledSyllable, ...], *, bar: int
 ) -> list[dict[str, Any]]:
@@ -85,7 +176,7 @@ def scheduled_syllables_payload(
             "tick_in_bar": item.slot.tick - (bar * 16),
             "target_stress": item.slot.accent,
             "label": item.syllable.label,
-            "word": item.syllable.word,
+            **syllable_display_payload(item.syllable),
             "stress": item.syllable.stress,
             "stressed": item.syllable.stressed,
         }

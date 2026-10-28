@@ -38,9 +38,11 @@ class RapEventType(str, Enum):
     BAR_PLAYBACK_COMPLETED = "bar_playback_completed"
     STOP_REQUESTED = "stop_requested"
     SESSION_RESET = "session_reset"
+    AUDIO_SETTINGS_CHANGED = "audio_settings_changed"
     AUDIO_UNDERRUN = "audio_underrun"
     AUDIO_DEVICE_FAILED = "audio_device_failed"
     PLAN_EDITED = "plan_edited"
+    CAPTURE_FINALIZED = "capture_finalized"
 
 
 @dataclass(frozen=True)

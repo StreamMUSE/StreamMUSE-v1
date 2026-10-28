@@ -1,0 +1,775 @@
+{
+  "schema_version": "streammuse.scheduling_registry.v1",
+  "date": "2026-10-22",
+  "baseline": "bde2f62c, isolated H200 source snapshot before feature integration",
+  "status_note": "Implementation status describes the mechanism or observation contract, not whether a measured value is constant.",
+  "class_enum": [
+    "control",
+    "workload/environment",
+    "state",
+    "derived/observed"
+  ],
+  "status_enum": [
+    "implemented-configurable",
+    "implemented-fixed",
+    "requires-engineering",
+    "model-only"
+  ],
+  "evidence_index": {
+    "budget_h200": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/budget-16-32-64-local/rounds.jsonl",
+    "budget_mac": "logs/scheduling_evidence_20261022/budget-16-32-64-mac/rounds.jsonl",
+    "concurrency": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-concurrency/bars.json",
+    "edits": "logs/scheduling_evidence_20261022/h200-snapshot/evidence/stages-edit-churn-corrected/bars.json",
+    "mac_transport": "logs/scheduling_evidence_20261022/mac-v3-two-bars/session/rounds.json",
+    "mac_preparation": "logs/scheduling_evidence_20261022/mac-preparation-measured/rounds.json",
+    "counterfactuals": "docs/research/2026-10-22-scheduling-evidence.json#/deadline_counterfactuals",
+    "invariants": "tests/unit/experiments/test_rap_scheduling_evidence.py"
+  },
+  "groups": [
+    {
+      "id": "G1",
+      "name": "Physical deadline budget and ready lead",
+      "priority": "primary_empirically_informed",
+      "merge_rationale": "Tempo, lookahead and guard jointly define usable physical time; none independently determines feasibility.",
+      "parameters": [
+        {
+          "name": "tempo",
+          "unit": "beats/min",
+          "class": "control",
+          "scope": "session/timeline segment",
+          "status": "implemented-configurable",
+          "current_value": 90,
+          "source": "v3 start.tempo_bpm; all stage measurements at 90 BPM",
+          "changes_at": "session start in measured baseline",
+          "dependencies": [
+            "meter",
+            "timeline origin"
+          ],
+          "evidence_refs": [
+            "concurrency",
+            "edits"
+          ],
+          "definition": "Musical beat rate used to map beat positions into physical time.",
+          "type_domain": "positive finite number; measured value 90"
+        },
+        {
+          "name": "lead_vector",
+          "unit": "bars",
+          "class": "control",
+          "scope": "stage/session",
+          "status": "implemented-configurable",
+          "current_value": {
+            "measured_lyric_lead": 2,
+            "measured_audio_lead": 2,
+            "baseline_default_lyric": 3,
+            "baseline_default_audio": 2
+          },
+          "source": "application/rap/lyric_session.py; v3 start payload",
+          "changes_at": "session start",
+          "dependencies": [
+            "stage readiness",
+            "commit cursor"
+          ],
+          "evidence_refs": [
+            "concurrency",
+            "edits"
+          ],
+          "definition": "Separate target horizons for lyric and source readiness, not guaranteed prepared coverage.",
+          "type_domain": "object of positive integer bar counts"
+        },
+        {
+          "name": "counterfactual_deadline",
+          "unit": "ms from session request",
+          "class": "derived/observed",
+          "scope": "output bar",
+          "status": "model-only",
+          "current_value": {
+            "lead_bars": [
+              1,
+              2,
+              3
+            ],
+            "bpm": [
+              60,
+              90,
+              120,
+              150,
+              180
+            ],
+            "guard_ticks": 1
+          },
+          "source": "D_j=((L+j)*16-guard)*60000/(4*BPM)",
+          "changes_at": "offline analysis",
+          "dependencies": [
+            "tempo",
+            "bar ordinal",
+            "lead",
+            "guard"
+          ],
+          "evidence_refs": [
+            "counterfactuals",
+            "invariants"
+          ],
+          "definition": "Hypothetical source-ready cutoff at the original bar obligation under a fixed observed cost trace. This shifts deadlines only; changed-lookahead admission and queueing are not resimulated.",
+          "type_domain": "finite nonnegative millisecond values derived from BPM, lead and guard"
+        }
+      ],
+      "observation_method": "Read start payload and source-ready event/receipt timestamps; sweep physical deadlines offline.",
+      "clock_and_uncertainty": "Client monotonic spans only; counterfactual keeps costs fixed, omits preparation/playback and is not a clock-calibrated acoustic result."
+    },
+    {
+      "id": "G2",
+      "name": "Stage service demand and effective resource capacity",
+      "priority": "primary_empirically_informed",
+      "merge_rationale": "An in-flight request count is not execution capacity; stage demand and the real lock/placement graph jointly determine queueing.",
+      "parameters": [
+        {
+          "name": "resource_placement",
+          "unit": "GPU/process identity",
+          "class": "control",
+          "scope": "deployment/resource",
+          "status": "implemented-configurable",
+          "current_value": {
+            "research_llm": "GPU0:18601",
+            "live_llm": "GPU1:18611",
+            "moss_mms": "GPU2:18620"
+          },
+          "source": "isolated deployment *.pid.json",
+          "changes_at": "service launch",
+          "dependencies": [
+            "GPU availability",
+            "model residency"
+          ],
+          "evidence_refs": [
+            "concurrency"
+          ],
+          "definition": "Mapping of distinct model services to authorized physical devices and endpoints.",
+          "type_domain": "explicit GPU/process/port identities; GPUs 0, 1, 2 in this deployment"
+        },
+        {
+          "name": "request_concurrency",
+          "unit": "independent sessions in flight",
+          "class": "control",
+          "scope": "experiment",
+          "status": "implemented-configurable",
+          "current_value": [
+            1,
+            2
+          ],
+          "source": "stages --study concurrency",
+          "changes_at": "paired condition",
+          "dependencies": [
+            "same shared source-renderer lock"
+          ],
+          "evidence_refs": [
+            "concurrency"
+          ],
+          "definition": "Number of independent sessions admitted simultaneously by the experiment client.",
+          "type_domain": "positive integer; measured levels 1 and 2"
+        },
+        {
+          "name": "source_render_capacity",
+          "unit": "simultaneously executing source renders",
+          "class": "control",
+          "scope": "renderer process",
+          "status": "implemented-fixed",
+          "current_value": 1,
+          "source": "infrastructure/rap/moss_aligned_phrase.py: render_source lock",
+          "changes_at": "requires renderer redesign",
+          "dependencies": [
+            "shared synthesizer and aligner"
+          ],
+          "evidence_refs": [
+            "concurrency"
+          ],
+          "definition": "Number of source synthesis/alignment calls that may execute inside the renderer lock at once.",
+          "type_domain": "positive integer; inspected implementation fixes this to 1"
+        },
+        {
+          "name": "stage_cost_profile",
+          "unit": "ms",
+          "class": "derived/observed",
+          "scope": "bar/stage",
+          "status": "implemented-fixed",
+          "current_value": {
+            "sequential_moss_median": 1781.98,
+            "sequential_alignment_median": 23.63,
+            "sequential_render_total_median": 1806.07,
+            "parallel_render_total_median": 3582.78,
+            "n_per_condition": 12
+          },
+          "source": "manifest stage_timings_ms; render_total includes lock wait and overhead",
+          "changes_at": "each render",
+          "dependencies": [
+            "text/voice/model",
+            "contention",
+            "warmness"
+          ],
+          "evidence_refs": [
+            "concurrency"
+          ],
+          "definition": "Observed server stage spans and response totals, retaining their different queue boundaries.",
+          "type_domain": "object of finite nonnegative durations and integer observation counts"
+        }
+      ],
+      "observation_method": "Read isolated process config and source-renderer lock; summarize manifest stage_timings_ms and paired makespans.",
+      "clock_and_uncertainty": "Server-local stage spans and client-local totals; no cross-host subtraction. Residual mixes lock wait and overhead; only three paired groups. Twelve bars per condition are clustered within sessions; there are three paired groups."
+    },
+    {
+      "id": "G3",
+      "name": "Useful candidate budget and acceptance",
+      "priority": "primary_empirically_informed",
+      "merge_rationale": "Candidate count, rescue waves and minimum acceptable yield form one bounded search policy; yield is an outcome, not an independent knob.",
+      "parameters": [
+        {
+          "name": "candidate_policy",
+          "unit": "candidates/waves per writer attempt",
+          "class": "control",
+          "scope": "writer attempt",
+          "status": "implemented-configurable",
+          "current_value": {
+            "experiment_initial": [
+              16,
+              32,
+              64
+            ],
+            "experiment_rescue_waves": 0,
+            "deployed_initial": 32,
+            "deployed_rescue_candidates": 16,
+            "deployed_rescue_waves": 3,
+            "minimum_valid": 3,
+            "minimum_score": 0
+          },
+          "source": "application/rap/lyric_writer.py: LyricWriterPolicy",
+          "changes_at": "writer construction",
+          "dependencies": [
+            "token cap",
+            "acceptance rules",
+            "outer retry policy"
+          ],
+          "evidence_refs": [
+            "budget_h200",
+            "budget_mac"
+          ],
+          "definition": "Initial and rescue search budget, desired valid stopping count, and selectable-score threshold.",
+          "type_domain": "integer counts/waves; minimum_valid is a rescue stopping criterion, not mandatory success count"
+        },
+        {
+          "name": "usable_yield",
+          "unit": "valid candidates and selectable attempts",
+          "class": "derived/observed",
+          "scope": "attempt/workload",
+          "status": "implemented-fixed",
+          "current_value": {
+            "h200_selectable_attempts": [
+              10,
+              10,
+              12
+            ],
+            "attempts_each": 12,
+            "h200_mean_valid": [
+              4.17,
+              6.5,
+              11.17
+            ],
+            "mac_selectable_attempts": [
+              10,
+              10,
+              11
+            ]
+          },
+          "source": "raw candidate ledgers under fixed syllable and scoring gates",
+          "changes_at": "each attempt",
+          "dependencies": [
+            "topic/flow/history",
+            "sampling seed/backend",
+            "budget"
+          ],
+          "evidence_refs": [
+            "budget_h200",
+            "budget_mac"
+          ],
+          "definition": "Structurally valid candidates and attempts with at least one selectable result after budget exhaustion.",
+          "type_domain": "nonnegative integer counts; empirical means may be real"
+        },
+        {
+          "name": "writer_latency",
+          "unit": "ms",
+          "class": "derived/observed",
+          "scope": "attempt/client host",
+          "status": "implemented-fixed",
+          "current_value": {
+            "h200_median_n16_n32_n64": [
+              91.24,
+              95.19,
+              155.85
+            ],
+            "mac_median_n16_n32_n64": [
+              1288.02,
+              1277.76,
+              1138.05
+            ]
+          },
+          "source": "client perf_counter spans; first cold CMU initialization retained",
+          "changes_at": "each attempt",
+          "dependencies": [
+            "budget",
+            "transport",
+            "cache state"
+          ],
+          "evidence_refs": [
+            "budget_h200",
+            "budget_mac"
+          ],
+          "definition": "Elapsed client-host time around the complete writer attempt including generation and evaluation.",
+          "type_domain": "finite nonnegative milliseconds"
+        }
+      ],
+      "observation_method": "Execute real writer, preserve every prompt/raw wave/ledger and selected record; compare matched workloads.",
+      "clock_and_uncertainty": "Requesting host perf_counter; cold first evaluation retained; 12 matched workloads, seed not bitwise guarantee, no CI or significance. Budget 32 is always middle in order; routes ran separately, so median differences do not isolate network latency."
+    },
+    {
+      "id": "G4",
+      "name": "Revision pressure and invalidation",
+      "priority": "primary_empirically_informed",
+      "merge_rationale": "Edit arrival pressure matters through the dependent work it invalidates and whether that work can actually stop; numeric content revision is not edit sequence.",
+      "parameters": [
+        {
+          "name": "edit_trace",
+          "unit": "ms after session start",
+          "class": "workload/environment",
+          "scope": "session/input revision",
+          "status": "implemented-configurable",
+          "current_value": [
+            [],
+            [
+              250
+            ],
+            [
+              250,
+              500,
+              750
+            ]
+          ],
+          "source": "research_update_sent and superseded events; actual send times preserved",
+          "changes_at": "observed input event",
+          "dependencies": [
+            "topic scope from bar 0",
+            "50 ms research polling resolution"
+          ],
+          "evidence_refs": [
+            "edits"
+          ],
+          "definition": "Observed or configured sequence of input edits and their effective suffix scope.",
+          "type_domain": "ordered event offsets in milliseconds; actual sends and acknowledgments recorded separately"
+        },
+        {
+          "name": "latest_source_delay",
+          "unit": "ms from initial session request",
+          "class": "derived/observed",
+          "scope": "first response bar",
+          "status": "implemented-fixed",
+          "current_value": {
+            "no_edit_median": 1916.64,
+            "one_edit_median": 3798.85,
+            "burst_edit_median": 3825.55,
+            "n_each": 3
+          },
+          "source": "latest lyric ID and final topic verified after final edit acknowledgement",
+          "changes_at": "each session",
+          "dependencies": [
+            "render lock",
+            "nonpreemptible old render",
+            "latest content availability"
+          ],
+          "evidence_refs": [
+            "edits"
+          ],
+          "definition": "Time from initial request until the final-topic, latest-identity source package arrives.",
+          "type_domain": "finite nonnegative milliseconds; outcomes grouped by scenario, not isolated edit-count effect"
+        },
+        {
+          "name": "cancellation_and_reuse_policy",
+          "unit": "policy/eligible dependency set",
+          "class": "control",
+          "scope": "stage/artifact",
+          "status": "implemented-fixed",
+          "current_value": "Observed obsolete source can finish; newer content replaces only eligible uncommitted work",
+          "source": "baseline lyric_session and source renderer; no cancellation latency trace",
+          "changes_at": "code/configuration boundary",
+          "dependencies": [
+            "stage cancellation support",
+            "artifact dependency identity"
+          ],
+          "evidence_refs": [
+            "edits",
+            "invariants"
+          ],
+          "definition": "Stage-specific behavior for stopping obsolete work and deciding whether completed artifacts remain eligible.",
+          "type_domain": "categorical policy; cancellation latency and executed waste unknown"
+        }
+      ],
+      "observation_method": "Collect scheduled and actual edit sends, accepted sequence, lyric identity/topic, and eligible source receipt.",
+      "clock_and_uncertainty": "Session client monotonic clock; edits polled at 50 ms. Final topics differ; no exact cancellation or audible-effect timing."
+    },
+    {
+      "id": "G5",
+      "name": "Transport and local preparation reserve",
+      "priority": "primary_empirically_informed",
+      "merge_rationale": "Remote source completion is not local playback readiness; transfer, warp/mix and enqueue reserve must stay on the critical path.",
+      "parameters": [
+        {
+          "name": "transport_profile",
+          "unit": "topology/codec/payload bytes",
+          "class": "control",
+          "scope": "deployment/request",
+          "status": "implemented-configurable",
+          "current_value": {
+            "topology": "Mac SSH forward to H200; separate H200 loopback control",
+            "codec": "PCM16 mono source package"
+          },
+          "source": "run manifests, response headers, byte counts",
+          "changes_at": "connection/deployment",
+          "dependencies": [
+            "network route",
+            "connection setup",
+            "payload"
+          ],
+          "evidence_refs": [
+            "budget_mac",
+            "mac_transport"
+          ],
+          "definition": "Configured client/server route and source-package representation.",
+          "type_domain": "categorical topology/codec plus nonnegative payload sizes"
+        },
+        {
+          "name": "mac_source_ready",
+          "unit": "ms from session start",
+          "class": "derived/observed",
+          "scope": "response bar",
+          "status": "implemented-fixed",
+          "current_value": {
+            "bar0": 5785.66,
+            "bar1": 7793.9,
+            "sessions": 1
+          },
+          "source": "Mac-observed request-to-source receipt; not isolated network latency",
+          "changes_at": "each request",
+          "dependencies": [
+            "writer/render queue",
+            "connection",
+            "transfer"
+          ],
+          "evidence_refs": [
+            "mac_transport"
+          ],
+          "definition": "Client-observed complete source-package receipt time including upstream work and transport.",
+          "type_domain": "finite nonnegative milliseconds from session request"
+        },
+        {
+          "name": "mac_warp_mix_cost",
+          "unit": "ms per bar",
+          "class": "derived/observed",
+          "scope": "local preparation",
+          "status": "implemented-fixed",
+          "current_value": {
+            "median": 49.99,
+            "max": 59.17,
+            "n": 12,
+            "output_frames": 128000,
+            "sample_rate_hz": 48000,
+            "channels": 2
+          },
+          "source": "real Rubber Band 4.0.0 and product BarAudioPreparer; finite non-silent output checked",
+          "changes_at": "each preparation",
+          "dependencies": [
+            "source onsets",
+            "flow",
+            "tempo",
+            "mix/format"
+          ],
+          "evidence_refs": [
+            "mac_preparation"
+          ],
+          "definition": "Elapsed local production preparation call and validation of its destination audio shape.",
+          "type_domain": "finite nonnegative milliseconds; integer frame/rate/channel counts"
+        }
+      ],
+      "observation_method": "Measure Mac source-package receipt and real local BarAudioPreparer calls; validate WAV/PCM and output frames.",
+      "clock_and_uncertainty": "Mac perf_counter spans; source receipt includes upstream work. One network session, 12 preparations, device timing absent."
+    },
+    {
+      "id": "G6",
+      "name": "Granularity and causal dependency contract",
+      "priority": "structural_not_a_measured_tuning_result",
+      "merge_rationale": "The granularity vector constrains which schedules are legal; sample placement does not imply partial semantic output.",
+      "parameters": [
+        {
+          "name": "measured_output_units",
+          "unit": "bars/ticks/samples",
+          "class": "control",
+          "scope": "pipeline contract",
+          "status": "implemented-fixed",
+          "current_value": {
+            "generation": "one bar",
+            "selection": "one lyric bar",
+            "tts_source": "one bar",
+            "alignment": "one source phrase",
+            "warp_mix": "one bar",
+            "commit": "one bar",
+            "template_grid": "16 ticks per bar",
+            "playback_placement": "samples"
+          },
+          "source": "v3 baseline contracts; no device playback measured here",
+          "changes_at": "protocol/implementation change",
+          "dependencies": [
+            "partial-output contracts",
+            "semantic predecessors"
+          ],
+          "evidence_refs": [
+            "concurrency",
+            "invariants"
+          ],
+          "definition": "Existing stage-level semantic units and placement resolutions, with measurement versus contract distinguished.",
+          "type_domain": "categorical bar/phrase/tick/sample units; no conversion assumed without explicit mapping"
+        },
+        {
+          "name": "finer_output_granularity",
+          "unit": "beat/tick/partial phrase",
+          "class": "control",
+          "scope": "future protocol",
+          "status": "model-only",
+          "current_value": null,
+          "source": "research design granularity vector; NOT implemented or benchmarked as output units",
+          "changes_at": "requires compatible product contracts",
+          "dependencies": [
+            "partial selection",
+            "incremental synthesis/alignment",
+            "commit policy"
+          ],
+          "evidence_refs": [
+            "invariants"
+          ],
+          "definition": "Hypothetical partial semantic generation, synthesis or commitment below one bar.",
+          "type_domain": "unknown; not implemented or measured as an output schedule"
+        }
+      ],
+      "observation_method": "Inspect baseline stage contracts and validate deterministic dependency/release invariants.",
+      "clock_and_uncertainty": "Structural units, not timing measurements; no beat/tick semantic output benchmark. Sample placement is an inspected contract."
+    },
+    {
+      "id": "G7",
+      "name": "Eligible coverage, cache identity and fallback obligation",
+      "priority": "structural_not_a_measured_tuning_result",
+      "merge_rationale": "A completed but stale artifact can preserve continuity without satisfying a fresh-input obligation; caches and fallback must use the same eligibility relation.",
+      "parameters": [
+        {
+          "name": "eligible_ready_coverage",
+          "unit": "union of musical intervals",
+          "class": "state",
+          "scope": "session/revision",
+          "status": "requires-engineering",
+          "current_value": null,
+          "source": "model quantity; no continuous buffer occupancy trace in this study",
+          "changes_at": "artifact ready/invalidation/commit",
+          "dependencies": [
+            "readiness",
+            "current dependency versions",
+            "holes in coverage"
+          ],
+          "evidence_refs": [],
+          "definition": "Union of ready, integrity-valid, dependency-compatible and epoch/policy-eligible output intervals, preserving holes before the playback frontier.",
+          "type_domain": "set of musical intervals; unmeasured continuous state"
+        },
+        {
+          "name": "cache_dependency_key",
+          "unit": "version/hash tuple",
+          "class": "control",
+          "scope": "artifact kind",
+          "status": "model-only",
+          "current_value": {
+            "source": [
+              "producer implementation/configuration version",
+              "text",
+              "voice",
+              "model",
+              "synthesis conditioning"
+            ],
+            "prepared": [
+              "producer implementation/configuration version",
+              "source identity",
+              "flow",
+              "timeline",
+              "format",
+              "mix"
+            ]
+          },
+          "source": "conservative dependency model; source tempo independence is not assumed",
+          "changes_at": "artifact creation or dependency change",
+          "dependencies": [
+            "actual producer inputs"
+          ],
+          "evidence_refs": [
+            "invariants"
+          ],
+          "definition": "Declared complete producer-input identity required for dependency compatibility; reuse additionally requires readiness, integrity and session/epoch/fidelity/expiry eligibility.",
+          "type_domain": "tuple of version/hash/value identities; missing key forbids reuse"
+        },
+        {
+          "name": "fresh_vs_continuous_output",
+          "unit": "separate success indicators",
+          "class": "derived/observed",
+          "scope": "playback obligation",
+          "status": "requires-engineering",
+          "current_value": null,
+          "source": "device playback, fallback, echo duration and acoustic verification belong to feature acceptance, not these source-stage tests",
+          "changes_at": "commit/playback",
+          "dependencies": [
+            "fresh compatible output",
+            "fallback eligibility",
+            "sink observation"
+          ],
+          "evidence_refs": [],
+          "definition": "Separate indicators for meeting the declared input/revision obligation and maintaining playback without unintended gaps; intended silence is not a continuity failure.",
+          "type_domain": "boolean outcome pair per obligation; not measured by source-stage tests"
+        }
+      ],
+      "observation_method": "Check declared cache dependencies and stale/fresh boundary invariants; retain missing coverage telemetry explicitly.",
+      "clock_and_uncertainty": "Model quantities only; no continuous cache/coverage/device timeline or fresh-vs-continuous performance estimate."
+    }
+  ],
+  "output_metrics": {
+    "vector": [
+      "continuity",
+      "freshness",
+      "content_validity",
+      "quality",
+      "response_gap"
+    ],
+    "role": "Descriptive outcomes, separate from controls and the seven parameter groups; no expected-value model, prediction, fitted map or weighted objective is asserted.",
+    "missingness": "Null means unmeasured, not zero or failure. Any future response-gap study must retain timeout/nonresponse cases and observation-window bounds separately from observed successful response times.",
+    "components": [
+      {
+        "name": "continuity",
+        "class": "derived/observed",
+        "scope": "intended playback interval",
+        "unit": "boolean per obligation",
+        "definition": "Intended interval played without an unintended gap; permitted fallback can maintain continuity without freshness.",
+        "measurement_status": "unmeasured_at_sink",
+        "current_value": null,
+        "source": "No device-playback observation in this worker's study; non-silent source WAVs do not establish playback continuity.",
+        "evidence_refs": []
+      },
+      {
+        "name": "freshness",
+        "class": "derived/observed",
+        "scope": "output obligation with declared input/revision cutoff",
+        "unit": "boolean per obligation",
+        "definition": "On-time output satisfies the obligation's input/revision cutoff and eligibility, assessed at the explicitly named output stage.",
+        "measurement_status": "source_stage_only_audible_unmeasured",
+        "current_value": null,
+        "source": "Latest-source identity/topic/acknowledgment checks and fixed-source-trace deadline sensitivity are available; they do not measure audible freshness.",
+        "evidence_refs": [
+          "edits",
+          "counterfactuals"
+        ]
+      },
+      {
+        "name": "content_validity",
+        "class": "derived/observed",
+        "scope": "writer output under declared flow and selection gates",
+        "unit": "boolean per candidate or selected output; counts retain denominator",
+        "definition": "Writer output passes the declared structural/selectability gates; distinct from perceptual musical or linguistic quality.",
+        "measurement_status": "measured_at_writer",
+        "current_value": "Per-candidate ledgers and paired attempt counts in referenced raw data; no cross-condition pooled score.",
+        "source": "Actual candidate evaluation and selection records.",
+        "evidence_refs": [
+          "budget_h200",
+          "budget_mac"
+        ]
+      },
+      {
+        "name": "quality",
+        "class": "derived/observed",
+        "scope": "listener-rated output under a declared rubric",
+        "unit": "unassigned; no rating instrument used",
+        "definition": "Listener-assessed musical/linguistic merit; structural validity and internal candidate ranking are not substituted for this outcome.",
+        "measurement_status": "unmeasured",
+        "current_value": null,
+        "source": "No listening-quality study was performed.",
+        "evidence_refs": []
+      },
+      {
+        "name": "response_gap",
+        "class": "derived/observed",
+        "scope": "accepted affected input/edit to first audible eligible response reflecting it",
+        "unit": "ms, with both boundaries measured on a common or calibrated clock",
+        "definition": "Elapsed time from accepted affected input/edit to the first audible response satisfying that input/revision obligation; retain superseded, timeout and nonresponse cases separately.",
+        "measurement_status": "unmeasured_at_acoustic_boundary",
+        "current_value": null,
+        "source": "Observed request-to-source receipt spans are different boundaries and must not be relabeled as audible response gap.",
+        "evidence_refs": []
+      }
+    ]
+  },
+  "theoretical_granularity_vector": [
+    "input observation resolution",
+    "input aggregation span",
+    "input release rule and phase",
+    "submission interval",
+    "replanning cadence",
+    "context span",
+    "generation horizon",
+    "candidate selection unit",
+    "text commitment unit",
+    "TTS input/output unit",
+    "alignment unit",
+    "warp/mix unit",
+    "transfer unit",
+    "artifact/cache unit",
+    "commit unit and phase",
+    "playback scheduling resolution",
+    "cancellation/preemption unit",
+    "measurement/display resolution"
+  ],
+  "relationships": {
+    "release": "R_jv=max(policy_release_jv,A_jv,max over (i,u) in pred(j,v) F_iu), including selected-text(j-1) -> writer(j)",
+    "finish": "S_jv>=R_jv subject to resource capacity; F_jv=S_jv+C_jv",
+    "deadline": "D_j=P_j_ms-M_j; L_j=F_j-D_j; success requires L_j<=0 and current eligibility; F_j is completion at the stage named by the obligation, not necessarily acoustic completion",
+    "timeline": "T(beta)=t0+integral_0^beta(60/B(u),du), beta in beats; sample(beta)=round(fs*(T(beta)-t0))",
+    "slack": "slack_j(t)=D_j-t-estimated_remaining_critical_path_j(t)",
+    "causality": "every artifact depends only on inputs available at its recorded release watermark",
+    "cache": "dependency_compatible iff every actual producer dependency is present and equal; reuse additionally requires ready, integrity_valid and epoch/policy eligibility",
+    "revision": "plan edit sequence, per-bar content revision and timeline revision are distinct identifiers",
+    "coverage": "eligible coverage is the union of intervals of reuse-eligible artifacts, including readiness, integrity, dependency and epoch/policy eligibility, not furthest ready position",
+    "yield": "usable candidates=sum(structurally_valid and selectable); no candidate-independence formula assumed",
+    "critical_path": "max dependent-path sum of stage service costs, including transfer if modeled; lower bound without queueing and omitted stages, not an end-to-end percentile estimator",
+    "queue": "Q_jv=S_jv-R_jv",
+    "units": "R,S,F,A,Q,D,P,M,C are common-clock request-relative milliseconds; timeline T is seconds, B is beats/min, fs is samples/s; P_ms=1000*(T(beta)-request_time_seconds)",
+    "job_identity": "(session,epoch,output_span,content_revision,timeline_revision,configuration_revision,stage,attempt)"
+  },
+  "unmeasured": [
+    "human quality",
+    "acoustic onset accuracy",
+    "device latency and underruns",
+    "server GPU kernel durations",
+    "exact cancellation latency",
+    "production cache hit rates",
+    "tempo-dependent synthesis cost",
+    "broad flow densities/context lengths/voices/models",
+    "beat/tick output schedules"
+  ],
+  "coverage_appendix": "docs/superpowers/specs/2026-10-22-realtime-scheduling-model-design.md#4-parameter-coverage-catalogue",
+  "evidence_scope_note": "Feature four-slot diagnostics and later live integration outcomes are explicitly excluded from every measurement here.",
+  "structural_diagram": {
+    "svg": "docs/research/2026-10-22-scheduling-stage-model.svg",
+    "png": "docs/research/2026-10-22-scheduling-stage-model.png",
+    "evidence_kind": "structural_model_not_measured_timeline"
+  },
+  "reduction_note": "Exploratory grouping, not a measured causal importance ranking, validated minimal model, or schedulability guarantee.",
+  "prior_paper": {
+    "url": "https://arxiv.org/html/2606.11886v1",
+    "section": "IV",
+    "relationship": "Retain physical/musical-time and freshness/continuity distinctions; do not import fitted latency laws or interval/generation-length feasibility bounds into the uncalibrated bar-level stage graph."
+  }
+}

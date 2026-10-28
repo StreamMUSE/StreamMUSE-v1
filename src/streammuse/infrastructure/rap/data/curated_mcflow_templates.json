@@ -1,0 +1,150 @@
+{
+  "schema_version": "streammuse.mcflow_templates.v1",
+  "extractor_version": "streammuse.mcflow.v1",
+  "aggregate": {"parsed_files": 3, "accepted_templates": 6, "rejected_measures": 0},
+  "rejections": [],
+  "templates": [
+    {
+      "template_id": "mcflow_4b52a40dac67813b8d53",
+      "name": "anonymous_measure_1",
+      "ticks_per_beat": 4,
+      "beats_per_bar": 4,
+      "provenance": {
+        "kind": "mcflow_extracted_anonymous",
+        "source": "anonymous_mcflow",
+        "source_hash": "782d61eac81af7524a7ecccb42132f93c3fd1afc937af87fd6add1a6ce190d08",
+        "quantization_error_ticks": 0.0
+      },
+      "slots": [
+        {"tick_in_bar": 0, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 2, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 3, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 5, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 7, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 8, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 10, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 11, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 3, "rhyme_group": "A"},
+        {"tick_in_bar": 15, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null}
+      ]
+    },
+    {
+      "template_id": "mcflow_0a782d792d272ce35c37",
+      "name": "anonymous_measure_3",
+      "ticks_per_beat": 4,
+      "beats_per_bar": 4,
+      "provenance": {
+        "kind": "mcflow_extracted_anonymous",
+        "source": "anonymous_mcflow",
+        "source_hash": "782d61eac81af7524a7ecccb42132f93c3fd1afc937af87fd6add1a6ce190d08",
+        "quantization_error_ticks": 0.0
+      },
+      "slots": [
+        {"tick_in_bar": 1, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 3, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 4, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 5, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 1, "rhyme_group": null},
+        {"tick_in_bar": 7, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 8, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 10, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 11, "duration_ticks": 3, "target_stress": 1.0, "boundary_strength": 3, "rhyme_group": "B"},
+        {"tick_in_bar": 14, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 15, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null}
+      ]
+    },
+    {
+      "template_id": "mcflow_4fa0466611a111afb52f",
+      "name": "anonymous_measure_20",
+      "ticks_per_beat": 4,
+      "beats_per_bar": 4,
+      "provenance": {
+        "kind": "mcflow_extracted_anonymous",
+        "source": "anonymous_mcflow",
+        "source_hash": "782d61eac81af7524a7ecccb42132f93c3fd1afc937af87fd6add1a6ce190d08",
+        "quantization_error_ticks": 0.0
+      },
+      "slots": [
+        {"tick_in_bar": 2, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 4, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 5, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 1, "rhyme_group": null},
+        {"tick_in_bar": 7, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 8, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 9, "duration_ticks": 2, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 11, "duration_ticks": 3, "target_stress": 1.0, "boundary_strength": 3, "rhyme_group": "B"},
+        {"tick_in_bar": 14, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null}
+      ]
+    },
+    {
+      "template_id": "mcflow_5db8ad408d09359b078d",
+      "name": "anonymous_measure_17",
+      "ticks_per_beat": 4,
+      "beats_per_bar": 4,
+      "provenance": {
+        "kind": "mcflow_extracted_anonymous",
+        "source": "anonymous_mcflow",
+        "source_hash": "95d1fcb862d6c55822ef70aa71be2bfddf03f8d6549a83b07289018d9f3c7e5b",
+        "quantization_error_ticks": 0.0
+      },
+      "slots": [
+        {"tick_in_bar": 0, "duration_ticks": 3, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 3, "duration_ticks": 3, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 6, "duration_ticks": 4, "target_stress": 1.0, "boundary_strength": 3, "rhyme_group": null},
+        {"tick_in_bar": 10, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 11, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 12, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 13, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 14, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 4, "rhyme_group": null}
+      ]
+    },
+    {
+      "template_id": "mcflow_778c4db0b4f291db7620",
+      "name": "anonymous_measure_35",
+      "ticks_per_beat": 4,
+      "beats_per_bar": 4,
+      "provenance": {
+        "kind": "mcflow_extracted_anonymous",
+        "source": "anonymous_mcflow",
+        "source_hash": "95d1fcb862d6c55822ef70aa71be2bfddf03f8d6549a83b07289018d9f3c7e5b",
+        "quantization_error_ticks": 0.0
+      },
+      "slots": [
+        {"tick_in_bar": 0, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 1, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 2, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 4, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 5, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 6, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": "A"},
+        {"tick_in_bar": 8, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 9, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 10, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 12, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 13, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 14, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 3, "rhyme_group": "A"}
+      ]
+    },
+    {
+      "template_id": "mcflow_522b72072b7907f3288f",
+      "name": "anonymous_measure_7",
+      "ticks_per_beat": 4,
+      "beats_per_bar": 4,
+      "provenance": {
+        "kind": "mcflow_extracted_anonymous",
+        "source": "anonymous_mcflow",
+        "source_hash": "f1f6e8691f40d5da3262644e849f7b8d6929f290f94d8f3131a4ba4eca0e4442",
+        "quantization_error_ticks": 0.0
+      },
+      "slots": [
+        {"tick_in_bar": 0, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 1, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 2, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 4, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 6, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 8, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 9, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 10, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 12, "duration_ticks": 1, "target_stress": 1.0, "boundary_strength": 3, "rhyme_group": "D"},
+        {"tick_in_bar": 13, "duration_ticks": 1, "target_stress": 0.0, "boundary_strength": 0, "rhyme_group": null},
+        {"tick_in_bar": 14, "duration_ticks": 2, "target_stress": 1.0, "boundary_strength": 0, "rhyme_group": null}
+      ]
+    }
+  ]
+}

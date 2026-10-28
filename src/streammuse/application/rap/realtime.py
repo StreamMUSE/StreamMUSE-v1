@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Callable
 
 from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.monitoring import RapEventPublisher
-from streammuse.application.rap.monitoring_payloads import flow_template_payload, scheduled_syllables_payload
+from streammuse.application.rap.monitoring_payloads import (
+    flow_template_payload,
+    scheduled_syllables_payload,
+    syllable_display_payload,
+)
 from streammuse.application.rap.scoring import rank_candidates
 from streammuse.application.rap.service import CandidateGenerator, ProsodyAnalyzer
 from streammuse.domain.rap import (
@@ -197,7 +201,7 @@ class RollingRapController:
             actual = self._clock()
             planned = (self._clock_origin or actual) + self._tempo.tick_to_seconds(tick)
             payload = {
-                "word": item.syllable.word,
+                **syllable_display_payload(item.syllable),
                 "label": item.syllable.label,
                 "stress": item.syllable.stress,
                 "beat": item.slot.beat,

@@ -20,6 +20,11 @@ const monitor = {
 
 const element = (id) => document.getElementById(id);
 const planControls = window.StreamMuseRapPlan?.mount(document);
+const interactionControls = window.StreamMuseRapInteraction?.mount(document);
+const settingsControls = window.StreamMuseRapSettings?.mount(document, { onChange: (info) => {
+  interactionControls?.settings(info);
+  planControls?.settings(info);
+} });
 
 function setText(id, value, fallback = "--") {
   const node = element(id);
@@ -184,11 +189,12 @@ function generationFailure(snapshot, requestId) {
 function renderHeader(snapshot, current) {
   const metadata = (monitor.session && monitor.session.metadata) || snapshot.session_metadata || {};
   const maxBars = integer(metadata.max_bars);
+  const tempo = number(snapshot.audio?.timing_evidence?.timing?.bpm) ?? number(metadata.tempo_bpm);
   setText("session-id", (monitor.session && monitor.session.session_id) || snapshot.session_id);
   setText("generator", metadata.generator);
   setText("model", metadata.model);
   setText("session-state", snapshot.stopped ? "stopped" : snapshot.session_id ? "running" : "waiting");
-  setText("tempo", number(metadata.tempo_bpm) === null ? null : `${metadata.tempo_bpm} BPM`);
+  setText("tempo", tempo === null ? null : `${tempo} BPM`);
   setText("tick", current.tick);
   setText("bar", displayBar(current.bar));
   setText("max-bars", maxBars === 0 ? "continuous (0)" : maxBars);
@@ -199,8 +205,14 @@ function renderHeader(snapshot, current) {
 function renderDecision(snapshot, current, decision) {
   const batch = latestBatch(snapshot, decision.request_id || null);
   const fallback = decision.fallback === true;
+  const nonLyric = {
+    flow_echo: { badge: "FLOW REPLAY", text: "Captured rhythm replay" },
+    drums_idle: { badge: "DRUMS ONLY", text: "Drums only" },
+    capture_transition: { badge: "DRUMS ONLY", text: "Drums only" },
+    silence: { badge: "SILENCE", text: "Silence" },
+  }[decision.source || decision.choice];
   setText("performance-bar", displayBar(current.bar));
-  setText("selected-line", decision.text, "Waiting for the first frozen bar.");
+  setText("selected-line", decision.text, nonLyric?.text || "Waiting for the first frozen bar.");
   setText("source", decision.source);
   setText("total-score", number(decision.total_score) === null ? null : fixed(decision.total_score));
   setText("generation-latency", milliseconds(batch.latency_ms));
@@ -208,9 +220,9 @@ function renderDecision(snapshot, current, decision) {
   setText("fallback-reason", decision.fallback_reason, "none");
 
   const badge = element("source-badge");
-  const sourceState = fallback ? "fallback" : decision.source ? "generated" : "unknown";
+  const sourceState = fallback ? "fallback" : nonLyric ? "unknown" : decision.source ? "generated" : "unknown";
   badge.dataset.source = sourceState;
-  badge.textContent = fallback ? `FALLBACK · ${decision.fallback_reason || "unspecified"}` : decision.source ? "GENERATED" : "UNRESOLVED";
+  badge.textContent = fallback ? `FALLBACK · ${decision.fallback_reason || "unspecified"}` : nonLyric?.badge || (decision.source ? "GENERATED" : "UNRESOLVED");
 
   const flow = currentFlow(snapshot, current.bar, decision);
   setText("template", flow.template_id || current.segment.template_id);
@@ -220,13 +232,32 @@ function renderDecision(snapshot, current, decision) {
   renderCurrentSyllable(snapshot, current);
   renderFlow(snapshot, current, flow, decision);
   renderFlowFacts(flow);
+  window.StreamMuseRapFlow?.renderStress(element("current-stress"), flow, document);
+  setText("current-stress-name", flow.name || flow.template_id, "Unavailable");
+  const timingEvidence = snapshot.audio?.timing_evidence;
+  window.StreamMuseRapFlow?.renderTiming(document, flow, decision, {
+    current_tick: current.tick,
+    timing_evidence: timingEvidence?.bar === current.bar ? timingEvidence : null,
+  });
+}
+
+function writtenSyllableLabel(emitted, scheduled = null) {
+  // A legacy emitted '.' must not hide a scheduled written fragment.
+  return emitted?.display_label || scheduled?.display_label ||
+    emitted?.label || emitted?.word || scheduled?.label || scheduled?.word;
 }
 
 function renderCurrentSyllable(snapshot, current) {
   const projected = snapshot.current_syllable;
   const event = latestEvent("syllable_emitted", current.bar);
   const syllable = projected && projected.bar === current.bar ? projected : event ? { ...event, ...payload(event) } : null;
-  setText("current-syllable", syllable && (syllable.label || syllable.word));
+  const decision = currentDecision(snapshot, current.bar);
+  const flow = currentFlow(snapshot, current.bar, decision);
+  const totalTicks = (integer(flow.ticks_per_beat) || 4) * (integer(flow.beats_per_bar) || 4);
+  const scheduled = syllable && objectValues(decision.scheduled_syllables).find(
+    (item) => (item.tick_in_bar ?? (item.tick % totalTicks)) === syllable.tick % totalTicks,
+  );
+  setText("current-syllable", syllable && writtenSyllableLabel(syllable, scheduled));
   if (!syllable) {
     setText("current-syllable-detail", "beat -- · stress -- · observation delay --");
     return;
@@ -264,8 +295,7 @@ function renderFlow(snapshot, current, flow, decision) {
     const slot = slotAtTick.get(tick);
     const scheduledSyllable = scheduledAtTick.get(tick);
     const emittedSyllable = emittedAtTick.get(tick);
-    const syllable = (emittedSyllable && (emittedSyllable.label || emittedSyllable.word)) ||
-      (scheduledSyllable && (scheduledSyllable.label || scheduledSyllable.word));
+    const syllable = writtenSyllableLabel(emittedSyllable, scheduledSyllable);
     const stress = slot ? Math.max(0, Math.min(1, number(slot.target_stress) || 0)) : 0;
     const boundary = slot ? number(slot.boundary_strength) || 0 : 0;
     const cell = createNode("div", "flow-cell");
@@ -615,25 +645,56 @@ function renderQueueAndHealth(snapshot, current, decision) {
     setText("next-bar", snapshot.stopped ? "session complete" : "awaiting reservation");
   }
 
-  const lastError = snapshot.last_error || latestEvent("presentation_error") || latestEvent("generation_failed");
+  const lastError = [snapshot.last_error, latestEvent("presentation_error"), latestEvent("generation_failed")]
+    .filter(Boolean).reduce((latest, event) => !latest || (number(event.sequence) ?? -Infinity) > (number(latest.sequence) ?? -Infinity) ? event : latest, null);
   const errorData = lastError ? payload(lastError).error_type ? payload(lastError) : lastError.payload || lastError : {};
   const batch = latestBatch(snapshot);
   const errorSequence = lastError && number(lastError.sequence);
   const batchSequence = number(batch.sequence);
-  const activeError = errorSequence !== null && (batchSequence === null || errorSequence > batchSequence);
+  const requiresReset = errorData.requires_reset === true;
+  const activeError = Boolean(lastError) && (requiresReset || errorSequence === null || batchSequence === null || errorSequence > batchSequence);
+  const recoverableWarning = errorData.recoverable === true && !requiresReset;
+  // Alternating responses do not emit candidate batches. Only a newer remote
+  // response in this session/epoch can retire a historical turn failure.
+  const responseRecovered = !requiresReset && errorSequence !== null
+    && (eventType(lastError) === "generation_failed" || errorData.component === "alternating_interaction")
+    && [...objectValues(snapshot.bars), ...objectValues(snapshot.frozen_bars).map((bar) => ({ ...bar, frozen: true })), snapshot.remote_chunk, ...monitor.events].some((event) => {
+      if (!event) return false;
+      const data = { ...event, ...payload(event) };
+      const epoch = snapshot.coordinator_epoch ?? errorData.coordinator_epoch;
+      const sessionId = snapshot.session_id || lastError?.session_id;
+      if (sessionId && data.session_id && sessionId !== data.session_id) return false;
+      if (epoch != null && data.coordinator_epoch != null && epoch !== data.coordinator_epoch) return false;
+      if (errorData.component === "alternating_interaction" && errorData.turn_id
+        && (!data.turn_id || data.turn_id === errorData.turn_id)) return false;
+      return number(data.sequence) !== null && data.sequence > errorSequence && data.fallback !== true
+        && (data.choice === "remote_latest" || data.renderer_decision === "remote_latest")
+        && (data.frozen === true || ["bar_frozen", "bar_audio_committed"].includes(eventType(event)) || data.state === "committed");
+    });
+  const warningRecovered = recoverableWarning && [snapshot.remote_chunk, latestEvent("chunk_committed")].some((event) => {
+    const data = event ? { ...event, ...payload(event) } : {};
+    return data.state === "committed" && data.renderer_decision === "remote_latest"
+      && number(event?.sequence) !== null && event.sequence > errorSequence;
+  });
   const activeRequest = planningRequest(snapshot);
   const activeBatch = latestBatch(snapshot, activeRequest.request_id || null);
   const modelPending = Boolean(activeRequest.request_id && !activeBatch.request_id);
+  const runtimeError = snapshot.runtime_error || snapshot.audio?.runtime_error;
+  if (element("runtime-error")) { setText("runtime-error", runtimeError, ""); element("runtime-error").hidden = !runtimeError; }
   let health = "READY";
-  if (snapshot.stopped) health = "STOPPED";
-  else if (activeError) health = "ERROR";
+  if (runtimeError || requiresReset) health = "ERROR";
+  else if (snapshot.stopped) health = "STOPPED";
+  else if (activeError && !recoverableWarning && !responseRecovered) health = "ERROR";
+  else if (activeError && recoverableWarning && !warningRecovered) health = "WARNING";
   else if (modelPending) health = "MODEL PENDING";
   setText("model-health", health);
   setText("generator-state", health.toLowerCase());
 
-  const message = [errorData.error_type, errorData.error_message].filter(Boolean).join(": ");
+  const message = runtimeError || [errorData.error_type, errorData.error_message || errorData.message].filter(Boolean).join(": ");
+  setText("last-error-label", recoverableWarning && !runtimeError ? "Last warning" : "Last error");
   setText("last-error", message, "none");
-  element("last-error").classList.toggle("has-error", Boolean(message));
+  element("last-error").classList.toggle("has-error", Boolean(message) && (!recoverableWarning || Boolean(runtimeError)));
+  element("last-error").classList.toggle("has-warning", Boolean(message) && recoverableWarning && !runtimeError);
 }
 
 function renderHistory(snapshot) {
@@ -770,6 +831,8 @@ function render() {
   renderHistory(snapshot);
   renderEvents();
   planControls?.update(snapshot, monitor.events, current, barViews(snapshot));
+  settingsControls?.update(snapshot);
+  interactionControls?.update(snapshot);
 }
 
 async function refreshSnapshot() {
@@ -805,6 +868,8 @@ function connectionState(state, label) {
   element("connection").dataset.state = state;
   setText("connection-label", label);
   planControls?.connection(state === "live");
+  settingsControls?.connection(state === "live");
+  interactionControls?.connection(state === "live");
 }
 
 function connect() {
@@ -865,7 +930,9 @@ async function sendControl(action) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.detail || `Control request failed (${response.status})`);
     if (monitor.snapshot && monitor.snapshot.audio && body.state) monitor.snapshot.audio.state = body.state;
-    if (action === "reset") planControls?.reset();
+    if (action === "reset") { planControls?.reset(); settingsControls?.reset(); interactionControls?.reset(); }
+    settingsControls?.load();
+    interactionControls?.load();
     setText("last-error", "none");
     element("last-error").classList.remove("has-error");
     render();
@@ -907,6 +974,8 @@ element("reset-runtime").addEventListener("click", () => sendControl("reset"));
 
 window.addEventListener("beforeunload", () => {
   monitor.closing = true;
+  settingsControls?.connection(false);
+  interactionControls?.connection(false);
   window.clearTimeout(monitor.reconnectTimer);
   if (monitor.socket) monitor.socket.close();
 });

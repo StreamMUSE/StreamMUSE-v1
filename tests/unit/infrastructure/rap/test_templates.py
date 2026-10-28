@@ -6,6 +6,9 @@ import pytest
 
 from streammuse.infrastructure.rap.scenarios import default_scenario, load_scenario
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES, TemplateCatalog
+from streammuse.domain.rap import CandidateRequest
+from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
+from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer
 
 
 def test_builtin_templates_have_nine_slots_and_honest_provenance() -> None:
@@ -15,6 +18,22 @@ def test_builtin_templates_have_nine_slots_and_honest_provenance() -> None:
         assert len(template.slots) == 9
         assert template.provenance.kind == "hand_authored_mcflow_inspired"
         assert template.provenance.source == "StreamMUSE baseline"
+
+
+@pytest.mark.parametrize("grid", ("straight", "syncopated", "staggered"))
+@pytest.mark.parametrize("accent", ("backbeat", "rising"))
+def test_stress_variants_preserve_onsets_and_untested_handcrafted_provenance(grid, accent):
+    baseline = BUILTIN_TEMPLATES.get(f"baseline_{grid}_9")
+    variant = BUILTIN_TEMPLATES.get(f"untested_{grid}_{accent}_9")
+
+    assert [slot.tick_in_bar for slot in variant.slots] == [slot.tick_in_bar for slot in baseline.slots]
+    assert [slot.duration_ticks for slot in variant.slots] == [slot.duration_ticks for slot in baseline.slots]
+    assert [slot.target_stress for slot in variant.slots] != [slot.target_stress for slot in baseline.slots]
+    assert "UNTESTED" in variant.name
+    assert variant.provenance.kind == "hand_authored_stress_variant"
+    assert "UNTESTED" in variant.provenance.source
+    assert baseline.template_id in variant.provenance.source
+    assert variant.provenance.source_hash is None
 
 
 def test_catalog_rejects_empty_catalog_and_unknown_template() -> None:
@@ -33,6 +52,21 @@ def test_default_scenario_is_valid_against_builtin_templates() -> None:
     assert [scenario.segment_for_bar(bar).topic for bar in (0, 4, 8, 12)] == ["space", "deep sea", "code", "space"]
     assert all(BUILTIN_TEMPLATES.get(segment.template_id) for segment in scenario.segments)
     assert all(line.strip() for segment in scenario.segments for line in segment.fallback_lines)
+
+
+def test_default_cli_fallback_catalog_can_resolve_every_new_stress_variant() -> None:
+    catalog = PrevalidatedFallbackCatalog.build(default_scenario(), BUILTIN_TEMPLATES, CmuProsodyAnalyzer())
+    for grid in ("straight", "syncopated", "staggered"):
+        for accent in ("backbeat", "rising"):
+            template = BUILTIN_TEMPLATES.get(f"untested_{grid}_{accent}_9")
+            request = CandidateRequest(
+                request_id=f"test-{template.template_id}", target_bar=0, topic="new topic",
+                flow_template=template, count=1, context_lines=(), seed=1,
+            )
+            fallback = catalog.line_for_any(request)
+            assert len(fallback.analysis.syllables) == 9
+            assert fallback.source == "prevalidated_fallback"
+            assert fallback.topic != "new topic"
 
 
 def test_load_scenario_builds_valid_json_scenario(tmp_path) -> None:

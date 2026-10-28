@@ -800,3 +800,139 @@ def test_running_reset_closes_detached_stream_before_starting_new_stream() -> No
     assert len(stream_factory.streams) == 2
     assert stream_factory.streams[1].active
     assert sink.snapshot().state == PlaybackState.RUNNING
+
+
+def test_quantized_callback_stop_requires_host_stop_before_restarting_same_stream() -> None:
+    class PortAudioStream(ActiveOutputStream):
+        def start(self):
+            if self.started and not self.stopped:
+                # sounddevice suppresses paStreamIsNotStopped, leaving the
+                # callback-terminated stream inactive without an exception.
+                return
+            super().start()
+            self.stopped = False
+
+    stream = None
+
+    def factory(*, audio_format, callback):
+        nonlocal stream
+        stream = PortAudioStream(callback, block_frames=4)
+        return stream
+
+    sink = SoundDeviceAudioSink(
+        audio_format=stereo_format(), stream_factory=factory,
+        callback_stop_factory=CallbackTerminated,
+    )
+    try:
+        sink.enqueue(prepared_bar(bar=0, frames=4))
+        sink.enqueue(prepared_bar(bar=1, frames=4))
+        assert sink.start()
+        stream.callback(np.zeros((2, 2), np.float32), 2, None, 0)
+        sink.request_stop_after_bar()
+        with pytest.raises(CallbackTerminated):
+            stream.callback(np.zeros((2, 2), np.float32), 2, None, 0)
+        # PortAudio callback termination is inactive, but NOT host-stopped.
+        stream.active = False
+        assert not stream.stopped
+        assert sink.start()
+        assert stream.stop_calls == 1
+        stream.callback(np.zeros((4, 2), np.float32), 4, None, 0)
+        assert sink.snapshot().last_completed_bar == 1
+        assert sink.output_device_status()["audible"] is True
+        assert AudioPlaybackNoticeKind.DEVICE_FAILED not in [n.kind for n in sink.drain_notices()]
+    finally:
+        sink.close()
+
+
+def test_discard_pending_physically_stops_stream_without_closing_it() -> None:
+    factory = ActiveOutputStreamFactory()
+    sink = SoundDeviceAudioSink(audio_format=stereo_format(), stream_factory=factory)
+    try:
+        assert sink.start()
+        stream = factory.streams[0]
+        sink.discard_pending()
+        assert not stream.active
+        assert not stream.closed
+        assert sink.output_device_status()["audible"] is False
+        assert sink.start()
+        assert stream.active
+    finally:
+        sink.close()
+
+
+def test_composite_fallback_retains_failure_and_reset_retries_original_device(tmp_path) -> None:
+    attempts = 0
+
+    def factory(*, audio_format, callback):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("device temporarily unavailable")
+        return ActiveOutputStream(callback, block_frames=4)
+
+    audio_format = stereo_format()
+    live = SoundDeviceAudioSink(audio_format=audio_format, stream_factory=factory)
+    fallback = NullAudioSink(audio_format=audio_format)
+    composite = CompositeAudioSink(live, Float32WavAudioSink(tmp_path / "recover.wav", audio_format), fallback=fallback)
+    try:
+        composite.enqueue(prepared_bar(bar=0, frames=4))
+        assert composite.start()
+        assert any(n.kind == AudioPlaybackNoticeKind.DEVICE_FAILED for n in composite.drain_notices())
+        status = composite.output_device_status()
+        assert status["backend"] == "null" and status["audible"] is False
+        assert "temporarily unavailable" in status["error"]
+        assert status["supports_device_selection"] is True
+        assert status["recovery_requires_reset"] is True
+        composite.request_stop_after_bar()
+        composite.reset()
+        composite.enqueue(prepared_bar(bar=0, frames=4))
+        assert composite.start()
+        assert composite.output_device_status()["backend"] == "sounddevice"
+        assert composite.output_device_status()["audible"] is True
+        assert composite.output_device_status()["error"] is None
+    finally:
+        composite.close()
+
+
+def test_composite_retains_failure_detected_by_post_start_snapshot(tmp_path) -> None:
+    class InactiveStream(ActiveOutputStream):
+        def start(self):
+            super().start()
+            self.active = False
+
+    audio_format = stereo_format()
+    live = SoundDeviceAudioSink(
+        audio_format=audio_format,
+        stream_factory=lambda **kwargs: InactiveStream(kwargs["callback"], 4),
+    )
+    composite = CompositeAudioSink(
+        live, Float32WavAudioSink(tmp_path / "observed-failure.wav", audio_format),
+        fallback=NullAudioSink(audio_format=audio_format),
+    )
+    try:
+        assert composite.start()
+        notices = composite.drain_notices()
+        assert any(n.kind == AudioPlaybackNoticeKind.DEVICE_FAILED for n in notices)
+        assert "unexpectedly" in composite.output_device_status()["error"]
+    finally:
+        composite.close()
+
+
+def test_cancelled_device_start_does_not_activate_fallback(tmp_path) -> None:
+    class CancelledStartSink(SoundDeviceAudioSink):
+        def start(self):
+            return False
+
+    audio_format = stereo_format()
+    fallback = NullAudioSink(audio_format=audio_format)
+    composite = CompositeAudioSink(
+        CancelledStartSink(audio_format=audio_format),
+        Float32WavAudioSink(tmp_path / "cancelled.wav", audio_format),
+        fallback=fallback,
+    )
+    try:
+        assert composite.start() is False
+        assert composite.output_device_status()["backend"] == "sounddevice"
+        assert fallback.snapshot().state == PlaybackState.STOPPED
+    finally:
+        composite.close()

@@ -30,7 +30,7 @@ def test_pcm_audio_accepts_exact_stereo_float32_data() -> None:
 
 
 def test_rap_audio_event_names_are_canonical() -> None:
-    assert [event.value for event in RapEventType][-20:] == [
+    assert [event.value for event in RapEventType][-22:] == [
         "audio_render_started",
         "audio_render_completed",
         "pronunciation_fallback",
@@ -48,9 +48,11 @@ def test_rap_audio_event_names_are_canonical() -> None:
         "bar_playback_completed",
         "stop_requested",
         "session_reset",
+        "audio_settings_changed",
         "audio_underrun",
         "audio_device_failed",
         "plan_edited",
+        "capture_finalized",
     ]
 
 
@@ -98,3 +100,31 @@ def test_prepared_rap_bar_is_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         prepared.text = "two"  # type: ignore[misc]
+
+
+def test_mix_config_preserves_legacy_defaults_and_requires_explicit_drum_boost() -> None:
+    from streammuse.domain.rap.audio import RapMixConfig
+
+    legacy = RapMixConfig()
+    boosted = RapMixConfig.with_drum_boost(revision=1)
+
+    assert (legacy.vocal_gain, legacy.drum_gain, legacy.master_gain, legacy.peak_limit) == (0.8, 0.55, 1.0, 0.95)
+    assert boosted.drum_gain == pytest.approx(legacy.drum_gain * 10 ** (3 / 20))
+    assert boosted.vocal_gain == legacy.vocal_gain
+    assert boosted.revision == 1
+    with pytest.raises(FrozenInstanceError):
+        legacy.drum_gain = 0.9
+
+
+@pytest.mark.parametrize("fields", [
+    {"vocal_gain": -0.1}, {"drum_gain": 2.1}, {"master_gain": 1.1},
+    {"vocal_gain": float("nan")}, {"drum_gain": float("inf")},
+    {"master_gain": True}, {"peak_limit": 0.0}, {"peak_limit": 1.1},
+    {"revision": -1}, {"revision": True},
+    {"drum_gain": 10 ** 400},
+])
+def test_mix_config_rejects_invalid_levels_and_revisions(fields) -> None:
+    from streammuse.domain.rap.audio import RapMixConfig
+
+    with pytest.raises(ValueError):
+        RapMixConfig(**fields)

@@ -11,8 +11,8 @@ from streammuse.domain.rap import (
     ScenarioSegment,
 )
 from streammuse.infrastructure.rap.fallback import PrevalidatedFallbackCatalog
-from streammuse.infrastructure.rap.prosody import HeuristicProsodyAnalyzer
-from streammuse.infrastructure.rap.templates import TemplateCatalog
+from streammuse.infrastructure.rap.prosody import CmuProsodyAnalyzer, HeuristicProsodyAnalyzer
+from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES, TemplateCatalog
 
 
 def _templates() -> TemplateCatalog:
@@ -139,3 +139,49 @@ def test_line_for_any_survives_live_edits_to_a_new_topic_or_template() -> None:
     assert catalog.line_for_any(request("ocean", other_one_slot)).topic == "space"
     with pytest.raises(ValueError, match="has 2 syllables"):
         catalog.line_for_any(request("ocean", two_slots))
+
+
+@pytest.mark.parametrize("analyzer_type", (CmuProsodyAnalyzer, HeuristicProsodyAnalyzer))
+def test_legacy_custom_scenario_covers_all_selectable_curated_flows_without_replacing_user_lines(analyzer_type) -> None:
+    custom_line = "my bright stars shine through the cold dark night"
+    scenario = RapScenario(
+        scenario_id="legacy-custom", tempo_bpm=120.0,
+        segments=(ScenarioSegment(0, 4, "custom", "baseline_straight_9", (custom_line,)),),
+    )
+    catalog = PrevalidatedFallbackCatalog.build(scenario, BUILTIN_TEMPLATES, analyzer_type())
+
+    for template in BUILTIN_TEMPLATES.values():
+        request = CandidateRequest(
+            request_id=f"live-edit-{template.template_id}", target_bar=7, topic="live topic",
+            flow_template=template, count=1, context_lines=(), seed=1,
+        )
+        fallback = catalog.line_for_any(request)
+
+        assert len(fallback.analysis.syllables) == len(template.slots)
+        assert fallback.source == "prevalidated_fallback"
+        if len(template.slots) == 9:
+            assert fallback.text == custom_line
+            assert fallback.topic == "custom"
+    assert scenario.segments == (ScenarioSegment(0, 4, "custom", "baseline_straight_9", (custom_line,)),)
+
+
+def test_custom_catalog_only_supplements_counts_for_its_selectable_curated_flows() -> None:
+    baseline = BUILTIN_TEMPLATES.get("baseline_straight_9")
+    dense = BUILTIN_TEMPLATES.get("mcflow_778c4db0b4f291db7620")
+    delayed = BUILTIN_TEMPLATES.get("mcflow_4fa0466611a111afb52f")
+    scenario = RapScenario(
+        scenario_id="restricted", tempo_bpm=120.0,
+        segments=(ScenarioSegment(0, 4, "custom", baseline.template_id,
+                                  ("my bright stars shine through the cold dark night",)),),
+    )
+    catalog = PrevalidatedFallbackCatalog.build(
+        scenario, TemplateCatalog((baseline, dense)), HeuristicProsodyAnalyzer(),
+    )
+
+    def request(template: FlowTemplate) -> CandidateRequest:
+        return CandidateRequest(request_id="r", target_bar=0, topic="live topic", flow_template=template,
+                                count=1, context_lines=(), seed=1)
+
+    assert len(catalog.line_for_any(request(dense)).analysis.syllables) == 12
+    with pytest.raises(ValueError, match="has 8 syllables"):
+        catalog.line_for_any(request(delayed))

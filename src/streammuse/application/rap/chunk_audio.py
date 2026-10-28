@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import gcd, isclose, isfinite
 from types import MappingProxyType
 from time import monotonic
@@ -15,7 +15,7 @@ import numpy as np
 from scipy.signal import resample_poly
 
 from streammuse.application.rap.alignment import align_exact
-from streammuse.application.rap.audio_rendering import bar_frame_count, limit_peak, mix_at, tick_frame_in_bar
+from streammuse.application.rap.audio_rendering import bar_frame_count, limit_peak, tick_frame_in_bar
 from streammuse.application.rap.audio_service import DrumRenderer, RapChunkPreparationStrategy
 from streammuse.application.rap.monitoring_payloads import (
     bounded_chunk_event_payload,
@@ -29,6 +29,9 @@ from streammuse.domain.rap.audio import (
     AudioWarningSeverity,
     PcmAudio,
     PreparedRapBar,
+    RapMixConfig,
+    RapWarpDiagnostics,
+    RenderedOnsetEstimate,
     SyllablePlacementDiagnostic,
 )
 from streammuse.domain.rap.flow import materialize_flow
@@ -41,6 +44,7 @@ from streammuse.domain.rap.remote_chunk import (
 )
 from streammuse.experiments.rap_audio_protocols.contracts import TwoBarRenderRequest
 from streammuse.domain.timing import Tempo
+from streammuse.infrastructure.rap.chords import render_chord_loop
 from streammuse.infrastructure.rap.chunk_package import DecodedRapChunkPackage
 
 if TYPE_CHECKING:
@@ -53,6 +57,65 @@ _FINAL_PEAK = 0.95
 _REMOTE_SAMPLE_RATE_HZ = 24_000
 # Matches the MOSS adapters' maximum_audio_seconds for one source phrase.
 _MAX_REMOTE_SOURCE_SECONDS = MAX_REMOTE_SOURCE_SECONDS
+
+
+def mix_audio_stems(
+    vocal: PcmAudio,
+    drum: PcmAudio,
+    config: RapMixConfig,
+    chord: PcmAudio | None = None,
+) -> PcmAudio:
+    """Mix reusable stems; OFF ignores chords and preserves the legacy mix."""
+    if not isinstance(config, RapMixConfig):
+        raise ValueError("mix config must be a RapMixConfig")
+    if vocal.format != drum.format or vocal.frame_count != drum.frame_count:
+        raise ValueError("vocal and drum stems must have the same format and frame count")
+    if vocal.format.sample_width_bytes != 4:
+        raise ValueError("mix stems must contain float32 PCM")
+    vocals = np.frombuffer(vocal.data, dtype=np.float32)
+    drums = np.frombuffer(drum.data, dtype=np.float32)
+    if not np.isfinite(vocals).all() or not np.isfinite(drums).all():
+        raise ValueError("mix stems must contain finite PCM samples")
+    chords = None
+    if chord is not None and config.chord_loop != "off":
+        if chord.format != vocal.format or chord.frame_count != vocal.frame_count:
+            raise ValueError("chord and vocal/drum stems must have the same format and frame count")
+        chords = np.frombuffer(chord.data, dtype=np.float32)
+        if not np.isfinite(chords).all():
+            raise ValueError("mix stems must contain finite PCM samples")
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            mixed = vocals * np.float32(config.vocal_gain) + drums * np.float32(config.drum_gain)
+            if chords is not None and config.chord_gain != 0:
+                mixed += chords * np.float32(config.chord_gain)
+            mixed *= np.float32(config.master_gain)
+    except FloatingPointError as error:
+        raise ValueError("gain application must produce finite PCM samples") from error
+    return PcmAudio(vocal.format, vocal.frame_count, limit_peak(mixed, config.peak_limit).tobytes())
+
+
+def remix_prepared_bar(prepared: PreparedRapBar, config: RapMixConfig) -> PreparedRapBar:
+    """Remix retained vocals/drums and regenerate the selected exact-bar chord.
+
+    This also accepts first-render results with no chord stem. Callers choose
+    which uncommitted bars to replace; neither input nor revision is mutated.
+    """
+    if not isinstance(config, RapMixConfig):
+        raise ValueError("mix config must be a RapMixConfig")
+    if prepared.vocal_stem is None or prepared.drum_stem is None:
+        raise ValueError("prepared bar has no reusable vocal/drum stems")
+    if prepared.vocal_stem.format != prepared.audio.format or prepared.vocal_stem.frame_count != prepared.audio.frame_count:
+        raise ValueError("retained stems do not match prepared audio")
+    chord = (
+        None if config.chord_loop == "off"
+        else render_chord_loop(config.chord_loop, prepared.bar, prepared.audio.frame_count, prepared.audio.format)
+    )
+    return replace(
+        prepared,
+        audio=mix_audio_stems(prepared.vocal_stem, prepared.drum_stem, config, chord),
+        chord_stem=chord,
+        mix_config=config,
+    )
 
 
 class RemoteChunkPreparationError(RuntimeError):
@@ -150,6 +213,7 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         tempo_bpm: float | None = None,
         clock: Callable[[], float] = monotonic,
         phrase_warper: PhraseWarper | None = None,
+        mix_config: RapMixConfig | None = None,
     ) -> None:
         """``phrase_warper`` is required to accept v2 chunks, which arrive unwarped."""
         if tempo is None:
@@ -170,8 +234,18 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         self._clock = clock
         self._phrase_warper = phrase_warper
         self._closed = False
+        self.set_mix_config(mix_config or RapMixConfig())
+
+    def set_mix_config(self, config: RapMixConfig) -> None:
+        if not isinstance(config, RapMixConfig):
+            raise ValueError("mix config must be a RapMixConfig")
+        self._mix_config = config
+
+    def remix(self, prepared: PreparedRapBar, config: RapMixConfig | None = None) -> PreparedRapBar:
+        return remix_prepared_bar(prepared, config or self._mix_config)
 
     def prepare(self, request: RemoteRapChunkRequest, *, deadline_monotonic: float) -> PreparedRapChunk:
+        mix_config = self._mix_config
         if self._closed:
             raise RemoteChunkPreparationError("remote MOSS preparation strategy is closed")
         if not isinstance(request, RemoteRapChunkRequest):
@@ -227,6 +301,8 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                 frame_counts,
                 observed_latency_ms,
                 anchors,
+                mix_config,
+                local_warp,
             )
         except RemoteChunkPreparationError as error:
             failed_at = self._clock()
@@ -551,6 +627,8 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
         frame_counts: tuple[int, int],
         observed_latency_ms: float,
         anchors: tuple[tuple[float, ...], tuple[float, ...]],
+        mix_config: RapMixConfig,
+        local_warp: LocalPhraseWarp | None,
     ) -> tuple[PreparedRapBar, PreparedRapBar]:
         if vocals.shape != (sum(frame_counts), self._audio_format.channels):
             raise RemoteChunkPreparationError("resampled remote vocals do not cover both Mac bars exactly")
@@ -563,9 +641,22 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
             drum = self._drums.render(bar_request.flow_template, self._tempo, self._audio_format, bar_request.bar)
             if drum.format != self._audio_format or drum.frame_count != frames:
                 raise RemoteChunkPreparationError("local drum render does not match the exact Mac bar format")
-            mixed = vocal_bar * np.float32(_VOCAL_GAIN)
-            mix_at(mixed, drum, 0, _DRUM_GAIN)
+            vocal_stem = PcmAudio(self._audio_format, frames, vocal_bar.tobytes())
             diagnostics = self._placement_diagnostics(manifest, anchors, selected.scheduled, bar_request.bar, frames, anchor_offset)
+            alignment = manifest.diagnostics.alignment_diagnostics
+            confidence = tuple(alignment.get("onset_confidence", ()))
+            source_onsets = tuple(alignment.get("source_onsets", anchors[0]))
+            estimates = tuple(
+                RenderedOnsetEstimate(
+                    slot_index=item.slot_index,
+                    requested_sample=item.target_sample,
+                    estimated_sample=anchors[1][anchor_offset + index] * self._audio_format.sample_rate_hz - start,
+                    source_seconds=source_onsets[anchor_offset + index],
+                    confidence=confidence[anchor_offset + index] if anchor_offset + index < len(confidence) else None,
+                    method="source_alignment_warp_estimate",
+                )
+                for index, item in enumerate(diagnostics)
+            )
             warnings = tuple(
                 AudioWarning(
                     code=AudioWarningCode.PRONUNCIATION_FALLBACK,
@@ -583,10 +674,21 @@ class RemoteMossChunkPreparationStrategy(RapChunkPreparationStrategy):
                     source="moss_aligned_remote",
                     fallback_reason=None,
                     scheduled=selected.scheduled,
-                    audio=PcmAudio(self._audio_format, frames, limit_peak(mixed, _FINAL_PEAK).tobytes()),
+                    audio=mix_audio_stems(vocal_stem, drum, mix_config),
                     diagnostics=diagnostics,
                     warnings=warnings,
                     render_latency_ms=observed_latency_ms,
+                    vocal_stem=vocal_stem,
+                    drum_stem=drum,
+                    mix_config=mix_config,
+                    onset_estimates=estimates,
+                    warp_diagnostics=RapWarpDiagnostics(
+                        source_onsets, anchors[0], anchors[1],
+                        local_warp.local_warp_ratios if local_warp else tuple(alignment.get("local_warp_ratios", ())),
+                        local_warp.policy if local_warp else "server_warp",
+                        local_warp.warp_ms if local_warp else float(manifest.diagnostics.stage_timings_ms.get("warp", 0.0)),
+                        local_warp.r3_attempt_deviations if local_warp else (),
+                    ),
                 )
             )
             start = end

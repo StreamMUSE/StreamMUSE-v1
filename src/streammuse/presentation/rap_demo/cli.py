@@ -173,9 +173,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rap-warp-policy",
-        choices=("gentle_sparse_r3", "all_onsets_r3"),
+        choices=("gentle_sparse_r3", "all_onsets_r3", "all_onsets_stress_r3"),
         default="gentle_sparse_r3",
-        help="local R3 anchor policy for v2 chunks",
+        help="local R3 anchor policy for v2/v3 audio; v3 can change it while stopped",
     )
     parser.add_argument("--rap-render-url", default="http://127.0.0.1:8020")
     parser.add_argument("--rap-render-profile", choices=("realtime",), default="realtime")
@@ -189,6 +189,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tempo", type=float, default=None, help="Override the scenario playback tempo")
     parser.add_argument("--audio-device", default=None)
+    parser.add_argument("--interaction-mode", choices=("continuous", "alternating"), default="continuous")
+    parser.add_argument("--response-bars", type=int, default=2, help="Generated response bars per alternating turn")
+    parser.add_argument("--drum-gain", type=float, default=None, help="v3 linear drum gain (default: +3 dB over legacy)")
+    parser.add_argument("--vocal-gain", type=float, default=0.80)
+    parser.add_argument("--chord-loop", choices=("off", "minor_cycle", "major_cycle"), default="off", help="Optional hand-authored local chord loop (v3)")
+    parser.add_argument("--chord-gain", type=float, default=0.20)
     parser.add_argument("--sample-rate", type=int, default=48_000)
     parser.add_argument("--voice", default="en-us")
     parser.add_argument("--voice-speed", type=int, default=175)
@@ -415,6 +421,16 @@ def _build_audio_demo(
             else None
         ),
         "audio_device": args.audio_device,
+        "interaction_mode": args.interaction_mode,
+        "response_bars": args.response_bars,
+        "mix": {
+            "drum_gain": args.drum_gain if args.drum_gain is not None else (
+                0.55 * 10 ** (3 / 20) if args.rap_protocol == "v3" and args.rap_audio_renderer == "moss_aligned_remote" else 0.55
+            ),
+            "vocal_gain": args.vocal_gain,
+            "chord_loop": args.chord_loop,
+            "chord_gain": args.chord_gain,
+        },
         "renderer": args.rap_audio_renderer,
         "transport": args.rap_audio_transport if args.rap_audio_renderer == "moss_aligned_remote" else "pcm",
         "render_url": args.rap_render_url if args.rap_audio_renderer == "moss_aligned_remote" else None,
@@ -445,6 +461,9 @@ def _build_audio_demo(
     playback = None
     controller: RapAudioController | None = None
     remote_client = None
+    runtime_ref: list[RapAudioDemoDependencies] = []
+    mode_factory = None
+    capabilities_probe = None
     try:
         recorder = RapSessionRecorder(session_dir, manifest)
         publisher = RapEventPublisher(str(manifest["session_id"]))
@@ -504,7 +523,7 @@ def _build_audio_demo(
             tempo=tempo,
             sink=sink,
             publisher=publisher,
-            on_tick=lambda tick: controller.on_tick(tick),
+            on_tick=lambda tick: (runtime_ref[0].controller if runtime_ref else controller).on_tick(tick),
             monotonic=clock,
         )
         planning_bar_limit = args.max_bars or (None if scenario.loop else scenario.total_bars)
@@ -531,38 +550,90 @@ def _build_audio_demo(
                 monotonic=clock,
             )
         elif args.rap_protocol == "v3":
+            from streammuse.application.rap.settings import RapSettings
             from streammuse.application.rap.bar_audio import BarAudioPreparer
             from streammuse.application.rap.bar_stream import BarStreamController
+            from streammuse.domain.rap.audio import RapMixConfig
+            from streammuse.domain.rap.timeline import RapTimeline
 
             opus_codec = None
             if args.rap_audio_transport == "opus":
                 opus_codec = audio_factories.create_opus_codec()
                 opus_codec.probe()
-            controller = BarStreamController(
-                tempo=tempo,
-                scenario=scenario,
-                templates=BUILTIN_TEMPLATES,
-                fallback_catalog=fallbacks,
-                analyzer=analyzer,
-                fallback_renderer=renderer,
-                lyric_stream=audio_factories.create_lyric_stream(base_url=args.rap_render_url),
-                audio_source=audio_factories.create_bar_audio_source(
-                    base_url=args.rap_render_url, opus_codec=opus_codec
-                ),
-                preparer=BarAudioPreparer(
-                    warper=phrase_warper, drums=drums, tempo=tempo, audio_format=audio_format
-                ),
-                publisher=publisher,
-                enqueue=playback.enqueue,
-                session_id=str(manifest["session_id"]),
-                seed=args.seed,
-                planning_bar_limit=planning_bar_limit,
-                startup_timeout_seconds=args.rap_render_startup_timeout,
-                monotonic=clock,
-                audio_format=audio_format,
+            capability_stream = audio_factories.create_lyric_stream(base_url=args.rap_render_url)
+            capabilities_probe = getattr(capability_stream, "get_capabilities", None)
+
+            def mode_factory(settings: RapSettings, epoch: int):
+                selected_tempo = Tempo(settings.tempo_bpm, 4, 4)
+                timeline = RapTimeline(selected_tempo)
+                mix = RapMixConfig(drum_gain=settings.drum_gain, vocal_gain=settings.vocal_gain,
+                                   chord_loop=settings.chord_loop, chord_gain=settings.chord_gain)
+                selected_warper = phrase_warper if settings.alignment_policy == phrase_warper.policy else (
+                    audio_factories.create_phrase_warper(policy=settings.alignment_policy)
+                )
+                fallback = DeterministicRapBarRenderer(
+                    tempo=selected_tempo, audio_format=audio_format, synthesizer=synthesizer,
+                    drums=drums, time_stretcher=time_stretcher, voice=args.voice,
+                    speed_wpm=args.voice_speed, pitch=args.voice_pitch,
+                    max_compression=args.max_compression, mix_config=mix,
+                )
+                stream = audio_factories.create_lyric_stream(base_url=args.rap_render_url)
+                source = audio_factories.create_bar_audio_source(base_url=args.rap_render_url, opus_codec=opus_codec)
+                preparer = BarAudioPreparer(
+                    warper=selected_warper, drums=drums, tempo=selected_tempo,
+                    audio_format=audio_format, mix_config=mix,
+                )
+                playback.set_timeline(timeline)
+                if settings.mode == "alternating":
+                    from streammuse.application.rap.interaction import AlternatingRapController, ProgressiveLyricTurnAdapter
+                    from streammuse.infrastructure.rap.flow_echo import FlowEchoRenderer
+
+                    echo_renderer = FlowEchoRenderer(
+                        drums=drums, idle_template=BUILTIN_TEMPLATES.get(scenario.segments[0].template_id),
+                        drum_gain=settings.drum_gain,
+                    )
+                    echo_renderer.set_mix_config(mix)
+
+                    generation = ProgressiveLyricTurnAdapter(
+                        lyric_stream=stream, audio_source=source, preparer=preparer,
+                        fallback_renderer=fallback, analyzer=analyzer, tempo=selected_tempo,
+                        seed=args.seed, monotonic=clock,
+                    )
+                    selected_controller = AlternatingRapController(
+                        tempo=selected_tempo, scenario=scenario, templates=BUILTIN_TEMPLATES,
+                        generation=generation,
+                        echo_renderer=echo_renderer,
+                        publisher=publisher, enqueue=playback.enqueue,
+                        session_id=str(manifest["session_id"]), response_bars=settings.response_bars,
+                        planning_bar_limit=planning_bar_limit,
+                        initial_epoch=epoch, monotonic=clock, audio_format=audio_format,
+                        timeline=timeline, on_timeline_changed=playback.set_timeline,
+                    )
+                    if args.rap_scripted_edits:
+                        _install_scripted_edits(selected_controller, args.rap_scripted_edits, selected_tempo)
+                    return selected_controller
+                selected_controller = BarStreamController(
+                    tempo=selected_tempo, scenario=scenario, templates=BUILTIN_TEMPLATES,
+                    fallback_catalog=fallbacks, analyzer=analyzer, fallback_renderer=fallback,
+                    lyric_stream=stream, audio_source=source, preparer=preparer,
+                    publisher=publisher, enqueue=playback.enqueue, session_id=str(manifest["session_id"]),
+                    seed=args.seed, planning_bar_limit=planning_bar_limit,
+                    startup_timeout_seconds=args.rap_render_startup_timeout,
+                    monotonic=clock, audio_format=audio_format, timeline=timeline,
+                    on_timeline_changed=playback.set_timeline, initial_epoch=epoch,
+                )
+                if args.rap_scripted_edits:
+                    _install_scripted_edits(selected_controller, args.rap_scripted_edits, selected_tempo)
+                return selected_controller
+
+            initial_settings = RapSettings(
+                tempo_bpm=tempo.bpm, mode=args.interaction_mode, response_bars=args.response_bars,
+                output_device=args.audio_device,
+                drum_gain=args.drum_gain if args.drum_gain is not None else RapMixConfig.with_drum_boost().drum_gain,
+                vocal_gain=args.vocal_gain,
+                alignment_policy=args.rap_warp_policy, chord_loop=args.chord_loop, chord_gain=args.chord_gain,
             )
-            if args.rap_scripted_edits:
-                _install_scripted_edits(controller, args.rap_scripted_edits, tempo)
+            controller = mode_factory(initial_settings, 0)
         else:
             if args.rap_audio_transport == "opus":
                 audio_factories.create_opus_codec().probe()
@@ -659,7 +730,7 @@ def _build_audio_demo(
         "terminal_detail": args.terminal_detail,
         "audio": manifest["audio"],
     }
-    return RapAudioDemoDependencies(
+    runtime = RapAudioDemoDependencies(
         tempo=tempo,
         controller=controller,
         coordinator=coordinator,
@@ -673,6 +744,15 @@ def _build_audio_demo(
         websocket_queue=websocket_queue,
         configured_max_bars=args.max_bars,
     )
+    runtime_ref.append(runtime)
+    from streammuse.application.rap.audio_settings import install_audio_settings
+    from streammuse.application.rap.settings import RapSettings
+
+    if mode_factory is None:
+        initial_settings = RapSettings(tempo_bpm=tempo.bpm, output_device=args.audio_device)
+    install_audio_settings(runtime, initial_settings, sink=sink,
+                           controller_factory=mode_factory, capabilities_probe=capabilities_probe)
+    return runtime
 
 
 def _parse_scripted_edits(text: str) -> list[tuple[int, int, str | None, str | None]]:
@@ -718,6 +798,22 @@ def _install_scripted_edits(controller, text: str, tempo) -> None:
 
 
 def _validate_audio_options(args: argparse.Namespace, *, require_external: bool) -> None:
+    if args.interaction_mode == "alternating" and (
+        args.audio_output == "none" or args.rap_audio_renderer != "moss_aligned_remote" or args.rap_protocol != "v3"
+    ):
+        raise ValueError("alternating mode requires the v3 remote renderer and audio output")
+    if not 1 <= args.response_bars <= 8:
+        raise ValueError("response-bars must be between 1 and 8")
+    for name in ("drum_gain", "vocal_gain", "chord_gain"):
+        value = getattr(args, name)
+        if value is None:
+            continue
+        if not isfinite(value) or not 0 <= value <= 2:
+            raise ValueError(f"{name.replace('_', '-')} must be between 0 and 2")
+    if (args.drum_gain is not None or args.vocal_gain != 0.80 or args.chord_loop != "off" or args.chord_gain != 0.20) and not (
+        args.rap_audio_renderer == "moss_aligned_remote" and args.rap_protocol == "v3"
+    ):
+        raise ValueError("mix gain options currently require the v3 remote renderer")
     if args.tempo is not None and (not isfinite(args.tempo) or args.tempo <= 0):
         raise ValueError("tempo must be positive")
     if not isfinite(args.sample_rate) or args.sample_rate <= 0:

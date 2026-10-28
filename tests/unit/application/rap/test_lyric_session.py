@@ -288,3 +288,92 @@ def test_a_silent_commit_leaves_no_line_to_follow() -> None:
         assert session._line_for_locked(0, session._bars[0]) == listener.lyrics[0].text
     finally:
         session.close()
+
+
+def test_bounded_turn_produces_only_requested_logical_bars():
+    listener, renderer = _Listener(), _Renderer()
+    session = _session(renderer, listener, start_bar=4, end_bar_exclusive=6, turn_id="turn-1")
+    try:
+        _wait(lambda: len(listener.ready) == 2)
+        for record in tuple(listener.lyrics):
+            session.committed(record.bar, record.lyric_id, record.text)
+        time.sleep(0.05)
+        assert [record.bar for record in listener.lyrics] == [4, 5]
+        assert [bar for bar, _ in renderer.rendered] == [4, 5]
+        assert session.snapshot()["turn_id"] == "turn-1"
+        with pytest.raises(ValueError, match="bound"):
+            session.committed(6, None, "echo must not advance model")
+    finally:
+        session.close()
+
+
+def test_tempo_update_keeps_lyrics_but_never_serves_old_tempo_audio():
+    from streammuse.domain.rap.lyric_stream import TempoUpdate
+    listener, renderer = _Listener(), _Renderer()
+    session = _session(renderer, listener)
+    try:
+        _wait(lambda: len(listener.ready) == 2)
+        records = tuple(listener.lyrics)
+        session.committed(0, records[0].lyric_id, records[0].text)
+        renderer.gate.clear()
+        ack = session.update_tempo(TempoUpdate(1, 0, 120))
+        assert ack["effective_from_bar"] == 1
+        assert ack["requested_from_bar"] == 0
+        assert ack["revision"] == 1
+        assert session.fetch_audio(1, records[1].lyric_id, 0).audio is None
+        assert session.fetch_audio(0, records[0].lyric_id, 0).audio.manifest.tempo_bpm == 90
+        renderer.gate.set()
+        audio = session.fetch_audio(1, records[1].lyric_id, 5, accept_older=False).audio
+        assert audio.manifest.tempo_bpm == 120
+        assert session.lyric(records[1].lyric_id) == records[1]
+    finally:
+        renderer.gate.set()
+        session.close()
+
+
+def test_inflight_old_tempo_render_cannot_overwrite_new_tempo_job():
+    from streammuse.domain.rap.lyric_stream import TempoUpdate
+
+    class BlockingRenderer(_Renderer):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def render(self, record, *, tempo_bpm, previous=None):
+            if tempo_bpm == 90:
+                self.started.set()
+                assert self.release.wait(3)
+            return super().render(record, tempo_bpm=tempo_bpm, previous=previous)
+
+    renderer, listener = BlockingRenderer(), _Listener()
+    session = _session(renderer, listener)
+    try:
+        assert renderer.started.wait(3)
+        record = listener.lyrics[0]
+        session.update_tempo(TempoUpdate(1, 0, 120))
+        renderer.release.set()
+        result = session.fetch_audio(0, record.lyric_id, 5, accept_older=False)
+        assert result.audio.manifest.tempo_bpm == 120
+        assert listener.ready.count((0, record.lyric_id)) == 1
+    finally:
+        renderer.release.set()
+        session.close()
+
+
+def test_bounded_commits_are_ordered_identity_checked_and_idempotent():
+    listener = _Listener()
+    session = _session(listener=listener, end_bar_exclusive=2, turn_id='bounded')
+    try:
+        _wait(lambda: len(listener.lyrics) == 2)
+        first, second = listener.lyrics
+        with pytest.raises(ValueError, match='order'):
+            session.committed(1, second.lyric_id, second.text)
+        with pytest.raises(ValueError, match='text'):
+            session.committed(0, first.lyric_id, 'not the generated line')
+        session.committed(0, first.lyric_id, first.text)
+        session.committed(0, first.lyric_id, first.text)
+        session.committed(1, second.lyric_id, second.text)
+        assert session.snapshot()['playhead'] == 1
+    finally:
+        session.close()

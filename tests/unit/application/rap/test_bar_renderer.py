@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from streammuse.application.rap.audio_rendering import bar_frame_count
 from streammuse.application.rap.bar_renderer import DeterministicRapBarRenderer
@@ -210,3 +211,70 @@ def test_nonfinal_tail_cropped_at_bar_boundary_has_truthful_warning_and_lengths(
     assert first.cropped_frames == 26_000
     assert crop_warning.code == AudioWarningCode.FORCED_BAR_FIT
     assert crop_warning.rendered_ms == 500.0
+
+
+def test_renderer_retains_stems_and_remixes_without_repeating_synthesis() -> None:
+    from streammuse.domain.rap.audio import RapMixConfig
+
+    synthesizer = ImpulseSpeechSynthesizer(frames=1_000)
+    renderer = DeterministicRapBarRenderer(
+        tempo=Tempo(92.0, 4, 4), audio_format=AudioFormat(),
+        synthesizer=synthesizer, drums=SilentDrumRenderer(),
+        time_stretcher=ExactLengthTimeStretcher(),
+    )
+    prepared = renderer.render(planned_bar_with_slots(bar=2, ticks=(0, 3, 9, 15)))
+    config = RapMixConfig(vocal_gain=0.4, revision=1)
+    renderer.set_mix_config(config)
+    remixed = renderer.remix(prepared)
+
+    assert len(synthesizer.requests) == 4
+    assert prepared.mix_config == RapMixConfig()
+    assert remixed.mix_config == config
+    assert remixed.audio.frame_count == prepared.audio.frame_count == 125_217
+    assert stereo_array(remixed.audio)[0, 0] == pytest.approx(0.4)
+    assert stereo_array(prepared.audio)[0, 0] == pytest.approx(0.8)
+    assert remixed.vocal_stem is prepared.vocal_stem
+    assert all(item.estimated_sample is None for item in prepared.onset_estimates)
+    assert all(item.method == "unavailable" for item in prepared.onset_estimates)
+
+
+def test_renderer_uses_snapshot_offsets_instead_of_recomputing_the_past() -> None:
+    from streammuse.domain.rap.timeline import RapTimeline
+
+    timing = RapTimeline(Tempo(92.0, 4, 4)).with_tempo(120.0, 2).snapshot(3, 48_000)
+    renderer = DeterministicRapBarRenderer(
+        tempo=Tempo(92.0, 4, 4), audio_format=AudioFormat(),
+        synthesizer=ImpulseSpeechSynthesizer(frames=1_000), drums=SilentDrumRenderer(),
+        time_stretcher=ExactLengthTimeStretcher(),
+    )
+    prepared = renderer.render(planned_bar_with_slots(bar=3, ticks=(0, 3, 9, 15)), timing=timing)
+
+    assert prepared.audio.frame_count == 96_000
+    assert [item.target_sample for item in prepared.diagnostics] == [0, 18_000, 54_000, 90_000]
+    assert prepared.timing is timing
+
+
+def test_drums_only_uses_exact_snapshot_and_mix_without_tts():
+    from streammuse.domain.rap.audio import RapMixConfig
+    from streammuse.domain.rap.timeline import RapTimeline
+    from streammuse.infrastructure.rap.drums import ProceduralBoomBapRenderer
+
+    timing = RapTimeline(Tempo(92.0, 4, 4)).with_tempo(120.0, 2).snapshot(3, 48_000)
+    synth = ImpulseSpeechSynthesizer(frames=1_000)
+    config = RapMixConfig.with_drum_boost(revision=3)
+    renderer = DeterministicRapBarRenderer(
+        tempo=Tempo(92.0, 4, 4), audio_format=AudioFormat(),
+        synthesizer=synth, drums=ProceduralBoomBapRenderer(seed=7),
+        time_stretcher=ExactLengthTimeStretcher(), mix_config=config,
+    )
+    plan = planned_bar_with_slots(bar=3, ticks=(0, 4, 8, 12))
+    prepared = renderer.render_drums_only(bar=3, template=plan.template, timing=timing)
+
+    assert prepared.audio.frame_count == 96_000 and prepared.timing is timing
+    assert prepared.source == "drums_only" and prepared.fallback_reason == "vocal_unavailable"
+    assert prepared.mix_config == config
+    assert prepared.scheduled == prepared.onset_estimates == ()
+    assert not synth.requests
+    assert not np.any(stereo_array(prepared.vocal_stem))
+    assert np.any(stereo_array(prepared.audio))
+    assert np.max(np.abs(stereo_array(prepared.audio))) <= 0.950001

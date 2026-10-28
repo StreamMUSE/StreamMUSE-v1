@@ -33,7 +33,9 @@ from streammuse.application.rap.lyric_writer import (
     LyricWriteRequest,
     SequentialLyricWriter,
 )
-from streammuse.domain.rap.lyric_stream import BarAudioManifest, BarLyricRecord, PlanEdit
+from streammuse.domain.rap.lyric_stream import BarAudioManifest, BarLyricRecord, PlanEdit, TempoUpdate
+from streammuse.domain.rap.timeline import RapTimeline
+from streammuse.domain.timing import Tempo
 
 FETCH_READY = "ready"
 FETCH_OLDER_VERSION = "older_version"
@@ -118,12 +120,29 @@ class LyricStreamSession:
         lyric_lead: int = 3,
         audio_lead: int = 2,
         history: tuple[tuple[int, str], ...] = (),
+        end_bar_exclusive: int | None = None,
+        turn_id: str | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if lyric_lead < 1 or audio_lead < 1 or lyric_lead < audio_lead:
             raise ValueError("leads must be positive and lyric_lead must cover audio_lead")
+        if isinstance(start_bar, bool) or not isinstance(start_bar, int) or start_bar < 0:
+            raise ValueError("start_bar must be a non-negative integer")
+        if end_bar_exclusive is not None and (
+            isinstance(end_bar_exclusive, bool) or not isinstance(end_bar_exclusive, int)
+            or not 1 <= end_bar_exclusive - start_bar <= 8
+        ):
+            raise ValueError("bounded turn must contain between 1 and 8 bars")
+        if turn_id is not None and (not isinstance(turn_id, str) or not turn_id.strip() or end_bar_exclusive is None):
+            raise ValueError("turn_id requires a non-empty id and bounded output")
         self.session_id = session_id
         self._tempo_bpm = float(tempo_bpm)
+        self._timeline = RapTimeline(Tempo(self._tempo_bpm, 4, 4))
+        self._tempo_seq = -1
+        self._tempo_ack: dict[str, object] | None = None
+        self._start_bar = start_bar
+        self._end_bar_exclusive = end_bar_exclusive
+        self._turn_id = turn_id
         self._plan = plan
         self._writer = writer
         self._renderer = renderer
@@ -187,6 +206,16 @@ class LyricStreamSession:
 
     def committed(self, bar: int, lyric_id: str | None, text: str) -> None:
         with self._condition:
+            if self._end_bar_exclusive is not None and not self._start_bar <= bar < self._end_bar_exclusive:
+                raise ValueError("commit lies outside the bounded turn")
+            if self._turn_id is not None:
+                record = self._by_id.get(lyric_id)
+                if record is None or record.bar != bar:
+                    raise ValueError("bounded turn commits require matching generated lyric identity")
+                if bar > self._playhead + 1:
+                    raise ValueError("bounded turn commits must be delivered in order")
+                if text != record.text:
+                    raise ValueError("bounded turn commit text must match the generated lyric")
             state = self._state(bar)
             record = self._by_id.get(lyric_id) if lyric_id else None
             state.committed_text = text or None  # a silent bar has no line to follow
@@ -195,6 +224,27 @@ class LyricStreamSession:
                 self._playhead = bar
             self._prune_locked()
             self._condition.notify_all()
+
+    def update_tempo(self, update: TempoUpdate) -> dict[str, object]:
+        with self._condition:
+            if update.edit_seq <= self._tempo_seq:
+                if self._tempo_ack is not None and update.to_payload() == self._tempo_ack["update"]:
+                    return {key: value for key, value in self._tempo_ack.items() if key != "update"}
+                raise ValueError("tempo edit_seq must increase")
+            effective = max(update.from_bar, self._playhead + 1)
+            self._timeline = self._timeline.with_tempo(update.bpm, effective)
+            self._tempo_seq = update.edit_seq
+            # An in-flight worker retains the old entry object and cannot publish
+            # into its replacement, even when the lyric content id is unchanged.
+            for lyric_id, record in self._by_id.items():
+                if record.bar >= effective:
+                    self._audio.pop(lyric_id, None)
+            ack = {"type": "tempo_updated", "edit_seq": update.edit_seq,
+                   "requested_from_bar": update.from_bar, "effective_from_bar": effective,
+                   "bpm": update.bpm, "revision": self._timeline.revision}
+            self._tempo_ack = {**ack, "update": update.to_payload()}
+            self._condition.notify_all()
+            return ack
 
     def fetch_audio(
         self, bar: int, lyric_id: str, wait_seconds: float, *, accept_older: bool = True
@@ -245,6 +295,9 @@ class LyricStreamSession:
             return {
                 "playhead": self._playhead,
                 "edit_seq": self._plan.edit_seq,
+                "timeline_revision": self._timeline.revision,
+                "turn_id": self._turn_id,
+                "end_bar_exclusive": self._end_bar_exclusive,
                 "latest": {bar: state.latest.revision for bar, state in self._bars.items() if state.latest},
                 "audio": {
                     lyric_id: entry.status
@@ -311,6 +364,8 @@ class LyricStreamSession:
 
     def _next_write_locked(self) -> tuple[LyricWriteRequest, int] | None:
         for bar in range(self._playhead + 1, self._playhead + self._lyric_lead + 1):
+            if self._end_bar_exclusive is not None and bar >= self._end_bar_exclusive:
+                break
             state = self._state(bar)
             if state.latest is not None:
                 continue
@@ -376,13 +431,17 @@ class LyricStreamSession:
                 entry.attempts += 1
                 before = self._bars.get(record.bar - 1)
                 previous = None if before is None else before.latest
+                timing = self._timeline.snapshot(record.bar, 24_000)
             try:
-                audio = self._renderer.render(record, tempo_bpm=self._tempo_bpm, previous=previous)
+                audio = self._renderer.render(record, tempo_bpm=timing.bpm, previous=previous)
                 error = None
             except Exception as failure:  # reported to the fetching client
                 audio, error = None, f"{type(failure).__name__}: {failure}"
             with self._condition:
-                entry = self._audio[record.lyric_id]
+                if (self._closed or self._audio.get(record.lyric_id) is not entry
+                        or self._timeline.snapshot(record.bar, 24_000) != timing):
+                    self._condition.notify_all()
+                    continue
                 if audio is not None:
                     entry.status, entry.audio = "ready", audio
                     self._stats["audio_rendered"] += 1
@@ -410,6 +469,8 @@ class LyricStreamSession:
                 continue
             return record
         for bar in range(self._playhead + 1, self._playhead + self._audio_lead + 1):
+            if self._end_bar_exclusive is not None and bar >= self._end_bar_exclusive:
+                break
             state = self._bars.get(bar)
             if state is None or state.latest is None:
                 continue

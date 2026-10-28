@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from math import isfinite
+from typing import TYPE_CHECKING
 
+from streammuse.domain.rap.chords import CHORD_LOOP_IDS
 from streammuse.domain.rap.models import ScheduledSyllable
+
+if TYPE_CHECKING:
+    from streammuse.domain.rap.timeline import BarTimingSnapshot
 
 
 class AudioWarningSeverity(str, Enum):
@@ -115,6 +121,62 @@ class SyllablePlacementDiagnostic:
 
 
 @dataclass(frozen=True)
+class RapMixConfig:
+    """Versioned linear gains; construction alone preserves the legacy mix."""
+
+    vocal_gain: float = 0.80
+    drum_gain: float = 0.55
+    master_gain: float = 1.0
+    peak_limit: float = 0.95
+    revision: int = 0
+    chord_loop: str = "off"
+    chord_gain: float = 0.20
+
+    def __post_init__(self) -> None:
+        for name, maximum in (("vocal_gain", 2.0), ("drum_gain", 2.0), ("master_gain", 1.0), ("peak_limit", 1.0), ("chord_gain", 2.0)):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not 0 <= value <= maximum or not isfinite(value):
+                raise ValueError(f"{name} must be finite and between 0 and {maximum}")
+        if self.peak_limit == 0:
+            raise ValueError("peak_limit must be positive")
+        if type(self.revision) is not int or self.revision < 0:
+            raise ValueError("mix revision must be a non-negative integer")
+        if not isinstance(self.chord_loop, str) or self.chord_loop not in CHORD_LOOP_IDS:
+            raise ValueError(f"chord_loop must be one of {CHORD_LOOP_IDS}")
+
+    @classmethod
+    def with_drum_boost(cls, *, revision: int = 0) -> RapMixConfig:
+        """Explicit settings preset: add 3 dB to the prior drum contribution."""
+        return cls(drum_gain=0.55 * 10 ** (3 / 20), revision=revision)
+
+
+@dataclass(frozen=True)
+class RenderedOnsetEstimate:
+    """A source-alignment/time-map estimate, never an acoustic observation."""
+
+    slot_index: int
+    requested_sample: int
+    estimated_sample: float | None = None
+    source_seconds: float | None = None
+    confidence: float | None = None
+    method: str = "unavailable"
+    unavailable_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class RapWarpDiagnostics:
+    """Applied warp evidence in original source-audio and output-bar coordinates."""
+
+    source_onsets: tuple[float, ...]
+    source_anchors: tuple[float, ...]
+    target_anchors: tuple[float, ...]
+    local_warp_ratios: tuple[float, ...]
+    policy: str
+    warp_ms: float
+    r3_attempt_deviations: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class PreparedRapBar:
     bar: int
     text: str
@@ -125,6 +187,13 @@ class PreparedRapBar:
     diagnostics: tuple[SyllablePlacementDiagnostic, ...]
     warnings: tuple[AudioWarning, ...]
     render_latency_ms: float
+    vocal_stem: PcmAudio | None = None
+    drum_stem: PcmAudio | None = None
+    mix_config: RapMixConfig | None = None
+    onset_estimates: tuple[RenderedOnsetEstimate, ...] = ()
+    warp_diagnostics: RapWarpDiagnostics | None = None
+    timing: BarTimingSnapshot | None = None
+    chord_stem: PcmAudio | None = None
 
 
 class AudioPlaybackNoticeKind(str, Enum):

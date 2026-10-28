@@ -60,6 +60,74 @@ def test_existing_parser_defaults_remain_text_only() -> None:
     assert args.rap_render_rolling_timeout == 5.0
 
 
+def test_interaction_cli_configuration_is_explicit_and_separate():
+    args = build_parser().parse_args([
+        "--interaction-mode", "alternating", "--response-bars", "3",
+        "--drum-gain", "0.75", "--vocal-gain", "0.8",
+    ])
+    assert args.interaction_mode == "alternating"
+    assert args.response_bars == 3
+    assert args.drum_gain == 0.75
+    assert args.vocal_gain == 0.8
+    assert build_parser().parse_args([]).interaction_mode == "continuous"
+
+
+def test_alternating_mode_rejects_unsupported_legacy_runtime(tmp_path):
+    args = build_parser().parse_args(["--interaction-mode", "alternating", "--log-dir", str(tmp_path)])
+    with pytest.raises(ValueError, match="v3"):
+        build_demo(args, audio_factories=FailIfCalledAudioFactories())
+
+
+@pytest.mark.parametrize("max_bars", [0, 3])
+def test_v3_assembly_switches_between_separate_modes_while_stopped(tmp_path, max_bars, monkeypatch):
+    from streammuse.application.rap.bar_stream import BarStreamController
+    from streammuse.application.rap.interaction import AlternatingRapController
+
+    scripted_calls = []
+    monkeypatch.setattr(BarStreamController, "on_tick", lambda self, tick: None)
+    monkeypatch.setattr(BarStreamController, "update_plan", lambda self, **kwargs: scripted_calls.append(kwargs))
+
+    class AudioFactories(RapAudioFactories):
+        def create_synthesizer(self):
+            return SimpleNamespace()
+        def create_phrase_warper(self, *, policy):
+            return SimpleNamespace(policy=policy, rubberband_version="test")
+        def create_lyric_stream(self, *, base_url):
+            return SimpleNamespace(
+                close=lambda: None,
+                get_capabilities=lambda: {"tempo_updates_v1", "bounded_turns_v1"},
+            )
+        def create_bar_audio_source(self, *, base_url, opus_codec):
+            return SimpleNamespace(close=lambda: None)
+        def create_sink(self, *, output, audio_format, audio_file, audio_device):
+            return NullAudioSink(audio_format=audio_format)
+
+    args = build_parser().parse_args([
+        "--rap-audio-renderer", "moss_aligned_remote", "--rap-protocol", "v3",
+        "--audio-output", "wav", "--log-dir", str(tmp_path), "--tempo", "60", "--max-bars", str(max_bars),
+        "--rap-scripted-edits", "4:topic=deep sea",
+    ])
+    runtime = build_demo(args, audio_factories=AudioFactories())
+    try:
+        assert isinstance(runtime.controller, BarStreamController)
+        runtime.controller.on_tick(40)
+        assert len(scripted_calls) == 1
+        assert runtime.settings_state()["capabilities"]["mode"] is True
+        result = runtime.update_settings({"mode": "alternating", "response_bars": 3})
+        assert isinstance(runtime.controller, AlternatingRapController)
+        assert result["session_restarted"] is True
+        assert runtime.controller.coordinator_epoch == 1
+        assert runtime.interaction_state()["supported"] is True
+        assert runtime.controller.terminal_bar_limit == (max_bars or None)
+        runtime.update_settings({"mode": "continuous"})
+        assert isinstance(runtime.controller, BarStreamController)
+        assert runtime.controller.coordinator_epoch == 2
+        runtime.controller.on_tick(40)
+        assert scripted_calls == [{"from_bar": 4, "topic": "deep sea", "template_id": None}] * 2
+    finally:
+        runtime.close()
+
+
 def test_parser_accepts_remote_moss_renderer_configuration() -> None:
     args = build_parser().parse_args(
         [

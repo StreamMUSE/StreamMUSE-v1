@@ -260,10 +260,14 @@ def test_renders_one_continuous_r3_phrase_with_exact_pcm16_and_diagnostics(
     assert aligner.calls == [(tmp_path / "request-1" / "source.wav", "Steady motion!")]
     assert len(stretcher.calls) == 1
     target_frames, sample_rate_hz, time_map = stretcher.calls[0]
-    assert target_frames == 128_000
+    # Only the active span is stretched; the 0.25-second rest is added afterward.
+    assert target_frames == 122_000
     assert sample_rate_hz == 24_000
     assert time_map[0] == (0, 0)
-    assert time_map[-1] == (23_999, 127_999)
+    assert time_map[-1] == (21_599, 121_999)
+    _, pcm = wavfile.read(io.BytesIO(result.vocal_wav))
+    assert not np.any(pcm[:6_000])
+    assert np.any(pcm[6_000:6_240])
 
     with wave.open(io.BytesIO(result.vocal_wav), "rb") as rendered:
         assert rendered.getframerate() == 24_000
@@ -421,7 +425,7 @@ def test_default_policy_uses_gentle_sparse_salient_onsets(tmp_path: Path) -> Non
 
     assert len(stretcher.calls) == 1
     _, _, time_map = stretcher.calls[0]
-    assert len(time_map) == 5
+    assert len(time_map) == 4  # First onset is the implicit active-span boundary.
     ratios = tuple(
         (target_end - target_start) / (source_end - source_start)
         for (source_start, target_start), (source_end, target_end) in zip(
@@ -447,8 +451,9 @@ def test_default_policy_uses_gentle_sparse_salient_onsets(tmp_path: Path) -> Non
     target_anchors = result.alignment_diagnostics["target_anchors"]
     assert len(source_anchors) == len(target_anchors) == len(_request().syllables)
     effective = artifact["mapping"]["effective_warp_anchors"]
-    assert tuple(target_anchors[index] for index in (0, 2, 3)) == pytest.approx(
-        tuple(anchor["target_seconds"] for anchor in effective)
+    assert target_anchors[0] == 0.25
+    assert tuple(target_anchors[index] for index in (2, 3)) == pytest.approx(
+        tuple(anchor["target_seconds"] + 0.25 for anchor in effective)
     )
     assert list(target_anchors) == sorted(target_anchors)
 
@@ -457,9 +462,9 @@ def test_default_policy_uses_gentle_sparse_salient_onsets(tmp_path: Path) -> Non
     sample_rate_hz = 24_000
     source_points = [source for source, _ in time_map]
     target_points = [target for _, target in time_map]
-    omitted_source_sample = round(source_anchors[1] * sample_rate_hz)
+    omitted_source_sample = round(source_anchors[1] * sample_rate_hz) - 2_400
     expected_target = (
-        np.interp(omitted_source_sample, source_points, target_points) / sample_rate_hz
+        np.interp(omitted_source_sample, source_points, target_points) / sample_rate_hz + 0.25
     )
     assert target_anchors[1] == pytest.approx(expected_target, abs=1.0 / sample_rate_hz)
 
@@ -575,8 +580,10 @@ def test_tick_zero_uses_cropped_acoustic_onset_as_single_boundary_endpoint(
     assert result.alignment_diagnostics["target_anchors"] == tuple(
         syllable.target_seconds for syllable in request.syllables
     )
+    # Public source coordinates refer to source.wav; warp_source_* below keeps
+    # the cropped time-map coordinates available without mixing the timebases.
     assert result.alignment_diagnostics["source_anchors"] == pytest.approx(
-        (0.0, 0.2, 0.45, 0.57)
+        (0.1, 0.3, 0.55, 0.67)
     )
 
     source_rate, source_samples = wavfile.read(workspace / "source.wav")
@@ -682,7 +689,7 @@ def test_uses_remote_contract_frame_count_at_non_90_bpm_half_frame_edge(
     result = renderer.render(request, tmp_path / "request")
 
     assert expected_frames == 57_600
-    assert stretcher.calls[0][0] == expected_frames
+    assert stretcher.calls[0][0] == expected_frames - 6_000
     assert result.audio_diagnostics["frame_count"] == expected_frames
     with wave.open(io.BytesIO(result.vocal_wav), "rb") as rendered:
         assert rendered.getnframes() == expected_frames
@@ -1175,7 +1182,7 @@ def _server_and_mac_warps(tmp_path: Path, policy: str, server_stretcher, mac_str
     return v1, source, local
 
 
-@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3"))
+@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3", "all_onsets_stress_r3"))
 def test_mac_v2_warp_feeds_r3_exactly_what_the_server_v1_warp_did(
     tmp_path: Path, policy: str
 ) -> None:
@@ -1189,6 +1196,8 @@ def test_mac_v2_warp_feeds_r3_exactly_what_the_server_v1_warp_did(
     assert local.source_anchors == tuple(v1.alignment_diagnostics["source_anchors"])
     assert local.target_anchors == tuple(v1.alignment_diagnostics["target_anchors"])
     assert local.policy == policy
+    artifact = json.loads((tmp_path / "v1" / "mms_alignment.json").read_text(encoding="utf-8"))
+    assert artifact["warp"]["stress_applied"] is (policy == "all_onsets_stress_r3")
     # The v2 server stopped after MMS: no warped vocal, no warp stage.
     assert set(source.stage_timings_ms) == {"moss", "aligner"}
     assert not (tmp_path / "v2" / "vocal.wav").exists()
@@ -1199,7 +1208,7 @@ def test_mac_v2_warp_feeds_r3_exactly_what_the_server_v1_warp_did(
 @pytest.mark.skipif(
     __import__("shutil").which("rubberband") is None, reason="rubberband CLI not installed"
 )
-@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3"))
+@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3", "all_onsets_stress_r3"))
 def test_mac_v2_warp_with_real_rubberband_matches_server_v1_bytes(
     tmp_path: Path, policy: str
 ) -> None:
@@ -1236,7 +1245,7 @@ def test_source_transport_keeps_pcm16_samples_and_reports_onsets(tmp_path: Path)
     assert "rubberband" not in source.model_tool_versions
 
 
-@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3"))
+@pytest.mark.parametrize("policy", ("gentle_sparse_r3", "all_onsets_r3", "all_onsets_stress_r3"))
 def test_v2_chunk_crosses_package_and_mac_warp_to_the_v1_server_bytes(
     tmp_path: Path, policy: str
 ) -> None:

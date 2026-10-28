@@ -24,6 +24,74 @@ from streammuse.domain.rap import (
 )
 from streammuse.domain.rap.models import BeatSlot
 from streammuse.domain.timing import Tempo
+from streammuse.domain.rap.timeline import RapTimeline
+from dataclasses import replace
+
+
+def _timed_bar(clock, bar):
+    timing = clock.snapshot(bar, 48_000)
+    result = prepared_bar(bar=bar)
+    return replace(result, audio=PcmAudio(result.audio.format, timing.frame_count,
+                                         bytes(timing.frame_count * result.audio.format.channels * 4)), timing=timing)
+
+
+def test_tempo_timeline_uses_old_frames_before_new_boundary():
+    clock = RapTimeline(Tempo(90, 4, 4))
+    changed = clock.with_tempo(120, 1)
+    sink, ticks = FakeRapAudioSink(), []
+    service = RapPlaybackService(tempo=Tempo(90, 4, 4), timeline=clock, sink=sink,
+                                 publisher=None, on_tick=ticks.append)
+    service.prime(_timed_bar(clock, 0))
+    service.set_timeline(changed)
+    assert service._tick_sample(15) == 120000
+    assert service._tick_sample(16) == 128000
+    assert service._tick_sample(17) == 134000
+    service.close()
+
+
+def test_playback_rejects_changed_queued_timing_and_wrong_duration():
+    clock = RapTimeline(Tempo(90, 4, 4))
+    sink = FakeRapAudioSink()
+    service = RapPlaybackService(tempo=Tempo(90, 4, 4), timeline=clock, sink=sink,
+                                 publisher=None, on_tick=lambda _: None)
+    good = _timed_bar(clock, 0)
+    with pytest.raises(ValueError, match="timing"):
+        service.prime(replace(good, audio=PcmAudio(good.audio.format, 0, b"")))
+    assert not sink.queued
+    service.prime(good)
+    with pytest.raises(ValueError, match="queued"):
+        service.set_timeline(clock.with_tempo(120, 0))
+    service.close()
+
+
+def test_playback_rejects_changed_past_even_if_current_frames_match():
+    original = RapTimeline(Tempo(90, 4, 4))
+    # Two 90 BPM bars and 120+72 BPM bars both last 16/3 seconds.
+    changed = original.with_tempo(120, 0).with_tempo(72, 1).with_tempo(90, 2)
+    sink = FakeRapAudioSink()
+    service = RapPlaybackService(tempo=Tempo(90, 4, 4), timeline=original,
+                                 sink=sink, publisher=None, on_tick=lambda _: None)
+    service._current_tick = 64
+    service._next_start_bar = 4
+    assert changed.snapshot(4, 48000).start_frame == original.snapshot(4, 48000).start_frame
+    with pytest.raises(ValueError, match='past|current'):
+        service.set_timeline(changed)
+    service.close()
+
+
+def test_completed_queue_keeps_negotiated_sample_rate_for_tick_clock():
+    clock = RapTimeline(Tempo(90, 4, 4))
+    sink = FakeRapAudioSink()
+    service = RapPlaybackService(tempo=Tempo(90, 4, 4), timeline=clock,
+                                 sink=sink, publisher=None, on_tick=lambda _: None)
+    timing = clock.snapshot(0, 44100)
+    fmt = AudioFormat(44100, 2)
+    bar = replace(prepared_bar(bar=0), timing=timing,
+                  audio=PcmAudio(fmt, timing.frame_count, bytes(timing.frame_count * 8)))
+    service.prime(bar)
+    service._prepared.clear()
+    assert service._tick_sample(16) == timing.end_frame
+    service.close()
 
 
 class RecordingPublisher:
@@ -793,12 +861,52 @@ def test_syllable_event_reports_exact_mixed_sample_not_poll_delay() -> None:
         "observation_delay_ms": 125.0,
         "word": "sample",
         "label": "sample",
+        "display_label": "sample",
+        "display_index": 0,
+        "display_count": 1,
         "stress": 1,
         "beat": 0,
         "subdivision": 2,
     }
 
     service.close()
+
+
+def test_audio_emitted_whisper_matches_scheduled_display_without_changing_targets():
+    from streammuse.application.rap.monitoring_payloads import scheduled_syllables_payload
+
+    prepared = prepared_bar(bar=0, syllable_at_tick=2)
+    scheduled = tuple(
+        ScheduledSyllable(
+            replace(prepared.scheduled[0].slot, tick=2 + index * 2, slot_index=index),
+            Syllable("whisper", index, 2, 1 - index, phonemes=("IH1",) if index == 0 else ("ER0",)),
+        )
+        for index in range(2)
+    )
+    prepared = replace(
+        prepared, text="whisper", scheduled=scheduled,
+        diagnostics=tuple(
+            replace(prepared.diagnostics[0], word="whisper", slot_index=index, target_sample=24_000 + index * 24_000)
+            for index in range(2)
+        ),
+    )
+    service, sink, publisher = running_service(prepared=prepared)
+    try:
+        sink.set_absolute_frame(54_000)
+        service.poll()
+        emitted = [event for event in publisher.events if event.event_type == RapEventType.SYLLABLE_EMITTED]
+        assert [event.payload.get("display_label") for event in emitted] == ["whis-", "-per"]
+        assert [event.payload["scheduled_sample"] for event in emitted] == [24_000, 48_000]
+        assert [event.payload["label"] for event in emitted] == ["whisper", "."]
+        planned = scheduled_syllables_payload(scheduled, bar=0)
+        for event, item in zip(emitted, planned):
+            for key in ("word", "display_label", "display_index", "display_count"):
+                assert event.payload[key] == item[key]
+            assert event.payload["software_error_samples"] == 0
+        assert prepared.text == "whisper"
+        assert prepared.scheduled == scheduled
+    finally:
+        service.close()
 
 
 def test_completed_bar_keeps_crossed_syllable_metadata_until_after_observation() -> None:

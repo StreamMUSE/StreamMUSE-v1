@@ -557,7 +557,7 @@ def test_immediate_start_stop_start_before_bar_zero_replays_bar_zero(tmp_path: P
         second_run.join(timeout=1.0)
 
 
-def test_finite_non_looping_scenario_stops_terminally_and_requires_reset_to_restart(tmp_path: Path) -> None:
+def test_finite_non_looping_scenario_restarts_without_manual_reset(tmp_path: Path) -> None:
     base = default_scenario()
     finite = RapScenario(
         scenario_id="finite-audio",
@@ -592,9 +592,16 @@ def test_finite_non_looping_scenario_stops_terminally_and_requires_reset_to_rest
         assert errors == []
         assert [bar.bar for bar in manual.completed] == [0]
         assert dependencies.control_state == PlaybackState.STOPPED
-        with pytest.raises(RuntimeError, match="reset.*finite scenario"):
-            dependencies.start()
-
+        worker = Thread(target=run)
+        worker.start()
+        _wait_for_playback_state(dependencies, PlaybackState.RUNNING)
+        assert dependencies.playback.current_tick in (None, 0)
+        manual.advance(bar_frames)
+        dependencies.playback.poll()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
+        assert errors == []
+        assert dependencies.control_state == PlaybackState.STOPPED
         dependencies.reset()
         assert dependencies.control_state == PlaybackState.STOPPED
     finally:

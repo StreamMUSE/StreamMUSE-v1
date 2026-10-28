@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 import pytest
+import httpx
 
 from streammuse.application.rap.runtime import RapAudioDemoDependencies
 from streammuse.application.rap.monitoring import RapEventDispatcher, RapEventPublisher, RapStateProjector
@@ -139,6 +140,247 @@ def test_state_endpoint_returns_complete_json_safe_monitor_snapshot(tmp_path: Pa
     assert response.json()["candidates"][0]["components"][0]["name"] == "stress_alignment"
     assert response.json()["latest_request"]["context_lines"] == ["prior line"]
     assert response.json()["latest_batch"]["prompt"][0]["content"] == "exact flow prompt"
+
+
+def test_settings_endpoints_delegate_typed_runtime_contract(tmp_path: Path) -> None:
+    runtime = ControllableFakeRuntime(tmp_path)
+    updates = []
+    runtime.settings_state = lambda: {"supported": True, "values": {"mode": "continuous"}}
+    runtime.update_settings = lambda payload: updates.append(payload) or {"effective_from_bar": 3}
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+    with TestClient(app) as client:
+        assert client.get("/api/control/settings").json()["values"]["mode"] == "continuous"
+        response = client.post("/api/control/settings", json={"tempo_bpm": 50})
+        assert response.status_code == 200
+        assert response.json()["effective_from_bar"] == 3
+        assert updates == [{"tempo_bpm": 50}]
+        assert client.post("/api/control/settings", content="not json").status_code == 422
+
+
+def test_new_controls_reject_unsupported_runtime_and_report_capabilities(tmp_path: Path) -> None:
+    app, _, _ = _app(tmp_path)
+    with TestClient(app) as client:
+        assert client.get("/api/control/settings").json()["supported"] is False
+        assert client.get("/api/control/interaction").json()["supported"] is False
+        assert client.post("/api/control/settings", json={"mode": "alternating"}).status_code == 404
+        assert client.post("/api/control/interaction/arm", json={}).status_code == 404
+
+
+def test_interaction_routes_validate_clock_measurement(tmp_path: Path) -> None:
+    runtime = ControllableFakeRuntime(tmp_path)
+    taps = []
+    runtime.interaction_state = lambda: {"supported": True, "phase": "CAPTURING"}
+    runtime.arm_capture = lambda: {"phase": "ARMED"}
+    runtime.record_tap = lambda **payload: taps.append(payload) or {"accepted": True}
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+    with TestClient(app) as client:
+        state = client.get("/api/control/interaction").json()
+        assert state["monotonic_seconds"] > 0
+        assert client.post("/api/control/interaction/arm", json={}).json()["phase"] == "ARMED"
+        payload = {"server_time_seconds": time.monotonic(), "client_time_ms": 100.0, "uncertainty_ms": 2.0}
+        assert client.post("/api/control/interaction/tap", json=payload).status_code == 200
+        assert taps == [payload]
+        for patch in ({"server_time_seconds": True}, {"server_time_seconds": "bad"}, {**payload, "uncertainty_ms": -1}):
+            assert client.post("/api/control/interaction/tap", json=patch).status_code == 422
+        for name in payload:
+            assert client.post(
+                "/api/control/interaction/tap", json={**payload, name: 10 ** 400},
+            ).status_code == 422
+        assert taps == [payload]
+
+
+def test_settings_runtime_conflicts_are_explicit(tmp_path: Path) -> None:
+    runtime = ControllableFakeRuntime(tmp_path)
+    def reject(_payload):
+        raise RuntimeError("mode changes require stopped playback")
+    runtime.update_settings = reject
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+    with TestClient(app) as client:
+        response = client.post("/api/control/settings", json={"mode": "alternating"})
+        assert response.status_code == 409
+        assert "stopped" in response.json()["detail"]
+
+
+def test_installed_settings_post_reports_committed_mix_despite_discovery_error(tmp_path):
+    from streammuse.application.rap.audio_settings import install_audio_settings
+    from streammuse.application.rap.settings import RapSettings
+
+    runtime = ControllableFakeRuntime(tmp_path)
+    runtime.control_state = PlaybackState.RUNNING
+    applied = []
+    runtime.controller = SimpleNamespace(update_mix=lambda config: applied.append(config) or {})
+    status_calls = 0
+
+    def status():
+        nonlocal status_calls
+        status_calls += 1
+        if status_calls == 2:
+            raise OSError("transient status failure")
+        return {"supports_device_selection": True}
+
+    sink = SimpleNamespace(
+        output_device_status=status, set_output_device=lambda value: None,
+        list_output_devices=lambda: [],
+    )
+    service = install_audio_settings(runtime, RapSettings(), sink=sink)
+    runtime.update_settings = service.update
+    runtime.settings_state = service.snapshot
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    with TestClient(app) as client:
+        response = client.post("/api/control/settings", json={"vocal_gain": 0.4})
+        assert response.status_code == 200
+        assert response.json()["values"]["vocal_gain"] == 0.4
+        assert response.json()["device_error"] == "transient status failure"
+        assert applied[0].vocal_gain == 0.4
+        assert client.get("/api/control/settings").json()["values"]["vocal_gain"] == 0.4
+
+
+def test_reset_maps_pending_runtime_settings_update_to_conflict(tmp_path):
+    entered, release = Event(), Event()
+    errors = []
+
+    def update(payload):
+        entered.set()
+        assert release.wait(2)
+        return {}
+
+    runtime = RapAudioDemoDependencies(
+        tempo=Tempo(60, 4, 4), controller=SimpleNamespace(close=lambda: None), coordinator=None,
+        playback=SimpleNamespace(state=PlaybackState.STOPPED, close=lambda: None),
+        publisher=object(), dispatcher=SimpleNamespace(flush_and_close=lambda: None),
+        session_dir=tmp_path, settings_service=SimpleNamespace(update=update),
+    )
+
+    def run_update():
+        try:
+            runtime.update_settings({"tempo_bpm": 90})
+        except BaseException as error:
+            errors.append(error)
+
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        worker = Thread(target=run_update)
+        worker.start()
+        try:
+            assert entered.wait(1)
+            response = client.post("/api/control/reset")
+            assert response.status_code == 409
+            assert "settings update" in response.json()["detail"]
+            assert runtime.control_state == PlaybackState.STOPPED
+        finally:
+            release.set()
+            worker.join(2)
+        assert not worker.is_alive()
+        assert errors == []
+
+
+def test_grouped_local_settings_endpoint_remains_available_during_tempo_wait(tmp_path):
+    from streammuse.application.rap.settings import RapSettings, RapSettingsService
+
+    entered, release = Event(), Event()
+
+    def apply(current, updated, changed):
+        if "tempo_bpm" in changed:
+            entered.set()
+            assert release.wait(2)
+            return {"effective_from_bar": 5}
+        return {"mix_revision": 1}
+
+    runtime = RapAudioDemoDependencies(
+        tempo=Tempo(60, 4, 4), controller=SimpleNamespace(close=lambda: None), coordinator=None,
+        playback=SimpleNamespace(state=PlaybackState.RUNNING, close=lambda: None),
+        publisher=object(), dispatcher=SimpleNamespace(flush_and_close=lambda: None), session_dir=tmp_path,
+    )
+    runtime.settings_service = RapSettingsService(
+        RapSettings(), state=lambda: "running", apply=apply,
+        capabilities=lambda: {"tempo_bpm": True, "drum_gain": True},
+    )
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            remote = asyncio.create_task(client.post("/api/control/settings/generation", json={"tempo_bpm": 80}))
+            try:
+                assert await asyncio.to_thread(entered.wait, 0.5)
+                response = await asyncio.wait_for(client.post("/api/control/settings/local", json={"drum_gain": 0.2}), timeout=0.5)
+                assert response.status_code == 200, response.text
+                assert response.json()["values"]["drum_gain"] == 0.2
+                assert not remote.done()
+                wrong_group = await client.post("/api/control/settings/local", json={"tempo_bpm": 70})
+                assert wrong_group.status_code == 422
+            finally:
+                release.set()
+                response = await remote
+            assert response.status_code == 200, response.text
+            current = await client.get("/api/control/settings/local")
+            assert current.json()["values"]["tempo_bpm"] == 80
+            assert current.json()["values"]["drum_gain"] == 0.2
+
+    asyncio.run(exercise())
+
+
+def test_slow_plan_send_does_not_block_local_settings_http(tmp_path):
+    entered, release = Event(), Event()
+    runtime = ControllableFakeRuntime(tmp_path)
+
+    def edit(**kwargs):
+        entered.set()
+        release.wait(1)
+        return SimpleNamespace(edit_seq=1, from_bar=0)
+
+    runtime.controller = SimpleNamespace(update_plan=edit, next_editable_bar=0)
+    runtime.update_settings = lambda patch, group=None: {"group": group, "values": patch}
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            request = asyncio.create_task(client.post("/api/control/plan", json={"topic": "rain"}))
+            try:
+                assert await asyncio.to_thread(entered.wait, 0.5)
+                local = await asyncio.wait_for(client.post("/api/control/settings/local", json={"drum_gain": 0.2}), timeout=0.25)
+                assert local.status_code == 200
+                assert not request.done(), "plan I/O blocked the API event loop"
+            finally:
+                release.set()
+                response = await request
+            assert response.status_code == 200, response.text
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("concurrent_control", [None, "start", "stop"])
+def test_reset_teardown_and_waiting_controls_do_not_block_api_event_loop(tmp_path, concurrent_control):
+    entered, release, reset_finished = Event(), Event(), Event()
+    runtime = ControllableFakeRuntime(tmp_path)
+
+    def reset():
+        entered.set()
+        release.wait(1)
+        reset_finished.set()
+
+    runtime.reset = reset
+    runtime.start = lambda: None
+    app = create_app(runtime=runtime, projector=FakeProjector(), websocket_queue=Queue())
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            pending = [asyncio.create_task(client.post("/api/control/reset"))]
+            try:
+                assert await asyncio.to_thread(entered.wait, 1)
+                if concurrent_control is not None:
+                    pending.append(asyncio.create_task(client.post(f"/api/control/{concurrent_control}")))
+                    await asyncio.sleep(0)
+                state = await asyncio.wait_for(client.get("/api/state"), timeout=0.25)
+                assert state.status_code == 200
+                assert not reset_finished.is_set(), "API loop stalled until blocking reset completed"
+            finally:
+                release.set()
+                results = await asyncio.gather(*pending)
+            assert results[0].status_code == 200
+
+    asyncio.run(exercise())
 
 
 def test_session_endpoint_reports_runtime_identity_without_exposing_runtime_objects(tmp_path: Path) -> None:
@@ -696,21 +938,14 @@ def test_plan_controls_are_discoverable_before_start_with_full_flow_previews(tmp
         assert "current_plan" not in payload
         assert runtime.start_calls == 0
         templates = {item["template_id"]: item for item in payload["templates"]}
-        assert set(templates) == {
-            "baseline_straight_9", "baseline_syncopated_9", "baseline_staggered_9",
-        }
-        flow = templates["baseline_syncopated_9"]
-        assert flow["name"] == "Syncopated nine-slot baseline"
+        assert len(templates) == 6
+        assert all(key.startswith("mcflow_") for key in templates)
+        flow = next(iter(templates.values()))
         assert flow["ticks_per_beat"] == flow["beats_per_bar"] == 4
-        assert [slot["tick_in_bar"] for slot in flow["slots"]] == [0, 2, 3, 5, 7, 8, 10, 13, 15]
-        assert flow["slots"][-1] == {
-            "slot_index": 8, "tick_in_bar": 15, "duration_ticks": 1,
-            "target_stress": 0.9, "boundary_strength": 3, "rhyme_group": "A",
-        }
-        assert flow["provenance"] == {
-            "kind": "hand_authored_mcflow_inspired", "source": "StreamMUSE baseline",
-            "source_hash": None, "quantization_error_ticks": 0.0,
-        }
+        assert all(len(item["slots"]) >= 8 for item in templates.values())
+        assert sum(item["slots"][0]["tick_in_bar"] > 0 for item in templates.values()) >= 2
+        assert all(item["provenance"]["kind"] == "mcflow_extracted_anonymous" for item in templates.values())
+        assert len(flow["provenance"]["source_hash"]) == 64
 
 
 def test_plan_controls_list_the_controller_catalog_not_unavailable_builtins(tmp_path: Path) -> None:

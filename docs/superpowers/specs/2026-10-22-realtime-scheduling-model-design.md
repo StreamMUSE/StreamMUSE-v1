@@ -1,6 +1,6 @@
 # Real-Time Generative Pipeline: Scheduling Model Design
 
-Status: research-design draft for review. No scheduler superiority, performance prediction, or empirical distribution is assumed. This document does not gate delivery of the interaction/UI features in the companion design.
+Status: approved for implementation and brief empirical testing on 2026-10-22. No scheduler superiority, performance prediction, or empirical distribution is assumed. This document does not gate delivery of the interaction/UI features in the companion design.
 
 Code baseline: `feature/rap_optimization`, `f8194f87`. The current architecture SVG is unchanged.
 
@@ -16,7 +16,8 @@ Deliverables for this theory work:
 2. A dependency/resource model with explicit causal and timing relationships.
 3. An observation contract sufficient to estimate and test those relationships.
 4. A mapping from the existing implementation to the model.
-5. A coverage checklist for later experiments, without predictions or a chosen optimal policy.
+5. Brief controlled tests to distinguish consequential parameters from unsubstantiated possibilities, followed by a shorter, potentially merged parameter set suitable for a paper.
+6. A coverage checklist for untested dimensions, without predictions or a chosen optimal policy.
 
 Non-goals today: claiming novelty or schedulability guarantees; selecting a winning scheduler; assuming independent candidate validity or latency; implementing every modeled alternative; changing the existing system diagram before the model is reviewed.
 
@@ -279,6 +280,9 @@ Paths above are relative to `src/streammuse/`. Values describe the inspected imp
 4. Map existing traces to the observation contract; list unavailable measurements and the instrumentation needed to obtain them.
 5. Build a trace-driven or synthetic-cost scheduling simulator only after model review. Use measured service traces where available and explicitly synthetic inputs elsewhere.
 6. Validate conservation of time/work, dependency order, causality, deadline accounting, and behavior at boundary cases before using simulations to make claims.
-7. Design experiments from independent axes and fixed workload/task constraints. Do not propose outcomes until the measurement/model foundations are reviewed.
+7. Run brief experiments from independent axes and fixed workload/task constraints. Separate actual model measurements, injected-delay tests, and trace-based counterfactuals. Report sample sizes and uncertainty; do not equate small exploratory differences with statistical significance.
+8. Reduce the main model to approximately 5-8 impactful parameter groups with explicit units, relationships, and measured/unmeasured status. Keep this broad inventory as a coverage appendix, not the paper's main parameter table. Explain merges and exclusions using evidence or clearly labeled modeling judgment.
+
+Execution and results: `docs/superpowers/plans/2026-10-22-rap-interactions-and-evidence.md` and `docs/reports/2026-10-22-scheduling-research.md`.
 
 Theory acceptance: a reviewer can distinguish each granularity, calculate job eligibility and deadlines on a supplied trace, identify which costs are measured versus assumed, and explain why a reported miss/fallback/fresh response occurred. No claim of exhaustive physical modeling is made: unmodeled effects are named, measured as residuals where possible, and promoted to explicit variables if consequential.

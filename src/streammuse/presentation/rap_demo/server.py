@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import math
+import time
 from contextlib import suppress
 from contextlib import asynccontextmanager
 from dataclasses import fields, is_dataclass
@@ -110,8 +111,13 @@ class _MonitorLifecycle:
         runtime_state = self._runtime_state()
         if isinstance(state, dict) and runtime_state is not None:
             audio = state.get("audio")
-            if isinstance(audio, dict) and audio.get("state") == "disabled":
+            if isinstance(audio, dict):
                 audio["state"] = runtime_state
+                if self._runtime_error is not None:
+                    audio["runtime_error"] = str(self._runtime_error)
+            state["stopped"] = runtime_state == "stopped"
+            if self._runtime_error is not None:
+                state["runtime_error"] = str(self._runtime_error)
         return state
 
     def session(self) -> dict[str, object]:
@@ -134,11 +140,6 @@ class _MonitorLifecycle:
     def start_control(self) -> dict[str, str]:
         self._require_control("start")
         with self._control_lock:
-            if getattr(self.runtime, "restart_requires_reset", False):
-                raise HTTPException(
-                    status_code=409,
-                    detail="runtime reset is required before restarting the completed finite scenario",
-                )
             if self._control_starting or self._runtime_state() != "stopped":
                 raise HTTPException(status_code=409, detail="runtime cannot start from its current state")
             if not self._start_runtime_thread_locked():
@@ -181,10 +182,10 @@ class _MonitorLifecycle:
             result["next_editable_bar"] = state["next_editable_bar"]
             if "last_edit" in state:
                 result["last_edit"] = _json_safe(state["last_edit"])
-            # TemplateCatalog currently exposes lookup only, not enumeration.
             catalog = getattr(controller, "_templates", BUILTIN_TEMPLATES)
-            templates = catalog if isinstance(catalog, Mapping) else getattr(catalog, "_by_id", {})
-            result["templates"] = [flow_template_payload(template) for template in templates.values()]
+            values = getattr(catalog, "values", None)
+            templates = values() if callable(values) else getattr(catalog, "_by_id", {}).values()
+            result["templates"] = [flow_template_payload(template) for template in templates]
         return result
 
     def plan_control(self, payload: object) -> dict[str, object]:
@@ -383,15 +384,15 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
 
     @app.post("/api/control/start", status_code=202)
     async def start_runtime() -> object:
-        return lifecycle.start_control()
+        return await asyncio.to_thread(_invoke_runtime_control, lifecycle.start_control)
 
     @app.post("/api/control/stop", status_code=202)
     async def stop_runtime() -> object:
-        return lifecycle.stop_control()
+        return await asyncio.to_thread(_invoke_runtime_control, lifecycle.stop_control)
 
     @app.post("/api/control/reset")
     async def reset_runtime() -> object:
-        return lifecycle.reset_control()
+        return await asyncio.to_thread(_invoke_runtime_control, lifecycle.reset_control)
 
     @app.get("/api/control/plan")
     async def plan_options() -> object:
@@ -403,7 +404,63 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
             payload = await request.json()
         except ValueError as error:
             raise HTTPException(status_code=422, detail="plan edit must contain valid JSON") from error
-        return lifecycle.plan_control(payload)
+        return await asyncio.to_thread(lifecycle.plan_control, payload)
+
+    @app.get("/api/control/settings")
+    async def settings_options() -> object:
+        method = getattr(runtime, "settings_state", None)
+        if not callable(method):
+            return {"supported": False, "capabilities": {}, "values": {}, "devices": []}
+        return _json_safe(await asyncio.to_thread(_invoke_runtime_control, method))
+
+    @app.post("/api/control/settings")
+    async def settings_update(request: Request) -> object:
+        method = _control_method(runtime, "update_settings")
+        payload = await _control_payload(request)
+        return _json_safe(await asyncio.to_thread(_invoke_runtime_control, method, payload))
+
+    @app.get("/api/control/settings/{group}")
+    async def grouped_settings_options(group: str) -> object:
+        method = _control_method(runtime, "settings_state")
+        return _json_safe(await asyncio.to_thread(_invoke_runtime_control, method, group=group))
+
+    @app.post("/api/control/settings/{group}")
+    async def grouped_settings_update(group: str, request: Request) -> object:
+        method = _control_method(runtime, "update_settings")
+        payload = await _control_payload(request)
+        return _json_safe(await asyncio.to_thread(_invoke_runtime_control, method, payload, group=group))
+
+    @app.get("/api/control/interaction")
+    async def interaction_state() -> object:
+        method = getattr(runtime, "interaction_state", None)
+        state = _invoke_runtime_control(method) if callable(method) else {"supported": False}
+        return {**_json_safe(state), "monotonic_seconds": time.monotonic()}
+
+    @app.post("/api/control/interaction/arm")
+    async def interaction_arm(request: Request) -> object:
+        method = _control_method(runtime, "arm_capture")
+        payload = await _control_payload(request)
+        if payload:
+            raise HTTPException(status_code=422, detail="arm accepts an empty JSON object")
+        return _json_safe(_invoke_runtime_control(method))
+
+    @app.post("/api/control/interaction/tap")
+    async def interaction_tap(request: Request) -> object:
+        method = _control_method(runtime, "record_tap")
+        payload = await _control_payload(request)
+        allowed = {"server_time_seconds", "client_time_ms", "uncertainty_ms"}
+        if set(payload) - allowed or "server_time_seconds" not in payload:
+            raise HTTPException(status_code=422, detail="tap requires a calibrated server_time_seconds")
+        for name, value in payload.items():
+            try:
+                finite = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise HTTPException(status_code=422, detail=f"{name} must be finite")
+            if value < 0:
+                raise HTTPException(status_code=422, detail=f"{name} cannot be negative")
+        return _json_safe(_invoke_runtime_control(method, **payload))
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
@@ -419,6 +476,34 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
             await lifecycle.connections.remove(websocket)
 
     return app
+
+
+async def _control_payload(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="control request must contain valid JSON") from error
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="control request must be a JSON object")
+    return payload
+
+
+def _control_method(runtime: object, name: str):
+    method = getattr(runtime, name, None)
+    if not callable(method):
+        raise HTTPException(status_code=404, detail=f"runtime does not support {name}")
+    return method
+
+
+def _invoke_runtime_control(method, *args, **kwargs):
+    try:
+        return method(*args, **kwargs)
+    except (ValueError, TypeError, KeyError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except NotImplementedError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (RuntimeError, OSError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 def _controller_plan_state(controller: object) -> Mapping[str, Any]:

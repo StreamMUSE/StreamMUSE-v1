@@ -883,6 +883,38 @@ def test_text_syllable_events_use_canonical_observation_telemetry() -> None:
     assert "jitter_ms" not in payload
 
 
+def test_text_emitted_whisper_keeps_original_syllables_and_matches_frozen_display(monkeypatch):
+    templates = TemplateCatalog.from_templates((FlowTemplate(
+        template_id="two_slots", name="Two slots", ticks_per_beat=4, beats_per_bar=4,
+        slots=(FlowSlot(0, 2, 1.0), FlowSlot(2, 14, 0.0)),
+        provenance=FlowProvenance(kind="test", source="test"),
+    ),))
+    scenario = RapScenario(
+        scenario_id="display", tempo_bpm=120.0,
+        segments=(ScenarioSegment(0, 4, "quiet", "two_slots", ("whisper",)),),
+    )
+    monkeypatch.setattr(f"{__name__}._templates", lambda: templates)
+    monkeypatch.setattr(f"{__name__}._scenario", lambda: scenario)
+    controller, spoken, events, dispatcher = _controller()
+    try:
+        controller.start()
+        controller.on_tick(0)
+        controller.on_tick(2)
+    finally:
+        _finish(controller, dispatcher)
+
+    emitted = [event.payload for event in events if event.event_type == RapEventType.SYLLABLE_EMITTED]
+    assert [item.get("display_label") for item in emitted] == ["whis-", "-per"]
+    assert [item["display_index"] for item in emitted] == [0, 1]
+    assert [item["display_count"] for item in emitted] == [2, 2]
+    assert [item["word"] for item in emitted] == ["whisper", "whisper"]
+    assert [item.syllable.label for item in spoken] == ["whisper", "."]
+    assert all(item.syllable.phonemes for item in spoken)
+    frozen = next(event.payload for event in events if event.event_type == RapEventType.BAR_FROZEN)
+    assert frozen["text"] == "whisper"
+    assert [item["display_label"] for item in frozen["scheduled_syllables"]] == ["whis-", "-per"]
+
+
 def test_close_waits_for_inflight_planner_before_closing_primary_client() -> None:
     primary = BlockingGenerator(timeout_s=0.05)
     close_observations: list[tuple[bool, bool]] = []

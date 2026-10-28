@@ -24,7 +24,9 @@ import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import json
+import logging
 import threading
+import time
 from typing import Any
 
 # Module-level imports: FastAPI resolves the route annotations from module globals.
@@ -45,11 +47,15 @@ from streammuse.application.rap.lyric_session import (
 )
 from streammuse.application.rap.lyric_writer import SequentialLyricWriter
 from streammuse.domain.rap import FlowTemplate
-from streammuse.domain.rap.lyric_stream import LYRIC_STREAM_SCHEMA_VERSION, BarLyricRecord, PlanEdit
+from streammuse.domain.rap.lyric_stream import (
+    LYRIC_STREAM_SCHEMA_VERSION, LYRIC_STREAM_CAPABILITIES, BOUNDED_TURNS_CAPABILITY,
+    TEMPO_UPDATES_CAPABILITY, BarLyricRecord, PlanEdit, TempoUpdate,
+)
 from streammuse.domain.rap.remote_chunk import _flow_from_payload
 
 MAX_WAIT_MS = 10_000
 _MAX_SESSIONS = 8
+_LOGGER = logging.getLogger("uvicorn.error")
 
 
 @dataclass
@@ -166,33 +172,61 @@ class LyricStreamService:
         """Create the session, or reattach to a live one (a reconnect). Returns (entry, created)."""
         if payload.get("schema_version") != LYRIC_STREAM_SCHEMA_VERSION:
             raise ValueError("unsupported lyric stream schema version")
+        capabilities = payload.get("capabilities", [])
+        if not isinstance(capabilities, list) or any(not isinstance(value, str) for value in capabilities):
+            raise ValueError("capabilities must be an array of strings")
+        if (payload.get("end_bar_exclusive") is not None or payload.get("turn_id") is not None
+                ) and BOUNDED_TURNS_CAPABILITY not in capabilities:
+            raise ValueError("bounded turn capability must be negotiated")
         with self._lock:
             existing = self._sessions.get(session_id)
             if existing is not None:
+                snapshot = existing.session.snapshot()
+                if (snapshot["turn_id"] != payload.get("turn_id")
+                        or snapshot["end_bar_exclusive"] != payload.get("end_bar_exclusive")):
+                    raise ValueError("reconnect cannot change the bounded turn identity")
                 return existing, False
             if len(self._sessions) >= _MAX_SESSIONS:
                 raise ValueError("too many live lyric sessions")
         writer, close_writer = self._writer_factory()
-        history = tuple(
-            (int(item["bar"]), str(item["text"])) for item in payload.get("history") or () if str(item.get("text", ""))
-        )
-        listener = _QueueListener()
-        session = LyricStreamSession(
-            session_id=session_id,
-            tempo_bpm=float(payload["tempo_bpm"]),
-            plan=plan_from_start(payload),
-            writer=writer,
-            renderer=self._renderer,
-            listener=listener,
-            start_bar=int(payload.get("start_bar", 0)),
-            seed=int(payload.get("seed", 0)),
-            lyric_lead=int(payload.get("lyric_lead", self._lyric_lead)),
-            audio_lead=int(payload.get("audio_lead", self._audio_lead)),
-            history=history,
-        )
+        try:
+            history = tuple(
+                (int(item["bar"]), str(item["text"])) for item in payload.get("history") or () if str(item.get("text", ""))
+            )
+            listener = _QueueListener()
+            session = LyricStreamSession(
+                session_id=session_id,
+                tempo_bpm=float(payload["tempo_bpm"]),
+                plan=plan_from_start(payload),
+                writer=writer,
+                renderer=self._renderer,
+                listener=listener,
+                start_bar=int(payload.get("start_bar", 0)),
+                seed=int(payload.get("seed", 0)),
+                lyric_lead=int(payload.get("lyric_lead", self._lyric_lead)),
+                audio_lead=int(payload.get("audio_lead", self._audio_lead)),
+                history=history,
+                end_bar_exclusive=payload.get("end_bar_exclusive"),
+                turn_id=payload.get("turn_id"),
+            )
+        except Exception:
+            close_writer()
+            raise
         entry = _Entry(session, listener, close_writer)
         with self._lock:
-            self._sessions[session_id] = entry
+            existing = self._sessions.get(session_id)
+            full = len(self._sessions) >= _MAX_SESSIONS
+            if existing is None and not full:
+                self._sessions[session_id] = entry
+        if existing is not None or full:
+            close_writer()
+            if existing is None:
+                raise ValueError("too many live lyric sessions")
+            snapshot = existing.session.snapshot()
+            if (snapshot["turn_id"] != payload.get("turn_id")
+                    or snapshot["end_bar_exclusive"] != payload.get("end_bar_exclusive")):
+                raise ValueError("reconnect cannot change the bounded turn identity")
+            return existing, False
         # Not started here: the caller attaches its listener first, then starts it,
         # so the first lines are not emitted before anyone is listening.
         return entry, True
@@ -212,17 +246,25 @@ class LyricStreamService:
 
 
 def mount_lyric_stream_routes(app, service: LyricStreamService) -> None:
+    @app.get("/v1/rap/capabilities")
+    async def capabilities():
+        return {"schema_version": LYRIC_STREAM_SCHEMA_VERSION, "capabilities": list(LYRIC_STREAM_CAPABILITIES)}
+
     @app.websocket("/v1/rap/sessions/{session_id}")
     async def lyric_session(websocket: WebSocket, session_id: str) -> None:
         await websocket.accept()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         entry = None
+        negotiated: set[str] = set()
 
         async def pump() -> None:
             while True:
                 message = await queue.get()
                 await websocket.send_text(json.dumps(message, separators=(",", ":")))
+                if message.get("type") == "tempo_updated" or message.get("operation") == "tempo_update":
+                    _LOGGER.info("tempo_control_sent session=%s edit_seq=%s type=%s unix_ns=%s",
+                                 session_id, message.get("edit_seq"), message.get("type"), time.time_ns())
 
         sender = asyncio.create_task(pump())
         try:
@@ -233,7 +275,11 @@ def mount_lyric_stream_routes(app, service: LyricStreamService) -> None:
                     if kind == "start":
                         entry, created = await run_in_threadpool(service.start, session_id, message)
                         entry.listener.attach(loop, queue)
-                        await queue.put({"type": "started", "session_id": session_id, "created": created})
+                        negotiated = set(message.get("capabilities", [])) & set(LYRIC_STREAM_CAPABILITIES)
+                        started = {"type": "started", "session_id": session_id, "created": created}
+                        if "capabilities" in message:
+                            started["capabilities"] = sorted(negotiated)
+                        await queue.put(started)
                         if created:
                             entry.session.start()
                         else:
@@ -245,6 +291,19 @@ def mount_lyric_stream_routes(app, service: LyricStreamService) -> None:
                     elif kind == "update":
                         edit = PlanEdit.from_payload(message["edit"])
                         await run_in_threadpool(entry.session.apply_edit, edit)
+                    elif kind == "tempo_update":
+                        received_ns, processing_started = time.time_ns(), time.monotonic()
+                        _LOGGER.info("tempo_control_received session=%s edit_seq=%s unix_ns=%s",
+                                     session_id, (message.get("update") or {}).get("edit_seq"), received_ns)
+                        if TEMPO_UPDATES_CAPABILITY not in negotiated:
+                            raise ValueError("tempo update capability was not negotiated")
+                        update = TempoUpdate.from_payload(message["update"])
+                        ack = await run_in_threadpool(entry.session.update_tempo, update)
+                        ack = {**ack, "server_received_unix_ns": received_ns,
+                               "server_processing_ms": (time.monotonic() - processing_started) * 1000}
+                        _LOGGER.info("tempo_control_queued session=%s edit_seq=%s revision=%s processing_ms=%.1f",
+                                     session_id, update.edit_seq, ack["revision"], ack["server_processing_ms"])
+                        await queue.put(ack)
                     elif kind == "committed":
                         await run_in_threadpool(
                             entry.session.committed,
@@ -259,7 +318,11 @@ def mount_lyric_stream_routes(app, service: LyricStreamService) -> None:
                     else:
                         await queue.put({"type": "error", "message": f"unknown message {kind!r}", "bar": None})
                 except (KeyError, TypeError, ValueError) as error:
-                    await queue.put({"type": "error", "message": f"{type(error).__name__}: {error}"[:512], "bar": None})
+                    failure = {"type": "error", "message": f"{type(error).__name__}: {error}"[:512], "bar": None}
+                    if kind == "tempo_update":
+                        failure["operation"] = "tempo_update"
+                        failure["edit_seq"] = (message.get("update") or {}).get("edit_seq")
+                    await queue.put(failure)
         except WebSocketDisconnect:
             pass
         finally:
