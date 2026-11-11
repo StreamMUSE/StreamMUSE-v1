@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>StreamMUSE Research</title>
+    <link rel="stylesheet" href="/static/css/rap-demo.css?v=20261028-2">
+    <link rel="stylesheet" href="/static/css/rap-research.css?v=20261105-2">
+    <script src="/static/js/rap-research.js?v=20261105-7" defer></script>
+  </head>
+  <body class="research-app">
+    <header class="research-header">
+      <div class="brand-block"><span class="wordmark">StreamMUSE</span><span class="product-name">Research</span></div>
+      <a href="/">Rap Lab</a>
+    </header>
+    <main id="research-root">
+      <nav class="research-tabs" role="tablist" aria-label="Research experiments">
+        <button id="tab-story" type="button" role="tab" aria-selected="true" aria-controls="panel-story" data-tab="story">Directed Story</button>
+        <button id="tab-microphone" type="button" role="tab" aria-selected="false" aria-controls="panel-microphone" tabindex="-1" data-tab="microphone">Microphone</button>
+        <button id="tab-characters" type="button" role="tab" aria-selected="false" aria-controls="panel-characters" tabindex="-1" data-tab="characters">Characters</button>
+        <button id="tab-coordination" type="button" role="tab" aria-selected="false" aria-controls="panel-coordination" tabindex="-1" data-tab="coordination">Coordination</button>
+      </nav>
+
+      <section id="panel-story" class="research-panel" role="tabpanel" aria-labelledby="tab-story" tabindex="0">
+        <div class="research-heading"><h1>Directed Story</h1><button type="button" data-refresh="story">Refresh</button></div>
+        <section class="story-playback" aria-labelledby="story-playback-heading">
+          <div class="playback-toolbar">
+            <h2 id="story-playback-heading">Current playback</h2>
+            <span id="story-playback-state" class="research-meta">Loading</span>
+            <strong id="story-playback-bar">Bar --</strong>
+            <div class="run-actions"><button id="story-start" type="button" disabled>Start</button><button id="story-stop" type="button" disabled>Stop</button></div>
+          </div>
+          <p id="story-playback-text" aria-live="polite">Waiting for a lyric.</p>
+          <div class="playback-detail"><span>Topic: <span id="story-playback-topic">--</span></span><span>Source: <span id="story-playback-source">--</span></span><span>Playing context: <span id="story-playback-version">--</span></span><span>Latest accepted: <span id="story-latest-version">--</span></span></div>
+          <p id="playback-feedback" class="research-feedback" role="status" aria-live="polite"></p>
+          <p id="playback-error" class="research-error" role="alert" hidden></p>
+        </section>
+        <dl class="research-facts">
+          <div><dt>State</dt><dd id="story-state">Loading</dd></div>
+          <div><dt>Version</dt><dd id="story-version">--</dd></div>
+          <div><dt>Model status</dt><dd id="story-model">Not reported</dd></div>
+          <div><dt>Events</dt><dd id="story-count">--</dd></div>
+        </dl>
+        <p id="story-error" class="research-error" role="alert" hidden></p>
+        <form id="story-form" class="story-composer">
+          <label for="story-text">Story event<textarea id="story-text" rows="3" maxlength="512" required aria-describedby="story-budget" placeholder="A courier discovers the map has changed."></textarea></label>
+          <button id="story-submit" type="submit" class="primary">Add event</button>
+        </form>
+        <p id="story-budget" class="research-meta"></p>
+        <p id="story-feedback" class="research-feedback" role="status" aria-live="polite"></p>
+        <section class="research-section" aria-labelledby="story-context-heading"><h2 id="story-context-heading">Continuity</h2><p id="story-context" class="story-context">Not reported.</p></section>
+        <section class="research-section" aria-labelledby="story-log-heading"><h2 id="story-log-heading">Event history</h2><ol id="story-log" class="research-log"><li class="research-empty">No events yet.</li></ol></section>
+      </section>
+
+      <section id="panel-microphone" class="research-panel" role="tabpanel" aria-labelledby="tab-microphone" tabindex="0" hidden>
+        <div class="research-heading"><h1>Microphone</h1><button type="button" data-refresh="microphone">Refresh</button></div>
+        <dl class="research-facts">
+          <div><dt>Capture</dt><dd id="mic-state">Idle</dd></div>
+          <div><dt>Model status</dt><dd id="mic-model">Not reported</dd></div>
+          <div><dt>Duration</dt><dd id="mic-duration">0.0 / 15 s</dd></div>
+          <div><dt>Transcription</dt><dd id="mic-latency">--</dd></div>
+        </dl>
+        <p id="microphone-error" class="research-error" role="alert" hidden></p>
+        <div class="microphone-controls">
+          <fieldset class="research-segments" id="mic-destination"><legend>Destination</legend><div>
+            <label><input type="radio" name="destination" value="transcript" checked><span>Transcript</span></label>
+            <label><input type="radio" name="destination" value="story"><span>Story</span></label>
+          </div></fieldset>
+          <button id="mic-hold" type="button" aria-label="Hold to record" aria-pressed="false">Hold to record</button>
+          <button id="mic-cancel" type="button" disabled>Cancel</button>
+        </div>
+        <progress id="mic-progress" value="0" max="15" aria-label="Recording duration"></progress>
+        <p id="mic-feedback" class="research-feedback" role="status" aria-live="polite">Idle</p>
+        <section class="research-section" aria-labelledby="transcript-heading"><h2 id="transcript-heading">Transcript</h2><p id="mic-transcript" class="transcript" aria-live="polite">No transcript yet.</p><p id="mic-event-id" class="research-meta"></p></section>
+      </section>
+
+      <section id="panel-characters" class="research-panel" role="tabpanel" aria-labelledby="tab-characters" tabindex="0" hidden>
+        <div class="research-heading"><h1>Characters</h1><button type="button" data-refresh="characters">Refresh</button></div>
+        <dl class="research-facts">
+          <div><dt>Run</dt><dd id="characters-state">Loading</dd></div>
+          <div><dt>Model status</dt><dd id="characters-model">Not reported</dd></div>
+          <div><dt>Mode</dt><dd id="characters-active-mode">--</dd></div>
+          <div><dt>Policy</dt><dd id="characters-active-policy">--</dd></div>
+        </dl>
+        <p id="characters-error" class="research-error" role="alert" hidden></p>
+        <form id="characters-form" class="experiment-controls" data-experiment="characters">
+          <fieldset class="research-segments"><legend>Mode</legend><div>
+            <label><input type="radio" name="character-mode" value="dialogue" checked><span>Dialogue</span></label>
+            <label><input type="radio" name="character-mode" value="counting"><span>Counting</span></label>
+          </div></fieldset>
+          <label>Policy<select id="characters-policy" disabled><option value="fixed_turn">Fixed turn</option><option value="naive">Naive</option><option value="coordinated">Coordinated</option></select></label>
+          <div class="run-actions"><button id="characters-start" type="submit" class="primary">Start 8 turns</button><button id="characters-stop" type="button" data-stop="characters">Stop</button></div>
+        </form>
+        <p id="characters-feedback" class="research-feedback" role="status" aria-live="polite"></p>
+        <div id="characters-personas" class="persona-strip" aria-label="Personas"></div>
+        <section class="research-section" aria-labelledby="characters-log-heading"><h2 id="characters-log-heading">Conversation</h2><ol id="characters-log" class="research-log"><li class="research-empty">No character events yet.</li></ol></section>
+      </section>
+
+      <section id="panel-coordination" class="research-panel" role="tabpanel" aria-labelledby="tab-coordination" tabindex="0" hidden>
+        <div class="research-heading"><h1>Coordination</h1><button type="button" data-refresh="coordination">Refresh</button></div>
+        <dl class="research-facts">
+          <div><dt>Run</dt><dd id="coordination-state">Loading</dd></div>
+          <div><dt>Model status</dt><dd id="coordination-model">Not reported</dd></div>
+          <div><dt>Mode</dt><dd id="coordination-active-mode">--</dd></div>
+          <div><dt>Policy</dt><dd id="coordination-active-policy">--</dd></div>
+        </dl>
+        <p id="coordination-error" class="research-error" role="alert" hidden></p>
+        <form id="coordination-form" class="experiment-controls" data-experiment="coordination">
+          <label>Policy<select id="coordination-policy"><option value="fixed_turn">Fixed turn</option><option value="naive">Naive</option><option value="coordinated" selected>Coordinated</option></select></label>
+          <span class="research-meta">Count 1 to 10</span>
+          <div class="run-actions"><button id="coordination-start" type="submit" class="primary">Start count</button><button id="coordination-stop" type="button" data-stop="coordination">Stop</button></div>
+        </form>
+        <p id="coordination-feedback" class="research-feedback" role="status" aria-live="polite"></p>
+        <section class="research-section" aria-labelledby="metrics-heading"><h2 id="metrics-heading">Run metrics</h2><div class="research-table-wrap"><table class="research-table"><thead><tr><th scope="col">Metric</th><th scope="col">Value</th></tr></thead><tbody id="coordination-metrics"><tr><td colspan="2">No metrics reported.</td></tr></tbody></table></div></section>
+        <section class="research-section" aria-labelledby="coordination-log-heading"><h2 id="coordination-log-heading">Coordination events</h2><ol id="coordination-log" class="research-log"><li class="research-empty">No coordination events yet.</li></ol></section>
+      </section>
+    </main>
+  </body>
+</html>

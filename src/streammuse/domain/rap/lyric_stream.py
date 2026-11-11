@@ -16,6 +16,7 @@ from typing import Mapping
 
 from streammuse.domain.rap.flow import FlowTemplate, materialize_flow
 from streammuse.domain.rap.models import ScheduledSyllable
+from streammuse.domain.rap.story import StoryContext
 from streammuse.domain.rap.timeline import validate_live_bpm
 from streammuse.domain.rap.remote_chunk import (
     _canonical_json_bytes,
@@ -36,8 +37,10 @@ LYRIC_STREAM_SCHEMA_VERSION = "streammuse.rap_lyric_stream.v3"
 BAR_AUDIO_SCHEMA_VERSION = "streammuse.rap_bar_audio.v3"
 BAR_AUDIO_SAMPLE_RATE_HZ = 24_000
 TEMPO_UPDATES_CAPABILITY = "tempo_updates_v1"
+TEMPO_RESCHEDULE_CAPABILITY = "tempo_reschedule_v1"
 BOUNDED_TURNS_CAPABILITY = "bounded_turns_v1"
-LYRIC_STREAM_CAPABILITIES = (TEMPO_UPDATES_CAPABILITY, BOUNDED_TURNS_CAPABILITY)
+STORY_CONTEXT_CAPABILITY = "story_context_v1"
+LYRIC_STREAM_CAPABILITIES = (TEMPO_UPDATES_CAPABILITY, BOUNDED_TURNS_CAPABILITY, TEMPO_RESCHEDULE_CAPABILITY, STORY_CONTEXT_CAPABILITY)
 # A one-bar MOSS source is about 2.7 s at 90 BPM; a generous bound still keeps
 # a corrupt manifest from claiming a huge buffer.
 MAX_BAR_SOURCE_SECONDS = 15.0
@@ -165,14 +168,17 @@ class PlanEdit:
     from_bar: int
     topic: str | None = None
     flow_template: FlowTemplate | None = None
+    story_context: StoryContext | None = None
 
     def __post_init__(self) -> None:
         for name in ("edit_seq", "from_bar"):
             value = getattr(self, name)
             if not _is_int(value) or value < 0:
                 raise ValueError(f"plan edit {name} must be a non-negative integer")
-        if self.topic is None and self.flow_template is None:
+        if self.topic is None and self.flow_template is None and self.story_context is None:
             raise ValueError("plan edit must change the topic or the flow template")
+        if self.story_context is not None and not isinstance(self.story_context, StoryContext):
+            raise ValueError("plan edit story_context must be a StoryContext")
         if self.topic is not None and not _nonblank(self.topic):
             raise ValueError("plan edit topic must be non-empty")
         if self.flow_template is not None:
@@ -184,18 +190,23 @@ class PlanEdit:
             "from_bar": self.from_bar,
             "topic": self.topic,
             "flow_template": None if self.flow_template is None else _flow_payload(self.flow_template),
+            **({"story_context": self.story_context.to_payload()} if self.story_context is not None else {}),
         }
 
     @classmethod
     def from_payload(cls, value: object) -> "PlanEdit":
         payload = _mapping(value, "plan edit")
-        _keys(payload, {"edit_seq", "from_bar", "topic", "flow_template"}, "plan edit")
+        expected = {"edit_seq", "from_bar", "topic", "flow_template"}
+        if "story_context" in payload:
+            expected.add("story_context")
+        _keys(payload, expected, "plan edit")
         flow = payload["flow_template"]
         return cls(
             payload["edit_seq"],  # type: ignore[arg-type]
             payload["from_bar"],  # type: ignore[arg-type]
             payload["topic"],  # type: ignore[arg-type]
             None if flow is None else _flow_from_payload(flow),
+            StoryContext.from_payload(payload["story_context"]) if "story_context" in payload else None,
         )
 
 
@@ -206,6 +217,7 @@ class TempoUpdate:
     edit_seq: int
     from_bar: int
     bpm: float
+    supersedes_edit_seq: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("edit_seq", "from_bar"):
@@ -213,15 +225,25 @@ class TempoUpdate:
             if not _is_int(value) or value < 0:
                 raise ValueError(f"tempo update {name} must be a non-negative integer")
         validate_live_bpm(self.bpm)
+        if self.supersedes_edit_seq is not None and (
+            not _is_int(self.supersedes_edit_seq) or not 0 < self.supersedes_edit_seq < self.edit_seq
+        ):
+            raise ValueError("tempo update supersedes_edit_seq must be positive and less than edit_seq")
 
     def to_payload(self) -> dict[str, object]:
-        return {"edit_seq": self.edit_seq, "from_bar": self.from_bar, "bpm": self.bpm}
+        payload = {"edit_seq": self.edit_seq, "from_bar": self.from_bar, "bpm": self.bpm}
+        if self.supersedes_edit_seq is not None:
+            payload["supersedes_edit_seq"] = self.supersedes_edit_seq
+        return payload
 
     @classmethod
     def from_payload(cls, value: object) -> "TempoUpdate":
         payload = _mapping(value, "tempo update")
-        _keys(payload, {"edit_seq", "from_bar", "bpm"}, "tempo update")
-        return cls(payload["edit_seq"], payload["from_bar"], payload["bpm"])
+        expected = {"edit_seq", "from_bar", "bpm"}
+        if "supersedes_edit_seq" in payload:
+            expected.add("supersedes_edit_seq")
+        _keys(payload, expected, "tempo update")
+        return cls(payload["edit_seq"], payload["from_bar"], payload["bpm"], payload.get("supersedes_edit_seq"))
 
 
 @dataclass(frozen=True)

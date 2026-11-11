@@ -166,6 +166,7 @@ class RapAudioDemoDependencies:
     websocket_queue: Any | None = None
     configured_max_bars: int = 0
     settings_service: Any | None = None
+    inference: Any | None = None
     controller_factory: Callable[[Any, int], Any] | None = None
     _closed: bool = field(default=False, init=False)
     _restart_requires_reset: bool = field(default=False, init=False)
@@ -189,6 +190,8 @@ class RapAudioDemoDependencies:
 
     @property
     def control_state(self) -> PlaybackState:
+        if self.inference is not None and self.inference.owns_output:
+            return self.inference.control_state
         if self._starting:
             return PlaybackState.STOP_REQUESTED if self._cancel_start else PlaybackState.PRIMING
         return self.playback.state
@@ -216,11 +219,15 @@ class RapAudioDemoDependencies:
             self.publisher.emit(RapEventType.AUDIO_SETTINGS_CHANGED, payload={"audio_device": name})
 
     def update_settings(self, payload: object, *, group: str | None = None) -> dict[str, Any]:
+        if self.inference is not None and self.inference.active:
+            raise RuntimeError("stop inference playback before changing legacy settings")
         if self.settings_service is None:
             raise NotImplementedError("runtime does not support settings changes")
         from streammuse.application.rap.settings import settings_group
         selected_group = settings_group(payload, group, allow_combined=self.control_state == PlaybackState.STOPPED)
         with self._lifecycle_lock:
+            if self.inference is not None and self.inference.active:
+                raise RuntimeError("stop inference playback before changing legacy settings")
             if self._closed:
                 raise RuntimeError("rap audio runtime is closed")
             independent_live_update = (
@@ -233,6 +240,10 @@ class RapAudioDemoDependencies:
             self._settings_groups.add(selected_group)
             self._settings_updating = True
         try:
+            if self.inference is not None and self.inference.owns_output:
+                output = self.inference.service.output
+                if output is not None:
+                    output.suspend()
             # Capability discovery and tempo acknowledgement can block on I/O.
             # Stop must remain available while reset/start are fenced out.
             return (self.settings_service.update(payload) if group is None
@@ -283,6 +294,8 @@ class RapAudioDemoDependencies:
         """Start audio playback and block until a requested or automatic stop."""
 
         with self._lifecycle_lock:
+            if self.inference is not None and self.inference.active:
+                raise RuntimeError("stop inference playback before starting legacy playback")
             if self._closed:
                 raise RuntimeError("rap audio runtime is closed")
             if self._starting:
@@ -296,6 +309,8 @@ class RapAudioDemoDependencies:
             self._starting = True
             self._cancel_start = False
         try:
+            if self.inference is not None:
+                self.inference.release_for_legacy()
             payload = _thaw_metadata(self.session_metadata)
             timeline = getattr(self.controller, "timeline", None)
             current_tempo = (
@@ -388,6 +403,9 @@ class RapAudioDemoDependencies:
         """Request a stop that the playback service quantizes to the current bar."""
 
         with self._lifecycle_lock:
+            if self.inference is not None and self.inference.owns_output:
+                self.inference.service.stop(_snapshot=False)
+                return
             self._request_stop_locked()
 
     def _request_stop_locked(self) -> None:
@@ -423,6 +441,9 @@ class RapAudioDemoDependencies:
         """Discard stopped session state so the next start begins at bar zero."""
 
         with self._lifecycle_lock:
+            if self.inference is not None and self.inference.owns_output:
+                self.inference.service.reset(_snapshot=False)
+                return
             if self._closed:
                 raise RuntimeError("rap audio runtime is closed")
             if self._starting:
@@ -490,7 +511,18 @@ class RapAudioDemoDependencies:
             if self._closed:
                 return
             self._closed = True
+        # Inference teardown joins callbacks/workers which use the lifecycle
+        # gate, so it must occur outside that gate.
+        inference_error = None
+        if self.inference is not None:
+            try:
+                self.inference.close()
+            except BaseException as error:
+                inference_error = error
+        with self._lifecycle_lock:
             failures: list[tuple[str, BaseException]] = []
+            if inference_error is not None:
+                failures.append(("inference close", inference_error))
 
             def attempt(phase: str, action: Callable[[], None]) -> None:
                 try:

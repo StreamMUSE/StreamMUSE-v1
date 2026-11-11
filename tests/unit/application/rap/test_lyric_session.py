@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,7 +16,7 @@ from streammuse.application.rap.lyric_session import (
     LyricStreamSession,
     RenderedBarAudio,
 )
-from streammuse.application.rap.lyric_writer import LyricWriterPolicy, SequentialLyricWriter
+from streammuse.application.rap.lyric_writer import LyricWriteFailed, LyricWriterPolicy, SequentialLyricWriter
 from streammuse.domain.rap import (
     CandidateBatch,
     FlowProvenance,
@@ -26,7 +27,7 @@ from streammuse.domain.rap import (
     Syllable,
     normalize_text,
 )
-from streammuse.domain.rap.lyric_stream import BarAudioManifest, PlanEdit
+from streammuse.domain.rap.lyric_stream import BarAudioManifest, PlanEdit, TempoUpdate
 
 _WORDS = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet")
 
@@ -117,6 +118,7 @@ class _Listener:
         self.superseded_bars = []
         self.ready = []
         self.errors = []
+        self.error_details = []
 
     def lyric(self, record):
         self.lyrics.append(record)
@@ -129,6 +131,10 @@ class _Listener:
 
     def error(self, message, *, bar=None):
         self.errors.append((bar, message))
+
+    def writer_error(self, message, *, bar, **details):
+        self.error(message, bar=bar)
+        self.error_details.append(details)
 
 
 def _session(renderer=None, listener=None, **overrides):
@@ -183,6 +189,61 @@ def test_writes_lyrics_in_bar_order_up_to_the_lead_and_renders_up_to_the_audio_l
         assert renderer.rendered[-1] == (2, 0)
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("failure_type", [LyricWriteFailed, RuntimeError])
+@pytest.mark.parametrize("failures", [1, 3])
+@pytest.mark.parametrize("structured", [True, False])
+def test_writer_reports_actual_bounded_retryability(failure_type, failures, structured):
+    delegate = SequentialLyricWriter(
+        _Generator(), _Analyzer(), ScoreWeights(),
+        LyricWriterPolicy(candidates=2, rescue_candidates=0, minimum_valid=1, rhyme_scheme="none"))
+
+    class Writer:
+        attempts = 0
+
+        def write(self, request):
+            if request.bar == 0:
+                self.attempts += 1
+                if self.attempts <= failures:
+                    if failure_type is LyricWriteFailed:
+                        raise failure_type("no_valid_candidates", ledger={})
+                    raise failure_type("provider unavailable")
+            return delegate.write(request)
+
+    writer, listener = Writer(), _Listener()
+    if not structured:
+        listener = SimpleNamespace(lyric=listener.lyric, superseded=listener.superseded,
+                                   audio_ready=listener.audio_ready, error=listener.error,
+                                   lyrics=listener.lyrics, errors=listener.errors,
+                                   error_details=listener.error_details)
+    session = _session(listener=listener, writer=writer, end_bar_exclusive=2)
+    try:
+        _wait(lambda: any(record.bar == 1 for record in listener.lyrics))
+        assert writer.attempts == min(failures + 1, 3)
+        assert len(listener.errors) == failures
+        expected = [
+            {"code": "lyric_write_failed", "retryable": attempt < 3,
+             "attempt": attempt, "max_attempts": 3}
+            for attempt in range(1, failures + 1)]
+        assert listener.error_details == (expected if structured else [])
+        assert (0 in [record.bar for record in listener.lyrics]) is (failures < 3)
+    finally:
+        session.close()
+
+
+def test_structured_listener_body_type_error_is_not_retried_as_legacy_error():
+    legacy_calls = []
+
+    def writer_error(message, **metadata):
+        raise TypeError("listener body failed")
+
+    listener = SimpleNamespace(writer_error=writer_error,
+                               error=lambda *args, **kwargs: legacy_calls.append(args))
+    with pytest.raises(TypeError, match="listener body failed"):
+        LyricStreamSession._report_writer_error(
+            SimpleNamespace(_listener=listener), "writer failed", bar=0, attempt=1)
+    assert legacy_calls == []
 
 
 def test_fetch_returns_ready_audio_at_once_and_unknown_ids_are_reported() -> None:
@@ -376,4 +437,152 @@ def test_bounded_commits_are_ordered_identity_checked_and_idempotent():
         session.committed(1, second.lyric_id, second.text)
         assert session.snapshot()['playhead'] == 1
     finally:
+        session.close()
+
+
+def test_reschedule_restores_original_bpm_after_old_target_has_passed():
+    listener = _Listener()
+    session = _session(listener=listener)
+    try:
+        _wait(lambda: len(listener.lyrics) == 3)
+        with session._condition:
+            records = tuple(listener.lyrics)
+            session.update_tempo(TempoUpdate(1, 1, 120))
+            session.committed(2, records[2].lyric_id, records[2].text)
+            committed = (session._bars[2].committed_text, session._bars[2].committed_template)
+            history = session._history_locked(3)
+            ack = session.update_tempo(TempoUpdate(2, 2, 120, supersedes_edit_seq=1))
+
+            assert ack["effective_from_bar"] == 3
+            assert ack["requested_from_bar"] == 2
+            assert ack["revision"] == 2
+            assert [session._timeline.snapshot(bar, 24000).bpm for bar in range(4)] == [90, 90, 90, 120]
+            assert session._timeline.snapshot(3, 24000).start_frame == 192000
+            assert (session._bars[2].committed_text, session._bars[2].committed_template) == committed
+            assert session._history_locked(3) == history
+            assert all(session.lyric(record.lyric_id) == record for record in records)
+    finally:
+        session.close()
+
+
+def test_reschedule_chain_retains_base_and_ordinary_update_starts_a_new_base():
+    session = _session()
+    try:
+        with session._condition:
+            session.update_tempo(TempoUpdate(1, 1, 100))
+            session.update_tempo(TempoUpdate(2, 3, 120))
+            session.update_tempo(TempoUpdate(3, 5, 120, supersedes_edit_seq=2))
+            ack = session.update_tempo(TempoUpdate(4, 7, 120, supersedes_edit_seq=3))
+            assert ack["revision"] == 4
+            assert session._timeline.snapshot(7, 24000).revision == 4
+            assert [session._timeline.snapshot(bar, 24000).bpm for bar in (0, 1, 3, 5, 7)] == [90, 100, 100, 100, 120]
+
+            session.update_tempo(TempoUpdate(5, 9, 80))
+            ack = session.update_tempo(TempoUpdate(6, 11, 80, supersedes_edit_seq=5))
+            assert ack["revision"] == 6
+            assert [session._timeline.snapshot(bar, 24000).bpm for bar in (5, 7, 9, 11)] == [100, 120, 120, 80]
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("supersedes,bpm", [(1, 120), (2, 110)])
+def test_invalid_reschedule_does_not_mutate_timeline_audio_or_latest_ack(supersedes, bpm):
+    listener = _Listener()
+    session = _session(listener=listener)
+    try:
+        _wait(lambda: len(listener.ready) == 2)
+        with session._condition:
+            ordinary = TempoUpdate(2, 2, 120)
+            ack = session.update_tempo(ordinary)
+            timeline_before = session._timeline
+            snapshot_before = session.snapshot()
+            with pytest.raises(ValueError):
+                session.update_tempo(TempoUpdate(3, 4, bpm, supersedes_edit_seq=supersedes))
+            assert session._timeline is timeline_before
+            assert session.snapshot() == snapshot_before
+            assert session.update_tempo(ordinary) == ack
+            assert session.update_tempo(TempoUpdate(4, 5, 120, supersedes_edit_seq=2))["revision"] == 2
+    finally:
+        session.close()
+
+
+def test_reschedule_requires_a_previous_tempo_update():
+    session = _session()
+    try:
+        with pytest.raises(ValueError):
+            session.update_tempo(TempoUpdate(2, 3, 120, supersedes_edit_seq=1))
+        assert session.snapshot()["timeline_revision"] == 0
+        assert session.update_tempo(TempoUpdate(1, 1, 100))["revision"] == 1
+    finally:
+        session.close()
+
+
+def test_reschedule_exact_retransmission_is_idempotent_including_optional_field():
+    session = _session()
+    try:
+        with session._condition:
+            first = TempoUpdate(1, 1, 120)
+            original_ack = session.update_tempo(first)
+            assert session.update_tempo(TempoUpdate.from_payload(first.to_payload())) == original_ack
+            update = TempoUpdate(2, 4, 120, supersedes_edit_seq=1)
+            ack = session.update_tempo(update)
+            timeline_before = session._timeline
+            assert session.update_tempo(TempoUpdate.from_payload(update.to_payload())) == ack
+            assert session._timeline is timeline_before
+            with pytest.raises(ValueError):
+                session.update_tempo(TempoUpdate(2, 4, 120))
+            assert session._timeline is timeline_before
+    finally:
+        session.close()
+
+
+def test_reschedule_invalidates_inflight_audio_from_earliest_replaced_boundary():
+    class BlockingRenderer(_Renderer):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def render(self, record, *, tempo_bpm, previous=None):
+            if tempo_bpm == 120:
+                self.started.set()
+                assert self.release.wait(3)
+            return super().render(record, tempo_bpm=tempo_bpm, previous=previous)
+
+    renderer, listener = BlockingRenderer(), _Listener()
+    session = _session(renderer, listener)
+    try:
+        _wait(lambda: len(listener.ready) == 2)
+        first, second = listener.lyrics[:2]
+        session.update_tempo(TempoUpdate(1, 1, 120))
+        assert renderer.started.wait(3)
+        session.committed(1, second.lyric_id, second.text)
+        session.update_tempo(TempoUpdate(2, 4, 120, supersedes_edit_seq=1))
+        assert session.fetch_audio(1, second.lyric_id, 0).audio is None
+        assert session.fetch_audio(0, first.lyric_id, 0).audio.manifest.tempo_bpm == 90
+        renderer.release.set()
+        result = session.fetch_audio(1, second.lyric_id, 5, accept_older=False)
+        assert result.audio.manifest.tempo_bpm == 90
+        _wait(lambda: listener.ready.count((1, second.lyric_id)) == 2)
+    finally:
+        renderer.release.set()
+        session.close()
+
+
+def test_reschedule_discards_ready_audio_at_old_boundary_but_keeps_earlier_audio():
+    renderer, listener = _Renderer(), _Listener()
+    session = _session(renderer, listener)
+    try:
+        _wait(lambda: len(listener.ready) == 2)
+        first, second = listener.lyrics[:2]
+        session.update_tempo(TempoUpdate(1, 1, 120))
+        assert session.fetch_audio(1, second.lyric_id, 5).audio.manifest.tempo_bpm == 120
+        renderer.gate.clear()
+        session.update_tempo(TempoUpdate(2, 4, 120, supersedes_edit_seq=1))
+        assert session.fetch_audio(1, second.lyric_id, 0).audio is None
+        assert session.fetch_audio(0, first.lyric_id, 0).audio.manifest.tempo_bpm == 90
+        renderer.gate.set()
+        assert session.fetch_audio(1, second.lyric_id, 5).audio.manifest.tempo_bpm == 90
+    finally:
+        renderer.gate.set()
         session.close()

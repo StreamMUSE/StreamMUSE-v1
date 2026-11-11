@@ -752,6 +752,58 @@ def _build_audio_demo(
         initial_settings = RapSettings(tempo_bpm=tempo.bpm, output_device=args.audio_device)
     install_audio_settings(runtime, initial_settings, sink=sink,
                            controller_factory=mode_factory, capabilities_probe=capabilities_probe)
+    if args.rap_audio_renderer == "moss_aligned_remote" and args.rap_protocol == "v3":
+        from streammuse.application.rap.inference import InferenceService
+        from streammuse.application.rap.inference.runtime_bridge import install_inference
+        from streammuse.infrastructure.rap.inference_backend import RealInferenceBackend
+        from streammuse.infrastructure.rap.inference_output import InferenceAudioOutput, TimedInferenceStream
+        import numpy as np
+
+        def inference_mix():
+            values = runtime.settings_service.values
+            return RapMixConfig(drum_gain=values.drum_gain, vocal_gain=values.vocal_gain,
+                                chord_loop=values.chord_loop, chord_gain=values.chord_gain)
+
+        def inference_preparer(request):
+            policy = runtime.settings_service.values.alignment_policy
+            warper = phrase_warper if phrase_warper.policy == policy else audio_factories.create_phrase_warper(policy=policy)
+            return BarAudioPreparer(warper=warper, drums=drums,
+                tempo=Tempo(request.bpm, request.ticks_per_beat, request.beats_per_bar),
+                audio_format=audio_format, mix_config=inference_mix())
+
+        def inference_silence(request, bar):
+            from streammuse.domain.rap import PcmAudio
+            pcm = drums.render(BUILTIN_TEMPLATES.get(request.template_id),
+                Tempo(request.bpm, request.ticks_per_beat, request.beats_per_bar), audio_format, bar)
+            samples = np.frombuffer(pcm.data, dtype=np.float32) * inference_mix().drum_gain
+            return PcmAudio(pcm.format, pcm.frame_count, samples.tobytes())
+
+        inference_output = InferenceAudioOutput(audio_format=audio_format, device=args.audio_device,
+            stream_factory=TimedInferenceStream if args.audio_output == "wav" else None,
+            recording_path=session_dir / "inference.wav")
+
+        def prepare_inference(config):
+            # Only assign selection under the runtime gate. Native stream
+            # replacement happens in output.start(), after that gate is released.
+            inference_output.device = runtime.settings_service.values.output_device
+            pcm = drums.render(BUILTIN_TEMPLATES.get(config["template_id"]),
+                Tempo(config["bpm"], config["ticks_per_beat"], config["beats_per_bar"]), audio_format, 0)
+            return np.frombuffer(pcm.data, dtype=np.float32).reshape(-1, audio_format.channels) * inference_mix().drum_gain
+
+        backend = RealInferenceBackend(
+            stream_factory=lambda: audio_factories.create_lyric_stream(base_url=args.rap_render_url),
+            source_factory=lambda: audio_factories.create_bar_audio_source(base_url=args.rap_render_url, opus_codec=opus_codec),
+            preparer_factory=inference_preparer, templates=BUILTIN_TEMPLATES, clock=clock,
+            silence_factory=inference_silence, request_timeout_seconds=args.rap_render_startup_timeout,
+        )
+        service = InferenceService(session_id=str(manifest["session_id"]), backend=backend,
+            sample_rate=audio_format.sample_rate_hz, channels=audio_format.channels, clock=clock,
+            output=inference_output, prepare=prepare_inference)
+        inference_output.set_error_handler(service.fail, warning_handler=service.warn,
+                                          active_probe=lambda: service.active)
+        service.configure({"bpm": tempo.bpm, "topic": scenario.segments[0].topic,
+                           "template_id": scenario.segments[0].template_id})
+        install_inference(runtime, service)
     return runtime
 
 

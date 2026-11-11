@@ -16,6 +16,8 @@ import threading
 import time
 from typing import Protocol
 
+import numpy as np
+
 from streammuse.application.rap.audio_rendering import bar_frame_count, tick_frame_in_bar
 from streammuse.application.rap.chunk_audio import (
     LocalPhraseWarp,
@@ -225,6 +227,13 @@ class BarAudioPreparer:
         first_sample = tick_frame_in_bar(record.bar, first_tick, tempo, self._audio_format)
         # Keep resampling-filter pre-ringing out of the explicit leading rest.
         vocal_samples[:first_sample] = 0.0
+        # Cropping at an aligned onset can start on a nonzero waveform sample.
+        # Smooth only the outer 2 ms; preserve all slot times and interior audio.
+        edge_frames = min(round(self._audio_format.sample_rate_hz * 0.002), (frames - first_sample) // 2)
+        if edge_frames >= 2:
+            attack = np.sin(np.linspace(0.0, np.pi / 2, edge_frames)) ** 2
+            vocal_samples[first_sample:first_sample + edge_frames] *= attack[:, None]
+            vocal_samples[-edge_frames:] *= attack[::-1, None]
         vocal_stem = PcmAudio(self._audio_format, frames, vocal_samples.tobytes())
         drum = self._drums.render(record.flow_template, tempo, self._audio_format, record.bar)
         if drum.format != self._audio_format or drum.frame_count != frames:

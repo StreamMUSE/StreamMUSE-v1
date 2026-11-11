@@ -140,6 +140,7 @@ class LyricStreamSession:
         self._timeline = RapTimeline(Tempo(self._tempo_bpm, 4, 4))
         self._tempo_seq = -1
         self._tempo_ack: dict[str, object] | None = None
+        self._tempo_base_timeline: RapTimeline | None = None
         self._start_bar = start_bar
         self._end_bar_exclusive = end_bar_exclusive
         self._turn_id = turn_id
@@ -184,10 +185,14 @@ class LyricStreamSession:
 
     def apply_edit(self, edit: PlanEdit) -> tuple[int, ...]:
         with self._condition:
+            if edit.story_context is not None and edit in self._plan.edits:
+                return ()
             self._plan = self._plan.with_edit(edit)
             effective = max(edit.from_bar, self._playhead + 1)
             superseded = []
             for bar, state in sorted(self._bars.items()):
+                if edit.story_context is not None and bar >= effective:
+                    state.write_failures = 0
                 if bar >= effective and state.latest is not None:
                     state.latest = None
                     state.next_revision = max(state.next_revision, state.revisions[-1].revision + 1)
@@ -232,12 +237,26 @@ class LyricStreamSession:
                     return {key: value for key, value in self._tempo_ack.items() if key != "update"}
                 raise ValueError("tempo edit_seq must increase")
             effective = max(update.from_bar, self._playhead + 1)
-            self._timeline = self._timeline.with_tempo(update.bpm, effective)
+            invalidate_from = effective
+            base = self._timeline
+            if update.supersedes_edit_seq is not None:
+                if self._tempo_ack is None or update.supersedes_edit_seq != self._tempo_seq:
+                    raise ValueError("tempo reschedule must supersede the latest tempo edit_seq")
+                if update.bpm != self._tempo_ack["bpm"]:
+                    raise ValueError("tempo reschedule BPM must match the previous acknowledgement")
+                # Every retry replaces the speculative switch against the same
+                # original map, even if the client has passed the old boundary.
+                base = self._tempo_base_timeline
+                assert base is not None
+                invalidate_from = min(effective, self._tempo_ack["effective_from_bar"])
+            timeline = base.with_tempo(update.bpm, effective, revision=self._timeline.revision + 1)
+            self._tempo_base_timeline = base
+            self._timeline = timeline
             self._tempo_seq = update.edit_seq
             # An in-flight worker retains the old entry object and cannot publish
             # into its replacement, even when the lyric content id is unchanged.
             for lyric_id, record in self._by_id.items():
-                if record.bar >= effective:
+                if record.bar >= invalidate_from:
                     self._audio.pop(lyric_id, None)
             ack = {"type": "tempo_updated", "edit_seq": update.edit_seq,
                    "requested_from_bar": update.from_bar, "effective_from_bar": effective,
@@ -308,6 +327,16 @@ class LyricStreamSession:
 
     # -- writer --------------------------------------------------------------------
 
+    def _report_writer_error(self, message: str, *, bar: int, attempt: int) -> None:
+        # Structured retry metadata is opt-in; legacy listeners retain their API.
+        handler = getattr(self._listener, "writer_error", None)
+        if callable(handler):
+            handler(message, bar=bar, code="lyric_write_failed",
+                    retryable=attempt < _MAX_WRITE_ATTEMPTS,
+                    attempt=attempt, max_attempts=_MAX_WRITE_ATTEMPTS)
+        else:
+            self._listener.error(message, bar=bar)
+
     def _writer_loop(self) -> None:
         while True:
             with self._condition:
@@ -324,17 +353,25 @@ class LyricStreamSession:
                 written = self._writer.write(request)
             except LyricWriteFailed as error:
                 with self._condition:
+                    if self._plan.for_bar(request.bar).edit_seq != plan_seq:
+                        continue  # a superseded attempt cannot spend the new edit's retry budget
                     state = self._state(request.bar)
                     state.write_failures += 1
+                    attempt = state.write_failures
                     self._stats["write_failures"] += 1
-                self._listener.error(f"lyric writer failed: {error}", bar=request.bar)
+                self._report_writer_error(f"lyric writer failed: {error}", bar=request.bar, attempt=attempt)
                 continue
             except Exception as error:  # generator transport failure; retry after a pause
                 with self._condition:
-                    self._state(request.bar).write_failures += 1
+                    if self._plan.for_bar(request.bar).edit_seq != plan_seq:
+                        continue
+                    state = self._state(request.bar)
+                    state.write_failures += 1
+                    attempt = state.write_failures
                     self._stats["write_failures"] += 1
                     self._condition.wait(0.5)
-                self._listener.error(f"lyric writer error: {type(error).__name__}: {error}", bar=request.bar)
+                self._report_writer_error(f"lyric writer error: {type(error).__name__}: {error}",
+                                          bar=request.bar, attempt=attempt)
                 continue
             published = None
             with self._condition:
@@ -389,6 +426,7 @@ class LyricStreamSession:
                 topic=plan.topic,
                 flow_template=plan.flow_template,
                 history=self._history_locked(bar),
+                story_context=plan.story_context,
                 seed=self._seed + bar * 1_000 + state.next_revision * 10 + state.write_failures,
                 previous_line=previous_line,
                 previous_template=previous_template,  # type: ignore[arg-type]

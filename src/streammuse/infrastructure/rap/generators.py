@@ -281,6 +281,39 @@ def _fit_phrase_bank_line(
     return " ".join((*topic_words, *filler))
 
 
+def _story_instruction(request: CandidateRequest) -> str:
+    if request.story_context is None:
+        return ""
+    directions = "\n".join(f"{e.sequence}. {e.text}" for e in request.story_context.events)
+    return ("\nPersistent plot directions, in order (requested, not established facts):\n"
+            f"{directions}\nContinue the story toward these directions without contradicting earlier ones. "
+            "Recent lines and rhyme targets may be speculative drafts, not confirmed playback.\n")
+
+
+def _history_label(request: CandidateRequest) -> str:
+    return "Recent draft context" if request.story_context is not None else "Recent frozen lines"
+
+
+def _story_priority(request: CandidateRequest) -> str:
+    if request.story_context is None or not request.story_context.events:
+        return ""
+    return (
+        " This is directed storytelling. Each line must advance the latest plot direction "
+        "using concrete people, actions or objects from it. Older directions remain context. "
+        "The topic is only background scenery; do not substitute a generic topic verse for the story."
+    )
+
+
+def _lyric_subject(request: CandidateRequest) -> str:
+    if request.story_context is not None and request.story_context.events:
+        return request.story_context.events[-1].text
+    return request.topic
+
+
+def _story_wording(request: CandidateRequest) -> str:
+    return " Use short common words. Depict the action now, not scenery." if _story_priority(request) else ""
+
+
 def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
     history = "\n".join(f"- {line}" for line in request.context_lines) or "- (none)"
     flow = format_flow_for_prompt(request.flow_template)
@@ -289,7 +322,7 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
             "role": "system",
             "content": (
                 "You are a meticulous rap lyric writer and pronunciation-aware prosody checker. "
-                "Follow the output contract exactly."
+                "Follow the output contract exactly." + _story_priority(request)
             ),
         },
         {
@@ -297,7 +330,7 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
             "content": (
                 f"Request {request.request_id} targets bar {request.target_bar} using flow template "
                 f"{request.template_id!r}. Give {request.count} distinct one-bar lyric lines about "
-                f"{request.topic!r}. Each line must contain exactly {request.required_syllables} spoken "
+                f"{_lyric_subject(request)!r}. Each line must contain exactly {request.required_syllables} spoken "
                 "syllables and be suitable for a four-four beat. Place naturally stressed syllables near "
                 "stronger flow slots, close the phrase at the final slot, and return plain lyric lines without "
                 "syllable markup, labels, or numbering. Work internally in two stages: draft extra lines, then "
@@ -305,7 +338,8 @@ def _build_messages(request: CandidateRequest) -> tuple[dict[str, str], ...]:
                 f"line that is not exactly {request.required_syllables} syllables. Output only the checked lines. "
                 "Contractions count as spoken; do not rely on spelling to count syllables. "
                 f"\n{flow}\n"
-                f"Recent frozen lines:\n{history}\nDeterministic variation seed: {request.seed}."
+                f"{_story_instruction(request)}{_history_label(request)}:\n{history}\nDeterministic variation seed: {request.seed}."
+                f"{_story_wording(request)}"
             ),
         },
     )
@@ -331,18 +365,18 @@ def _build_independent_messages(
             "role": "system",
             "content": (
                 "You are a meticulous rap lyric writer and pronunciation-aware prosody checker. "
-                "Return exactly one plain lyric line and nothing else."
+                "Return exactly one plain lyric line and nothing else." + _story_priority(request)
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Write one distinct lyric line about {request.topic!r} for bar {request.target_bar}. "
+                f"Write one distinct lyric line about {_lyric_subject(request)!r} for bar {request.target_bar}. "
                 f"It must contain exactly {request.required_syllables} spoken syllables under normal American "
                 "spoken pronunciation. Match lexical stress to the stronger slots, preserve natural words, and "
                 "close the phrase at the final slot. Spell out every number with words; never emit digits. "
-                f"{markup}{_rhyme_instruction(request)}\n{flow}\nRecent frozen lines:\n{history}\n"
-                f"Variation seed: {request.seed}."
+                f"{markup}{_rhyme_instruction(request)}\n{flow}\n{_story_instruction(request)}{_history_label(request)}:\n{history}\n"
+                f"Variation seed: {request.seed}.{_story_wording(request)}"
             ),
         },
     )

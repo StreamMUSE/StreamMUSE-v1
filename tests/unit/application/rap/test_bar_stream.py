@@ -105,6 +105,9 @@ class _Stream:
     def send(self, message):
         self.sent.append(dict(message))
 
+    def send_for_session(self, session_id, message):
+        self.send(message)
+
     def close(self):
         pass
 
@@ -438,7 +441,7 @@ class _TempoStream(_Stream):
     def __init__(self):
         super().__init__()
         self.revision = 0
-        self.capabilities = frozenset({"tempo_updates_v1"})
+        self.capabilities = frozenset({"tempo_updates_v1", "tempo_reschedule_v1"})
 
     def request_tempo(self, payload, **kwargs):
         self.sent.append(dict(payload))
@@ -446,6 +449,44 @@ class _TempoStream(_Stream):
         return {"type": "tempo_updated", "edit_seq": payload["edit_seq"],
                 "requested_from_bar": payload["from_bar"], "effective_from_bar": payload["from_bar"],
                 "bpm": payload["bpm"], "revision": self.revision}
+
+
+def test_default_tempo_change_targets_next_uncommitted_bar_not_failure_timeout():
+    now = [100.0]
+    stream, enqueued = _TempoStream(), []
+    controller = _controller(stream, _Source(), enqueued, clock=lambda: now[0],
+                             timeline=RapTimeline(Tempo(90, 4, 4)), fallback_renderer=_TimedEspeak())
+    controller._started = True
+    controller._clock_origin = 100.0
+    try:
+        with controller._lock:
+            controller._ensure_window_locked()
+            current = controller._commit_locked(0, tick=None)
+        ack = controller.update_tempo(120)
+        assert ack['effective_from_bar'] == 1
+        assert ack['ack_timeout_seconds'] == 10.0
+        assert controller._slot(0).committed is current and current.timing.bpm == 90
+        controller.on_tick(15)
+        assert enqueued[-1].timing.bpm == 120
+    finally:
+        controller.close()
+
+
+def test_tempo_change_near_commit_boundary_defers_only_to_next_feasible_bar():
+    now = [100.0]
+    controller = _controller(_TempoStream(), _Source(), [], clock=lambda: now[0],
+                             timeline=RapTimeline(Tempo(90, 4, 4)), fallback_renderer=_TimedEspeak())
+    controller._started = True
+    controller._clock_origin = 100.0
+    controller._playhead = 0
+    try:
+        now[0] += 2.4
+        ack = controller.update_tempo(120)
+        assert ack['effective_from_bar'] == 2
+        assert controller.timeline.snapshot(1, 48000).bpm == 90
+        assert controller.timeline.snapshot(2, 48000).bpm == 120
+    finally:
+        controller.close()
 
 
 def test_tempo_update_invalidates_prepared_future_and_retains_past_snapshot():
@@ -755,7 +796,7 @@ def test_alignment_ack_is_local_while_tempo_ack_and_old_timing_warp_are_pending(
         controller.close()
 
 
-def test_tempo_boundary_reserves_full_ack_budget_before_commit():
+def test_tempo_boundary_reserves_coordination_lead_not_full_failure_timeout():
     now = [100.0]
     stream = _TempoStream()
     controller = _controller(stream, _Source(), [], clock=lambda: now[0])
@@ -765,11 +806,109 @@ def test_tempo_boundary_reserves_full_ack_budget_before_commit():
     now[0] = 110.0
     try:
         ack = controller.update_tempo(50)
-        # The complete ten-second retry budget ends at 120s, before bar 8's guard.
+        # Two seconds of normal coordination fit at bar 5, not bar 8.
         assert ack['ack_timeout_seconds'] == 10.0
-        assert ack['effective_from_bar'] == 8
-        assert controller.timeline.snapshot(7, 48_000).bpm == 90
-        assert controller.timeline.snapshot(8, 48_000).bpm == 50
+        assert ack['coordination_lead_seconds'] == 2.0
+        assert ack['effective_from_bar'] == 5
+        assert controller.timeline.snapshot(4, 48_000).bpm == 90
+        assert controller.timeline.snapshot(5, 48_000).bpm == 50
+    finally:
+        controller.close()
+
+
+def test_tempo_coordination_budget_adapts_to_slow_observed_ack():
+    now = [100.0]
+    class DelayedAck(_TempoStream):
+        def request_tempo(self, payload, **kwargs):
+            now[0] += 1.5
+            return super().request_tempo(payload, **kwargs)
+    controller = _controller(DelayedAck(), _Source(), [], clock=lambda: now[0],
+                             timeline=RapTimeline(Tempo(90,4,4)), fallback_renderer=_TimedEspeak())
+    controller._started = True
+    controller._clock_origin = 100.0
+    controller._playhead = 0
+    try:
+        first = controller.update_tempo(120)
+        second = controller.update_tempo(90)
+        assert first['coordination_lead_seconds'] == 2.0
+        assert second['coordination_lead_seconds'] == 3.0
+        assert second['effective_from_bar'] > first['effective_from_bar']
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize('lead', [0, -1, float('nan'), float('inf')])
+def test_tempo_coordination_lead_must_be_positive_and_finite(lead):
+    with pytest.raises(ValueError, match='tempo_coordination_lead'):
+        _controller(_TempoStream(), _Source(), [], tempo_coordination_lead_seconds=lead)
+
+
+def test_ack_after_target_was_committed_cannot_retime_committed_audio():
+    class LateAck(_TempoStream):
+        def __init__(self):
+            super().__init__()
+            self.capabilities = frozenset({'tempo_updates_v1'})
+        def request_tempo(self, payload, **kwargs):
+            controller.on_tick(payload['from_bar'] * 16 - 1)
+            return super().request_tempo(payload, **kwargs)
+    enqueued = []
+    controller = _controller(LateAck(), _Source(), enqueued, clock=lambda: 100.0,
+                             timeline=RapTimeline(Tempo(90,4,4)), fallback_renderer=_TimedEspeak())
+    controller._started = True
+    controller._clock_origin = 100.0
+    with controller._lock:
+        controller._ensure_window_locked()
+        controller._commit_locked(0, tick=None)
+    try:
+        before = controller.timeline
+        with pytest.raises(ValueError, match='late'):
+            controller.update_tempo(120)
+        assert controller.timeline == before
+        assert controller._slot(controller._playhead).committed.timing.bpm == 90
+        assert controller.tempo_control_state['requires_reset'] is True
+    finally:
+        controller.close()
+
+
+def test_old_server_keeps_conservative_tempo_guard_without_reschedule_support():
+    stream = _TempoStream()
+    stream.capabilities = frozenset({'tempo_updates_v1'})
+    controller = _controller(stream, _Source(), [], clock=lambda: 100.0)
+    controller._started = True
+    controller._clock_origin = 100.0
+    controller._playhead = 0
+    try:
+        ack = controller.update_tempo(120)
+        assert ack['effective_from_bar'] == 4
+        assert ack['coordination_lead_seconds'] == 10
+        assert ack['reschedule_count'] == 0
+    finally:
+        controller.close()
+
+
+def test_late_ack_is_rescheduled_without_retiming_committed_bars():
+    class LateOnce(_TempoStream):
+        def request_tempo(self, payload, **kwargs):
+            if self.revision == 0:
+                controller.on_tick(15)
+            return super().request_tempo(payload, **kwargs)
+    stream, enqueued = LateOnce(), []
+    controller = _controller(stream, _Source(), enqueued, clock=lambda: 100.0,
+                             timeline=RapTimeline(Tempo(90,4,4)), fallback_renderer=_TimedEspeak())
+    controller._started = True
+    controller._clock_origin = 100.0
+    with controller._lock:
+        controller._ensure_window_locked()
+        controller._commit_locked(0, tick=None)
+    try:
+        ack = controller.update_tempo(120)
+        assert ack['reschedule_count'] == 1
+        assert stream.sent[-1]['supersedes_edit_seq'] == 1
+        assert ack['revision'] == 2
+        assert controller.tempo_control_state['requires_reset'] is False
+        assert controller._slot(1).committed.timing.bpm == 90
+        assert controller.timeline.snapshot(ack['effective_from_bar']-1,48000).bpm == 90
+        assert controller.timeline.snapshot(ack['effective_from_bar'],48000).bpm == 120
     finally:
         controller.close()
 

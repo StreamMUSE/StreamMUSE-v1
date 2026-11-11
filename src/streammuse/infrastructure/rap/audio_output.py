@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
+from functools import wraps
 from pathlib import Path
 from queue import Empty, SimpleQueue
 import struct
@@ -41,6 +43,21 @@ OutputStreamFactory = Callable[..., OutputStream]
 CallbackStopFactory = Callable[[], BaseException]
 
 
+# PortAudio discovery/format checks can create CoreAudio units too. Keep them
+# exclusive with native stream control; callbacks only acquire the state lock.
+_NATIVE_CONTROL_LOCK = RLock()
+
+
+def _native_controlled(method):
+    @wraps(method)
+    def controlled(self, *args, **kwargs):
+        guard = _NATIVE_CONTROL_LOCK if self._stream_factory is None else nullcontext()
+        with guard:
+            return method(self, *args, **kwargs)
+
+    return controlled
+
+
 @dataclass(frozen=True)
 class OutputDeviceDescriptor:
     """Host/name is the selection identity; index is only a current lookup hint."""
@@ -64,6 +81,11 @@ OutputDeviceSelection = OutputDeviceDescriptor | Mapping[str, object] | str | in
 def list_output_devices(audio_format: AudioFormat = AudioFormat()) -> tuple[OutputDeviceDescriptor, ...]:
     """Enumerate output-capable devices, including explicit format failures."""
     _require_float32(audio_format)
+    with _NATIVE_CONTROL_LOCK:
+        return _discover_output_devices(audio_format)
+
+
+def _discover_output_devices(audio_format: AudioFormat) -> tuple[OutputDeviceDescriptor, ...]:
     try:
         import sounddevice
 
@@ -99,7 +121,12 @@ def validate_output_device(
     device: OutputDeviceSelection, audio_format: AudioFormat = AudioFormat(),
 ) -> OutputDeviceDescriptor:
     """Resolve a fresh host/name descriptor and check the exact output format."""
-    devices = list_output_devices(audio_format)
+    return _resolve_output_device(device, list_output_devices(audio_format))
+
+
+def _resolve_output_device(
+    device: OutputDeviceSelection, devices: tuple[OutputDeviceDescriptor, ...],
+) -> OutputDeviceDescriptor:
     if isinstance(device, OutputDeviceDescriptor):
         matches = [item for item in devices if (item.host_api, item.name) == (device.host_api, device.name)]
     elif isinstance(device, Mapping):
@@ -171,7 +198,7 @@ class SoundDeviceAudioSink:
         self,
         *,
         audio_format: AudioFormat,
-        device: str | None = None,
+        device: str | int | None = None,
         stream_factory: OutputStreamFactory | None = None,
         callback_stop_factory: CallbackStopFactory | None = None,
     ) -> None:
@@ -180,6 +207,7 @@ class SoundDeviceAudioSink:
         self._device = device
         self._device_descriptor: OutputDeviceDescriptor | None = None
         self._device_error: str | None = None
+        self._device_cache: tuple[OutputDeviceDescriptor, ...] = ()
         self._stream_factory = stream_factory
         self._callback_stop_factory = callback_stop_factory or _default_callback_stop_factory
         self._queued: deque[PreparedRapBar] = deque()
@@ -266,30 +294,47 @@ class SoundDeviceAudioSink:
             return self._device_descriptor
 
     def list_output_devices(self) -> tuple[OutputDeviceDescriptor, ...]:
-        return list_output_devices(self._audio_format)
+        with _NATIVE_CONTROL_LOCK:
+            with self._state_lock:
+                if self._state != PlaybackState.STOPPED:
+                    return self._device_cache
+                stream = self._stream
+            # CallbackStop marks playback stopped before PortAudio finishes its
+            # host lifecycle. Complete that lifecycle before probing formats.
+            if stream is not None and self._stream_factory is None:
+                stream.stop()
+            devices = list_output_devices(self._audio_format)
+            with self._state_lock:
+                self._device_cache = devices
+            return devices
 
     def validate_output_device(self, device: OutputDeviceSelection) -> OutputDeviceDescriptor:
-        return validate_output_device(device, self._audio_format)
+        return _resolve_output_device(device, self.list_output_devices())
 
+    @_native_controlled
     def set_output_device(self, device: OutputDeviceSelection) -> OutputDeviceDescriptor:
         """Open a replacement while stopped; preserve queue and playback cursor."""
         with self._state_lock:
             if self._state != PlaybackState.STOPPED:
                 raise RuntimeError("output device can only change while stopped")
-            try:
-                selected = self.validate_output_device(device)
+        try:
+            selected = self.validate_output_device(device)
+            with self._state_lock:
+                if self._state != PlaybackState.STOPPED:
+                    raise RuntimeError("output device can only change while stopped")
                 replacement = self._open_stream(selected.index)
-            except Exception as error:
+                old_stream = self._stream
+                self._stream = replacement
+                self._stream_started = False
+                self._device = selected.index
+                self._device_descriptor = selected
+                self._device_error = None
+                self._epoch += 1
+        except Exception as error:
+            with self._state_lock:
                 self._device_error = str(error)
                 self._publish(AudioPlaybackNoticeKind.DEVICE_FAILED, None, str(error))
-                raise
-            old_stream = self._stream
-            self._stream = replacement
-            self._stream_started = False
-            self._device = selected.index
-            self._device_descriptor = selected
-            self._device_error = None
-            self._epoch += 1
+            raise
         if old_stream is not None:
             self._stop_and_close_stream(old_stream)
         return selected
@@ -332,6 +377,7 @@ class SoundDeviceAudioSink:
             options["device"] = device
         return self._stream_factory(**options)
 
+    @_native_controlled
     def start(self) -> bool:
         with self._state_lock:
             if self._state == PlaybackState.CLOSED:
@@ -340,11 +386,16 @@ class SoundDeviceAudioSink:
                 return True
             stream = self._stream
             start_epoch = self._epoch
+            selected = self._device_descriptor
         try:
             # CallbackStop makes PortAudio inactive, not stopped. Finish the
             # previous host lifecycle outside the callback/state lock first.
             if stream is not None:
                 stream.stop()
+            if selected is not None:
+                selected = self.validate_output_device(selected)
+            elif self._stream_factory is None:
+                selected = self.validate_output_device(self._device)
             with self._state_lock:
                 if self._state == PlaybackState.CLOSED:
                     raise RuntimeError("audio sink is closed")
@@ -354,9 +405,9 @@ class SoundDeviceAudioSink:
                     return True
                 start_epoch = self._epoch
                 stream = self._stream
-                if self._device_descriptor is not None:
-                    self._device_descriptor = self.validate_output_device(self._device_descriptor)
-                    self._device = self._device_descriptor.index
+                if selected is not None:
+                    self._device_descriptor = selected
+                    self._device = selected.index
                 if self._stream is None:
                     self._stream = self._open_stream(self._device)
                 self._state = PlaybackState.RUNNING
@@ -415,6 +466,7 @@ class SoundDeviceAudioSink:
             samples = self._completed_audio.pop(id(bar))
         return PcmAudio(bar.audio.format, bar.audio.frame_count, samples.tobytes())
 
+    @_native_controlled
     def request_stop_after_bar(self) -> AudioPlaybackSnapshot:
         with self._state_lock:
             if self._state not in (PlaybackState.RUNNING, PlaybackState.STOP_REQUESTED):
@@ -431,6 +483,7 @@ class SoundDeviceAudioSink:
             stream.stop()
         return snapshot
 
+    @_native_controlled
     def reset(self) -> None:
         with self._state_lock:
             stream = self._stream
@@ -456,6 +509,7 @@ class SoundDeviceAudioSink:
         if stream is not None:
             self._stop_and_close_stream(stream)
 
+    @_native_controlled
     def discard_pending(self) -> None:
         """Clear one stopped playback epoch without destroying the device stream."""
 
@@ -510,6 +564,7 @@ class SoundDeviceAudioSink:
             except Empty:
                 return tuple(notices)
 
+    @_native_controlled
     def close(self) -> None:
         with self._state_lock:
             if self._state == PlaybackState.CLOSED:

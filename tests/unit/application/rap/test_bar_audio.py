@@ -116,6 +116,30 @@ def test_output_rate_conversion_cannot_leak_vocals_into_the_leading_rest():
     assert np.max(np.abs(samples[12000:])) > 0
 
 
+@pytest.mark.parametrize("first_tick", [0, 2])
+def test_vocal_edges_are_declicked_without_moving_or_fading_interior_syllables(first_tick):
+    record, manifest, source = record_and_manifest()
+    flow = replace(record.flow_template, slots=tuple(
+        replace(slot, tick_in_bar=slot.tick_in_bar + first_tick)
+        for slot in record.flow_template.slots))
+    record = replace(record, flow_template=flow, scheduled=tuple(
+        replace(item, slot=slot) for item, slot in
+        zip(record.scheduled, materialize_flow(flow, record.bar))))
+    manifest = replace(manifest, lyric_id=record.lyric_id)
+    prepared = preparer(Warper()).prepare(record, manifest, source)
+    samples = np.frombuffer(prepared.vocal_stem.data, dtype=np.float32).reshape(-1, 2)
+    first_sample = first_tick * 6000
+    edge_frames = 96  # Two milliseconds at the 48 kHz output rate.
+
+    assert np.count_nonzero(samples[:first_sample]) == 0
+    assert np.all(samples[first_sample] == 0)
+    assert np.all(samples[-1] == 0)
+    assert np.max(np.abs(np.diff(samples[first_sample:first_sample + edge_frames], axis=0))) < 0.001
+    assert samples[first_sample + edge_frames + 100:-edge_frames - 100] == pytest.approx(1000 / 32768, abs=3e-5)
+    assert prepared.onset_estimates[0].requested_sample == first_sample
+    assert prepared.audio.frame_count == 96000
+
+
 def test_moss_gain_only_remix_does_not_warp_again_or_modify_prepared_audio():
     record, manifest, source = record_and_manifest()
     warper = Warper()

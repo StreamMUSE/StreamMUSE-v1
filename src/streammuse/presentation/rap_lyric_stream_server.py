@@ -49,7 +49,7 @@ from streammuse.application.rap.lyric_writer import SequentialLyricWriter
 from streammuse.domain.rap import FlowTemplate
 from streammuse.domain.rap.lyric_stream import (
     LYRIC_STREAM_SCHEMA_VERSION, LYRIC_STREAM_CAPABILITIES, BOUNDED_TURNS_CAPABILITY,
-    TEMPO_UPDATES_CAPABILITY, BarLyricRecord, PlanEdit, TempoUpdate,
+    TEMPO_UPDATES_CAPABILITY, TEMPO_RESCHEDULE_CAPABILITY, BarLyricRecord, PlanEdit, TempoUpdate,
 )
 from streammuse.domain.rap.remote_chunk import _flow_from_payload
 
@@ -135,7 +135,15 @@ class _QueueListener:
         self._send({"type": "audio_ready", "bar": bar, "lyric_id": lyric_id})
 
     def error(self, message: str, *, bar: int | None = None) -> None:
-        self._send({"type": "error", "message": message[:512], "bar": bar})
+        self._send({"type": "error", "message": message[:512], "bar": bar,
+                    "code": "session_error", "retryable": False,
+                    "attempt": None, "max_attempts": None})
+
+    def writer_error(self, message: str, *, bar: int, code: str, retryable: bool,
+                     attempt: int, max_attempts: int) -> None:
+        self._send({"type": "error", "message": message[:512], "bar": bar,
+                    "code": code, "retryable": retryable,
+                    "attempt": attempt, "max_attempts": max_attempts})
 
 
 @dataclass
@@ -298,6 +306,8 @@ def mount_lyric_stream_routes(app, service: LyricStreamService) -> None:
                         if TEMPO_UPDATES_CAPABILITY not in negotiated:
                             raise ValueError("tempo update capability was not negotiated")
                         update = TempoUpdate.from_payload(message["update"])
+                        if update.supersedes_edit_seq is not None and TEMPO_RESCHEDULE_CAPABILITY not in negotiated:
+                            raise ValueError("tempo reschedule capability was not negotiated")
                         ack = await run_in_threadpool(entry.session.update_tempo, update)
                         ack = {**ack, "server_received_unix_ns": received_ns,
                                "server_processing_ms": (time.monotonic() - processing_started) * 1000}

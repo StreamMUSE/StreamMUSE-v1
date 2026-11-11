@@ -25,6 +25,7 @@ from streammuse.domain.rap import (
     normalize_text,
 )
 from streammuse.domain.rap.lyric_stream import BarLyricRecord
+from streammuse.domain.rap.story import StoryContext
 
 # Bumped whenever the prompt or the selection rule changes, so every lyric
 # record says which writer produced it.
@@ -80,6 +81,7 @@ class LyricWriteRequest:
     seed: int
     previous_line: str | None = None
     previous_template: FlowTemplate | None = None
+    story_context: StoryContext | None = None
 
 
 @dataclass(frozen=True)
@@ -224,6 +226,9 @@ class SequentialLyricWriter:
                 "candidates_requested": sum(wave_sizes[:waves]),
                 "candidates_valid": sum(1 for item in result.evaluations if item.valid),
                 "waves": waves,
+                **({"story_version": request.story_context.version,
+                    "story_event_ids": tuple(e.event_id for e in request.story_context.events)}
+                   if request.story_context is not None else {}),
             },
         )
         return WrittenLyric(
@@ -248,6 +253,7 @@ class SequentialLyricWriter:
             context_lines=tuple(request.history[-4:]) if wave == 0 else (),
             seed=request.seed * 100 + wave,
             rhyme_with=rhyme_with,
+            story_context=request.story_context,
         )
         try:
             batch = self._generator.generate(candidate_request)

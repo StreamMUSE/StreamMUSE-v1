@@ -101,6 +101,26 @@ def test_tempo_update_round_trips_without_changing_lyric_identity():
         TempoUpdate.from_payload({'edit_seq': 1, 'from_bar': 0, 'bpm': 180.1})
 
 
+def test_normal_tempo_payload_remains_compatible_without_reschedule_field():
+    payload = {"edit_seq": 3, "from_bar": 12, "bpm": 123.5}
+    update = TempoUpdate.from_payload(payload)
+    assert update.supersedes_edit_seq is None
+    assert update.to_payload() == payload
+
+
+def test_tempo_reschedule_round_trips_with_superseded_sequence():
+    payload = {"edit_seq": 4, "from_bar": 16, "bpm": 123.5, "supersedes_edit_seq": 3}
+    update = TempoUpdate.from_payload(json.loads(json.dumps(payload)))
+    assert update.supersedes_edit_seq == 3
+    assert update.to_payload() == payload
+
+
+@pytest.mark.parametrize("supersedes", [True, False, 0, -1, 4, 5, 1.5, "3"])
+def test_tempo_reschedule_rejects_invalid_superseded_sequence(supersedes):
+    with pytest.raises(ValueError, match="supersedes_edit_seq"):
+        TempoUpdate(4, 16, 120, supersedes_edit_seq=supersedes)
+
+
 def _manifest(**overrides) -> BarAudioManifest:
     values = dict(
         lyric_id="a" * 64,

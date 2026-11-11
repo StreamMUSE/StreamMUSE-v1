@@ -146,7 +146,16 @@ class LyricStreamConnection:
         thread.start()
 
     def send(self, message: Mapping[str, object]) -> None:
+        self._send(message)
+
+    def send_for_session(self, session_id: str, message: Mapping[str, object]) -> None:
+        """Capture only the intended session's socket; never redirect a stale edit."""
+        self._send(message, expected_session_id=session_id)
+
+    def _send(self, message: Mapping[str, object], *, expected_session_id: str | None = None) -> None:
         with self._lock:
+            if expected_session_id is not None and expected_session_id != self._session_id:
+                raise ConnectionError("lyric stream session changed before delivery")
             socket = self._socket
         if socket is None:
             raise ConnectionError("lyric stream is not connected")

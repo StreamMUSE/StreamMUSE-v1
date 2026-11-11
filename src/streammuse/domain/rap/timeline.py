@@ -110,11 +110,16 @@ class RapTimeline:
         segment = self._segment(tick // 16)
         return segment.seconds + (tick - segment.bar * 16) * (60.0 / segment.bpm / 4)
 
-    def with_tempo(self, bpm: float, from_bar: int) -> "RapTimeline":
+    def with_tempo(self, bpm: float, from_bar: int, *, revision: int | None = None) -> "RapTimeline":
         validate_live_bpm(bpm)
         _nonnegative_int(from_bar, "from_bar")
+        if revision is None:
+            revision = self.revision + 1
+        else:
+            _nonnegative_int(revision, "revision")
+            if revision <= self.revision:
+                raise ValueError("revision must be larger than the base timeline revision")
         boundary = self.tick_to_seconds(from_bar * 16)
-        revision = self.revision + 1
         segments = tuple(segment for segment in self._segments if segment.bar < from_bar)
         return RapTimeline(self.tempo, revision, segments + (_Segment(from_bar, boundary, float(bpm), revision),))
 

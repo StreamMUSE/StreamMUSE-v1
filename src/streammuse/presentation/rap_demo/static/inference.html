@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreamMUSE Inference</title>
+  <link rel="stylesheet" href="/static/css/rap-inference.css?v=20261111-1">
+  <script src="/static/js/rap-inference.js?v=20261111-1" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><strong>StreamMUSE</strong><h1>Inference</h1></div>
+    <div class="session"><span>Session</span><strong id="session-id">--</strong><span id="active-mode">--</span></div>
+    <nav aria-label="Workspace"><a href="/">Rap Lab</a><span id="connection" role="status">Connecting</span></nav>
+  </header>
+  <main id="inference-root">
+    <section class="transport band" aria-label="Session controls">
+      <fieldset class="segments"><legend>Mode</legend><div>
+        <label><input id="mode-cycle" type="radio" name="mode" value="cycle" checked disabled><span>Cyclic exchange</span></label>
+        <label><input id="mode-steering" type="radio" name="mode" value="steering" disabled><span>Continuous steering</span></label>
+      </div></fieldset>
+      <label class="field tempo">BPM<input id="bpm" type="number" min="30" max="240" step="1" value="60" disabled></label>
+      <div class="actions"><button id="start" class="primary" type="button" title="Start a fresh playback epoch" disabled><span aria-hidden="true">&#9654;</span> Start</button><button id="stop" type="button" title="Stop the shared session"><span aria-hidden="true">&#9632;</span> Stop</button><button id="reset" type="button" title="Reset the shared session and clear history"><span aria-hidden="true">&#8634;</span> Reset</button></div>
+      <details id="audio-settings" class="audio-settings"><summary title="Audio output and levels" aria-label="Audio output and levels"><span aria-hidden="true">&#9881;</span></summary><div class="audio-popover">
+        <label class="field">Output device<select id="output-device" disabled><option value="">System default</option></select></label>
+        <label class="field">Drums <output id="drum-gain-value" for="drum-gain">--</output><input id="drum-gain" type="range" min="0" max="2" step="0.01" disabled></label>
+        <label class="field">Vocals <output id="vocal-gain-value" for="vocal-gain">--</output><input id="vocal-gain" type="range" min="0" max="2" step="0.01" disabled></label>
+        <p id="audio-status" class="muted" role="status">Audio settings not loaded</p>
+      </div></details>
+      <div class="renderer"><span>Renderer</span><strong id="renderer">--</strong></div>
+    </section>
+    <p id="error" class="message error" role="alert" hidden></p>
+    <p id="feedback" class="message" role="status" hidden></p>
+    <section class="inputs band" aria-label="Mode inputs">
+      <div id="cycle-inputs" class="turn-inputs">
+        <label class="field">USER<input id="user-duration" type="number" min="0.25" step="0.25" value="1" disabled></label>
+        <label class="field">MODEL<input id="model-duration" type="number" min="0.25" step="0.25" value="2" disabled></label>
+        <label class="field">Duration unit<select id="duration-unit"><option value="bars">Bars</option><option value="beats">Beats</option></select></label>
+        <span id="meter" class="muted">Meter --</span>
+      </div>
+      <button id="save-config" type="button" disabled>Apply settings</button>
+      <form id="steering-form" class="steering" hidden>
+        <label class="field topic">Topic / prompt<input id="topic" type="text" maxlength="2000" autocomplete="off" disabled></label>
+        <label class="field flow">Flow<select id="template" disabled><option value="">Keep current flow</option></select></label>
+        <div id="flow-preview" class="flow-preview" aria-label="Requested flow preview"></div>
+        <button id="apply-steering" type="submit" disabled>Apply steering</button>
+      </form>
+      <span id="config-status" class="muted"></span>
+    </section>
+    <section class="performance band" aria-labelledby="performance-heading">
+      <div class="section-heading"><h2 id="performance-heading">Performance</h2><span id="phase" class="phase">STOPPED</span><strong id="phase-time">--</strong><span id="runtime-state" class="muted">--</span></div>
+      <div class="performance-meta"><span>Beat <strong id="beat">--</strong></span><span>Tick <strong id="tick">--</strong></span><span>Requested input <strong id="requested-version">--</strong></span><span>Playing input <strong id="playing-version">--</strong></span></div>
+      <p id="current-text" class="current-text">--</p>
+      <div class="timeline-scroll"><div id="performance-grid" class="performance-grid" role="img" aria-label="Syllable and flow positions"></div></div>
+      <div class="playback-timing"><span>Scheduled start <strong id="scheduled-start">--</strong></span><span>Observed callback <strong id="observed-start">--</strong></span><span id="timing-domain" class="muted">Clock domain --</span></div>
+      <div id="capture-section" class="capture-row"><div id="capture-surface" tabindex="0" role="button" aria-label="Keyboard rhythm capture" aria-disabled="true"><strong>USER capture</strong><span id="capture-status">Not active</span><span id="capture-count">-- taps</span></div><span id="phase-status" role="status"></span></div>
+    </section>
+    <section class="preparations band" aria-labelledby="preparations-heading">
+      <div class="section-heading"><h2 id="preparations-heading">Preparation</h2><span id="span-range" class="muted">Ticks --</span><span id="span-count" class="muted"></span></div>
+      <div class="span-legend" aria-label="Preparation states"><span data-state="selected">Selected</span><span data-state="ready">Ready</span><span data-state="committed">Committed</span><span data-state="playing">Playing</span><span data-state="missing">Late / missing</span><span data-state="stale">Stale context</span></div>
+      <div class="timeline-scroll"><div id="span-timeline" class="span-timeline" aria-label="Prepared musical spans"></div></div>
+    </section>
+    <section class="metrics band" aria-label="Measured timings and coverage">
+      <dl class="metric-strip">
+        <div><dt>Response start</dt><dd id="metric-response">--</dd></div><div><dt>Steering playback</dt><dd id="metric-steering">--</dd></div>
+        <div><dt>Playable prefix</dt><dd id="metric-prefix">--</dd></div><div><dt>LLM TTFT</dt><dd id="metric-ttft">--</dd></div>
+        <div><dt>Missing vocals</dt><dd id="metric-missing">--</dd></div><div><dt>Stale context</dt><dd id="metric-stale">--</dd></div>
+      </dl>
+      <details id="metrics-details"><summary>Measurement details</summary><dl id="metric-details" class="detail-grid"></dl></details>
+    </section>
+    <section class="requests band" aria-labelledby="requests-heading">
+      <div class="section-heading"><h2 id="requests-heading">Recent responses</h2><span id="request-count" class="muted"></span><div class="exports"><a href="/api/inference/export?format=json" download="inference-trace.json">JSON trace</a><a href="/api/inference/export?format=csv" download="inference-metrics.csv">CSV metrics</a></div></div>
+      <div class="table-scroll"><table><thead><tr><th scope="col">Request</th><th scope="col">State</th><th scope="col">Input</th><th scope="col">First audio ready</th><th scope="col">TTFT</th><th scope="col">Candidate yield</th></tr></thead><tbody id="requests-body"><tr><td colspan="6">No requests</td></tr></tbody></table></div>
+    </section>
+    <section class="optimization band"><details id="optimization-details"><summary>Optimization settings <span id="backend-name" class="muted">--</span></summary>
+      <dl id="capabilities" class="detail-grid"></dl>
+      <div class="optimization-controls"><label class="field">Candidate budget<input id="candidate-budget" type="number" min="1" step="1" disabled></label><label class="field">Concurrency<input id="concurrency" type="number" min="1" step="1" disabled></label><span id="optimization-reason" class="muted">Capabilities not reported</span></div>
+    </details></section>
+  </main>
+</body>
+</html>

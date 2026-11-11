@@ -8,6 +8,7 @@ from math import isfinite
 from types import MappingProxyType
 
 from streammuse.domain.rap.flow import FlowTemplate
+from streammuse.domain.rap.story import StoryContext
 
 
 @dataclass(frozen=True)
@@ -23,8 +24,11 @@ class CandidateRequest:
     seed: int
     # Protocol v3 lyric stream: the previous line this one should rhyme with.
     rhyme_with: str | None = None
+    story_context: StoryContext | None = None
 
     def __post_init__(self) -> None:
+        if self.story_context is not None and not isinstance(self.story_context, StoryContext):
+            raise ValueError("candidate story_context must be a StoryContext")
         if not isinstance(self.request_id, str) or not self.request_id.strip():
             raise ValueError("candidate request_id must be non-empty")
         if self.rhyme_with is not None and (

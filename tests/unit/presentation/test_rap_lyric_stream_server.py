@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import wave
@@ -23,9 +24,25 @@ from streammuse.infrastructure.rap.bar_package import (
     PcmBarPackageEncoder,
     decode_bar_package,
 )
-from streammuse.presentation.rap_lyric_stream_server import LyricStreamService, mount_lyric_stream_routes
+from streammuse.presentation.rap_lyric_stream_server import LyricStreamService, _QueueListener, mount_lyric_stream_routes
 
 from tests.unit.application.rap.test_lyric_session import _Analyzer, _flow, _Generator
+
+
+def test_queue_listener_preserves_structured_retryability_and_defaults_fatal():
+    async def exercise():
+        listener, queue = _QueueListener(), asyncio.Queue()
+        listener.attach(asyncio.get_running_loop(), queue)
+        listener.writer_error("no_valid_candidates", bar=1, code="lyric_write_failed",
+                              retryable=True, attempt=1, max_attempts=3)
+        message = await asyncio.wait_for(queue.get(), timeout=1)
+        assert message == {"type": "error", "message": "no_valid_candidates", "bar": 1,
+                           "code": "lyric_write_failed", "retryable": True,
+                           "attempt": 1, "max_attempts": 3}
+        listener.error("render failed", bar=0)
+        fatal = await asyncio.wait_for(queue.get(), timeout=1)
+        assert fatal["retryable"] is False
+    asyncio.run(exercise())
 
 
 def _wav(frames: int) -> bytes:
@@ -210,11 +227,10 @@ def test_controller_handles_delayed_ack_through_real_client_and_server(tmp_path,
                 release_ack.set()
                 thread.join(3)
                 assert not thread.is_alive()
-                assert service.session('s-e0').snapshot()['timeline_revision'] == 1
-                controller.on_tick(31)
-                controller.on_tick(47)
-                if transit_delay > 5:
-                    controller.on_tick(63)
+                assert service.session('s-e0').snapshot()['timeline_revision'] == (1 if ack_lost else 2)
+                final_bar = 3 if ack_lost else results[0]['effective_from_bar']
+                for bar in range(2, final_bar + 1):
+                    controller.on_tick(bar * 16 - 1)
                 if ack_lost:
                     assert len(failures) == 1 and isinstance(failures[0], TimeoutError)
                     assert not results
@@ -225,7 +241,9 @@ def test_controller_handles_delayed_ack_through_real_client_and_server(tmp_path,
                     assert enqueued[-1].fallback_reason == 'tempo_ack_uncertain'
                 else:
                     assert not failures
-                    assert results[0]['effective_from_bar'] == (4 if transit_delay > 5 else 3)
+                    assert results[0]['reschedule_count'] == 1
+                    assert results[0]['effective_from_bar'] > 1
+                    assert enqueued[1].timing.bpm == 90
                     assert results[0]['ack_elapsed_ms'] >= transit_delay * 1000
                     assert enqueued[-1].timing.bpm == 50
                     assert enqueued[-1].audio.frame_count == 230_400
@@ -233,6 +251,44 @@ def test_controller_handles_delayed_ack_through_real_client_and_server(tmp_path,
                 release_ack.set()
                 thread.join(4)
                 controller.close()
+    finally:
+        controller.close()
+        service.close()
+
+
+def test_fast_tempo_ack_uses_next_uncommitted_bar_through_real_transport(tmp_path):
+    from streammuse.infrastructure.rap.lyric_stream_client import LyricStreamConnection
+    from streammuse.domain.rap.timeline import RapTimeline
+    from streammuse.domain.timing import Tempo
+    from tests.unit.application.rap.test_bar_stream import _controller, _Source, _TimedEspeak
+    client, service, _ = _client(tmp_path)
+    connection = LyricStreamConnection('http://test')
+    enqueued = []
+    controller = _controller(connection, _Source(), enqueued,
+                             timeline=RapTimeline(Tempo(90,4,4)),
+                             fallback_renderer=_TimedEspeak(), startup_timeout_seconds=.01)
+    try:
+        with client.websocket_connect('/v1/rap/sessions/s-e0') as websocket:
+            class Socket:
+                def send(self, raw): websocket.send_text(raw)
+                def recv(self): return websocket.receive_text()
+                def close(self): websocket.close()
+            def connect():
+                connection._socket = Socket()
+                connection._socket.send(json.dumps(connection._start))
+            connection._connect = connect
+            controller.start()
+            deadline = time.monotonic()+2
+            while not connection.capabilities and time.monotonic()<deadline:
+                time.sleep(.005)
+            current = enqueued[0]
+            ack = controller.update_tempo(120)
+            assert ack['effective_from_bar'] == 1 and ack['reschedule_count'] == 0
+            assert enqueued[0] is current and current.timing.bpm == 90
+            controller.on_tick(15)
+            assert enqueued[-1].timing.bpm == 120
+            assert service.session('s-e0').snapshot()['timeline_revision'] == 1
+            controller.close()
     finally:
         controller.close()
         service.close()

@@ -1,6 +1,7 @@
 """Sounddevice selection validates stable descriptors and preserves stopped state."""
 
 from types import SimpleNamespace
+from threading import Event, Thread
 import sys
 
 import numpy as np
@@ -42,14 +43,18 @@ class Backend:
         self.default = SimpleNamespace(device=(0, 1))
         self.streams = []
         self.fail_open = None
+        self.discovery_calls = 0
+        self.probe_calls = 0
 
     def query_devices(self):
+        self.discovery_calls += 1
         return self.devices
 
     def query_hostapis(self):
         return [{"name": "Core Audio"}]
 
     def check_output_settings(self, *, device, samplerate, channels, dtype):
+        self.probe_calls += 1
         assert (samplerate, channels, dtype) == (48_000, 2, "float32")
         if self.devices[device]["max_output_channels"] < channels:
             raise RuntimeError("unsupported channel count")
@@ -94,6 +99,206 @@ def test_device_descriptor_is_resolved_by_host_and_name_after_index_changes(back
     assert audio_output.validate_output_device(selected.to_payload()) == resolved
     with pytest.raises(ValueError, match="unavailable|missing"):
         audio_output.validate_output_device({"host_api": "Core Audio", "name": "Unplugged"})
+
+
+@pytest.mark.parametrize("stop_requested", [False, True])
+@pytest.mark.parametrize("operation", ["list", "validate"])
+def test_active_device_queries_use_cached_format_results(backend, stop_requested, operation):
+    sink = audio_output.SoundDeviceAudioSink(audio_format=AudioFormat())
+    cached = sink.list_output_devices()
+    sink.enqueue(bar(0))
+    assert sink.start()
+    backend.streams[-1].callback(np.zeros((1, 2), np.float32), 1, None, 0)
+    if stop_requested:
+        assert sink.request_stop_after_bar().state is PlaybackState.STOP_REQUESTED
+    calls = backend.discovery_calls, backend.probe_calls
+    backend.devices.clear()
+    try:
+        if operation == "list":
+            assert sink.list_output_devices() == cached
+        else:
+            assert sink.validate_output_device(cached[1].to_payload()) == cached[1]
+            with pytest.raises(ValueError, match="unavailable"):
+                sink.validate_output_device(cached[2])
+        assert (backend.discovery_calls, backend.probe_calls) == calls
+    finally:
+        sink.close()
+
+
+def test_running_queries_without_a_stopped_snapshot_do_not_probe(backend):
+    sink = audio_output.SoundDeviceAudioSink(
+        audio_format=AudioFormat(), stream_factory=lambda **kwargs: Stream(device=None, **kwargs),
+    )
+    assert sink.start()
+    calls = backend.discovery_calls, backend.probe_calls
+    try:
+        sink.list_output_devices()
+        with pytest.raises(ValueError, match="missing|unavailable"):
+            sink.validate_output_device("Unplugged")
+        assert (backend.discovery_calls, backend.probe_calls) == calls
+    finally:
+        sink.close()
+
+
+@pytest.mark.parametrize("device, expected", [(None, "Speakers"), ("Headphones", "Headphones"), (2, "Headphones")])
+def test_native_start_primes_device_cache_without_a_prior_settings_query(backend, device, expected):
+    sink = audio_output.SoundDeviceAudioSink(audio_format=AudioFormat(), device=device)
+    try:
+        assert sink.start()
+        calls = backend.discovery_calls, backend.probe_calls
+        assert calls == (1, 3)
+        assert sink.output_device.name == expected
+        assert backend.streams[-1].device == sink.output_device.index
+        assert [item.name for item in sink.list_output_devices()] == ["Speakers", "Headphones", "Unsupported"]
+        assert sink.validate_output_device(expected).name == expected
+        assert (backend.discovery_calls, backend.probe_calls) == calls
+    finally:
+        sink.close()
+
+
+def test_injected_start_does_not_discover_native_devices(backend):
+    sink = audio_output.SoundDeviceAudioSink(
+        audio_format=AudioFormat(), stream_factory=lambda **kwargs: Stream(device=None, **kwargs),
+    )
+    try:
+        assert sink.start()
+        assert (backend.discovery_calls, backend.probe_calls) == (0, 0)
+    finally:
+        sink.close()
+
+
+def test_stopped_device_listing_refreshes_after_playback(backend):
+    sink = audio_output.SoundDeviceAudioSink(audio_format=AudioFormat())
+    before = sink.list_output_devices()
+    assert sink.start()
+    sink.request_stop_after_bar()
+    backend.devices[2]["name"] = "Replacement"
+    calls = backend.discovery_calls, backend.probe_calls
+    try:
+        after = sink.list_output_devices()
+        assert [item.name for item in before] == ["Speakers", "Headphones", "Unsupported"]
+        assert [item.name for item in after] == ["Speakers", "Replacement", "Unsupported"]
+        assert (backend.discovery_calls, backend.probe_calls) == (calls[0] + 1, calls[1] + 3)
+    finally:
+        sink.close()
+
+
+@pytest.mark.parametrize("scope", ["global", "same_sink", "different_sinks"])
+def test_concurrent_stopped_discovery_and_format_probes_are_serialized(backend, monkeypatch, scope):
+    entered, release, second_attempted, overlapped = Event(), Event(), Event(), Event()
+    errors = []
+    original_probe = backend.check_output_settings
+
+    def probe(**kwargs):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(2)
+        elif not release.is_set():
+            overlapped.set()
+        original_probe(**kwargs)
+
+    monkeypatch.setattr(backend, "check_output_settings", probe)
+    first_sink = audio_output.SoundDeviceAudioSink(audio_format=AudioFormat())
+    second_sink = first_sink if scope == "same_sink" else audio_output.SoundDeviceAudioSink(audio_format=AudioFormat())
+    first = audio_output.list_output_devices if scope == "global" else first_sink.list_output_devices
+    second = audio_output.list_output_devices if scope == "global" else second_sink.list_output_devices
+
+    def run(operation, attempted=None):
+        if attempted is not None:
+            attempted.set()
+        try:
+            operation()
+        except Exception as error:
+            errors.append(error)
+
+    threads = [Thread(target=run, args=(first,)), Thread(target=run, args=(second, second_attempted))]
+    threads[0].start()
+    try:
+        assert entered.wait(1)
+        threads[1].start()
+        assert second_attempted.wait(1)
+        assert not overlapped.wait(0.05)
+        assert backend.discovery_calls == 1
+    finally:
+        release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(2)
+        first_sink.close()
+        second_sink.close()
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert backend.discovery_calls == 2 and backend.probe_calls == 6
+
+
+@pytest.mark.parametrize("operation", ["open", "start", "stop", "close", "reset", "discard", "restart", "switch"])
+def test_native_lifecycle_excludes_device_discovery(backend, monkeypatch, operation):
+    sink = audio_output.SoundDeviceAudioSink(audio_format=AudioFormat())
+    if operation not in ("open", "start"):
+        assert sink.start()
+    if operation in ("restart", "switch"):
+        sink.request_stop_after_bar()
+    entered, release, attempted, discovered = Event(), Event(), Event(), Event()
+    errors = []
+    method = {"open": "OutputStream", "start": "start", "close": "close"}.get(operation, "stop")
+    owner = backend if operation == "open" else Stream
+    original = getattr(owner, method)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, method, blocked)
+    actions = {
+        "open": sink.start, "start": sink.start, "stop": sink.request_stop_after_bar,
+        "close": sink.close, "reset": sink.reset, "discard": sink.discard_pending,
+        "restart": sink.start,
+        "switch": lambda: sink.set_output_device("Headphones"),
+    }
+
+    def run(action):
+        try:
+            action()
+        except Exception as error:
+            errors.append(error)
+
+    lifecycle = Thread(target=run, args=(actions[operation],))
+    lifecycle.start()
+    discovery = None
+    try:
+        assert entered.wait(1)
+        original_query = backend.query_devices
+
+        def query():
+            discovered.set()
+            return original_query()
+
+        monkeypatch.setattr(backend, "query_devices", query)
+
+        def list_devices():
+            attempted.set()
+            audio_output.list_output_devices()
+
+        discovery = Thread(target=run, args=(list_devices,))
+        discovery.start()
+        assert attempted.wait(1)
+        assert not discovered.wait(0.05)
+        if operation not in ("open", "switch"):
+            # Native stop/close/start must leave callback state accessible.
+            observed = Event()
+            reader = Thread(target=lambda: (sink.snapshot(), observed.set()))
+            reader.start()
+            assert observed.wait(1)
+            reader.join(1)
+    finally:
+        release.set()
+        lifecycle.join(2)
+        if discovery is not None:
+            discovery.join(2)
+        sink.close()
+    assert not lifecycle.is_alive() and not discovery.is_alive()
+    assert errors == []
 
 
 def test_device_switch_is_stopped_only_and_preserves_resume_position_and_queue(backend):

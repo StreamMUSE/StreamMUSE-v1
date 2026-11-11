@@ -77,6 +77,39 @@ changes. `GET /api/control/settings` exposes the groups, activation rules, and
 independent acknowledgements. The original endpoint remains available for
 existing scripts, including supported stopped bulk updates.
 
+Device format availability is cached during playback. The client refreshes it
+while stopped and serializes native discovery with stream operations, so GUI
+polling does not repeatedly open Core Audio units during music playback.
+
+Live tempo changes target the earliest uncommitted bar with enough coordination
+time: initially two seconds plus the 250 ms local preparation margin, rather
+than reserving the full ten-second network failure timeout. The allowance grows
+to twice the preceding acknowledgement time on a slower connection. A request
+near a bar's commitment deadline moves to the following feasible bar. Committed
+audio is never retimed. With `tempo_reschedule_v1` negotiated, a reply that misses
+its boundary triggers one conservative reschedule: the server replaces the
+speculative switch, and the client keeps confirmed timing until the later change.
+Older servers keep the full ten-second guard. Lost acknowledgements or an
+unsuccessful recovery still require Reset while confirmed local audio continues.
+This is a low-latency scheduling estimate, not a guarantee against arbitrary
+network delay.
+
+### Bluetooth Output Troubleshooting
+
+Connect AirPods before launching the Python client. If a previously connected
+headset is greyed out with `Internal PortAudio error [PaErrorCode -9986]`, stop
+playback and restart the **Mac Python client**, then select the headset again.
+Reloading the website or resetting the rap session does not reinitialize
+PortAudio's device state. The H200 services and SSH forward need not restart.
+
+On 2026-10-28 the long-running client rejected AirPods at 48 kHz stereo, while a
+fresh process accepted both 44.1 and 48 kHz. Restarting only the Mac client
+restored the same device; direct AirPods playback completed without reported
+underruns. This supports stale host/device state after reconnect, not a need to
+change the rap sample rate. Automatic Bluetooth hot-plug recovery is not
+implemented. Choose the physical headphones rather than `ZoomAudioDevice` unless
+virtual routing is intentional. Bluetooth also adds output latency.
+
 ## Syllable grid
 
 The grid now shows approximate written fragments such as `whis-` and `-per`,

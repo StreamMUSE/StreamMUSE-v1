@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -246,6 +247,20 @@ def test_sounddevice_sink_passes_selected_device_to_the_lazy_portaudio_factory(m
     observed: dict[str, object] = {}
 
     class LazySoundDevice:
+        default = SimpleNamespace(device=(0, 0))
+
+        @staticmethod
+        def query_devices():
+            return [{"name": "Studio Speakers", "hostapi": 0, "max_output_channels": 2, "default_samplerate": 48_000}]
+
+        @staticmethod
+        def query_hostapis():
+            return [{"name": "Core Audio"}]
+
+        @staticmethod
+        def check_output_settings(**kwargs):
+            assert kwargs == {"device": 0, "samplerate": 48_000, "channels": 2, "dtype": "float32"}
+
         class OutputStream(FakeOutputStream):
             def __init__(self, **kwargs) -> None:
                 observed.update(kwargs)
@@ -254,10 +269,10 @@ def test_sounddevice_sink_passes_selected_device_to_the_lazy_portaudio_factory(m
     monkeypatch.setitem(sys.modules, "sounddevice", LazySoundDevice)
     sink = SoundDeviceAudioSink(audio_format=stereo_format(), device="Studio Speakers")
 
-    sink.start()
+    assert sink.start()
     sink.close()
 
-    assert observed["device"] == "Studio Speakers"
+    assert observed["device"] == 0
 
 
 def test_sounddevice_callback_fills_silence_and_reports_status_underrun() -> None:

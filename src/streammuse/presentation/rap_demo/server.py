@@ -23,6 +23,10 @@ from fastapi.staticfiles import StaticFiles
 
 from streammuse.application.rap.monitoring_payloads import flow_template_payload
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
+from streammuse.presentation.rap_demo.characters_api import create_characters_router
+from streammuse.presentation.rap_demo.inference_api import create_inference_router
+from streammuse.presentation.rap_demo.microphone_api import create_microphone_router
+from streammuse.presentation.rap_demo.story_api import create_story_router
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -30,6 +34,11 @@ _POLL_INTERVAL_S = 0.02
 _MAX_EVENTS_PER_POLL = 256
 _SEND_TIMEOUT_S = 0.25
 _RUNTIME_SHUTDOWN_TIMEOUT_S = 10.0
+
+
+def _require_legacy_mode(runtime: object) -> None:
+    if getattr(getattr(runtime, "inference", None), "active", False):
+        raise HTTPException(409, "Inference playback is active; use its mode-specific controls")
 
 
 class _ConnectionPool:
@@ -190,6 +199,7 @@ class _MonitorLifecycle:
 
     def plan_control(self, payload: object) -> dict[str, object]:
         """A listener's live theme/flow edit (protocol v3 controllers only)."""
+        _require_legacy_mode(self.runtime)
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="plan edit must be a JSON object")
         controller = getattr(self.runtime, "controller", None)
@@ -351,7 +361,7 @@ class _MonitorLifecycle:
 
 
 def create_app(*, runtime: object, projector: object, websocket_queue: object) -> FastAPI:
-    """Create an isolated read-only monitor around one rap runtime."""
+    """Create the rap monitor and opt-in interaction experiments."""
 
     lifecycle = _MonitorLifecycle(runtime, projector, websocket_queue)
 
@@ -366,6 +376,18 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
     app = FastAPI(title="StreamMUSE Rap Research Monitor", lifespan=lifespan)
     app.state.monitor = lifecycle
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="rap-demo-static")
+    app.include_router(create_story_router(runtime))
+    app.include_router(create_microphone_router())
+    app.include_router(create_characters_router())
+    app.include_router(create_inference_router(runtime))
+
+    @app.get("/inference")
+    async def inference() -> FileResponse:
+        return FileResponse(STATIC_DIR / "inference.html")
+
+    @app.get("/research")
+    async def research() -> FileResponse:
+        return FileResponse(STATIC_DIR / "research.html")
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -438,6 +460,7 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
 
     @app.post("/api/control/interaction/arm")
     async def interaction_arm(request: Request) -> object:
+        _require_legacy_mode(runtime)
         method = _control_method(runtime, "arm_capture")
         payload = await _control_payload(request)
         if payload:
@@ -446,6 +469,7 @@ def create_app(*, runtime: object, projector: object, websocket_queue: object) -
 
     @app.post("/api/control/interaction/tap")
     async def interaction_tap(request: Request) -> object:
+        _require_legacy_mode(runtime)
         method = _control_method(runtime, "record_tap")
         payload = await _control_payload(request)
         allowed = {"server_time_seconds", "client_time_ms", "uncertainty_ms"}

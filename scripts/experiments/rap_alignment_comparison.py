@@ -20,6 +20,7 @@ from streammuse.domain.rap.remote_chunk import _flow_payload
 from streammuse.domain.timing import Tempo
 from streammuse.infrastructure.rap.drums import ProceduralBoomBapRenderer
 from streammuse.infrastructure.rap.lyric_stream_client import HttpBarAudioSource, LyricStreamConnection
+from streammuse.infrastructure.rap.opus_codec import FFmpegOpusCodec
 from streammuse.infrastructure.rap.phrase_warp import RubberBandPhraseWarper, probe_rubberband_r3
 from streammuse.infrastructure.rap.templates import BUILTIN_TEMPLATES
 
@@ -30,7 +31,7 @@ def compare(args):
     session = "alignment-" + uuid.uuid4().hex[:16]
     messages = Queue()
     connection = LyricStreamConnection(args.url)
-    source = HttpBarAudioSource(args.url)
+    source = HttpBarAudioSource(args.url, opus_codec=FFmpegOpusCodec())
     records = {}
     captured = []
     started = time.monotonic()

@@ -24,6 +24,7 @@ from math import isfinite
 from threading import RLock
 import time
 from typing import Protocol
+from uuid import uuid4
 
 from streammuse.application.rap.alignment import align_exact
 from streammuse.application.rap.audio_rendering import bar_frame_count
@@ -49,9 +50,14 @@ from streammuse.domain.rap.lyric_stream import (
     TempoUpdate,
     LYRIC_STREAM_CAPABILITIES,
     TEMPO_UPDATES_CAPABILITY,
+    TEMPO_RESCHEDULE_CAPABILITY,
+    STORY_CONTEXT_CAPABILITY,
 )
 from streammuse.domain.rap.timeline import RapTimeline, BarTimingSnapshot
 from streammuse.domain.rap.remote_chunk import _flow_payload
+from streammuse.domain.rap.story import (
+    StoryContext, StoryEvent, StoryConflict, MAX_STORY_EVENTS, MAX_STORY_TEXT_BYTES, MAX_STORY_TEXT_CHARS,
+)
 from streammuse.domain.timing import Tempo
 
 SOURCE_REMOTE_LATEST = "remote_latest"
@@ -79,6 +85,8 @@ class LyricStreamPort(Protocol):
     ) -> None: ...
 
     def send(self, message: Mapping[str, object]) -> None: ...
+
+    def send_for_session(self, session_id: str, message: Mapping[str, object]) -> None: ...
 
     def close(self) -> None: ...
 
@@ -167,6 +175,7 @@ class BarStreamController:
         on_timeline_changed: Callable[[RapTimeline], None] | None = None,
         initial_epoch: int = 0,
         tempo_ack_timeout_seconds: float = 10.0,
+        tempo_coordination_lead_seconds: float = 2.0,
     ) -> None:
         if tempo.ticks_per_beat != 4 or tempo.beats_per_bar != 4:
             raise ValueError("lyric stream bars require 4/4 with four ticks per beat")
@@ -176,6 +185,8 @@ class BarStreamController:
             raise ValueError("initial_epoch must be a non-negative integer")
         if not isfinite(tempo_ack_timeout_seconds) or tempo_ack_timeout_seconds <= 0:
             raise ValueError("tempo_ack_timeout_seconds must be positive and finite")
+        if not isfinite(tempo_coordination_lead_seconds) or tempo_coordination_lead_seconds <= 0:
+            raise ValueError("tempo_coordination_lead_seconds must be positive and finite")
         self._tempo = tempo
         self._timeline = timeline or RapTimeline(tempo)
         self._initial_timeline = self._timeline
@@ -186,6 +197,8 @@ class BarStreamController:
         self._last_tempo_edit: dict[str, object] | None = None
         self._tempo_uncertain = False
         self._tempo_ack_timeout = tempo_ack_timeout_seconds
+        self._tempo_coordination_lead = tempo_coordination_lead_seconds
+        self._tempo_ack_seconds = 0.0
         self._mix_changes: list[tuple[int, RapMixConfig]] = []
         self._mix_revision = 0
         self._scenario = scenario
@@ -212,6 +225,7 @@ class BarStreamController:
         self._clock = monotonic
         self._audio_format = audio_format or AudioFormat()
         self._lock = RLock()
+        self._plan_edit_lock = RLock()
         self._tempo_edit_lock = RLock()
         self._epoch = initial_epoch
         self._started = False
@@ -227,6 +241,7 @@ class BarStreamController:
         self._plan = self._base_plan()
         self._edit_seq = 0
         self._latest_plan_edit: dict[str, object] | None = None
+        self._pending_story_edits: set[int] = set()
 
     # -- public lifecycle (same surface as RollingRapChunkController) ------------------
 
@@ -282,31 +297,65 @@ class BarStreamController:
             if self._closed or self._tempo_uncertain:
                 raise RuntimeError("tempo changes require an active, synchronized session")
             effective = max(requested, self._playhead + 1)
-            # Leave a bounded acknowledgement and local preparation interval.
+            # The failure timeout is not a mandatory playback delay. Reserve a
+            # normal coordination window, enlarged after slower observed replies.
             request_started = self._clock()
+            can_reschedule = TEMPO_RESCHEDULE_CAPABILITY in getattr(self._lyric_stream, "capabilities", ())
+            coordination_lead = min(self._tempo_ack_timeout,
+                                    max(self._tempo_coordination_lead, 2 * self._tempo_ack_seconds))
+            if not can_reschedule:
+                coordination_lead = self._tempo_ack_timeout
             while (self._clock_origin is not None
-                   and self._commit_time_locked(effective) < request_started + self._tempo_ack_timeout + self._mac_margin):
+                   and self._commit_time_locked(effective) < request_started + coordination_lead + self._mac_margin):
                 effective += 1
             update = TempoUpdate(self._tempo_edit_seq + 1, effective, bpm)
             epoch, prior = self._epoch, self._timeline
-        try:
-            ack = operation(update.to_payload(), timeout=self._tempo_ack_timeout)
-        except (TimeoutError, ConnectionError):
+        for attempt in range(2):
+            try:
+                ack = operation(update.to_payload(), timeout=self._tempo_ack_timeout)
+            except (TimeoutError, ConnectionError, ValueError):
+                with self._lock:
+                    if epoch == self._epoch and not self._closed:
+                        self._fail_tempo_locked("tempo acknowledgement lost; continuing local audio at confirmed timing; reset required")
+                raise
             with self._lock:
-                if epoch == self._epoch and not self._closed:
-                    self._fail_tempo_locked("tempo acknowledgement lost; continuing local audio at confirmed timing; reset required")
-            raise
+                if epoch != self._epoch or self._closed:
+                    raise RuntimeError("tempo acknowledgement belongs to an obsolete session")
+                accepted = ack.get("effective_from_bar")
+                expected_revision = prior.revision + attempt + 1
+                if (not isinstance(accepted, int) or isinstance(accepted, bool) or accepted < effective
+                        or self._timeline != prior or ack.get("bpm") != bpm
+                        or ack.get("revision") != expected_revision or ack.get("edit_seq") != update.edit_seq):
+                    self._fail_tempo_locked("invalid tempo acknowledgement; reset required")
+                    raise ValueError("invalid tempo acknowledgement; reset required")
+                late = accepted <= self._playhead or (
+                    self._clock_origin is not None
+                    and self._commit_time_locked(accepted) < self._clock() + self._mac_margin)
+                if not late:
+                    break
+                if not can_reschedule or attempt:
+                    self._fail_tempo_locked("late tempo acknowledgement; reset required")
+                    raise ValueError("late tempo acknowledgement; reset required")
+                # The server replaces the speculative switch with this later
+                # boundary. Never install a tempo retroactively on the client.
+                effective = max(requested, self._playhead + 1)
+                coordination_lead = self._tempo_ack_timeout
+                while (self._clock_origin is not None
+                       and self._commit_time_locked(effective) < self._clock() + coordination_lead + self._mac_margin):
+                    effective += 1
+                update = TempoUpdate(update.edit_seq + 1, effective, bpm,
+                                     supersedes_edit_seq=update.edit_seq)
         with self._lock:
             if epoch != self._epoch or self._closed:
                 raise RuntimeError("tempo acknowledgement belongs to an obsolete session")
             accepted = ack.get("effective_from_bar")
             if (not isinstance(accepted, int) or isinstance(accepted, bool) or accepted < effective
                     or accepted <= self._playhead or self._timeline != prior
-                    or ack.get("bpm") != bpm or ack.get("revision") != prior.revision + 1
+                    or ack.get("bpm") != bpm or ack.get("revision") != expected_revision
                     or ack.get("edit_seq") != update.edit_seq):
                 self._fail_tempo_locked("tempo acknowledgement is invalid or missed its boundary; reset required")
                 raise ValueError("invalid or late tempo acknowledgement; reset required")
-            changed = self._timeline.with_tempo(bpm, accepted)
+            changed = self._timeline.with_tempo(bpm, accepted, revision=expected_revision)
             if self._on_timeline_changed is not None:
                 try:
                     self._on_timeline_changed(changed)
@@ -318,6 +367,7 @@ class BarStreamController:
             self._timeline = changed
             self._timing_enabled = True
             self._tempo_edit_seq = update.edit_seq
+            self._tempo_ack_seconds = self._clock() - request_started
             for bar, slot in self._slots.items():
                 if bar >= accepted and slot.committed is None:
                     slot.remote.clear()
@@ -331,6 +381,8 @@ class BarStreamController:
                     slot.local_requested = False
             result = {**ack, "requested_from_bar": requested, "coordinator_epoch": self._epoch,
                       "ack_elapsed_ms": (self._clock() - request_started) * 1000.0,
+                      "coordination_lead_seconds": coordination_lead,
+                      "reschedule_count": attempt,
                       "ack_timeout_seconds": self._tempo_ack_timeout}
             self._last_tempo_edit = result
             self._ensure_window_locked()
@@ -490,38 +542,105 @@ class BarStreamController:
             if deliver is not None and not self._closed and not self._stopping and epoch == self._epoch:
                 self._enqueue(deliver)
 
-    def update_plan(self, *, from_bar: int, topic: str | None = None, template_id: str | None = None) -> PlanEdit:
-        """A listener's live edit: theme and/or flow from ``from_bar`` onward."""
+    def story_snapshot(self) -> dict[str, object]:
         with self._lock:
-            self._edit_seq += 1
-            edit = PlanEdit(
-                edit_seq=self._edit_seq,
-                from_bar=from_bar,
-                topic=topic,
-                flow_template=None if template_id is None else self._templates.get(template_id),
-            )
-            self._plan = self._plan.with_edit(edit)
-            effective = max(from_bar, self._playhead + 1)
-            for bar, slot in self._slots.items():
-                if bar >= effective and slot.committed is None:
-                    # Keep playable audio until its replacement is fully rendered.
-                    slot.local_requested = False
-            self._ensure_window_locked()
-            self._latest_plan_edit = {
-                "coordinator_epoch": self._epoch,
-                "edit_seq": edit.edit_seq,
-                "from_bar": from_bar,
-                "effective_from_bar": effective,
-                "topic": topic,
-                "template_id": template_id,
-            }
-            self._emit(
-                RapEventType.PLAN_EDITED, bar=effective,
-                tick=self._last_tick if self._last_tick >= 0 else None,
-                payload=dict(self._latest_plan_edit),
-            )
-        self._lyric_stream.send({"type": "update", "edit": edit.to_payload()})
+            context = self._story_context_locked()
+            return {"session_id": self.session_id, "enabled": bool(context.events),
+                    **context.to_payload(),
+                    "limits": {"events": MAX_STORY_EVENTS, "text_chars": MAX_STORY_TEXT_CHARS,
+                               "total_text_utf8_bytes": MAX_STORY_TEXT_BYTES},
+                    "continuity": "directions_only; playback history is not established"}
+
+    def _story_context_locked(self) -> StoryContext:
+        return next((e.story_context for e in reversed(self._plan.edits)
+                     if e.story_context is not None), StoryContext())
+
+    def submit_story_event(self, text: str, event_id: str | None = None, *, source: str = "typed",
+                           expected_session_id: str | None = None) -> dict[str, object]:
+        """Accept an additive direction at the ordinary ASAP future edit boundary."""
+        with self._plan_edit_lock:
+            with self._lock:
+                session_id, epoch = self.session_id, self._epoch
+                if expected_session_id is not None and expected_session_id != session_id:
+                    raise StoryConflict("story session changed; discard the stale submission")
+                if self._closed:
+                    raise RuntimeError("cannot add a direction to a closed controller")
+                if self._started and STORY_CONTEXT_CAPABILITY not in getattr(self._lyric_stream, "capabilities", ()):
+                    raise RuntimeError("lyric peer must support story_context_v1; update the server first")
+                context = self._story_context_locked()
+                event = StoryEvent(uuid4().hex if event_id is None else event_id,
+                                   context.version + 1, text, time.time(), source)
+                updated = context.with_event(event)
+                duplicate = updated is context
+                if duplicate:
+                    event = next(e for e in context.events if e.event_id == event.event_id)
+                    edit = next(e for e in reversed(self._plan.edits) if e.story_context is not None
+                                and e.story_context.version == event.sequence)
+                    should_send = self._started and edit.edit_seq in self._pending_story_edits
+                    if should_send and edit.edit_seq < self._plan.edit_seq:
+                        # The renderer may have accepted a later topic/flow edit.
+                        # Recover transport order without creating another StoryEvent.
+                        edit = self._prepare_plan_edit_locked(from_bar=self._playhead + 1, story_context=context)
+                else:
+                    edit = self._prepare_plan_edit_locked(from_bar=self._playhead + 1, story_context=updated)
+                    should_send = self._started
+                acknowledgement = {"session_id": session_id, "event": event.to_payload(), "duplicate": duplicate,
+                                   "effective_from_bar": edit.from_bar, "status": "accepted"}
+            self._deliver_plan_edit(edit, epoch=epoch, session_id=session_id, should_send=should_send)
+            return acknowledgement
+
+    def update_plan(self, *, from_bar: int, topic: str | None = None, template_id: str | None = None,
+                    story_context: StoryContext | None = None) -> PlanEdit:
+        """A listener's live edit: theme and/or flow from ``from_bar`` onward."""
+        with self._plan_edit_lock:
+            with self._lock:
+                edit = self._prepare_plan_edit_locked(from_bar=from_bar, topic=topic, template_id=template_id,
+                                                     story_context=story_context)
+                epoch, session_id = self._epoch, self.session_id
+                should_send = story_context is None or self._started
+            self._deliver_plan_edit(edit, epoch=epoch, session_id=session_id, should_send=should_send)
         return edit
+
+    def _prepare_plan_edit_locked(self, *, from_bar: int, topic: str | None = None,
+                                  template_id: str | None = None, story_context: StoryContext | None = None) -> PlanEdit:
+        self._edit_seq += 1
+        edit = PlanEdit(edit_seq=self._edit_seq, from_bar=from_bar, topic=topic,
+                        flow_template=None if template_id is None else self._templates.get(template_id),
+                        story_context=story_context)
+        self._plan = self._plan.with_edit(edit)
+        effective = max(from_bar, self._playhead + 1)
+        for bar, slot in self._slots.items():
+            if bar >= effective and slot.committed is None:
+                # Keep playable audio until its replacement is fully rendered.
+                slot.local_requested = False
+        self._ensure_window_locked()
+        self._latest_plan_edit = {"coordinator_epoch": self._epoch, "edit_seq": edit.edit_seq,
+                                  "from_bar": from_bar, "effective_from_bar": effective,
+                                  "topic": topic, "template_id": template_id}
+        self._emit(RapEventType.PLAN_EDITED, bar=effective,
+                   tick=self._last_tick if self._last_tick >= 0 else None,
+                   payload=dict(self._latest_plan_edit))
+        return edit
+
+    def _deliver_plan_edit(self, edit: PlanEdit, *, epoch: int, session_id: str, should_send: bool) -> None:
+        if not should_send:
+            return
+        with self._lock:
+            if epoch != self._epoch:
+                raise StoryConflict("story session changed before edit delivery")
+            if edit.story_context is not None:
+                self._pending_story_edits.add(edit.edit_seq)
+        message = {"type": "update", "edit": edit.to_payload()}
+        # Only plan controls serialize here; tick/Stop/Reset never acquire this lock.
+        if edit.story_context is None:
+            self._lyric_stream.send(message)
+        else:
+            self._lyric_stream.send_for_session(session_id, message)
+        with self._lock:
+            if epoch == self._epoch and edit.story_context is not None:
+                # Every story snapshot includes all earlier immutable directions.
+                self._pending_story_edits.difference_update(
+                    seq for seq in tuple(self._pending_story_edits) if seq <= edit.edit_seq)
 
     def request_stop(self, *, successor_bar: int | None) -> None:
         with self._lock:
@@ -574,6 +693,7 @@ class BarStreamController:
             self._plan = self._base_plan()
             self._edit_seq = 0
             self._latest_plan_edit = None
+            self._pending_story_edits.clear()
             self._timeline = self._initial_timeline
             self._legacy_timing_before_bar = 0
             self._tempo_edit_seq = 0
@@ -631,6 +751,8 @@ class BarStreamController:
                         "fallback_reason": None,
                         "revision": record.revision,
                         "lyric_id": record.lyric_id,
+                        "story_version": record.provenance.get("story_version"),
+                        "story_event_ids": record.provenance.get("story_event_ids", ()),
                         "lead_ms": self._lead_ms_locked(record.bar),
                     },
                 )
@@ -982,6 +1104,8 @@ class BarStreamController:
             "lyric_id": lyric_id,
             "revision": record.revision if record is not None else None,
             "latest_revision": latest.revision if latest is not None else None,
+            "story_version": record.provenance.get("story_version") if record is not None else None,
+            "story_event_ids": record.provenance.get("story_event_ids", ()) if record is not None else (),
             "topic": played_topic,
             "template_id": played_flow.template_id,
             "flow": flow_template_payload(played_flow),

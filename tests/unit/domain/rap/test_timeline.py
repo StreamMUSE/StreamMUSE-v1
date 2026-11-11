@@ -66,3 +66,19 @@ def test_audio_helpers_accept_full_snapshot_and_timeline():
         assert bar_start_frame(4, timing, fmt) == snapshot.start_frame
         assert bar_frame_count(4, timing, fmt) == snapshot.frame_count
         assert tick_frame_in_bar(4, 7, timing, fmt) == snapshot.tick_offsets[7]
+
+
+def test_explicit_revision_can_jump_forward_when_rebuilding_from_an_older_base():
+    base = timeline(90).with_tempo(100, from_bar=1)
+    changed = base.with_tempo(120, from_bar=4, revision=7)
+    assert changed.revision == 7
+    assert changed.snapshot(4, 48000).revision == 7
+    assert changed.snapshot(3, 48000) == base.snapshot(3, 48000)
+    assert changed.with_tempo(80, from_bar=6).revision == 8
+
+
+@pytest.mark.parametrize("revision", [True, 0, 1, -1, 1.5, "2"])
+def test_explicit_revision_must_be_an_integer_larger_than_base(revision):
+    base = timeline().with_tempo(120, from_bar=1)
+    with pytest.raises(ValueError, match="revision"):
+        base.with_tempo(100, from_bar=4, revision=revision)

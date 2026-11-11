@@ -1,5 +1,33 @@
 # Real-Time Rap Audio Demo Quick Start
 
+## Inference Optimization Page (2026-11-11)
+
+The new [inference page guide](inference-page-guide.md) covers cyclic
+USER -> WAIT -> MODEL exchange and continuous steering at
+`http://127.0.0.1:8018/inference`. The original dashboard remains at `/`, in the
+same session. The [engineering handoff](inference-optimization-handoff.md) maps
+the editable implementation, timing contracts, and optimization entry points.
+For this deployment use H200 **GPUs 1 and 2**, Qwen port **18711**, and renderer
+port **18721**. The older deployment commands below are historical alternatives;
+do not start them alongside this running stack.
+
+## Optimized MOSS-Local (2026-10-28)
+
+The [current MOSS-Local operating guide](rap-mosslocal-live-2026-10-28.md)
+contains the restored H200 SGLang service, Mac client, SSH forwarding, and
+rollback commands. It uses the same **8018 GUI** and **18720 render endpoint**
+with the new controls intact. Use that guide for the current Opus-enabled setup;
+the PCM commands below remain a supported alternative. Actual live-edit timing
+and fallback results are in the
+[restoration report](../reports/2026-10-28-mosslocal-restoration.md).
+
+Live tempo edits now target the earliest uncommitted bar that leaves enough
+coordination time, rather than reserving the entire ten-second failure timeout.
+The bar already playing stays unchanged. See the
+[tempo update report](../reports/2026-10-31-tempo-asap.md) for live measurements.
+The current renderer/alignment process shares GPU0 with Qwen; MOSS remains on
+GPU1. Reuse the healthy deployment rather than starting duplicate services.
+
 ## Flow And Audio Update (2026-10-28)
 
 The latest [flow/audio guide](rap-flow-audio-controls.md) covers the six curated

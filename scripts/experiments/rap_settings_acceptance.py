@@ -9,7 +9,12 @@ from pathlib import Path
 import time
 import urllib.request
 
-from rap_interaction_acceptance import Acceptance, require_device_output
+if __package__:
+    from .rap_interaction_acceptance import Acceptance, require_device_output
+    from .rap_live_edit_acceptance import EventEvidence, LiveAcceptance, StatePoller, measure_edit, write_json
+else:
+    from rap_interaction_acceptance import Acceptance, require_device_output
+    from rap_live_edit_acceptance import EventEvidence, LiveAcceptance, StatePoller, measure_edit, write_json
 
 
 def timing(state):
@@ -51,6 +56,30 @@ def change_policy(test, selected):
             "effective_from_bar": ack["effective_from_bar"], "observed_bar": timing(played)["bar"], "ack": ack}
 
 
+def change_topic_flow(test, topic, template, *, timeout=65, poll_interval=.1):
+    """Require exact-revision device playback without altering transport state."""
+    output = test.output / "topic_edit"
+    measured = LiveAcceptance(test.url, output)
+    poller = StatePoller(measured, EventEvidence(output), poll_interval)
+    result = {}
+    try:
+        poller.start()
+        poller.check()
+        require_device_output(poller.settings.get("audio_output", {}))
+        result = measure_edit(measured, poller, index=0, topic=topic, template=template,
+                              args=argparse.Namespace(timeout=timeout, poll_interval=poll_interval))
+        assert result["status"] == "passed", f"topic/flow matching revision did not finish playback: {result['status']}"
+        return result
+    except BaseException as error:
+        if not result:
+            result = {"status": "failed", "error": repr(error)}
+        raise
+    finally:
+        poller.close()
+        write_json(output / "summary.json", result)
+        measured.evidence.close()
+
+
 def run(args):
     test = Acceptance(args.url, args.output)
     summary = {"status": "running", "alignment_changes": []}
@@ -81,8 +110,7 @@ def run(args):
         test.wait("/api/state", lambda state: (timing(state).get("mix") or {}).get("chord_loop") == "major_cycle")
         options = test.request("/api/control/plan")
         template = next(item for item in options["templates"] if item["template_id"] == "mcflow_4fa0466611a111afb52f")
-        test.request("/api/control/plan", {"topic": "quiet trains at sunrise", "template_id": template["template_id"]})
-        time.sleep(10)
+        summary["topic_flow"] = change_topic_flow(test, "quiet trains at sunrise", template)
         state = test.request("/api/state")
         assert state["audio"]["underruns"] == 0
         summary["continuous"] = {"underruns": state["audio"]["underruns"], "bars": state["frozen_bars"]}
