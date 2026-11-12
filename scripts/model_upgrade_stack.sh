@@ -67,10 +67,16 @@ case $tts in
       --moss-runtime-config $P/moss_tts.yaml --moss-runtime-config-sha256 3d575d2b73aa83bd608ef62df0a0f9b8fdbf3c7a99b362f79864d873cba568b9 \
       --moss-runtime-patch-sha256 $(sha256sum $R/patches/sglang-omni-0.1.4-af3ab61-moss-continuation.patch | cut -d' ' -f1)" ;;
   mosslocal)
-    launch tts env HF_HOME=$H/models/huggingface CUDA_VISIBLE_DEVICES=$gpu SGLANG_OMNI_STARTUP_TIMEOUT=2400 \
+    # SGLang-Omni keeps its IPC sockets and per-GPU startup locks under /tmp by default; on this
+    # shared host those paths may belong to another user, so give this user its own directory.
+    # Keep the name short (16 characters at most): the MPS daemon's longest socket path,
+    # <dir>/sglang-omni-mps-<user>/<GPU UUID>/pipe/control_privileged, must fit in 107 bytes.
+    T=/tmp/sgo-$(id -u); mkdir -p $T
+    launch tts env HF_HOME=$H/models/huggingface CUDA_VISIBLE_DEVICES=$gpu SGLANG_OMNI_STARTUP_TIMEOUT=2400 TMPDIR=$T \
       PATH=$S/.venv/bin:/usr/local/cuda/bin:/usr/bin:/bin bash -c "cd $S; exec $S/.venv/bin/sgl-omni serve \
       --model-path OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 --config examples/configs/moss_tts_local_non_streaming.yaml \
       --tts_engine.gpu_memory_fraction 0.3 --tts_engine.engine.mem_fraction_static 0.3 \
+      --endpoints.base_path $T \
       --host 127.0.0.1 --port 8630 --allowed-local-media-path $B/media"
     moss="--moss-model OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 --moss-model-revision be7766a6735b98bd793f7c79fb720b4d0f5d13b8 \
       --moss-runtime-version 0.1.8 --moss-runtime-revision 870d77446b3fae6e4f4f2a6964f7eae2f75e663a \

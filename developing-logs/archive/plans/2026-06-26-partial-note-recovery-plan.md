@@ -238,7 +238,7 @@ Lekai 后端用 `close_at_end=False` + server-side `self._active_pitches` 做跨
 
 - 本改动只在**推理跟不上调度**（快 tempo / GPU 忙）时才生效；慢 tempo（如一致性测试的 tempo 15）永不触发，所以 `tests/consistency/` 的 tempo-15 档必须继续全绿。
 - 快 tempo 下，这套逻辑会改变迟到音符的落点（夹头留尾 vs 原来的整体挪动），可能让一致性测试的快 tempo 档表现变化。评估是否要：
-  - [x] 4.1 在一致性测试的"零丢弃前置"里，同时检测 session 日志/`model_schedule_trace.jsonl` 的"部分补齐/丢弃/forced off"计数（目前只检测 `_inference_worker` 的 dropped stale request，见 [consistency-test.md](../../docs/developer-guide/consistency-test.md)）——快 tempo 失败能干净归类为"性能"而非"回归"。
+  - [x] 4.1 在一致性测试的"零丢弃前置"里，同时检测 session 日志/`model_schedule_trace.jsonl` 的"部分补齐/丢弃/forced off"计数（目前只检测 `_inference_worker` 的 dropped stale request，见 [consistency-test.md](../../../docs/developer-guide/consistency-test.md)）——快 tempo 失败能干净归类为"性能"而非"回归"。
 
 ## Phase 5：收尾
 

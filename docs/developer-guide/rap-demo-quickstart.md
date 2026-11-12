@@ -374,7 +374,7 @@ their server caches never mix.
 ### Protocol v3: Mac Client And Lyric Stream Service
 
 `--rap-protocol v3` replaces the two-bar request/response loop with a per-bar
-lyric stream (plan `developing-logs/plans/2026-10-08-rap-lyric-stream-plan.md`,
+lyric stream (plan `developing-logs/archive/plans/2026-10-08-rap-lyric-stream-plan.md`,
 report `developing-logs/reports/2026-10-12-rap-lyric-stream-implementation-report.md`):
 
 - The server writes one line per bar, three bars ahead of the last committed
@@ -759,7 +759,7 @@ Measured on 2026-09-30 (24 chunks, 90 BPM, 2-bar chunks): end-to-end p50
 3.28 s / p95 3.55 s; Qwen 0.96 s, MOSS 2.09 s, MMS 0.05 s, R3 0.06 s; a
 24-bar headless demo (`--audio-output wav --no-web`) used remote audio for 22
 bars with zero underruns. Details and open decisions are in
-`developing-logs/plans/2026-09-30-rap-mac-local-server-plan.md`.
+`developing-logs/archive/plans/2026-09-30-rap-mac-local-server-plan.md`.
 
 ## Legacy v1/v2 Runtime Shutdown
 

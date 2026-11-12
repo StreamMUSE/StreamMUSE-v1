@@ -4,7 +4,7 @@
 
 把远端 RAP chunk 的准备时间，从当前约 1.49 秒（中位数，全部在 H200 上）降到约 1.15 秒，并去掉两类偶发长尾。第 0 阶段把 R3 拉伸移到 Mac 后，其中服务器端约 1.07 秒，Mac 端拉伸约 0.08 秒。前提是不改变 MOSS 的输出、不降低 chunk 契约的校验强度、不牺牲可追溯性。
 
-依据：[profiling 报告](../reports/2026-09-25-rap-moss-sglang-profiling-report.md)，已于 2026-10-01 更正了 Qwen 部分。
+依据：[profiling 报告](../../reports/2026-09-25-rap-moss-sglang-profiling-report.md)，已于 2026-10-01 更正了 Qwen 部分。
 
 ## 非目标
 
@@ -359,7 +359,7 @@ D1（整理现有改动）
 
 **做了什么**
 
-- `93c04b78`：把拉伸相关的代码（准备输入、锚点规划、R3 调用、诊断）从 `moss_aligned_phrase.py` 移到不依赖 GPU 的 [phrase_warp.py](../../src/streammuse/infrastructure/rap/phrase_warp.py)。服务器输出逐字节不变。
+- `93c04b78`：把拉伸相关的代码（准备输入、锚点规划、R3 调用、诊断）从 `moss_aligned_phrase.py` 移到不依赖 GPU 的 [phrase_warp.py](../../../src/streammuse/infrastructure/rap/phrase_warp.py)。服务器输出逐字节不变。
 - `83c224c4`：协议 v2。
   - 服务器做完 MOSS 和 MMS 就返回：原始人声（PCM16）、每个音节的 `source_onsets` 和 `onset_confidence`。
   - Mac 用同一个 `chunk_render_request` 重建渲染请求，再通过 `PhraseWarper` 接口（实现是 `RubberBandPhraseWarper`）在本机跑 R3。
@@ -387,7 +387,7 @@ D1（整理现有改动）
 **Opus 的影响：与计划不同的地方**
 
 - 计划里沿用了第 4 阶段的波形门槛（SNR 和相关系数）。但 R3 是 phase vocoder，输入哪怕变一点点，输出的相位都会变。对照实验证明了这一点：只给原始人声加 1 LSB 的抖动（听不出来），拉伸结果的波形相关系数就掉到 0.58。所以在 R3 下游，波形 SNR 和相关系数没有意义，改用 STFT 幅度 SNR 和对数谱距离（LSD）。
-- 工具：[scripts/check_v2_opus_warp_quality.py](../../scripts/check_v2_opus_warp_quality.py)。下表是 37 个 chunk 的中位数，参考信号是“以 PCM 为输入的 Mac 端拉伸结果”。
+- 工具：[scripts/check_v2_opus_warp_quality.py](../../../scripts/check_v2_opus_warp_quality.py)。下表是 37 个 chunk 的中位数，参考信号是“以 PCM 为输入的 Mac 端拉伸结果”。
 
   | 路径 | 幅度 SNR | LSD | 波形相关 |
   |---|---:|---:|---:|
@@ -531,7 +531,7 @@ D1（整理现有改动）
 
 ### 第 1、4 阶段在 H200 上的验收，以及第 5 阶段整体复测（2026-10-01）
 
-完整数据见 [profiling 报告第 10 节](../reports/2026-09-25-rap-moss-sglang-profiling-report.md)。同一张卡上，基线与优化配置对比：
+完整数据见 [profiling 报告第 10 节](../../reports/2026-09-25-rap-moss-sglang-profiling-report.md)。同一张卡上，基线与优化配置对比：
 
 | 项目 | 基线 | 优化 | 结果 |
 |---|---:|---:|---|

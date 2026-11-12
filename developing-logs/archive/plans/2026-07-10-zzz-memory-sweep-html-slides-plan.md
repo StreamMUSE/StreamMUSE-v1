@@ -15,7 +15,7 @@
 
 ## 数据来源
 
-- 实验报告：`developing-logs/reports/2026-07-10-zzz-memory-sweep-experiment-report.md`
+- 实验报告：`developing-logs/archive/reports/2026-07-10-zzz-memory-sweep-experiment-report.md`
 - 正式结果汇总：`task_runs/zzz_memory_full_matrix_parallel_20260710-090000/matrix_summary_formal.csv`
 - 正式结果 Markdown：`task_runs/zzz_memory_full_matrix_parallel_20260710-090000/matrix_summary_formal.md`
 - 原始 per-turn 数据：各模型目录下的 `per_turn.csv`

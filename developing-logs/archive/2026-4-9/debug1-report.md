@@ -1,7 +1,7 @@
 # Debug1 Report
 
 Date: 2026-04-09
-Related Plan: developing-logs/2026-4-9/debug1-plan.md
+Related Plan: developing-logs/archive/2026-4-9/debug1-plan.md
 
 ## 1. Scope
 

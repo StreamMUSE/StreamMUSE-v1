@@ -240,7 +240,7 @@ planner 先对 bar 0 发出 n=16 的请求，完成后再发 bar 1 的请求。�
 补丁服务、render server、两个 SGLang 服务和 vLLM 均已正常停止，8 张 GPU 已全部释放。
 ## 10. 2026-10-01 优化后的复测
 
-依据：[2026-10-01 优化计划](../plans/2026-10-01-rap-server-latency-optimization-plan.md)的第 0 到第 4 阶段全部完成后，按测量协议复测。
+依据：[2026-10-01 优化计划](../archive/plans/2026-10-01-rap-server-latency-optimization-plan.md)的第 0 到第 4 阶段全部完成后，按测量协议复测。
 
 **设置**
 
@@ -276,7 +276,7 @@ planner 先对 bar 0 发出 n=16 的请求，完成后再发 bar 1 的请求。�
 
 ## 11. 2026-10-12 协议 v3（歌词流、单 bar、续写）的复测
 
-依据：[歌词流计划](../plans/2026-10-08-rap-lyric-stream-plan.md)的第 9 阶段；详见 [2026-10-12 实施报告](2026-10-12-rap-lyric-stream-implementation-report.md)。
+依据：[歌词流计划](../archive/plans/2026-10-08-rap-lyric-stream-plan.md)的第 9 阶段；详见 [2026-10-12 实施报告](2026-10-12-rap-lyric-stream-implementation-report.md)。
 
 **设置**
 

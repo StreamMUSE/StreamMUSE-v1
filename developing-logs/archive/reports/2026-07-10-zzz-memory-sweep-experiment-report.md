@@ -2,7 +2,7 @@
 
 ## 结论摘要
 
-本次按照 `developing-logs/plans/2026-07-03-zzz-memory-sweep-plan.md` 完成了 7 个模型的 ZipZapZop memory sweep。正式实验结果目录：
+本次按照 `developing-logs/archive/plans/2026-07-03-zzz-memory-sweep-plan.md` 完成了 7 个模型的 ZipZapZop memory sweep。正式实验结果目录：
 
 - run root：`task_runs/zzz_memory_full_matrix_parallel_20260710-090000/`
 - 正式汇总（过滤 smoke/pilot）：`matrix_summary_formal.csv` / `matrix_summary_formal.json` / `matrix_summary_formal.md`

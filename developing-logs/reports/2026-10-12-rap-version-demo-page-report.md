@@ -2,7 +2,7 @@
 
 日期：2026-10-12，录音在美东时间当晚，UTC 是 10-13。
 
-依据：[demo 页面计划](../plans/2026-10-12-rap-version-demo-page-plan.md)。计划里待定的事项都按我的建议执行。计划定的是三个版本，之后应你的要求加了 v0.2（10-01 延迟优化之后的版本），见 2.5。
+依据：[demo 页面计划](../archive/plans/2026-10-12-rap-version-demo-page-plan.md)。计划里待定的事项都按我的建议执行。计划定的是三个版本，之后应你的要求加了 v0.2（10-01 延迟优化之后的版本），见 2.5。
 
 页面：<https://claude.ai/artifact/6qh44sFzTteZd4YrWTjvyH>。目前是私有的，要给别人看，需要在页面的 Share 菜单里分享。
 

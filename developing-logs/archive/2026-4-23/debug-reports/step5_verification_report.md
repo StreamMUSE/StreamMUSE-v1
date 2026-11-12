@@ -79,4 +79,4 @@
 - FakeRT v3 输出目录: `output/debug/fake_rt_equivalent_v3/`
 - Offline vs FakeRT v3 对比报告: `output/debug/offline/inference_consistency_report.json`
 - Offline vs FakeRT overlap 对比报告: `output/debug/fake_rt_overlap/inference_consistency_report.json`
-- 会话进度记录: `developing-logs/2026-4-23/debug-reports/session_progress_2026-04-24.md`
+- 会话进度记录: `developing-logs/archive/2026-4-23/debug-reports/session_progress_2026-04-24.md`

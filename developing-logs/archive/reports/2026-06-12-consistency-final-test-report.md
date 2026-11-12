@@ -1,6 +1,6 @@
 # Final Consistency Test 执行 Report（2026-06-25）
 
-对应计划：`developing-logs/plans/2026-06-12-consistency-final-test-plan.md`（含 rev3 + Phase 0 实测记录 + 执行 Todo List）。
+对应计划：`developing-logs/archive/plans/2026-06-12-consistency-final-test-plan.md`（含 rev3 + Phase 0 实测记录 + 执行 Todo List）。
 
 ## 一句话结论
 

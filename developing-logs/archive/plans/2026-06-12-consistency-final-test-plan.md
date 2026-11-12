@@ -152,7 +152,7 @@ LEKAI_CHECKPOINT_PATH=models/ModelLekai/epoch_4_1104_1204/model.safetensors \
 ## 执行 Todo List
 
 > ✅ **全部执行完成（2026-06-25）**。完整结果、与计划的偏差、判别力证据见
-> `developing-logs/reports/2026-06-12-consistency-final-test-report.md`。
+> `developing-logs/archive/reports/2026-06-12-consistency-final-test-report.md`。
 > 默认配置（song 4 × tempo 15+120）真跑 PASSED（6m25s），日常套件 173 passed + 1 skipped。
 >
 > 下方各 Phase 子项的勾选状态**仅作历史参考**——实现中三处实质偏离计划原描述，以 report 为准：
@@ -207,7 +207,7 @@ NPZ 与 mel MIDI 两条数据源 BPM 完全一致。测试两侧统一钉 `120`�
 - **realtime CLI（song 1, tempo 60, greedy, BPM=120）**：63 次推理**全部返回 0 个伴奏音符**，`combined.mid` 的 Accompaniment track 为空。
 - **offline（song 1 = condition_idx=3, greedy, BPM=120）**：生成 **263 个音符**。BPM token 两侧一致（都是 265 = 中桶），排除 BPM 坑。
 - **根因**：sliding-window 把自己生成的伴奏反馈进下一拍 context；第 0 拍贪心选了 empty marker(169)，之后每拍 context 里伴奏槽全是 169 → **自我强化的空循环**。offline 则一次性 condition 整个 part0(melody) 自回归生成整个 part1，二者是**架构上不等价的算法**。
-- **历史佐证**：`developing-logs/2026-4-23/.../final_summary_report.md` 实测 offline vs fake-rt 总体 match rate **1.0%–1.15%**，"一致性未达标"，当年从未解决。报告原话："greedy decoding favors empty tokens... 模型行为问题，非代码 bug"。
+- **历史佐证**：`developing-logs/archive/2026-4-23/.../final_summary_report.md` 实测 offline vs fake-rt 总体 match rate **1.0%–1.15%**，"一致性未达标"，当年从未解决。报告原话："greedy decoding favors empty tokens... 模型行为问题，非代码 bug"。
 - **真正达成一致的机制（晚于4月）**：commit `8250298` 的 `scripts/compare_lekai_offline_realtime_raw.py`（5/10）显示一致性是在**两阶段 prompt+continuation 架构**上、比对 streammuse-cli 存的 **`prompt_continuation_raw_history.json`**（raw acc 事件，非 audible MIDI）达成的，且依赖外部路径 `/data/home/yuanxin/RT-accompanimentV2/...`。该外部路径**在本机不存在**，`prompt_continuation_raw_history.json` 当前 streammuse-cli **不产出**，当前 server 只有单一 `sliding_window` mode。
 
 **结论**：plan 假设的 setup（单 checkpoint / sliding-window / 比 combined.mid）与历史上真正验证过一致性的 setup（两阶段 / raw history JSON / 外部 codebase）不是同一套。需用户决策后才能继续（见与用户的对话）。

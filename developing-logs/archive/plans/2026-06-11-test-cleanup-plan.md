@@ -149,7 +149,7 @@
 > **执行完成（2026-06-12）**：全部步骤已完成，173 passed。两处与计划的偏差：
 > ① 共享 fakes 放在 `tests/unit/application/fakes.py`（conftest.py 无法干净地导出供子类化的类），并补了 `application/`、`factories/` 的 `__init__.py`；
 > ② `integration/test_cli_entry_point.py` 保留本地 mocks（其签名更全且被 MagicMock 动态替换，与 unit fakes 形态不同，强行共享得不偿失）。
-> 详见 `developing-logs/reports/2026-06-12-test-cleanup-report.md`。
+> 详见 `developing-logs/archive/reports/2026-06-12-test-cleanup-report.md`。
 
 ## 附：顺手发现的覆盖缺口（本次不处理，仅记录)
 

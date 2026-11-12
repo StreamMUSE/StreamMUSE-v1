@@ -764,10 +764,10 @@ if __name__ == "__main__":
 
 ### 报告记录规范
 
-每个 Step 完成后，必须在 `developing-logs/2026-4-23/debug-reports/` 目录下创建报告文件：
+每个 Step 完成后，必须在 `developing-logs/archive/2026-4-23/debug-reports/` 目录下创建报告文件：
 
 ```
-developing-logs/2026-4-23/debug-reports/
+developing-logs/archive/2026-4-23/debug-reports/
 ├── step1_environment_report.md      # Step 1 完成报告
 ├── step2_baseline_report.md         # Step 2 完成报告
 ├── step3_phase1_input_layer.md      # Phase 1 完成报告
@@ -1408,7 +1408,7 @@ uv run python scripts/debug_inference_consistency.py \
 
 ## 测试数据归档
 - 所有生成的 MIDI 文件: `output/debug/`
-- 所有报告文件: `developing-logs/2026-4-23/debug-reports/`
+- 所有报告文件: `developing-logs/archive/2026-4-23/debug-reports/`
 - 代码变更: commit hash
 
 ## 后续行动

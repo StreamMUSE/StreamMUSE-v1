@@ -16,7 +16,7 @@
 > 2026-07-17 execution update：accepted campaign 为
 > `task_runs/melody_robustness_20260717_generated_acc_v3`。Formal integrity 160/160、listening readiness
 > 80/80、blind package audit 均通过；详细证据见
-> `developing-logs/reports/2026-07-17-melody-perturbation-generated-acc-listening-completion-report.md`。
+> `developing-logs/archive/reports/2026-07-17-melody-perturbation-generated-acc-listening-completion-report.md`。
 
 ## 1. 最终要回答的问题
 

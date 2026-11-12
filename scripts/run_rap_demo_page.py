@@ -9,7 +9,7 @@ inside a run are results and are never retried. Every run appends one line to
 
     uv run python scripts/run_rap_demo_page.py --versions v0.0,v1.0 --out output/rap_demo_page_2026-10
 
-Plan: developing-logs/plans/2026-10-12-rap-version-demo-page-plan.md.
+Plan: developing-logs/archive/plans/2026-10-12-rap-version-demo-page-plan.md.
 """
 
 from __future__ import annotations

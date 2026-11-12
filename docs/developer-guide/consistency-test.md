@@ -37,7 +37,7 @@ STREAMMUSE_CONSISTENCY_SONGS=4,5,2 STREAMMUSE_CONSISTENCY_TEMPOS=120,90,60,15 \
 
 ## 三个必须遵守的设计约束（踩坑换来的）
 
-这些不是随意选择，违反任何一条都会让测试要么假绿要么假红。详见 `developing-logs/plans/2026-06-12-consistency-final-test-plan.md` 的 Phase 0 记录。
+这些不是随意选择，违反任何一条都会让测试要么假绿要么假红。详见 `developing-logs/archive/plans/2026-06-12-consistency-final-test-plan.md` 的 Phase 0 记录。
 
 ### 1. 只用非空歌
 

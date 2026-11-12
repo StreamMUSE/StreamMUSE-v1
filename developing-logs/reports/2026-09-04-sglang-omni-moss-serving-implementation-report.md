@@ -430,7 +430,7 @@ evaluator 要求独立空 root、完整 provenance、cache miss、service call c
 | evaluator CLI | `scripts/sglang_moss_ab.py evaluate` |
 | runbook | `docs/developer-guide/sglang-omni-moss-serving.md` |
 | quickstart | `docs/developer-guide/rap-demo-quickstart.md` |
-| implementation plan/TODO | `developing-logs/plans/2026-09-03-sglang-omni-moss-serving-plan.md` |
+| implementation plan/TODO | `developing-logs/archive/plans/2026-09-03-sglang-omni-moss-serving-plan.md` |
 
 主要新增/扩展测试位于：
 
@@ -448,7 +448,7 @@ evaluator 要求独立空 root、完整 provenance、cache miss、service call c
 - [SGLang-Omni MOSS-TTS cookbook](https://github.com/sgl-project/sglang-omni/blob/main/docs/cookbook/moss_tts.md)
 - [SGLang-Omni local MOSS-TTS cookbook](https://github.com/sgl-project/sglang-omni/blob/main/docs/cookbook/moss_tts_local.md)
 - `docs/developer-guide/sglang-omni-moss-serving.md`
-- `developing-logs/plans/2026-09-03-sglang-omni-moss-serving-plan.md`
+- `developing-logs/archive/plans/2026-09-03-sglang-omni-moss-serving-plan.md`
 
 ## 12. 最终判断
 

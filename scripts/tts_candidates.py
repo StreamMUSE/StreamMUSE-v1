@@ -10,7 +10,7 @@ and scoring as MOSS.
 Duration: ``token_count`` profiles ask for the bar's length (MOSS, 12.5 tokens
 per second); the others speak at their own pace and the R3 warp fits them.
 
-Plan: developing-logs/plans/2026-10-14-rap-model-upgrade-plan.md.
+Plan: developing-logs/archive/plans/2026-10-14-rap-model-upgrade-plan.md.
 """
 
 from __future__ import annotations

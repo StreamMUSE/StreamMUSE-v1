@@ -14,7 +14,7 @@ end words and the mean score. Every written line is kept for listening pages.
         --label qwen3.8-27b-fp8 --extra-payload '{"chat_template_kwargs": {"enable_thinking": false}}' \\
         --out <json>
 
-Plan: developing-logs/plans/2026-10-14-rap-model-upgrade-plan.md.
+Plan: developing-logs/archive/plans/2026-10-14-rap-model-upgrade-plan.md.
 """
 
 from __future__ import annotations

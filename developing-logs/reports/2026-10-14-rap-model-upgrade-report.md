@@ -2,7 +2,7 @@
 
 日期：2026-10-14（H200 时间已到 10-15）。分支：`feature/rap_optimization`，最后一个提交是 `bf15058f`。
 
-依据：[模型升级计划](../plans/2026-10-14-rap-model-upgrade-plan.md)。按你的要求，没有测闭源模型，其余都按计划执行。
+依据：[模型升级计划](../archive/plans/2026-10-14-rap-model-upgrade-plan.md)。按你的要求，没有测闭源模型，其余都按计划执行。
 
 **试听页面**
 

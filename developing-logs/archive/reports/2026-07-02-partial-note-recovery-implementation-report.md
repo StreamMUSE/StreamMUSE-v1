@@ -2,7 +2,7 @@
 
 ## 结论
 
-本轮已按 `developing-logs/plans/2026-06-26-partial-note-recovery-plan.md` 完成迟到伴奏音符的 partial-note recovery：实时推理返回晚于目标 tick 时，不再把所有迟到事件整体挪到当前 tick，也不再简单丢掉 onset；而是按音符区间判断，保留仍在持续的长音尾部。
+本轮已按 `developing-logs/archive/plans/2026-06-26-partial-note-recovery-plan.md` 完成迟到伴奏音符的 partial-note recovery：实时推理返回晚于目标 tick 时，不再把所有迟到事件整体挪到当前 tick，也不再简单丢掉 onset；而是按音符区间判断，保留仍在持续的长音尾部。
 
 最终验证结果：
 

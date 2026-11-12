@@ -105,4 +105,4 @@
 - FakeRT overlap 输出: `output/debug/fake_rt_overlap/`
 - v3 对比报告: `output/debug/offline/inference_consistency_report.json`
 - overlap 对比报告: `output/debug/fake_rt_overlap/inference_consistency_report.json`
-- 全部过程报告: `developing-logs/2026-4-23/debug-reports/`
+- 全部过程报告: `developing-logs/archive/2026-4-23/debug-reports/`

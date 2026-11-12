@@ -20,10 +20,10 @@
 
 依据：
 
-- [profiling 报告](../reports/2026-09-25-rap-moss-sglang-profiling-report.md)
-- [SGLang-Omni 基准报告](../reports/2026-09-11-sglang-omni-moss-server-benchmark-report.md)
-- [Opus 传输实验](../../docs/developer-guide/rap-opus-transport-experiment-2026-08-21.md)
-- [远端 MOSS 验收](../../docs/developer-guide/realtime-remote-moss-acceptance-2026-08-21.md)
+- [profiling 报告](../../reports/2026-09-25-rap-moss-sglang-profiling-report.md)
+- [SGLang-Omni 基准报告](../../reports/2026-09-11-sglang-omni-moss-server-benchmark-report.md)
+- [Opus 传输实验](../../../docs/developer-guide/rap-opus-transport-experiment-2026-08-21.md)
+- [远端 MOSS 验收](../../../docs/developer-guide/realtime-remote-moss-acceptance-2026-08-21.md)
 
 ## 核心风险：省下的是通信，多出来的是 MOSS 计算
 
@@ -111,7 +111,7 @@ Mac 路径通过启动脚本显式选择 `mlx` 后端。代码里现有的默认
 不能直接使用的部分：
 
 - SGLang-Omni 对 Apple Silicon 的支持还是实验性的，目前只正式支持 Qwen3-ASR 和 Fun-CosyVoice3。
-- [preflight_sglang_omni_moss.py](../../scripts/preflight_sglang_omni_moss.py) 要求 `nvcc`。
+- [preflight_sglang_omni_moss.py](../../../scripts/preflight_sglang_omni_moss.py) 要求 `nvcc`。
 - 上游 vLLM 的 macOS 后端只能跑 CPU，速度不够。
 
 ## 通用规则
@@ -145,7 +145,7 @@ Mac 路径通过启动脚本显式选择 `mlx` 后端。代码里现有的默认
 先完成 [2026-10-01 plan](2026-10-01-rap-server-latency-optimization-plan.md) 的第 0 阶段：
 
 - 在 `gentle_sparse_r3` 下，服务端只发稀疏锚点；
-- 但 Mac 端 [chunk_audio.py:409](../../src/streammuse/application/rap/chunk_audio.py#L409) 要求锚点数等于音节数，所以远端 chunk 全部被拒（48 / 48）；
+- 但 Mac 端 [chunk_audio.py:409](../../../src/streammuse/application/rap/chunk_audio.py#L409) 要求锚点数等于音节数，所以远端 chunk 全部被拒（48 / 48）；
 - 不修复这一点，后面所有端到端测量都没有意义。
 
 ### 0b. Mac 环境
@@ -202,7 +202,7 @@ Mac 路径通过启动脚本显式选择 `mlx` 后端。代码里现有的默认
 
 目的：知道同一条流程在没有时间压力时会产出什么。以后可以衡量实时运行因为时间限制损失了多少，这也是 D4 不降质量的衡量基准。
 
-现成的工具：[client_simulation.py](../../scripts/client_simulation.py)。它是一个客户端模拟器：
+现成的工具：[client_simulation.py](../../../scripts/client_simulation.py)。它是一个客户端模拟器：
 - 服务端和客户端的核心逻辑都是真实的，只模拟了 Mac controller 发请求的方式；
 - 省略了播放时钟、音频设备和 fallback 逻辑。
 
@@ -211,7 +211,7 @@ Mac 路径通过启动脚本显式选择 `mlx` 后端。代码里现有的默认
 - 它和 Mac controller 的发请求方式一致：连续请求 2-bar chunk，使用 `realtime_default` 策略，把已选中歌词的最后四行作为下一个请求的 context，形成一条滚动的 context 轨迹。
 - 它走真实的客户端校验路径，也就是 `RemoteMossChunkPreparationStrategy`。
 - seed 固定为 `--seed + index`。
-- `--budget-ms` 同时决定请求里的 `remaining_budget_ms` 和客户端的 deadline。服务端对这个值没有上限，只要求是正整数（[remote_chunk.py:529](../../src/streammuse/domain/rap/remote_chunk.py#L529)）。
+- `--budget-ms` 同时决定请求里的 `remaining_budget_ms` 和客户端的 deadline。服务端对这个值没有上限，只要求是正整数（[remote_chunk.py:529](../../../src/streammuse/domain/rap/remote_chunk.py#L529)）。
 - 把 `--budget-ms` 设成 60000 时，每个 chunk 都能完整跑完 16 个初始候选，需要时再加 4 个 rescue 候选，以及 MOSS、MMS、R3，不会被 `render_reserve_ms` 截断。
 
 运行方式：
@@ -254,7 +254,7 @@ uv run python scripts/client_simulation.py \
 
 ### 现状
 
-- 渲染服务通过 [local_chat_client.py](../../src/streammuse/infrastructure/inference/local_chat_client.py) 调用 OpenAI 兼容的 `/chat/completions`，靠 `n=16` 一次拿到 16 个候选（:153）。
+- 渲染服务通过 [local_chat_client.py](../../../src/streammuse/infrastructure/inference/local_chat_client.py) 调用 OpenAI 兼容的 `/chat/completions`，靠 `n=16` 一次拿到 16 个候选（:153）。
 - 同一个客户端同时只允许一个请求。
 - 启动时会探测 `GET {vllm}/models`。
 
@@ -286,8 +286,8 @@ uv run python scripts/client_simulation.py \
 
 ### 现状
 
-- [rap_render_server.py:109](../../src/streammuse/presentation/rap_render_server.py#L109) 的 `_MOSS_SERVING_BACKENDS` 只有 `inprocess` 和 `sglang-omni` 两种。
-- `sglang-omni` 后端通过 [sglang_moss_tts.py](../../src/streammuse/infrastructure/rap/sglang_moss_tts.py) 调用 loopback 的 `POST /v1/audio/speech`：
+- [rap_render_server.py:109](../../../src/streammuse/presentation/rap_render_server.py#L109) 的 `_MOSS_SERVING_BACKENDS` 只有 `inprocess` 和 `sglang-omni` 两种。
+- `sglang-omni` 后端通过 [sglang_moss_tts.py](../../../src/streammuse/infrastructure/rap/sglang_moss_tts.py) 调用 loopback 的 `POST /v1/audio/speech`：
   - 参考音频以 `file://` 形式传递；
   - 带 `token_count` 和采样参数；
   - 返回 24 kHz 单声道 WAV；
@@ -298,7 +298,7 @@ uv run python scripts/client_simulation.py \
 1. **MOSS MLX 服务**：新增 `scripts/mlx_moss_server.py`，在 `envs/rap-mlx-moss` 环境里运行（`uv run --project envs/rap-mlx-moss python scripts/mlx_moss_server.py`），监听 `127.0.0.1:8030`。
    - 接口：`/health`、`/v1/models`、`/v1/audio/speech`，请求和响应格式与 SglangMossSynthesizer 使用的子集一致。
    - 如果 mlx-audio 自带的 server 能支持全部所需字段，就直接用它，只补缺少的部分。
-2. **参数一致**：以下参数都要和 [moss_generation.py](../../src/streammuse/infrastructure/rap/moss_generation.py) 一致：
+2. **参数一致**：以下参数都要和 [moss_generation.py](../../../src/streammuse/infrastructure/rap/moss_generation.py) 一致：
    - `MAX_NEW_TOKENS=256`；
    - audio temperature 1.7、top_p 0.8、top_k 25、repetition penalty 1.0；
    - `token_count` 控制时长（12.5 token/s）；
@@ -338,15 +338,15 @@ uv run python scripts/client_simulation.py \
 
 ### 3a. 设备默认值
 
-- [rap_render_server.py:1695](../../src/streammuse/presentation/rap_render_server.py#L1695) 的 `--aligner-device` 和 [:1780](../../src/streammuse/presentation/rap_render_server.py#L1780) 的 MOSS 设备，默认值都是 `cuda`。
+- [rap_render_server.py:1695](../../../src/streammuse/presentation/rap_render_server.py#L1695) 的 `--aligner-device` 和 [:1780](../../../src/streammuse/presentation/rap_render_server.py#L1780) 的 MOSS 设备，默认值都是 `cuda`。
 - 改为 `auto`，按 cuda → mps → cpu 的顺序选择，并把实际选中的设备写进 manifest。
 
 ### 3b. PyTorch inprocess 后端在 MPS 上的修正
 
 这一步只在 0c 需要 MPS 对照，或者想保留 PyTorch 后端作为备选时才做：
 
-- [moss_backend.py:82](../../scripts/rap_audio_backends/moss_backend.py#L82)：现在只要不是 CUDA 就用 fp32，MPS 上应该改为 bf16。
-- [moss_backend.py:606](../../scripts/rap_audio_backends/moss_backend.py#L606)：现在只要不是 CUDA 就用 `eager`，MPS 上应该改为 `sdpa`。
+- [moss_backend.py:82](../../../scripts/rap_audio_backends/moss_backend.py#L82)：现在只要不是 CUDA 就用 fp32，MPS 上应该改为 bf16。
+- [moss_backend.py:606](../../../scripts/rap_audio_backends/moss_backend.py#L606)：现在只要不是 CUDA 就用 `eager`，MPS 上应该改为 `sdpa`。
 - seed 设置加上 MPS 分支。
 - `_configure_torch_backends` 只在 CUDA 上调用。
 
@@ -370,7 +370,7 @@ uv run python scripts/client_simulation.py \
 - 最后启动 demo；
 - 不再需要 H200 quickstart 里的 `LD_LIBRARY_PATH`、`CUDA_VISIBLE_DEVICES` 和 SSH 隧道。
 
-客户端默认就连 `http://127.0.0.1:8020`（[cli.py:137](../../src/streammuse/presentation/rap_demo/cli.py#L137)），不需要改。
+客户端默认就连 `http://127.0.0.1:8020`（[cli.py:137](../../../src/streammuse/presentation/rap_demo/cli.py#L137)），不需要改。
 
 ### 测试
 
@@ -385,12 +385,12 @@ uv run python scripts/client_simulation.py \
 
 ## 第 4 阶段：按 Mac 的实测数字重新调时间预算
 
-- **`render_reserve_ms`**（[remote_chunk.py:198](../../src/streammuse/domain/rap/remote_chunk.py#L198)，现在是 3000）：
+- **`render_reserve_ms`**（[remote_chunk.py:198](../../../src/streammuse/domain/rap/remote_chunk.py#L198)，现在是 3000）：
   - 改为 Mac 上 MOSS + MMS + R3 + 打包的 p95，再加 300 ms 余量；
   - 预留调大以后，留给 Qwen 的时间会变少，要确认 16 个初始候选还能在时间内生成完。
 - **候选数量和 Qwen 模型保持不变**（D4）。时间不够时，只能用不降低质量的办法：第 6 阶段的优化，或者放宽 lookahead。
 - **lookahead**：
-  - [cli.py:584](../../src/streammuse/presentation/rap_demo/cli.py#L584) 把 `moss_aligned_remote` 的 lookahead 写死成 2；
+  - [cli.py:584](../../../src/streammuse/presentation/rap_demo/cli.py#L584) 把 `moss_aligned_remote` 的 lookahead 写死成 2；
   - 放宽到 3 可以多一些延迟余量，但处理速度仍然必须快于 5.33 s 一个 chunk；
   - 所以只有在"延迟超标、但处理速度够"的时候才改。
 - **资源争抢**：
@@ -414,10 +414,10 @@ uv run python scripts/client_simulation.py \
   - 逐 chunk 比较：用 `--replay-context` 固定 context。
   - 实时运行选中候选的分数、可用候选的数量、WER，都不应该明显低于参考运行。门槛在跑完第一批后再定。
 - **音质**：MLX 量化版本与 PyTorch 参考不逐位一致，需要检查：
-  - 可懂度：用 [check_moss_benchmark_audio.py](../../scripts/check_moss_benchmark_audio.py) 跑 Whisper 转写，WER 和 H200 输出相比不能明显变差，具体门槛在跑完第一批后再定；
+  - 可懂度：用 [check_moss_benchmark_audio.py](../../../scripts/check_moss_benchmark_audio.py) 跑 Whisper 转写，WER 和 H200 输出相比不能明显变差，具体门槛在跑完第一批后再定；
   - 时间精度：R3 拉伸后，节拍对齐的误差分布；
   - 盲听：5 对，Mac 和 H200 各一条，同一句歌词。
-- **文档**：在 [rap-demo-quickstart.md](../../docs/developer-guide/rap-demo-quickstart.md) 里新增一节 "Mac 本地运行"。
+- **文档**：在 [rap-demo-quickstart.md](../../../docs/developer-guide/rap-demo-quickstart.md) 里新增一节 "Mac 本地运行"。
 
 ---
 

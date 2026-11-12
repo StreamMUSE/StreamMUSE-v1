@@ -9,7 +9,7 @@ Run it with::
     LEKAI_CHECKPOINT_PATH=models/ModelLekai/epoch_4_1104_1204/model.safetensors \
       uv run pytest tests/consistency/ -v
 
-See developing-logs/plans/2026-06-12-consistency-final-test-plan.md for the design and the
+See developing-logs/archive/plans/2026-06-12-consistency-final-test-plan.md for the design and the
 Phase 0 findings that justify the comparison method (pianoroll-level, non-empty songs,
 windowed to the melody length).
 """

@@ -1,7 +1,7 @@
 # Simulator 直接产出双轨 MIDI 实施报告
 
 更新时间：2026-04-09  
-对应计划：`developing-logs/2026-4-9/add-midi-output-plan.md`  
+对应计划：`developing-logs/archive/2026-4-9/add-midi-output-plan.md`  
 执行范围：Phase 1.0 / 1 / 2 / 3 / 4
 
 ---

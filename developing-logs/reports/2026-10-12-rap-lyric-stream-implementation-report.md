@@ -4,7 +4,7 @@
 
 依据：
 
-- [歌词流计划（2026-10-12 修订）](../plans/2026-10-08-rap-lyric-stream-plan.md)：每个阶段的简要记录在计划末尾的“实施记录”；
+- [歌词流计划（2026-10-12 修订）](../archive/plans/2026-10-08-rap-lyric-stream-plan.md)：每个阶段的简要记录在计划末尾的“实施记录”；
 - [profiling 报告](2026-09-25-rap-moss-sglang-profiling-report.md)：第 11 节是这次的 H200 整体复测。
 
 ## 1. 直接结论

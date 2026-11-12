@@ -48,7 +48,7 @@ without the hash. The fingerprint then returns to the unpatched value.
 Applies **on top of** the latency patch above (same `-p1` layout; it does not
 apply to the unpatched package). It adds MOSS-TTS continuation to the speech
 endpoint, for the lyric stream's per-bar synthesis (protocol v3, plan
-`developing-logs/plans/2026-10-08-rap-lyric-stream-plan.md`, phase 6):
+`developing-logs/archive/plans/2026-10-08-rap-lyric-stream-plan.md`, phase 6):
 
 | Change | File |
 |---|---|
@@ -82,7 +82,7 @@ prefix, the returned prefix correlates 0.96–0.98 with the original, and a
 
 The continuation patch above, ported to SGLang-Omni **0.1.8** (`870d77446`,
 apply with `git apply` in a source checkout) for **MOSS-TTS-Local-Transformer
-v1.5** (model-upgrade plan, `developing-logs/plans/2026-10-14-rap-model-upgrade-plan.md`).
+v1.5** (model-upgrade plan, `developing-logs/archive/plans/2026-10-14-rap-model-upgrade-plan.md`).
 Same request fields (`prefix_audio` data URI, `prefix_text`) and the same
 `token_count` meaning (new audio only). One difference from the Delay model:
 the Local AR stage returns only the generated codes, so the patch keeps the

@@ -5,7 +5,7 @@ description: 从 fresh 40-input staging 到 fixed-20 qualification、160-run for
 
 # 旋律扰动、生成伴奏与 flexible triangle 听测工作流
 
-当前规范是 [`2026-07-17-melody-perturbation-generated-acc-listening-completion-plan.md`](../../developing-logs/plans/2026-07-17-melody-perturbation-generated-acc-listening-completion-plan.md)。它 supersede 旧 plan 的 24-clip quality-rating Phase F/T10。旧 v1 命令只用于历史包；本轮 DoD 必须使用 `listening_triangle_selection.v2`。
+当前规范是 [`2026-07-17-melody-perturbation-generated-acc-listening-completion-plan.md`](../../developing-logs/archive/plans/2026-07-17-melody-perturbation-generated-acc-listening-completion-plan.md)。它 supersede 旧 plan 的 24-clip quality-rating Phase F/T10。旧 v1 命令只用于历史包；本轮 DoD 必须使用 `listening_triangle_selection.v2`。
 
 最终问题不是“扰动后的 melody 是否不同”，而是：在同一首歌、excerpt、checkpoint、sample seed 和 RT-theoretical pipeline 下，pitch/onset/both 扰动是否使模型生成的 accompaniment 可被人耳区分。听测只播放 generated accompaniment。
 
@@ -215,7 +215,7 @@ objective metrics、paired contrasts、coverage、factorial interaction、song-b
 当前 v3 campaign 的 harmonic/coverage/identity controls 通过，但冻结的 +1-tick rhythm control 为
 0/5；因此 rhythm endpoint 是 assay-invalid，strict report 的 `targeted_controls=false`。不要事后降低
 threshold 或覆盖 `40_analysis`。这不阻止 acc-only triangle 听测，但 objective rhythm 结论必须保持无效；
-详见 [`2026-07-17 completion report`](../../developing-logs/reports/2026-07-17-melody-perturbation-generated-acc-listening-completion-report.md)。
+详见 [`2026-07-17 completion report`](../../developing-logs/archive/reports/2026-07-17-melody-perturbation-generated-acc-listening-completion-report.md)。
 
 ## 8. 构建并审计 95 题 blind package
 

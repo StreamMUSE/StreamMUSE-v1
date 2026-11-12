@@ -13,7 +13,7 @@
 
 1. **不是"完全不相同"**：15 首中 **12 首在 pianoroll 层完全一致**（含金标准 song 4，53/53 cells 100% match）；零丢请求、零迟到调度。
 2. **3 首真实分叉**：song 5、nyan_cat、river_flows——全部是"贪心下处于空塌缩边缘"的歌。
-3. **根因已定位到具体代码行**：realtime 后端（[lekai_http_backend.py:423-427](../../src/streammuse/infrastructure/inference/lekai_http_backend.py)）会把模型生成的 **bar token (255) 剥掉并替换成空拍标记 `[169]`** 再放回自回归上下文；offline（`model.py` 生成循环）则把生成的 `[255]` **原样保留**在序列里。两边从该 token 起上下文分叉，贪心级联放大。
+3. **根因已定位到具体代码行**：realtime 后端（[lekai_http_backend.py:423-427](../../../src/streammuse/infrastructure/inference/lekai_http_backend.py)）会把模型生成的 **bar token (255) 剥掉并替换成空拍标记 `[169]`** 再放回自回归上下文；offline（`model.py` 生成循环）则把生成的 `[255]` **原样保留**在序列里。两边从该 token 起上下文分叉，贪心级联放大。
 4. **这不是新引入的回归**：该替换逻辑写于 **2026-04-09**（commit `ca1b1b8c` "debug, reference to the old system, deeply debug"），早于 6/25 的金标准测试。历史上"验证过完全相同"的只有 song 4——它恰好从不在非小节位置自发吐 bar token，踩不到这条路径。**这三首歌从来就不一致，只是从未被测过。**
 
 ## 逐首对比结果（pianoroll 层，旋律窗口内）
@@ -86,7 +86,7 @@ realtime 前13: [257, 263, 265, 173, 255, 173, 169, 143, 6, 83, 2, 170, 169, ...
 
 ### 真凶：生成后处理不对称（✅ 根因）
 
-realtime 后端 `_generate_part1_tokens_from_prompt`（[lekai_http_backend.py:420-428](../../src/streammuse/infrastructure/inference/lekai_http_backend.py)）：
+realtime 后端 `_generate_part1_tokens_from_prompt`（[lekai_http_backend.py:420-428](../../../src/streammuse/infrastructure/inference/lekai_http_backend.py)）：
 
 ```python
 if token_val in {part1_end_marker, part1_empty_marker, bar_token}:

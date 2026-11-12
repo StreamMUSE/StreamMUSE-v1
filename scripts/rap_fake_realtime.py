@@ -22,7 +22,7 @@ Run it with the version's own interpreter so the version's code is imported:
         --scenario demo_page/scenarios/S01.json --rap-audio-renderer moss_aligned_remote \\
         --rap-render-url http://127.0.0.1:18220 --audio-output wav --no-web ...
 
-Plan: developing-logs/plans/2026-10-12-rap-version-demo-page-plan.md.
+Plan: developing-logs/archive/plans/2026-10-12-rap-version-demo-page-plan.md.
 """
 
 from __future__ import annotations

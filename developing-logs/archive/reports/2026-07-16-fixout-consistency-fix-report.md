@@ -3,7 +3,7 @@
 ## 1. 结论摘要
 
 本次工作针对调查报告
-`developing-logs/reports/2026-07-10-fixout-consistency-investigation-report.md`
+`developing-logs/archive/reports/2026-07-10-fixout-consistency-investigation-report.md`
 中记录的 single-stage Lekai offline / MIDI-file realtime simulation 不一致问题进行了代码级复核、修复和完整回归。
 
 最终结论如下：

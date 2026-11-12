@@ -4,7 +4,7 @@
 
 依据：
 
-- [2026-10-01 优化计划](../plans/2026-10-01-rap-server-latency-optimization-plan.md)：各阶段逐条的实施记录，在计划末尾的“实施记录”一节；
+- [2026-10-01 优化计划](../archive/plans/2026-10-01-rap-server-latency-optimization-plan.md)：各阶段逐条的实施记录，在计划末尾的“实施记录”一节；
 - [2026-09-25 profiling 报告](2026-09-25-rap-moss-sglang-profiling-report.md)：第 10 节是这次的整体复测。
 
 ## 1. 直接结论

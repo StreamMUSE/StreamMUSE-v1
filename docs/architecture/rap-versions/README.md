@@ -41,4 +41,4 @@ These distinguish current features, formal model overlays, and the isolated
 
 数字来源：`developing-logs/reports/2026-10-12-rap-version-demo-page-report.md`（v0.0–v1.0 的 real-time 中位数）、
 `2026-10-01-rap-latency-optimization-implementation-report.md`、`2026-10-12-rap-lyric-stream-implementation-report.md`、
-`developing-logs/plans/2026-09-03-sglang-omni-moss-serving-plan.md`。v1.1 的实测数字没有入库，图中不标延迟。
+`developing-logs/archive/plans/2026-09-03-sglang-omni-moss-serving-plan.md`。v1.1 的实测数字没有入库，图中不标延迟。

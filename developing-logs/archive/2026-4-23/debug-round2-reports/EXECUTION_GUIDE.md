@@ -276,7 +276,7 @@ logs/
 ├── fakert_1_prompt.log        # 提取的 prompt 日志
 └── offline_1_prompt.log       # 提取的 prompt 日志
 
-developing-logs/2026-4-23/debug-round2-reports/
+developing-logs/archive/2026-4-23/debug-round2-reports/
 ├── round2-final-report.md     # 最终报告
 └── ...
 ```

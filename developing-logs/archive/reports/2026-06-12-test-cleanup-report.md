@@ -1,6 +1,6 @@
 # Test 整理执行 Report（2026-06-12）
 
-对应计划：`developing-logs/plans/2026-06-11-test-cleanup-plan.md`（含执行 Todo List）。
+对应计划：`developing-logs/archive/plans/2026-06-11-test-cleanup-plan.md`（含执行 Todo List）。
 
 ## 结果总览
 
