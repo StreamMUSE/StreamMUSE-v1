@@ -272,4 +272,4 @@ uv run python scripts/experiments/inference_milestone/launch_mac.py --port 8020 
 
 - 回合边界的说话人相似度：要用 7 节打包的 `source.wav` 在 Mac 上算，计算脚本还没写，拿到文件后再做。
 - 把 steering 的默认适配器改成 `session`：验收通过后由 Bowen 决定。
-- 70、110 这类 BPM 下 steering 的表现：服务层有一个已知的取整问题会让约一半的修改多晚一个 bar，和这次改动无关，60 和 90 BPM 不受影响。详见[合并计划](../plans/2026-11-11-rap-inference-optimization-and-carryover-plan.md)实施记录的第 3 阶段。
+- 70、110 这类 BPM 下 steering 的表现：服务层有一个已知的取整问题会让约一半的修改多晚一个 bar，和这次改动无关，60 和 90 BPM 不受影响。详见[合并计划](2026-11-11-rap-inference-optimization-and-carryover-plan.md)实施记录的第 3 阶段。
