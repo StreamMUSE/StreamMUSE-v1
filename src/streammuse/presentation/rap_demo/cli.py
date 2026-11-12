@@ -186,6 +186,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rap-render-url", default="http://127.0.0.1:8020")
     parser.add_argument("--rap-render-profile", choices=("realtime",), default="realtime")
     parser.add_argument("--rap-render-startup-timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--inference-steering-adapter",
+        choices=("bounded", "session"),
+        default="bounded",
+        help=(
+            "how the inference page's steering mode uses the v3 server: 'bounded' opens a short "
+            "session per request (the behaviour so far); 'session' keeps one session per playback and "
+            "sends edits as plan updates"
+        ),
+    )
     parser.add_argument("--rap-render-rolling-timeout", type=float, default=5.0)
     parser.add_argument(
         "--rap-render-reserve-ms",
@@ -802,6 +812,7 @@ def _build_audio_demo(
                 base_url=args.rap_render_url, opus_codec=opus_codec),
             preparer_factory=inference_preparer, templates=BUILTIN_TEMPLATES, clock=clock,
             silence_factory=inference_silence, request_timeout_seconds=args.rap_render_startup_timeout,
+            steering_adapter=args.inference_steering_adapter,
         )
         service = InferenceService(session_id=str(manifest["session_id"]), backend=backend,
             sample_rate=audio_format.sample_rate_hz, channels=audio_format.channels, clock=clock,

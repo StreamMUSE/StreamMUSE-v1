@@ -1,34 +1,27 @@
 """A protocol v3 server on a real socket, for tests of the real client transports.
 
-uvicorn serves ``mount_lyric_stream_routes`` with a deterministic lyric writer
-and bar renderer (no models). Every request's TCP connection is recorded, so a
-test can tell a reused connection from a new one.
+uvicorn serves the stand-in server (the real v3 routes over a deterministic lyric
+writer and bar renderer, no models). Every request's TCP connection is recorded,
+so a test can tell a reused connection from a new one.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 import socket
 import threading
 import time
 from types import SimpleNamespace
 
-from fastapi import FastAPI
 import numpy as np
 import uvicorn
 
-from streammuse.application.rap.bar_audio import MossBarAudioRenderer
-from streammuse.application.rap.lyric_writer import LyricWriterPolicy, SequentialLyricWriter
-from streammuse.domain.rap import ScoreWeights
+from scripts.experiments.inference_opt.standin_server import DelayProxy, build_service, create_app
 from streammuse.domain.rap.audio import AudioFormat, PcmAudio
-from streammuse.infrastructure.rap.bar_package import PcmBarPackageEncoder
 from streammuse.infrastructure.rap.inference_backend import RealInferenceBackend
 from streammuse.infrastructure.rap.lyric_stream_client import HttpBarAudioSource, LyricStreamConnection
-from streammuse.presentation.rap_lyric_stream_server import LyricStreamService, mount_lyric_stream_routes
 
-from tests.unit.application.rap.test_lyric_session import _Analyzer, _Generator
-from tests.unit.presentation.test_rap_lyric_stream_server import _SourceRenderer
+__all__ = ["DelayProxy", "LiveClient", "LiveLyricServer", "Seen", "FORMAT"]
 
 FORMAT = AudioFormat(sample_rate_hz=100, channels=1)
 
@@ -42,20 +35,11 @@ class Seen:
 
 
 class LiveLyricServer:
-    def __init__(self, workspace, *, keep_alive_seconds: int = 75) -> None:
-        self.source = _SourceRenderer()
-        self.renderer = MossBarAudioRenderer(self.source, PcmBarPackageEncoder(), workspace_root=workspace)
-
-        def writer_factory():
-            writer = SequentialLyricWriter(
-                _Generator(), _Analyzer(), ScoreWeights(),
-                LyricWriterPolicy(candidates=2, rescue_candidates=0, minimum_valid=1, rhyme_scheme="none"),
-            )
-            return writer, lambda: None
-
-        self.service = LyricStreamService(writer_factory=writer_factory, renderer=self.renderer)
-        application = FastAPI()
-        mount_lyric_stream_routes(application, self.service)
+    def __init__(self, workspace, *, keep_alive_seconds: int = 75, write_seconds: float = 0.0,
+                 render_seconds: float = 0.0) -> None:
+        self.service, self.generator, self.source = build_service(
+            workspace, write_seconds=write_seconds, render_seconds=render_seconds)
+        application = create_app(self.service)
         self.seen: list[Seen] = []
         self._lock = threading.Lock()
 
@@ -67,7 +51,8 @@ class LiveLyricServer:
 
         self._socket = socket.socket()
         self._socket.bind(("127.0.0.1", 0))
-        self.url = f"http://127.0.0.1:{self._socket.getsockname()[1]}"
+        self.port = self._socket.getsockname()[1]
+        self.url = f"http://127.0.0.1:{self.port}"
         # log_config/log_level None: leave the process's logging alone (other tests read uvicorn's loggers).
         self._server = uvicorn.Server(uvicorn.Config(
             recording, log_config=None, log_level=None, lifespan="off", timeout_keep_alive=keep_alive_seconds))
@@ -158,84 +143,3 @@ class LiveClient:
 
     def close(self) -> None:
         self.backend.close()
-
-
-class DelayProxy:
-    """A TCP forwarder that adds latency, standing in for the SSH tunnel.
-
-    Every chunk is delivered ``one_way_seconds`` late in each direction, and a
-    new connection waits one extra round trip before its first byte moves (the
-    connection setup that a real remote link pays and loopback does not).
-    """
-
-    def __init__(self, upstream_port: int, *, one_way_seconds: float) -> None:
-        self._upstream = ("127.0.0.1", upstream_port)
-        self._delay = one_way_seconds
-        self._listener = socket.socket()
-        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._listener.bind(("127.0.0.1", 0))
-        self._listener.listen(32)
-        self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
-        self.connections = 0
-        self._closed = threading.Event()
-        self._sockets: list[socket.socket] = []
-        threading.Thread(target=self._accept, name="delay-proxy", daemon=True).start()
-
-    def _accept(self) -> None:
-        while not self._closed.is_set():
-            try:
-                downstream, _ = self._listener.accept()
-            except OSError:
-                return
-            self.connections += 1
-            try:
-                upstream = socket.create_connection(self._upstream, timeout=5)
-            except OSError:
-                downstream.close()
-                continue
-            self._sockets += [downstream, upstream]
-            setup = time.monotonic() + 2 * self._delay
-            for source, target, not_before in ((downstream, upstream, setup), (upstream, downstream, 0.0)):
-                self._pump(source, target, not_before)
-
-    def _pump(self, source: socket.socket, target: socket.socket, not_before: float) -> None:
-        pending: deque[tuple[float, bytes | None]] = deque()
-        ready = threading.Condition()
-
-        def read() -> None:
-            while True:
-                try:
-                    data = source.recv(65536)
-                except OSError:
-                    data = b""
-                with ready:
-                    pending.append((max(time.monotonic(), not_before) + self._delay, data or None))
-                    ready.notify()
-                if not data:
-                    return
-
-        def write() -> None:
-            while True:
-                with ready:
-                    while not pending:
-                        ready.wait()
-                    due, data = pending.popleft()
-                time.sleep(max(0.0, due - time.monotonic()))
-                try:
-                    if data is None:
-                        target.shutdown(socket.SHUT_WR)
-                        return
-                    target.sendall(data)
-                except OSError:
-                    return
-
-        for job in (read, write):
-            threading.Thread(target=job, name="delay-proxy-pump", daemon=True).start()
-
-    def close(self) -> None:
-        self._closed.set()
-        for item in (self._listener, *self._sockets):
-            try:
-                item.close()
-            except OSError:
-                pass

@@ -162,7 +162,7 @@ def first_bar_latency(client, request) -> float:
 
 def test_over_a_slow_link_a_prepared_turn_saves_the_connection_round_trips(server):
     one_way = 0.06
-    proxy = DelayProxy(int(server.url.rsplit(":", 1)[1]), one_way_seconds=one_way)
+    proxy = DelayProxy(server.port, one_way_seconds=one_way)
     client = LiveClient(proxy.url)
     try:
         # No prepare: what every turn paid before (capabilities, handshake, new audio connections).

@@ -68,6 +68,83 @@ class ContinuationIndex:
             return self._by_text.get(request.history[-1]) if request.history else None
 
 
+def fetch_and_prepare(source, preparer, record, *, bpm, physical_bar, clock, alive, pause):
+    """Fetch one line's audio and prepare it for the bar it will play in.
+
+    ``record`` is the server's line (its own session id and bar numbering);
+    ``physical_bar`` is where it plays locally. Returns ``(prepared, timings,
+    continuation)``, or ``None`` once ``alive()`` is false. A missing, failed
+    or mismatched result raises.
+    """
+    started = clock()
+    while alive():
+        fetched = source.fetch(record.session_id, record.bar, record.lyric_id,
+                               wait_ms=1000, accept_older=False)
+        if not alive():
+            return None
+        if fetched.status == "pending":
+            pause(0.05)
+            continue
+        if fetched.status != "ready":
+            raise RuntimeError(f"remote bar audio: {fetched.status}")
+        if (fetched.lyric_id != record.lyric_id or fetched.manifest is None
+                or fetched.source_wav is None or fetched.manifest.lyric_id != record.lyric_id
+                or fetched.manifest.bar != record.bar
+                or fetched.manifest.tempo_bpm != bpm):
+            raise ValueError("remote audio identity or tempo mismatch")
+        fetched_at = clock()
+        slots = materialize_flow(record.flow_template, physical_bar)
+        local_record = replace(record, bar=physical_bar, scheduled=tuple(
+            replace(item, slot=slot) for item, slot in zip(record.scheduled, slots)))
+        local_manifest = replace(fetched.manifest, bar=physical_bar, lyric_id=local_record.lyric_id)
+        prepared = preparer.prepare(local_record, local_manifest, fetched.source_wav)
+        if prepared.text != record.text:
+            raise ValueError("prepared audio text does not match selected lyric")
+        if not alive():
+            return None
+        timings = {"client_fetch_decode_ms": max(0.0, (fetched_at - started) * 1000),
+                   "client_prepare_ms": max(0.0, (clock() - fetched_at) * 1000)}
+        for key, value in fetched.manifest.stage_timings_ms.items():
+            if type(value) in (int, float) and isfinite(value) and value >= 0:
+                timings[f"server_{key}_ms"] = float(value)
+        warp_ms = getattr(prepared, "render_latency_ms", None)
+        if type(warp_ms) in (int, float) and isfinite(warp_ms) and warp_ms >= 0:
+            timings["client_warp_ms"] = float(warp_ms)
+        continuation = _thaw(fetched.manifest.diagnostics).get("continuation")
+        return prepared, timings, continuation if isinstance(continuation, dict) else None
+    return None
+
+
+def build_span(request, bar, audio, *, record=None, timings=None, declared_silence=False, final=False):
+    """The AudioSpan for request-relative ``bar``; ``record`` is the server's line, in its own bar numbering."""
+    if audio.format.sample_width_bytes != 4:
+        raise ValueError("prepared audio must be float32 PCM")
+    start = request.start_tick + bar * 16
+    frame_at = lambda tick: round(tick * audio.format.sample_rate_hz * 60 / request.bpm / 4)
+    frames = frame_at(start + 16) - frame_at(start)
+    if abs(audio.frame_count - frames) > 1:
+        raise ValueError("prepared audio duration differs from destination coverage")
+    width = audio.format.channels * 4
+    # Match the existing relocation policy for a one-frame rounding difference.
+    data = audio.data[:frames * width].ljust(frames * width, b"\0")
+    if not np.all(np.isfinite(np.frombuffer(data, dtype=np.float32))):
+        raise ValueError("prepared PCM contains non-finite samples")
+    syllables = () if record is None else tuple(
+        {**payload, "start_tick": start + payload["tick_in_bar"],
+         "duration_ticks": item.slot.duration_ticks, "text": payload["display_label"]}
+        for item, payload in zip(
+            record.scheduled, scheduled_syllables_payload(record.scheduled, bar=record.bar)))
+    return AudioSpan(
+        request_id=request.request_id, output_id=f"{request.request_id}:bar:{bar}",
+        epoch=request.epoch, input_version=request.input_version, start_tick=start,
+        duration_ticks=16, sample_rate=audio.format.sample_rate_hz, channels=audio.format.channels,
+        pcm=data, revision=0 if record is None else record.revision, safe_split_ticks=(),
+        declared_silence=declared_silence, text="" if record is None else record.text,
+        syllables=syllables, stage_timings=timings or {},
+        first_vocal_tick=None if record is None else record.scheduled[0].slot.tick - record.bar * 16,
+        final=final)
+
+
 @dataclass
 class _SharedSource:
     """The bar audio source every session of a backend fetches through."""
@@ -117,7 +194,7 @@ three, so the request after it connects from scratch as before.
     def __init__(self, *, stream_factory, source_factory, preparer_factory, templates,
                  clock=time.monotonic, silence_factory=None, request_timeout_seconds=90,
                  max_requests=4, fetch_workers=3, spare_max_age_seconds=30.0,
-                 warm_connections=2, continuation_index=None):
+                 warm_connections=2, continuation_index=None, steering_adapter="bounded"):
         if (type(request_timeout_seconds) not in (int, float)
                 or not isfinite(request_timeout_seconds) or request_timeout_seconds <= 0):
             raise ValueError("request timeout must be finite and positive")
@@ -128,6 +205,8 @@ three, so the request after it connects from scratch as before.
             raise ValueError("spare connection age limit must be finite and positive")
         if type(warm_connections) is not int or warm_connections < 0:
             raise ValueError("warm connection count must be a non-negative integer")
+        if steering_adapter not in ("bounded", "session"):
+            raise ValueError("steering adapter must be 'bounded' or 'session'")
         self._stream_factory, self._source_factory = stream_factory, source_factory
         self._preparer_factory, self._templates = preparer_factory, templates
         self._clock, self._silence_factory = clock, silence_factory
@@ -143,9 +222,26 @@ three, so the request after it connects from scratch as before.
         self._spare = None  # (stream, remote session id, handshake time)
         self._preparing = {}
         self._preparer = ThreadPoolExecutor(max_workers=3, thread_name_prefix="inference-v3-prepare")
+        # Which adapter serves steering requests is reported with the other capabilities.
+        self.capabilities = {**type(self).capabilities, "steering_adapter": steering_adapter}
+        self._steering = None
+        if steering_adapter == "session":
+            from streammuse.infrastructure.rap.inference_steering import SteeringSessionBackend
+
+            self._steering = SteeringSessionBackend(
+                stream_factory=stream_factory, capabilities=self._capabilities_from,
+                acquire_source=self._acquire_source, release_source=self._release_source,
+                forget_transports=self._forget_transports, fetchers=self._fetchers,
+                preparer_factory=preparer_factory, templates=templates,
+                continuations=self._continuations, clock=clock,
+                request_timeout_seconds=request_timeout_seconds)
 
     def submit(self, request, on_span, on_event):
         self._validate_request(request)
+        if (self._steering is not None and request.config.get("mode") == "steering"
+                and not request.flow_ticks):
+            # One long session per playback instead of one bounded session per request.
+            return self._steering.submit(request, on_span, on_event)
         with self._lock:
             if self._closed:
                 raise RuntimeError("inference backend is closed")
@@ -166,6 +262,8 @@ three, so the request after it connects from scratch as before.
             work = self._requests.get(request_id)
             if work is not None:
                 work.canceled.set()
+        if work is None and self._steering is not None:
+            return self._steering.cancel(request_id)
         return work is not None
 
     def prepare(self):
@@ -193,6 +291,8 @@ three, so the request after it connects from scratch as before.
             self._closed = True
             for work in self._requests.values():
                 work.canceled.set()
+        if self._steering is not None:
+            self._steering.close()  # before the fetch workers and the shared source go away
         self._preparer.shutdown(wait=True, cancel_futures=True)
         self._workers.shutdown(wait=True)
         self._fetchers.shutdown(wait=True, cancel_futures=True)
@@ -586,45 +686,12 @@ three, so the request after it connects from scratch as before.
 
     def _fetch_prepare(self, work, stopped, source, preparer, record, enqueue):
         try:
-            started = self._clock()
-            while not stopped.is_set() and self._check(work):
-                fetched = source.fetch(record.session_id, record.bar, record.lyric_id,
-                                       wait_ms=1000, accept_older=False)
-                if stopped.is_set() or not self._check(work):
-                    return
-                if fetched.status == "pending":
-                    work.canceled.wait(0.05)
-                    continue
-                if fetched.status != "ready":
-                    raise RuntimeError(f"remote bar audio: {fetched.status}")
-                if (fetched.lyric_id != record.lyric_id or fetched.manifest is None
-                        or fetched.source_wav is None or fetched.manifest.lyric_id != record.lyric_id
-                        or fetched.manifest.bar != record.bar
-                        or fetched.manifest.tempo_bpm != work.request.bpm):
-                    raise ValueError("remote audio identity or tempo mismatch")
-                fetched_at = self._clock()
-                physical = work.request.start_tick // 16 + record.bar
-                slots = materialize_flow(record.flow_template, physical)
-                local_record = replace(record, bar=physical, scheduled=tuple(
-                    replace(item, slot=slot) for item, slot in zip(record.scheduled, slots)))
-                local_manifest = replace(fetched.manifest, bar=physical, lyric_id=local_record.lyric_id)
-                prepared = preparer.prepare(local_record, local_manifest, fetched.source_wav)
-                if prepared.text != record.text:
-                    raise ValueError("prepared audio text does not match selected lyric")
-                if stopped.is_set() or not self._check(work):
-                    return
-                timings = {"client_fetch_decode_ms": max(0.0, (fetched_at - started) * 1000),
-                           "client_prepare_ms": max(0.0, (self._clock() - fetched_at) * 1000)}
-                for key, value in fetched.manifest.stage_timings_ms.items():
-                    if type(value) in (int, float) and isfinite(value) and value >= 0:
-                        timings[f"server_{key}_ms"] = float(value)
-                warp_ms = getattr(prepared, "render_latency_ms", None)
-                if type(warp_ms) in (int, float) and isfinite(warp_ms) and warp_ms >= 0:
-                    timings["client_warp_ms"] = float(warp_ms)
-                continuation = _thaw(fetched.manifest.diagnostics).get("continuation")
-                enqueue("prepared", (record, prepared, timings,
-                                     continuation if isinstance(continuation, dict) else None))
-                return
+            result = fetch_and_prepare(
+                source, preparer, record, bpm=work.request.bpm,
+                physical_bar=work.request.start_tick // 16 + record.bar, clock=self._clock,
+                alive=lambda: not stopped.is_set() and self._check(work), pause=work.canceled.wait)
+            if result is not None:
+                enqueue("prepared", (record, *result))
         except Exception as error:
             enqueue("failure", (record, error))
 
@@ -640,32 +707,10 @@ three, so the request after it connects from scratch as before.
         if not self._check(work):
             return
         request = work.request
-        if audio.format.sample_width_bytes != 4:
-            raise ValueError("prepared audio must be float32 PCM")
         start = request.start_tick + bar * 16
-        frame_at = lambda tick: round(tick * audio.format.sample_rate_hz * 60 / request.bpm / 4)
-        frames = frame_at(start + 16) - frame_at(start)
-        if abs(audio.frame_count - frames) > 1:
-            raise ValueError("prepared audio duration differs from destination coverage")
-        width = audio.format.channels * 4
-        # Match the existing relocation policy for a one-frame rounding difference.
-        data = audio.data[:frames * width].ljust(frames * width, b"\0")
-        if not np.all(np.isfinite(np.frombuffer(data, dtype=np.float32))):
-            raise ValueError("prepared PCM contains non-finite samples")
-        syllables = () if record is None else tuple(
-            {**payload, "start_tick": start + payload["tick_in_bar"],
-             "duration_ticks": item.slot.duration_ticks, "text": payload["display_label"]}
-            for item, payload in zip(
-                record.scheduled, scheduled_syllables_payload(record.scheduled, bar=bar)))
-        span = AudioSpan(
-            request_id=request.request_id, output_id=f"{request.request_id}:bar:{bar}",
-            epoch=request.epoch, input_version=request.input_version, start_tick=start,
-            duration_ticks=16, sample_rate=audio.format.sample_rate_hz, channels=audio.format.channels,
-            pcm=data, revision=0 if record is None else record.revision, safe_split_ticks=(),
-            declared_silence=declared_silence, text="" if record is None else record.text,
-            syllables=syllables, stage_timings=timings or {},
-            first_vocal_tick=None if record is None else record.scheduled[0].slot.tick - bar * 16,
-            final=len(work.delivered | {bar}) == request.duration_ticks // 16)
+        span = build_span(request, bar, audio, record=record, timings=timings,
+                          declared_silence=declared_silence,
+                          final=len(work.delivered | {bar}) == request.duration_ticks // 16)
         if work.canceled.is_set():
             return
         if work.on_span(span) is False:

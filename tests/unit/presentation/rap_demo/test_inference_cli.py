@@ -39,3 +39,38 @@ def test_v3_composes_inference_without_starting_audio_or_creating_another_sessio
         assert snapshot["capabilities"]["commit_quantum_ticks"] == 16
     finally:
         runtime.close()
+
+
+def _inference(tmp_path, *extra):
+    args = build_parser().parse_args([
+        "--rap-audio-renderer", "moss_aligned_remote", "--rap-protocol", "v3",
+        "--audio-output", "wav", "--log-dir", str(tmp_path), "--tempo", "60", *extra,
+    ])
+    return build_demo(args, audio_factories=QuietFactories())
+
+
+def test_steering_keeps_the_bounded_adapter_unless_the_long_session_one_is_asked_for(tmp_path):
+    default = _inference(tmp_path / "default")
+    try:
+        assert default.inference.snapshot()["capabilities"]["steering_adapter"] == "bounded"
+    finally:
+        default.close()
+    session = _inference(tmp_path / "session", "--inference-steering-adapter", "session")
+    try:
+        assert session.inference.snapshot()["capabilities"]["steering_adapter"] == "session"
+    finally:
+        session.close()
+
+
+def test_inference_fetches_through_a_source_that_keeps_idle_connections(tmp_path):
+    from streammuse.infrastructure.rap.lyric_stream_client import HttpBarAudioSource
+
+    source = RapAudioFactories().create_inference_bar_audio_source(base_url="http://test", opus_codec=None)
+    legacy = RapAudioFactories().create_bar_audio_source(base_url="http://test", opus_codec=None)
+    try:
+        assert isinstance(source, HttpBarAudioSource)
+        assert source._client._transport._pool._keepalive_expiry == 60.0
+        assert legacy._client._transport._pool._keepalive_expiry == 5.0  # the legacy page is unchanged
+    finally:
+        source.close()
+        legacy.close()

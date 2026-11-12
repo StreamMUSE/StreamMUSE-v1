@@ -15,6 +15,10 @@ def main():
     parser.add_argument("--renderer", default="http://127.0.0.1:18721")
     parser.add_argument("--device", default="MacBook Pro Speakers")
     parser.add_argument("--output", type=Path, default=Path("output/inference_20261111/client"))
+    parser.add_argument("--steering-adapter", choices=("bounded", "session"), default="bounded",
+                        help="steering mode: short session per request (bounded) or one long session")
+    parser.add_argument("--audio-output", choices=("composite", "wav"), default="composite",
+                        help="'wav' records without opening an audio device")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[3]
     output = args.output.resolve()
@@ -33,7 +37,8 @@ def main():
     argv = [str(root / ".venv/bin/python"), "-m", "streammuse.presentation.rap_demo.cli",
             "--rap-audio-renderer", "moss_aligned_remote", "--rap-protocol", "v3",
             "--rap-audio-transport", "opus", "--rap-render-url", args.renderer,
-            "--tempo", "60", "--audio-output", "composite", "--audio-device", args.device,
+            "--tempo", "60", "--audio-output", args.audio_output, "--audio-device", args.device,
+            "--inference-steering-adapter", args.steering_adapter,
             "--max-bars", "0", "--port", str(args.port), "--log-dir", str(output / "sessions"),
             "--terminal-layout", "stream", "--terminal-detail", "summary",
             "--interaction-mode", "continuous", "--response-bars", "2",

@@ -211,6 +211,9 @@ class Harness:
     def run_prepare(self):
         """Run prepare and wait for its background work."""
         assert self.backend.prepare() is True
+        self.settle_prepare()
+
+    def settle_prepare(self):
         for future in list(self.backend._preparing.values()):
             future.result(timeout=3)
 
@@ -657,7 +660,7 @@ def test_prepare_returns_at_once_and_the_next_session_uses_the_early_handshake(h
     finally:
         harness.connect_gate.set()
         thread.join(3)
-    harness.run_prepare()
+    harness.settle_prepare()
     spare = next(s for s in harness.streams if s.connected)
     assert not spare.opened and harness.warmed == [2]
     stream = turn(harness, "turn-1")
