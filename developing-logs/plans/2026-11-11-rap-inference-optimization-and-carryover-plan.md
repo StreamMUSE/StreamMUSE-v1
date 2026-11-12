@@ -91,7 +91,7 @@ Andrew 11-11 在他的机器上测的 WAIT 中位数是 5.34 s（5 个回合）�
 
 - [x] H200 上启动整套服务，Mac 经隧道连上。
 - [x] Cyclic 基线：5 个回合，见上表。
-- [ ] 把这次用的时间线分析写成脚本 `scripts/analyze_inference_trace.py`：输入导出的 trace，输出每个请求各阶段的耗时。之后每个阶段都用它出数。
+- [x] 把这次用的时间线分析写成脚本 `scripts/analyze_inference_trace.py`：输入导出的 trace，输出每个请求各阶段的耗时。之后每个阶段都用它出数。（2026-11-12 完成，见实施记录。）
 - [ ] Steering 基线：60 和 90 BPM 各改 6 次（3 次在 bar 前半、3 次在后半），记录改动到新版本播出的时间、stale 时长、缺失时长。
 - [ ] 逐 bar 记录是否续写：读音频包里的 `diagnostics.continuation`，确认请求的第一个 bar 是不是都没续写。
 
@@ -347,4 +347,17 @@ Andrew 11-11 在他的机器上测的 WAIT 中位数是 5.34 s（5 个回合）�
 - 新适配器里一条消息发送失败（连接刚好断开）会直接判这个会话失败，由下一个请求重开，这次修改会晚几秒。没有做“等自动重连后重发”，因为重发的 `update` 可能已经被服务器收到过一次。
 
 还没做的验收（要 H200）：第 0 阶段的 steering 基线；同样 12 次修改下前半的在下一个 bar 播出、后半的最多晚一个 bar、缺失为 0；续写比例 95% 以上。验收通过之前不要把默认值改成 `session`。
+
+**2026-11-12：第 0 阶段的分析脚本和验收用的脚本**
+
+提交：`feat(rap): add inference trace analysis and acceptance helpers`（提交号见本节末尾的汇总表）。
+
+- `scripts/analyze_inference_trace.py`：输入页面导出的 trace（`/api/inference/export?format=json`，或验收脚本写出的 `trace.json`），输出：
+  - cyclic 每个回合从请求发出到“第一句歌词到 Mac”“音频就绪”“MODEL 开始”的时间，以及取音频、服务器合成、Mac 准备各自的时间，带中位数和最小、最大值；
+  - steering 每次修改：修改时在播哪个 bar、在前半还是后半、多久后新版本播出、晚了几个 bar；
+  - 续写比例（从第 2 阶段的客户端起 trace 里才有这项数据），以及没续写的原因分布。
+- 用这台机器上 11-11 的真实基线 trace 跑过，输出和上面基线表的数字一致（2577、1382、1302、471、78、6、4262，最小 3760，最大 4488）。另有 6 个用夹具的单元测试。交接文档说这台机器上没有基线 trace，其实有（`output/inference_opt_20261111/baseline-cycle/`）。
+- `scripts/experiments/inference_opt/steering_edits.py`：对运行中的 Mac 客户端按 BPM 做 N 次修改（前一半在 bar 前半，后一半在 bar 后半），每次等新版本播出，最后导出 trace。第 0 阶段的 steering 基线和第 3 阶段的验收都用它。
+- `scripts/experiments/inference_opt/measure_round_trips.py`：量链路的往返（新建连接的 GET、复用连接的 GET、WebSocket 握手），每次测量前后各跑一次。
+- 全量测试 3490 通过、5 跳过、5 失败（和基线相同的 5 个）。
 
