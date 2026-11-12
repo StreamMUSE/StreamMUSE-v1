@@ -2,6 +2,8 @@
 
 对应计划：[2026-11-11 合并计划](../plans/2026-11-11-rap-inference-optimization-and-carryover-plan.md)。这份文档写给接手实施的人，记录已经核实的事实、定下来的设计和还没核实的点。
 
+> **更新（2026-11-12）：** 这份文档里的三个阶段已经实施并推送（`7ea213ed`、`6e99a46a`、`4b12f8b2`，分析脚本 `94c3b828`），真实验收还没做。实际做法和这里的出入记在[合并计划](../plans/2026-11-11-rap-inference-optimization-and-carryover-plan.md)的实施记录里，验收步骤见 [H200 验收手册](2026-11-12-inference-opt-h200-acceptance-runbook.md)。下面的内容是实施之前写的，保留原样。
+
 ## 0. 现在的状态
 
 - **代码一行没改。** 只读了代码、跑了基线测试、写了这份文档。
