@@ -108,6 +108,12 @@ class RapAudioFactories:
 
         return HttpBarAudioSource(base_url, opus_codec=opus_codec)
 
+    def create_inference_bar_audio_source(self, *, base_url: str, opus_codec):
+        """The inference page fetches in bursts, one per turn: keep idle connections across turns."""
+        from streammuse.infrastructure.rap.lyric_stream_client import HttpBarAudioSource
+
+        return HttpBarAudioSource(base_url, opus_codec=opus_codec, keepalive_expiry_seconds=60.0)
+
     def create_sink(
         self,
         *,
@@ -792,7 +798,8 @@ def _build_audio_demo(
 
         backend = RealInferenceBackend(
             stream_factory=lambda: audio_factories.create_lyric_stream(base_url=args.rap_render_url),
-            source_factory=lambda: audio_factories.create_bar_audio_source(base_url=args.rap_render_url, opus_codec=opus_codec),
+            source_factory=lambda: audio_factories.create_inference_bar_audio_source(
+                base_url=args.rap_render_url, opus_codec=opus_codec),
             preparer_factory=inference_preparer, templates=BUILTIN_TEMPLATES, clock=clock,
             silence_factory=inference_silence, request_timeout_seconds=args.rap_render_startup_timeout,
         )

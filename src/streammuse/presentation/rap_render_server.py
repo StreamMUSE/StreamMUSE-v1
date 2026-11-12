@@ -271,6 +271,7 @@ class RapRenderServerConfig:
     lyric_continuation: bool = False
     vllm_extra_payload: Mapping[str, object] | None = None
     moss_sglang_resample_output: bool = False
+    http_keep_alive_s: int = 75
 
 
 @dataclass
@@ -1785,6 +1786,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="convert the sglang-omni MOSS response to 24 kHz mono (MOSS-TTS-Local returns 48 kHz stereo)",
     )
     parser.add_argument(
+        "--http-keep-alive-seconds",
+        type=int,
+        default=75,
+        help=(
+            "how long an idle HTTP connection stays open (uvicorn's own default is 5). A client that "
+            "fetches once per turn reuses its connections only if this outlasts the gap between turns"
+        ),
+    )
+    parser.add_argument(
         "--vllm-extra-payload",
         default="",
         help=(
@@ -1864,6 +1874,7 @@ def main(
             host=config.host,
             port=config.port,
             log_level="info",
+            timeout_keep_alive=config.http_keep_alive_s,
         )
     finally:
         composition.close()
@@ -1883,6 +1894,8 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
     backend = args.moss_serving_backend
     if args.lyric_continuation and (not args.lyric_stream or backend != "sglang-omni"):
         raise ValueError("--lyric-continuation requires --lyric-stream and the sglang-omni backend")
+    if args.http_keep_alive_seconds < 1:
+        raise ValueError("--http-keep-alive-seconds must be at least 1")
     sglang_only = {
         "--moss-sglang-url": args.moss_sglang_url,
         "--moss-reference-text-file": args.moss_reference_text_file,
@@ -2049,6 +2062,7 @@ def _server_config_from_args(args: argparse.Namespace) -> RapRenderServerConfig:
         lyric_continuation=args.lyric_continuation,
         vllm_extra_payload=_json_object(args.vllm_extra_payload, "--vllm-extra-payload"),
         moss_sglang_resample_output=args.moss_sglang_resample_output,
+        http_keep_alive_s=args.http_keep_alive_seconds,
     )
 
 

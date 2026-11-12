@@ -232,3 +232,30 @@ Andrew 11-11 在他的机器上测的 WAIT 中位数是 5.34 s（5 个回合）�
 - Mac：装了 `espeak-ng`；隧道把本机 18620 转到 H200 的 8620，18711 转到 8601。
 - Cyclic 基线的数据在 `output/inference_opt_20261111/baseline-cycle/`（不进 git）。
 - 当天晚些时候 H200 连不上了，隧道已断，H200 上三个服务的状态没有再确认。第 0 阶段剩下的 steering 基线和续写记录要等连接恢复；分析脚本只用本机的 trace，不受影响。
+
+**2026-11-11：第 1 阶段（代码和单元测试完成，真实验收未做）**
+
+提交：`feat(rap): keep inference transports between cyclic turns`（提交号见本节末尾的汇总表）。H200 当天连不上，下面“验收”一栏的两项都没有做。
+
+做了什么：
+
+- `LyricStreamConnection` 新增 `connect(session_id)`，只做 WebSocket 握手、不发 `start`；`open()` 发现已有同一个会话的握手就只发 `start`。发送失败（握手已失效）时关掉它，按原来的方式重新建连并发 `start`。没有调用过 `connect()` 时 `open()` 的行为和以前一样。
+- `HttpBarAudioSource` 新增可选参数 `keepalive_expiry_seconds` 和方法 `warm(n)`（并发发 n 个便宜的 GET，把连接池里的连接建好或刷新）。不传参数时和以前一样用 httpx 默认的 5 s，旧页面不受影响；新页面通过 `RapAudioFactories.create_inference_bar_audio_source` 用 60 s。
+- `RealInferenceBackend`：服务器能力只查一次；取音频的 source 整个后端共用一个；新增 `prepare()`（只入队，后台并行做三件事：查能力、预热两条取音频的连接、建一条握手完成但未发 `start` 的 WebSocket）。请求到来时优先用这条备用连接，超过 30 s 或发送失败就关掉、按原方式建连。会话出错时三样都丢弃，下一个请求从头建连。
+- `InferenceService._begin_user()` 在每次进入 USER 阶段时调用后端的 `prepare()`（后端没有这个方法就跳过）。只影响 cyclic 模式。
+- render server 新增 `--http-keep-alive-seconds`，默认 75（uvicorn 自己的默认是 5）。
+
+测试：
+
+- 新增 28 个测试，全量 3428 通过、5 跳过、5 失败（5 个失败是已知的 FastPitch/timing 缺语料，和基线一样）。
+- 新增真实套接字的集成测试 `tests/integration/test_inference_live_transport.py`：线程里起 uvicorn，挂 v3 路由，配假的写词和合成，用真的 `LyricStreamConnection`、`HttpBarAudioSource` 和 `RealInferenceBackend` 连。验证了：`prepare()` 之后服务器上有一条握手完成但没有会话的 WebSocket；请求发出到两个 bar 都交付的过程中，服务器没有收到任何新的 TCP 连接，也没有再查能力；之后的回合继续复用同一批 HTTP 连接；备用连接被掐断后自动重新建连，回合照常完成；服务器 keep-alive 很短时只是享受不到复用，回合不失败。
+- 本机模拟（不是验收）：在客户端和测试服务器之间加一个 TCP 转发，每个方向延迟 250 ms，新建连接多等一次往返；假的合成固定睡 0.47 s，写词不计时。请求发出到第一个 bar 交付，不做 `prepare()` 时中位数 3643 ms，做了之后 1039 ms（各 5 次）。这只说明连接开销的变化，真实的 WAIT 还要加上写词、音频包传输和 Mac 端准备的时间。
+
+和计划的出入：
+
+- 计划写“用户没敲出节奏时，提前建好的连接直接关掉”。实际做法是留着给下一回合用：15 s 以内的备用连接不重建，超过 30 s 的不使用。服务器上一条只握手没 `start` 的连接不占会话名额。
+- 计划没提两边的 keep-alive：httpx 默认 5 s 丢弃空闲连接，uvicorn 默认 5 s 关闭空闲连接，而回合间隔在 10 s 以上。所以客户端（仅新页面）调到 60 s，服务器默认调到 75 s。**服务器这一项对所有客户端生效**，包括旧页面；旧页面的客户端仍然 5 s 就丢弃空闲连接，所以行为不变。要恢复原值，启动时加 `--http-keep-alive-seconds 5`。
+- 交接文档建议的“失败时由后端重试一次”做了两层：连接对象自己会用同一个会话 ID 重新握手；后端另外兜底，换一条新连接和新的会话 ID 再试一次。
+- 这台 Mac 上 Homebrew 的 node 是坏的（缺 `libsimdjson.33.dylib`），直接跑全量测试会多出 87 个调用 node 的失败。测试时用 `PATH="/usr/local/bin:$PATH"` 让它用另一份 node v18，没有改动系统。
+
+还没做的验收（要 H200）：同条件 5 个回合的 WAIT 中位数低于 2 s、缺失为 0。

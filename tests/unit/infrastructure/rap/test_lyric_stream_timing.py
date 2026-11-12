@@ -237,3 +237,130 @@ def test_audio_get_recovers_real_http_disconnect_then_decodes_valid_audio():
         listener.close()
     assert not thread.is_alive() and not failures
     assert len(requests) == 2
+
+
+class _EarlySocket:
+    """A socket whose handshake is done; records what is sent on it."""
+
+    def __init__(self, broken=False):
+        self.sent, self.broken, self.closed = [], broken, threading.Event()
+
+    def send(self, raw):
+        if self.broken:
+            raise OSError("connection reset")
+        self.sent.append(json.loads(raw))
+
+    def recv(self):
+        self.closed.wait(5)
+        raise OSError("closed")
+
+    def close(self):
+        self.closed.set()
+
+
+def _connection_with_handshakes(*sockets):
+    connection = LyricStreamConnection("http://test")
+    made = []
+    pending = list(sockets)
+
+    def handshake():
+        made.append(connection._session_id)
+        return pending.pop(0)
+
+    connection._handshake = handshake
+    return connection, made
+
+
+def test_early_handshake_carries_the_start_without_connecting_again():
+    socket_ = _EarlySocket()
+    connection, made = _connection_with_handshakes(socket_)
+    connection.connect("session-a")
+    assert made == ["session-a"] and socket_.sent == []
+    try:
+        connection.open("session-a", {"type": "start", "seed": 1}, lambda message: None)
+        assert made == ["session-a"]
+        assert socket_.sent == [{"type": "start", "seed": 1}]
+        connection.send({"type": "stop"})
+        assert socket_.sent[-1] == {"type": "stop"}
+    finally:
+        connection.close()
+    assert socket_.closed.is_set()
+
+
+def test_early_handshake_for_another_session_is_closed_and_not_used():
+    early, fresh = _EarlySocket(), _EarlySocket()
+    connection, made = _connection_with_handshakes(early, fresh)
+    connection.connect("session-a")
+    try:
+        connection.open("session-b", {"type": "start"}, lambda message: None)
+        assert made == ["session-a", "session-b"]
+        assert early.closed.is_set() and early.sent == []
+        assert fresh.sent == [{"type": "start"}]
+    finally:
+        connection.close()
+
+
+def test_stale_early_handshake_reconnects_and_sends_the_same_start():
+    early, fresh = _EarlySocket(broken=True), _EarlySocket()
+    connection, made = _connection_with_handshakes(early, fresh)
+    # A start provider is only for reconnects of a running session, not for this fallback.
+    connection._start_provider = lambda: {"type": "start", "from": "provider"}
+    connection.connect("session-a")
+    try:
+        connection.open("session-a", {"type": "start", "seed": 4}, lambda message: None)
+        assert made == ["session-a", "session-a"]
+        assert early.closed.is_set()
+        assert fresh.sent == [{"type": "start", "seed": 4}]
+    finally:
+        connection.close()
+
+
+def test_closing_an_unused_early_handshake_closes_its_socket():
+    socket_ = _EarlySocket()
+    connection, _ = _connection_with_handshakes(socket_)
+    connection.connect("session-a")
+    connection.close()
+    assert socket_.closed.is_set()
+    with pytest.raises(ConnectionError):
+        connection.send({"type": "stop"})
+
+
+def test_open_without_early_handshake_connects_and_starts_as_before():
+    socket_ = _EarlySocket()
+    connection, made = _connection_with_handshakes(socket_)
+    try:
+        connection.open("session-a", {"type": "start"}, lambda message: None)
+        assert made == ["session-a"] and socket_.sent == [{"type": "start"}]
+    finally:
+        connection.close()
+
+
+def test_audio_source_keeps_the_httpx_idle_expiry_unless_asked():
+    default = HttpBarAudioSource("http://test")
+    longer = HttpBarAudioSource("http://test", keepalive_expiry_seconds=60.0)
+    try:
+        assert default._client._transport._pool._keepalive_expiry == 5.0
+        assert longer._client._transport._pool._keepalive_expiry == 60.0
+    finally:
+        default.close()
+        longer.close()
+
+
+def test_warm_issues_concurrent_cheap_requests_and_tolerates_failures():
+    barrier = threading.Barrier(2, timeout=3)
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        barrier.wait()  # both requests are in flight at once: each needs its own connection
+        return httpx.Response(200, json={"capabilities": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert HttpBarAudioSource("http://test", client=client).warm(2) == 2
+    assert paths == ["/v1/rap/capabilities"] * 2
+
+    def refuse(request):
+        raise httpx.ConnectError("refused")
+
+    with httpx.Client(transport=httpx.MockTransport(refuse)) as client:
+        assert HttpBarAudioSource("http://test", client=client).warm(2) == 0

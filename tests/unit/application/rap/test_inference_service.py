@@ -427,3 +427,31 @@ def test_continuous_new_response_records_its_own_first_vocal_origin(setup):
     service.audio_callback(50)
     row = service.snapshot()["requests"][-1]
     assert row["first_vocal_onset_ms"] == 250
+
+
+def test_cycle_tells_the_backend_to_prepare_at_every_user_phase_and_steering_never_does(setup):
+    service, producer, _ = setup
+    calls = []
+    producer.prepare = lambda: calls.append(service.snapshot()["phase"])
+    capture(service)
+    assert calls == ["USER"] and service.snapshot()["phase"] == "WAIT"
+    producer.deliver(start=0, ticks=32)
+    service.audio_callback(800)
+    assert service.snapshot()["phase"] == "USER" and calls == ["USER", "USER"]
+    service.audio_callback(400)  # nothing captured: USER repeats and prepares again
+    assert calls == ["USER", "USER", "USER"]
+    service.reset()
+    service.configure({"mode": "steering"})
+    service.start()
+    assert len(calls) == 3
+
+
+def test_a_failing_prepare_never_reaches_the_audio_callback(setup):
+    service, producer, _ = setup
+
+    def prepare():
+        raise RuntimeError("renderer unreachable")
+
+    producer.prepare = prepare
+    capture(service)
+    assert service.snapshot()["phase"] == "WAIT" and service.snapshot()["error"] is None

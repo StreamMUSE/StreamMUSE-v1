@@ -1,18 +1,22 @@
 """Bounded inference requests over the existing v3 lyric/MOSS/local-warp pipeline.
 
-Factories create request-owned transports and a BarAudioPreparer. submit/cancel
-never perform network or preparation work. silence_factory receives the request
-and ABSOLUTE destination bar and returns mixed drums-only PcmAudio. No phoneme
-splits or sub-bar generation are advertised by this legacy adapter.
+Factories create transports and a BarAudioPreparer. Each bounded session owns its
+lyric stream; the bar audio source and the server's capability list are shared by
+all sessions of one backend, so a request does not pay for them again. submit,
+cancel and prepare never perform network or preparation work on the caller's
+thread. silence_factory receives the request and ABSOLUTE destination bar and
+returns mixed drums-only PcmAudio. No phoneme splits or sub-bar generation are
+advertised by this legacy adapter.
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 import copy
 from dataclasses import dataclass, field, replace
 import hashlib
+import logging
 from math import isfinite
 import queue
 from threading import Event, Lock
@@ -26,6 +30,18 @@ from streammuse.domain.rap import FlowProvenance, FlowSlot, FlowTemplate, materi
 from streammuse.domain.rap.inference import AudioSpan, InferenceRequest
 from streammuse.domain.rap.lyric_stream import BarLyricRecord, LYRIC_STREAM_SCHEMA_VERSION
 from streammuse.domain.rap.remote_chunk import _flow_payload
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _SharedSource:
+    """The bar audio source every session of a backend fetches through."""
+
+    source: object
+    users: int = 0
+    retired: bool = False
+    closed: bool = False
 
 
 @dataclass
@@ -45,6 +61,12 @@ Full bounded lookahead permits incremental delivery without falsely reporting
 playback commitment to advance the server cursor. The caller still owns final
 session/epoch fencing at playback: a callback already executing when cancel is
 called cannot be recalled. close waits for owned workers/transport cleanup.
+
+Between requests the backend keeps what does not belong to one session: the
+server's capability list, the bar audio source (and its pooled connections) and,
+after ``prepare``, one lyric stream whose WebSocket handshake is already done.
+The next session sends its ``start`` on that stream. A failed session drops all
+three, so the request after it connects from scratch as before.
     """
 
     capabilities = {
@@ -59,12 +81,18 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
 
     def __init__(self, *, stream_factory, source_factory, preparer_factory, templates,
                  clock=time.monotonic, silence_factory=None, request_timeout_seconds=90,
-                 max_requests=4, fetch_workers=3):
+                 max_requests=4, fetch_workers=3, spare_max_age_seconds=30.0,
+                 warm_connections=2):
         if (type(request_timeout_seconds) not in (int, float)
                 or not isfinite(request_timeout_seconds) or request_timeout_seconds <= 0):
             raise ValueError("request timeout must be finite and positive")
         if any(type(n) is not int or n <= 0 for n in (max_requests, fetch_workers)):
             raise ValueError("worker limits must be positive integers")
+        if (type(spare_max_age_seconds) not in (int, float)
+                or not isfinite(spare_max_age_seconds) or spare_max_age_seconds <= 0):
+            raise ValueError("spare connection age limit must be finite and positive")
+        if type(warm_connections) is not int or warm_connections < 0:
+            raise ValueError("warm connection count must be a non-negative integer")
         self._stream_factory, self._source_factory = stream_factory, source_factory
         self._preparer_factory, self._templates = preparer_factory, templates
         self._clock, self._silence_factory = clock, silence_factory
@@ -73,6 +101,12 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
         self._requests, self._seen = {}, OrderedDict()
         self._workers = ThreadPoolExecutor(max_workers=max_requests, thread_name_prefix="inference-v3")
         self._fetchers = ThreadPoolExecutor(max_workers=fetch_workers, thread_name_prefix="inference-v3-audio")
+        self._spare_max_age, self._warm_connections = spare_max_age_seconds, warm_connections
+        self._server_capabilities = None
+        self._source = None
+        self._spare = None  # (stream, remote session id, handshake time)
+        self._preparing = {}
+        self._preparer = ThreadPoolExecutor(max_workers=3, thread_name_prefix="inference-v3-prepare")
 
     def submit(self, request, on_span, on_event):
         self._validate_request(request)
@@ -98,6 +132,24 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
                 work.canceled.set()
         return work is not None
 
+    def prepare(self):
+        """Get transports ready for the next request; returns at once.
+
+        In the background: learn the server's capabilities, open (or refresh)
+        the pooled bar audio connections, and finish a lyric stream handshake.
+        Every step is optional. Whatever is missing or stale when the request
+        arrives is done then, exactly as without ``prepare``.
+        """
+        with self._lock:
+            if self._closed:
+                return False
+            for name, job in (("capabilities", self._prepare_capabilities),
+                              ("source", self._prepare_source), ("spare", self._prepare_spare)):
+                running = self._preparing.get(name)
+                if running is None or running.done():
+                    self._preparing[name] = self._preparer.submit(job)
+        return True
+
     def close(self):
         with self._lock:
             if self._closed:
@@ -105,8 +157,157 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
             self._closed = True
             for work in self._requests.values():
                 work.canceled.set()
+        self._preparer.shutdown(wait=True, cancel_futures=True)
         self._workers.shutdown(wait=True)
         self._fetchers.shutdown(wait=True, cancel_futures=True)
+        self._drop_spare()
+        with self._lock:
+            holder, self._source = self._source, None
+            if holder is not None:
+                holder.retired = True
+        self._close_if_unused(holder)
+
+    # -- transports kept between requests ---------------------------------------
+
+    def _capabilities_from(self, stream):
+        with self._lock:
+            known = self._server_capabilities
+        if known is None:
+            known = frozenset(stream.get_capabilities())
+            with self._lock:
+                self._server_capabilities = known
+        return known
+
+    def _acquire_source(self):
+        with self._lock:
+            holder = self._source
+            if holder is not None:
+                holder.users += 1
+                return holder
+        created = _SharedSource(self._source_factory(), users=1)
+        with self._lock:
+            if self._source is None:
+                self._source = created
+                return created
+            holder = self._source
+            holder.users += 1
+        # Another session installed one first; this one was never used.
+        created.users, created.retired = 0, True
+        self._close_if_unused(created)
+        return holder
+
+    def _release_source(self, holder, *, failed=False):
+        with self._lock:
+            holder.users -= 1
+            if failed and self._source is holder:
+                # Another session may still be fetching through it; it is closed
+                # when the last one lets go.
+                self._source = None
+                holder.retired = True
+        self._close_if_unused(holder)
+
+    def _close_if_unused(self, holder):
+        if holder is None:
+            return
+        with self._lock:
+            if not holder.retired or holder.users or holder.closed:
+                return
+            holder.closed = True
+        try:
+            holder.source.close()
+        except Exception as error:
+            _LOGGER.debug("inference audio source close failed: %s", error)
+
+    def _take_spare(self):
+        with self._lock:
+            spare, self._spare = self._spare, None
+        if spare is None:
+            return None
+        stream, session_id, connected_at = spare
+        if self._clock() - connected_at <= self._spare_max_age:
+            return stream, session_id
+        self._close_quietly(stream)
+        return None
+
+    def _drop_spare(self):
+        with self._lock:
+            spare, self._spare = self._spare, None
+        if spare is not None:
+            self._close_quietly(spare[0])
+
+    @staticmethod
+    def _close_quietly(stream):
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    def _forget_transports(self):
+        """After a failed session nothing kept from before it is trusted."""
+        with self._lock:
+            self._server_capabilities = None
+        self._drop_spare()
+
+    def _await_prepared(self, work, name):
+        with self._lock:
+            running = self._preparing.get(name)
+        while running is not None and not running.done() and self._check(work):
+            wait_futures([running], timeout=0.05)
+
+    def _prepare_capabilities(self):
+        stream = None
+        try:
+            with self._lock:
+                if self._server_capabilities is not None or self._closed:
+                    return
+            stream = self._stream_factory()
+            self._capabilities_from(stream)
+        except Exception as error:
+            _LOGGER.debug("inference prepare: capabilities unavailable: %s", error)
+        finally:
+            if stream is not None:
+                self._close_quietly(stream)
+
+    def _prepare_source(self):
+        holder = None
+        try:
+            holder = self._acquire_source()
+            warm = getattr(holder.source, "warm", None)
+            if callable(warm) and self._warm_connections:
+                warm(self._warm_connections)
+        except Exception as error:
+            _LOGGER.debug("inference prepare: audio connections not warmed: %s", error)
+        finally:
+            if holder is not None:
+                self._release_source(holder)
+
+    def _prepare_spare(self):
+        stream = None
+        try:
+            with self._lock:
+                spare = self._spare
+                # Replace a handshake that would be too old by the time it is used.
+                if self._closed or (spare is not None
+                                    and self._clock() - spare[2] <= self._spare_max_age / 2):
+                    return
+            stream = self._stream_factory()
+            connect = getattr(stream, "connect", None)
+            if not callable(connect):
+                return
+            session_id = "inference-" + uuid.uuid4().hex
+            connect(session_id)
+            with self._lock:
+                if self._closed:
+                    return
+                replaced, self._spare = self._spare, (stream, session_id, self._clock())
+                stream = None
+            if replaced is not None:
+                self._close_quietly(replaced[0])
+        except Exception as error:
+            _LOGGER.debug("inference prepare: early handshake failed: %s", error)
+        finally:
+            if stream is not None:
+                self._close_quietly(stream)
 
     @staticmethod
     def _validate_request(request):
@@ -192,12 +393,12 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
 
     def _run_session(self, work, flows, start, end, preparer):
         request = work.request
-        session_id = "inference-" + uuid.uuid4().hex
+        session_id = None
         messages = queue.Queue(maxsize=256)
         overflow, stopped = Event(), Event()
         latest, futures, delivered = {}, [], set()
-        stream = source = None
-        opened = False
+        stream = holder = None
+        opened = failed = False
 
         def enqueue(kind, value):
             if work.canceled.is_set() or stopped.is_set():
@@ -207,14 +408,8 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
             except queue.Full:
                 overflow.set()
 
-        try:
-            stream = self._stream_factory()
-            if "bounded_turns_v1" not in stream.get_capabilities():
-                raise ValueError("renderer must support bounded_turns_v1")
-            if not self._check(work):
-                return
-            source = self._source_factory()
-            payload = {
+        def start_payload():
+            return {
                 "type": "start", "schema_version": LYRIC_STREAM_SCHEMA_VERSION,
                 "capabilities": ["bounded_turns_v1"], "tempo_bpm": request.bpm,
                 "start_bar": start, "end_bar_exclusive": end, "turn_id": session_id,
@@ -226,9 +421,34 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
                     for i, line in enumerate(request.history[-4:])],
                 "lyric_lead": end - start, "audio_lead": end - start,
             }
+
+        try:
+            # A prepare still in flight finishes sooner than starting over.
+            self._await_prepared(work, "capabilities")
+            self._await_prepared(work, "spare")
+            spare = self._take_spare()
+            if spare is not None:
+                stream, session_id = spare
+            else:
+                stream, session_id = self._stream_factory(), "inference-" + uuid.uuid4().hex
+            if "bounded_turns_v1" not in self._capabilities_from(stream):
+                raise ValueError("renderer must support bounded_turns_v1")
+            if not self._check(work):
+                return
+            holder = self._acquire_source()
+            source = holder.source
+            on_message = lambda message: enqueue("message", message)
             # A partially successful open may have created a server session.
             opened = True
-            stream.open(session_id, payload, lambda message: enqueue("message", message))
+            try:
+                stream.open(session_id, start_payload(), on_message)
+            except Exception:
+                if spare is None:
+                    raise
+                # The early handshake did not survive; connect the usual way once.
+                self._close_quietly(stream)
+                stream, session_id = self._stream_factory(), "inference-" + uuid.uuid4().hex
+                stream.open(session_id, start_payload(), on_message)
             while self._check(work) and len(delivered) < end - start:
                 if overflow.is_set():
                     raise RuntimeError("bounded lyric message queue overflow")
@@ -281,6 +501,9 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
                 self._candidate_event(work, record)
                 futures.append(self._fetchers.submit(
                     self._fetch_prepare, work, stopped, source, preparer, record, enqueue))
+        except Exception:
+            failed = not work.canceled.is_set()
+            raise
         finally:
             stopped.set()
             for future in futures:
@@ -293,12 +516,15 @@ called cannot be recalled. close waits for owned workers/transport cleanup.
                     sent = True
                 except Exception as error:
                     cleanup_errors.append(f"server_stop: {type(error).__name__}: {error}"[:512])
-            for name, resource in (("audio_source", source), ("lyric_stream", stream)):
-                if resource is not None:
-                    try:
-                        resource.close()
-                    except Exception as error:
-                        cleanup_errors.append(f"{name}: {type(error).__name__}: {error}"[:512])
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as error:
+                    cleanup_errors.append(f"lyric_stream: {type(error).__name__}: {error}"[:512])
+            if failed:
+                self._forget_transports()
+            if holder is not None:
+                self._release_source(holder, failed=failed)
             if opened:
                 self._event(work, "session_cleanup", stop_sent=sent,
                             server_cancel_confirmed=False, gpu_cancel_confirmed=False,

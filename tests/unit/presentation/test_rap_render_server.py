@@ -2075,8 +2075,27 @@ def test_cli_composes_through_injected_factory_without_model_imports(
 
     assert status == 0
     assert calls["config"].host == "127.0.0.1"  # type: ignore[union-attr]
-    assert calls["serve"] == {"host": "127.0.0.1", "port": 8020, "log_level": "info"}
+    assert calls["serve"] == {"host": "127.0.0.1", "port": 8020, "log_level": "info",
+                              "timeout_keep_alive": 75}
     assert close_calls == ["close"]
+
+
+def test_cli_http_keep_alive_is_configurable_and_validated(tmp_path: Path) -> None:
+    composition = SimpleNamespace(
+        orchestrator=FakeOrchestrator(tmp_path / "worker"), health={"ready": True},
+        producer_manifest=_producer_manifest(), close=lambda: None,
+    )
+    served: dict[str, object] = {}
+    base = ["--artifact-root", str(tmp_path / "artifacts"), "--vllm-model", "vllm",
+            "--moss-model", "moss", "--moss-reference-wav", "voice.wav"]
+
+    # uvicorn's own default (5 s) stays available for a deployment that wants it back.
+    assert main([*base, "--http-keep-alive-seconds", "5"], composition_factory=lambda _config: composition,
+                serve=lambda app, **kwargs: served.update(kwargs)) == 0
+    assert served["timeout_keep_alive"] == 5
+    with pytest.raises(SystemExit):
+        main([*base, "--http-keep-alive-seconds", "0"], composition_factory=lambda _config: composition,
+             serve=lambda app, **kwargs: None)
 
 
 def test_cli_closes_composed_worker_when_server_raises(tmp_path: Path) -> None:

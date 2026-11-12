@@ -64,8 +64,13 @@ class Harness:
         self.fetch_status = "ready"
         self.wrong_audio = False
         self.capabilities = {"bounded_turns_v1"}
-        self.source_close_error = False
+        self.source_close_error = self.stream_close_error = False
         self.preparer_override = None
+        self.capability_calls = self.open_count = 0
+        self.supports_connect = False
+        self.connect_gate = None
+        self.stale_handshakes = set()
+        self.warmed = []
         self.backend = RealInferenceBackend(
             stream_factory=self.stream_factory, source_factory=self.source_factory,
             preparer_factory=self.preparer_factory, templates={"test": TEMPLATE},
@@ -89,13 +94,27 @@ class Harness:
             def __init__(self):
                 self.sent = []
 
+            connected = None
+
             def get_capabilities(self):
+                harness.capability_calls += 1
                 if harness.open_gate is not None:
                     assert harness.open_gate.wait(3)
                 return frozenset(harness.capabilities)
 
+            def handshake(self, session_id):
+                if harness.connect_gate is not None:
+                    assert harness.connect_gate.wait(3)
+                self.connected = session_id
+                harness.notify()
+
             def open(self, session_id, start, on_message):
+                if self.connected in harness.stale_handshakes:
+                    raise ConnectionError("handshake went stale")
+                assert self.connected in (None, session_id)
                 self.session_id, self.start, self.handler = session_id, start, on_message
+                harness.open_count += 1
+                self.order = harness.open_count
                 self.opened = True
                 on_message({"type": "started", "capabilities": ["bounded_turns_v1"]})
                 harness.notify()
@@ -108,8 +127,12 @@ class Harness:
             def close(self):
                 self.closed = True
                 harness.notify()
+                if harness.stream_close_error:
+                    raise RuntimeError("stream close failed")
 
         stream = Stream()
+        if self.supports_connect:
+            stream.connect = stream.handshake
         self.streams.append(stream)
         self.notify()
         return stream
@@ -135,6 +158,10 @@ class Harness:
                 return BarAudioFetch(harness.fetch_status,
                                      lyric_id="wrong" if harness.wrong_audio else lyric_id,
                                      manifest=manifest, source_wav=source, request_ms=7.0)
+
+            def warm(self, connections):
+                harness.warmed.append(connections)
+                harness.notify()
 
             def close(self):
                 self.closed = True
@@ -174,8 +201,16 @@ class Harness:
         self.notify()
 
     def opened(self, index=0):
-        self.wait(lambda: len(self.streams) > index and self.streams[index].opened)
-        return self.streams[index]
+        """The index-th stream that carried a session, in the order sessions opened."""
+        sessions = lambda: sorted((s for s in self.streams if s.opened), key=lambda s: s.order)
+        self.wait(lambda: len(sessions()) > index)
+        return sessions()[index]
+
+    def run_prepare(self):
+        """Run prepare and wait for its background work."""
+        assert self.backend.prepare() is True
+        for future in list(self.backend._preparing.values()):
+            future.result(timeout=3)
 
     def record(self, bar, *, revision=0, stream=None):
         stream = stream or self.opened()
@@ -243,8 +278,11 @@ def test_first_bar_emits_before_remaining_turn_and_closes_session_on_completion(
     harness.emit(1)
     harness.wait(lambda: len(harness.spans) == 2 and all(s.closed for s in harness.streams))
     assert harness.spans[-1].start_tick == 16 and harness.spans[-1].final
-    assert all(s.closed for s in harness.sources)
     assert harness.streams[0].sent == [{"type": "stop"}]
+    # The audio source outlives the session: the next turn reuses its connections.
+    assert len(harness.sources) == 1 and not harness.sources[0].closed
+    harness.backend.close()
+    assert harness.sources[0].closed
 
 
 def test_out_of_order_ready_bars_do_not_block_behind_slow_earlier_fetch(harness):
@@ -543,14 +581,17 @@ def test_silent_bars_require_explicit_local_drum_composition():
         harness.close()
 
 
-def test_cleanup_closes_socket_even_when_http_source_close_raises(harness):
-    harness.source_close_error = True
+def test_cleanup_reports_a_failing_socket_close_and_survives_a_failing_source_close(harness):
+    harness.source_close_error = harness.stream_close_error = True
     harness.submit(request(duration_ticks=16, flow_ticks=(2, 6, 10, 14)))
     harness.emit(0)
     harness.wait(lambda: any(e["type"] in ("error", "session_cleanup") for e in harness.events))
     assert harness.streams[0].closed
     cleanup = next(e for e in harness.events if e["type"] == "session_cleanup")
-    assert cleanup["cleanup_errors"]
+    assert cleanup["cleanup_errors"] and cleanup["stop_sent"] is True
+    harness.wait(lambda: any(e["type"] == "complete" for e in harness.events))
+    harness.backend.close()  # the shared source's close error stays inside the backend
+    assert harness.sources[0].closed
 
 
 def test_middle_silent_bar_uses_separate_bounded_runs_not_invented_vocals(harness):
@@ -581,3 +622,145 @@ def test_corrupt_prepared_audio_never_becomes_playable(harness, fault):
     harness.emit(0)
     harness.wait(lambda: any(e["type"] == "error" for e in harness.events))
     assert harness.spans == []
+
+
+def turn(harness, request_id, **changes):
+    """One complete two-bar turn; returns the stream that carried it."""
+    before = harness.open_count
+    harness.submit(request(request_id=request_id, **changes))
+    stream = harness.opened(before)
+    for bar in (0, 1):
+        harness.emit(bar, stream=stream)
+    harness.wait(lambda: any(e["type"] == "complete" and e["request_id"] == request_id
+                             for e in harness.events))
+    return stream
+
+
+def test_turns_share_one_capability_lookup_and_one_audio_source(harness):
+    first = turn(harness, "turn-1")
+    second = turn(harness, "turn-2")
+    assert first is not second and first.session_id != second.session_id
+    assert harness.capability_calls == 1
+    assert len(harness.sources) == 1 and not harness.sources[0].closed
+    assert len(harness.spans) == 4
+
+
+def test_prepare_returns_at_once_and_the_next_session_uses_the_early_handshake(harness):
+    harness.supports_connect = True
+    harness.connect_gate = harness.open_gate = Event()
+    returned = Event()
+    thread = Thread(target=lambda: (harness.backend.prepare(), returned.set()))
+    thread.start()
+    try:
+        assert returned.wait(0.5), "prepare blocked on network work"
+    finally:
+        harness.connect_gate.set()
+        thread.join(3)
+    harness.run_prepare()
+    spare = next(s for s in harness.streams if s.connected)
+    assert not spare.opened and harness.warmed == [2]
+    stream = turn(harness, "turn-1")
+    assert stream is spare and stream.session_id == spare.connected
+    assert stream.start["turn_id"] == spare.connected
+    assert harness.capability_calls == 1
+    # No second stream was needed for the session itself.
+    assert [s for s in harness.streams if s.opened] == [spare]
+
+
+def test_request_arriving_during_prepare_waits_for_the_handshake_in_flight(harness):
+    harness.supports_connect = True
+    harness.connect_gate = Event()
+    assert harness.backend.prepare() is True
+    harness.submit()
+    harness.wait(lambda: any(s.connected is None and not s.closed for s in harness.streams))
+    assert not any(s.opened for s in harness.streams)
+    harness.connect_gate.set()
+    stream = harness.opened()
+    assert stream.connected == stream.session_id
+
+
+def test_repeated_prepare_keeps_a_recent_handshake_and_refreshes_connections(harness):
+    harness.supports_connect = True
+    harness.run_prepare()
+    harness.run_prepare()
+    assert len([s for s in harness.streams if s.connected]) == 1
+    assert harness.warmed == [2, 2] and len(harness.sources) == 1
+
+
+def test_stale_early_handshake_falls_back_to_a_fresh_connection(harness):
+    harness.supports_connect = True
+    harness.run_prepare()
+    spare = next(s for s in harness.streams if s.connected)
+    harness.stale_handshakes.add(spare.connected)
+    stream = turn(harness, "turn-1")
+    assert stream is not spare and spare.closed and not spare.opened
+    assert stream.start["turn_id"] == stream.session_id != spare.connected
+    assert not any(e["type"] == "error" for e in harness.events)
+
+
+def test_early_handshake_older_than_the_limit_is_closed_not_used():
+    now = [100.0]
+    harness = Harness(clock=lambda: now[0], spare_max_age_seconds=30)
+    try:
+        harness.supports_connect = True
+        harness.run_prepare()
+        spare = next(s for s in harness.streams if s.connected)
+        now[0] += 31
+        stream = turn(harness, "turn-1")
+        assert stream is not spare and spare.closed and not spare.opened
+    finally:
+        harness.close()
+
+
+def test_failed_session_forgets_capabilities_source_and_handshake(harness):
+    harness.supports_connect = True
+    harness.run_prepare()
+    harness.submit()
+    harness.opened().handler({"type": "error", "message": "lyric stream disconnected"})
+    harness.wait(lambda: any(e["type"] == "error" for e in harness.events))
+    harness.wait(lambda: harness.sources[0].closed)
+    harness.run_prepare()
+    assert harness.capability_calls == 2 and len(harness.sources) == 2
+    stream = turn(harness, "turn-2")
+    assert stream.connected == stream.session_id
+    assert not harness.sources[1].closed
+
+
+def test_canceled_session_keeps_shared_transports(harness):
+    harness.submit()
+    harness.opened()
+    harness.backend.cancel("request-1")
+    harness.wait(lambda: any(e["type"] == "canceled" for e in harness.events))
+    turn(harness, "turn-2")
+    assert harness.capability_calls == 1 and len(harness.sources) == 1
+    assert not harness.sources[0].closed
+
+
+def test_close_closes_an_unused_early_handshake_and_rejects_prepare(harness):
+    harness.supports_connect = True
+    harness.run_prepare()
+    spare = next(s for s in harness.streams if s.connected)
+    harness.backend.close()
+    assert spare.closed and all(s.closed for s in harness.sources)
+    assert harness.backend.prepare() is False
+
+
+def test_prepare_without_early_handshake_support_keeps_the_request_path(harness):
+    harness.run_prepare()
+    assert not any(s.connected for s in harness.streams)
+    stream = turn(harness, "turn-1")
+    assert stream.connected is None and harness.capability_calls == 1
+
+
+def test_prepare_failures_are_silent_and_the_request_still_runs(harness):
+    harness.supports_connect = True
+
+    def broken():
+        raise OSError("renderer unreachable")
+
+    original = harness.backend._stream_factory
+    harness.backend._stream_factory = broken
+    harness.run_prepare()
+    harness.backend._stream_factory = original
+    turn(harness, "turn-1")
+    assert not any(e["type"] == "error" for e in harness.events)

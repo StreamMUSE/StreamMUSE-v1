@@ -208,6 +208,15 @@ class InferenceService:
                      "playable_prefix_ready_ms", "ready_to_start_overhead_ms"):
             self._metrics[name] = None
         self._event("phase", phase="USER", cycle_id=self.cycle_id)
+        # The response is requested when capture closes. A backend that can get its
+        # transports ready meanwhile is told now; this runs on the audio callback,
+        # so the backend must only queue the work.
+        prepare = getattr(self.backend, "prepare", None)
+        if callable(prepare):
+            try:
+                prepare()
+            except Exception:
+                pass
 
     def _model_ticks(self):
         return self.config["model_beats"] * self.config["ticks_per_beat"]

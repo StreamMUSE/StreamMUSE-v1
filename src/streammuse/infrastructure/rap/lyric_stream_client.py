@@ -32,6 +32,10 @@ class LyricStreamConnection:
 
     If the connection drops, it reconnects (bounded attempts) and resends a
     fresh ``start`` built by ``start_provider`` so the server reattaches.
+
+    ``connect`` may be called before ``open`` to do the WebSocket handshake
+    ahead of time: the server accepts the socket and waits for ``start``, so
+    ``open`` for the same session then only has to send it.
     """
 
     def __init__(
@@ -57,6 +61,7 @@ class LyricStreamConnection:
         self._tempo_requests: dict[int, tuple[threading.Event, dict[str, object]]] = {}
         self._dispatch_queue: queue.Queue | None = None
         self._dispatch_thread: threading.Thread | None = None
+        self._preconnected = False
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -125,16 +130,59 @@ class LyricStreamConnection:
                 return True
         return False
 
+    def connect(self, session_id: str) -> None:
+        """Handshake only: no ``start`` is sent and no session exists until ``open``."""
+        with self._lock:
+            stale = self._socket
+            self._socket = None
+            self._preconnected = False
+            self._closing = False
+            self._capabilities = frozenset()
+            self._session_id = session_id
+            self._start = None
+        if stale is not None:
+            self._close_socket(stale)
+        socket = self._handshake()
+        with self._lock:
+            closing = self._closing or self._session_id != session_id
+            if not closing:
+                self._socket = socket
+                self._preconnected = True
+        if closing:
+            self._close_socket(socket)
+
     def open(
         self, session_id: str, start: Mapping[str, object], on_message: Callable[[Mapping[str, object]], None]
     ) -> None:
         with self._lock:
+            # Only a handshake made for this very session can carry its ``start``:
+            # the session id is part of the socket's URL.
+            ready = self._socket if self._preconnected and self._session_id == session_id else None
+            unused = self._socket if self._preconnected and ready is None else None
+            if self._preconnected:
+                self._socket = None
+            self._preconnected = False
             self._closing = False
             self._capabilities = frozenset()
             self._session_id = session_id
             self._start = start
             self._on_message = on_message
-        self._connect()
+        if unused is not None:
+            self._close_socket(unused)
+        if ready is not None:
+            try:
+                ready.send(json.dumps(dict(start or {}), separators=(",", ":")))
+            except Exception as error:
+                # The early handshake went stale; connect again exactly as without it.
+                _LOGGER.warning("lyric_stream_preconnect_stale session=%s error=%s",
+                                session_id, type(error).__name__)
+                self._close_socket(ready)
+                ready = None
+        if ready is not None:
+            with self._lock:
+                self._socket = ready
+        else:
+            self._connect()
         dispatch_queue = queue.Queue(maxsize=256)
         self._dispatch_queue = dispatch_queue
         dispatch_thread = threading.Thread(target=self._dispatch_loop, args=(dispatch_queue,),
@@ -164,13 +212,11 @@ class LyricStreamConnection:
     def close(self) -> None:
         with self._lock:
             self._closing = True
+            self._preconnected = False
             socket = self._socket
             self._socket = None
         if socket is not None:
-            try:
-                socket.close()
-            except Exception:
-                pass
+            self._close_socket(socket)
         if self._thread is not None:
             self._thread.join(5.0)
         dispatch_queue, dispatch_thread = self._dispatch_queue, self._dispatch_thread
@@ -184,14 +230,24 @@ class LyricStreamConnection:
         if dispatch_thread is not None and dispatch_thread is not threading.current_thread():
             dispatch_thread.join(5.0)
 
-    def _connect(self) -> None:
+    @staticmethod
+    def _close_socket(socket) -> None:
+        try:
+            socket.close()
+        except Exception:
+            pass
+
+    def _handshake(self):
         from websockets.sync.client import connect
 
-        socket = connect(
+        return connect(
             _ws_url(self._base_url, f"/v1/rap/sessions/{self._session_id}"),
             open_timeout=self._connect_timeout,
             max_size=4 * 1024 * 1024,
         )
+
+    def _connect(self) -> None:
+        socket = self._handshake()
         start = self._start_provider() if (self._start_provider is not None and self._socket is not None) else self._start
         socket.send(json.dumps(dict(start or {}), separators=(",", ":")))
         with self._lock:
@@ -262,11 +318,43 @@ class HttpBarAudioSource:
         opus_codec: OpusCodec | None = None,
         client: httpx.Client | None = None,
         clock: Callable[[], float] = time.perf_counter,
+        keepalive_expiry_seconds: float | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._codec = opus_codec
-        self._client = client or httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0))
+        if client is None:
+            options: dict[str, object] = {"timeout": httpx.Timeout(15.0, connect=5.0)}
+            if keepalive_expiry_seconds is not None:
+                # httpx drops idle connections after 5 s by default. A caller whose
+                # fetches come in bursts (one per turn) asks for longer; keep it below
+                # the server's own keep-alive timeout so the client expires them first.
+                options["limits"] = httpx.Limits(keepalive_expiry=keepalive_expiry_seconds)
+            client = httpx.Client(**options)
+        self._client = client
         self._clock = clock
+
+    def warm(self, connections: int = 2, *, timeout_seconds: float = 5.0) -> int:
+        """Open or refresh ``connections`` pooled connections; returns how many answered.
+
+        Concurrent cheap GETs each take their own connection, so later fetches
+        (bars are fetched in parallel) do not pay for connection setup.
+        """
+        answered = []
+
+        def probe() -> None:
+            try:
+                self._client.get(f"{self._base_url}/v1/rap/capabilities", timeout=timeout_seconds)
+                answered.append(True)
+            except httpx.HTTPError:
+                pass
+
+        threads = [threading.Thread(target=probe, name="rap-bar-audio-warm", daemon=True)
+                   for _ in range(max(0, connections))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout_seconds + 1.0)
+        return len(answered)
 
     def fetch(self, session_id: str, bar: int, lyric_id: str, *, wait_ms: int, accept_older: bool) -> BarAudioFetch:
         started = self._clock()
