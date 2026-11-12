@@ -84,6 +84,8 @@ class MossBarAudioRenderer:
     With ``continuation``, a bar is synthesized as the continuation of the
     previous bar's latest line (its MOSS source, kept here for the last
     ``source_cache_size`` renders); without that source it is synthesized alone.
+    The kept sources are shared by every session, so a session's first bar can
+    continue a line of an earlier session, named by ``prefix_lyric_id``.
     """
 
     def __init__(
@@ -106,12 +108,13 @@ class MossBarAudioRenderer:
         self._clock = clock
 
     def render(
-        self, record: BarLyricRecord, *, tempo_bpm: float, previous: BarLyricRecord | None = None
+        self, record: BarLyricRecord, *, tempo_bpm: float, previous: BarLyricRecord | None = None,
+        prefix_lyric_id: str | None = None,
     ) -> RenderedBarAudio:
         started = self._clock()
         request = bar_render_request(record, tempo_bpm)
         workspace = self._workspace_root / record.session_id / f"bar{record.bar:05d}-{record.lyric_id[:16]}-bpm{float(tempo_bpm).hex()}"
-        prefix, continuation = self._prefix_for(previous, tempo_bpm)
+        prefix, continuation = self._prefix_for(previous, tempo_bpm, prefix_lyric_id)
         source = (
             self._renderer.render_source(request, workspace)
             if prefix is None
@@ -153,9 +156,19 @@ class MossBarAudioRenderer:
         )
 
 
-    def _prefix_for(self, previous: BarLyricRecord | None, tempo_bpm: float) -> tuple[SpeechPrefix | None, dict[str, object]]:
+    def _prefix_for(
+        self, previous: BarLyricRecord | None, tempo_bpm: float, handoff_lyric_id: str | None = None
+    ) -> tuple[SpeechPrefix | None, dict[str, object]]:
         if not self._continuation:
             return None, {"used": False, "reason": "disabled"}
+        if previous is None and handoff_lyric_id is not None:
+            # The line before this session's first bar was rendered by another session.
+            with self._sources_lock:
+                prefix = self._sources.get((handoff_lyric_id, tempo_bpm))
+            if prefix is None:
+                # Evicted, rendered at another tempo, or never rendered here.
+                return None, {"used": False, "reason": "handoff_not_cached", "prefix_lyric_id": handoff_lyric_id}
+            return prefix, {"used": True, "prefix_lyric_id": handoff_lyric_id, "handoff": True}
         if previous is None:
             return None, {"used": False, "reason": "no_previous_line"}
         with self._sources_lock:

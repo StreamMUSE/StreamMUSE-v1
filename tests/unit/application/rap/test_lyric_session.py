@@ -586,3 +586,51 @@ def test_reschedule_discards_ready_audio_at_old_boundary_but_keeps_earlier_audio
     finally:
         renderer.gate.set()
         session.close()
+
+
+class _HandoffRenderer(_Renderer):
+    """A renderer that can continue from another session's line."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prefix_ids = []
+
+    def render(self, record, *, tempo_bpm, previous=None, prefix_lyric_id=None):
+        self.prefix_ids.append((record.bar, record.revision, prefix_lyric_id))
+        return super().render(record, tempo_bpm=tempo_bpm, previous=previous)
+
+
+def test_only_the_first_bar_of_a_session_is_handed_the_line_to_continue_from() -> None:
+    renderer, listener = _HandoffRenderer(), _Listener()
+    session = _session(renderer, listener, start_bar=4, continue_from_lyric_id="c" * 64,
+                       history=((3, "the line before"),))
+    try:
+        _wait(lambda: len(renderer.rendered) == 2)
+        assert renderer.prefix_ids == [(4, 0, "c" * 64), (5, 0, None)]
+        assert renderer.previous == [None, (4, 0)]
+        # A rewritten first bar still has no previous bar in this session.
+        session.apply_edit(PlanEdit(edit_seq=1, from_bar=4, topic="space"))
+        _wait(lambda: (4, 1) in renderer.rendered)
+        assert (4, 1, "c" * 64) in renderer.prefix_ids
+    finally:
+        session.close()
+
+
+def test_session_without_a_handoff_calls_the_renderer_exactly_as_before() -> None:
+    renderer = _HandoffRenderer()
+    session = _session(renderer)
+    try:
+        _wait(lambda: len(renderer.rendered) == 2)
+        assert [item[2] for item in renderer.prefix_ids] == [None, None]
+    finally:
+        session.close()
+
+
+def test_renderer_that_cannot_take_a_handoff_is_never_passed_one() -> None:
+    renderer, listener = _Renderer(), _Listener()  # render(record, *, tempo_bpm, previous=None)
+    session = _session(renderer, listener, continue_from_lyric_id="c" * 64)
+    try:
+        _wait(lambda: len(renderer.rendered) == 2)
+        assert not listener.errors
+    finally:
+        session.close()

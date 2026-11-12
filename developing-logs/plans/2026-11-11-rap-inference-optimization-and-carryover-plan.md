@@ -259,3 +259,35 @@ Andrew 11-11 在他的机器上测的 WAIT 中位数是 5.34 s（5 个回合）�
 - 这台 Mac 上 Homebrew 的 node 是坏的（缺 `libsimdjson.33.dylib`），直接跑全量测试会多出 87 个调用 node 的失败。测试时用 `PATH="/usr/local/bin:$PATH"` 让它用另一份 node v18，没有改动系统。
 
 还没做的验收（要 H200）：同条件 5 个回合的 WAIT 中位数低于 2 s、缺失为 0。
+
+**2026-11-11：第 2 阶段（代码和单元测试完成，真实验收未做）**
+
+提交：`feat(rap): continue the previous line across inference requests`（提交号见本节末尾的汇总表）。声音不一致的问题是否因此消失，没有验证。
+
+做了什么：
+
+- 协议：新增可选能力 `continuation_handoff_v1`。`start` 可以带 `continue_from: {"lyric_id": "<64 位十六进制>"}`，指明这个会话的第一个 bar 接在哪一句后面。带了字段但没声明能力，或 ID 格式不对，服务器拒绝这次 `start`。
+- 服务器：`LyricStreamSession` 只在渲染会话的第一个 bar、且它前面没有本会话的 bar 时，把这个 ID 作为 `prefix_lyric_id` 传给渲染器；其余情况调用方式和以前完全一样。渲染器的 `render` 没有声明这个参数时不传。
+- `MossBarAudioRenderer`：没有上一个 bar 但有交接 ID 时，在共用的前缀缓存里查。命中就续写，`diagnostics.continuation` 里多一个 `handoff: true`；没命中就单独合成，原因写 `handoff_not_cached`。
+- 客户端（`RealInferenceBackend`）：记下每个已交付 bar 的服务器歌词 ID。开新会话时找“紧挨在前面的那一句”，查到且服务器声明了这个能力才带 `continue_from`，否则 `start` 和以前一字不差。
+- 每个 bar 的 `stage_timings` 事件里附上服务器返回的 `diagnostics.continuation`，这样导出的 trace 里能直接数续写比例（第 0 阶段遗留的“逐 bar 记录是否续写”）。
+
+测试：
+
+- 新增 24 个测试，全量 3452 通过、5 跳过、5 失败（和基线相同的 5 个）。
+- 真实套接字的集成测试里跑了两个回合：第 1 回合的第一个 bar 是 `no_previous_line`，第 2 回合的第一个 bar 是 `used: true, handoff: true`，测试服务器收到的合成前缀就是第 1 回合最后一句的文本；两个回合 BPM 不同时是 `handoff_not_cached`，回合照常完成。
+- 回归：旧页面的控制器发出的 `start` 里声明的能力仍是原来那 4 个，不带 `continue_from`。
+
+和计划、交接文档的出入：
+
+- 交接文档写“用 `request.history[-1]` 的文本查 ID”。实际分了三级：同一个请求里前面已交付的 bar（中间隔着静音 bar 的情况）；steering 模式按位置查“结束在本请求起点的那个 bar”；最后才按 `history[-1]` 的文本查。原因是 steering 的后续请求发出时，它前面那个 bar 已经交付但还没播，`history[-1]` 是更早的一句。Cyclic 模式每个回合的 tick 都从 0 开始，位置不唯一，所以只按文本查。
+- 服务器对外声明的能力多了一个，但旧页面的客户端不声明它。为此把原来的常量拆成了两个：`PLAYBACK_CLIENT_CAPABILITIES`（旧页面声明的 4 个）和 `LYRIC_STREAM_CAPABILITIES`（服务器提供的 5 个）。
+
+已知的限制：
+
+- 缓存的键带 BPM，两个回合之间改了 BPM 就接不上。
+- 服务器只留最近 64 句的音频，服务器重启后也会清空；这两种情况都按“没命中”处理。
+- 按文本查时，如果两句歌词一字不差，取后交付的那一句。
+
+还没做的验收（要 H200）：除整场第一个 bar 外续写比例 95% 以上；回合边界的说话人相似度不低于回合内部；请 Andrew 再听。
+

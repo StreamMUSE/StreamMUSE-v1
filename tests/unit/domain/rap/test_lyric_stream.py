@@ -158,3 +158,24 @@ def test_bar_audio_manifest_round_trips() -> None:
 def test_bar_audio_manifest_rejects_inconsistent_values(overrides) -> None:
     with pytest.raises(ValueError):
         _manifest(**overrides)
+
+
+def test_continuation_handoff_is_offered_by_the_server_but_not_declared_by_the_playback_client():
+    from streammuse.domain.rap.lyric_stream import (
+        CONTINUATION_HANDOFF_CAPABILITY, LYRIC_STREAM_CAPABILITIES, PLAYBACK_CLIENT_CAPABILITIES,
+    )
+
+    assert PLAYBACK_CLIENT_CAPABILITIES == (
+        "tempo_updates_v1", "bounded_turns_v1", "tempo_reschedule_v1", "story_context_v1")
+    assert LYRIC_STREAM_CAPABILITIES == (*PLAYBACK_CLIENT_CAPABILITIES, CONTINUATION_HANDOFF_CAPABILITY)
+
+
+@pytest.mark.parametrize("value", ["a" * 64, {"lyric_id": "A" * 64}, {"lyric_id": "a" * 63},
+                                   {"lyric_id": "a" * 64, "bar": 1}, {}])
+def test_continue_from_must_name_exactly_one_lyric_id(value):
+    from streammuse.domain.rap.lyric_stream import continuation_handoff_lyric_id
+
+    with pytest.raises(ValueError, match="continue_from"):
+        continuation_handoff_lyric_id({"continue_from": value})
+    assert continuation_handoff_lyric_id({}) is None
+    assert continuation_handoff_lyric_id({"continue_from": {"lyric_id": "a" * 64}}) == "a" * 64

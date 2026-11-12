@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+import inspect
 import threading
 import time
 from typing import Protocol
@@ -64,8 +65,23 @@ class BarAudioRenderer(Protocol):
     def render(
         self, record: BarLyricRecord, *, tempo_bpm: float, previous: BarLyricRecord | None = None
     ) -> RenderedBarAudio:
-        """Render ``record``; ``previous`` is the latest line of the bar before, to continue from."""
+        """Render ``record``; ``previous`` is the latest line of the bar before, to continue from.
+
+        A renderer may also accept ``prefix_lyric_id``: the id of a line it rendered
+        for another session, to continue from when there is no ``previous``. The
+        session passes it only to renderers whose ``render`` declares it.
+        """
         ...
+
+
+def _accepts_prefix_lyric_id(renderer: object) -> bool:
+    try:
+        parameters = inspect.signature(renderer.render).parameters  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return "prefix_lyric_id" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
 
 
 class LyricSessionListener(Protocol):
@@ -122,6 +138,7 @@ class LyricStreamSession:
         history: tuple[tuple[int, str], ...] = (),
         end_bar_exclusive: int | None = None,
         turn_id: str | None = None,
+        continue_from_lyric_id: str | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if lyric_lead < 1 or audio_lead < 1 or lyric_lead < audio_lead:
@@ -142,6 +159,10 @@ class LyricStreamSession:
         self._tempo_ack: dict[str, object] | None = None
         self._tempo_base_timeline: RapTimeline | None = None
         self._start_bar = start_bar
+        # Only the session's first bar can need it: every later bar follows a bar of this session.
+        self._handoff_lyric_id = (
+            continue_from_lyric_id if continue_from_lyric_id and _accepts_prefix_lyric_id(renderer) else None
+        )
         self._end_bar_exclusive = end_bar_exclusive
         self._turn_id = turn_id
         self._plan = plan
@@ -470,8 +491,11 @@ class LyricStreamSession:
                 before = self._bars.get(record.bar - 1)
                 previous = None if before is None else before.latest
                 timing = self._timeline.snapshot(record.bar, 24_000)
+                handoff = {}
+                if previous is None and record.bar == self._start_bar and self._handoff_lyric_id is not None:
+                    handoff = {"prefix_lyric_id": self._handoff_lyric_id}
             try:
-                audio = self._renderer.render(record, tempo_bpm=timing.bpm, previous=previous)
+                audio = self._renderer.render(record, tempo_bpm=timing.bpm, previous=previous, **handoff)
                 error = None
             except Exception as failure:  # reported to the fetching client
                 audio, error = None, f"{type(failure).__name__}: {failure}"

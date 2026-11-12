@@ -48,7 +48,7 @@ from streammuse.domain.rap.lyric_stream import (
     BarLyricRecord,
     PlanEdit,
     TempoUpdate,
-    LYRIC_STREAM_CAPABILITIES,
+    PLAYBACK_CLIENT_CAPABILITIES,
     TEMPO_UPDATES_CAPABILITY,
     TEMPO_RESCHEDULE_CAPABILITY,
     STORY_CONTEXT_CAPABILITY,
@@ -1212,7 +1212,7 @@ class BarStreamController:
             "history": [{"bar": bar, "text": text} for bar, text in self._history[-4:]],
             "lyric_lead": self._lyric_lead,
             "audio_lead": self._audio_lead,
-            "capabilities": list(LYRIC_STREAM_CAPABILITIES),
+            "capabilities": list(PLAYBACK_CLIENT_CAPABILITIES),
         }
 
     def _slot(self, bar: int) -> _Slot:

@@ -1413,3 +1413,14 @@ def test_local_fallback_after_an_edit_to_a_new_topic_uses_any_matching_line() ->
         assert stream.sent[-1]["source"] == SOURCE_ESPEAK_LOCAL
     finally:
         controller.close()
+
+
+def test_playback_controller_start_message_does_not_declare_or_use_continuation_handoff():
+    stream, source, enqueued = _Stream(), _Source(), []
+    controller = _start_with(stream, source, enqueued, _record(0), startup_timeout_seconds=0.01)
+    try:
+        assert stream.start["capabilities"] == [
+            "tempo_updates_v1", "bounded_turns_v1", "tempo_reschedule_v1", "story_context_v1"]
+        assert "continue_from" not in stream.start
+    finally:
+        controller.close()

@@ -435,3 +435,87 @@ def _record_for_continuation(bar: int, text: str):
         session_id="s1", bar=bar, revision=0, topic="space", flow_template=template, text=line,
         scheduled=align_exact(analysis, materialize_flow(template, bar)), score=0.5,
     )
+
+
+def test_bar_renderer_continues_a_line_handed_over_from_another_session(tmp_path) -> None:
+    first = _record_for_continuation(1, "first line here now")
+    second = _record_for_continuation(0, "second line here now")
+    source = _SourceRenderer()
+    renderer = MossBarAudioRenderer(source, PcmBarPackageEncoder(), workspace_root=tmp_path)
+    renderer.render(first, tempo_bpm=90.0)
+
+    handed = renderer.render(second, tempo_bpm=90.0, prefix_lyric_id=first.lyric_id)
+    assert source.prefixes[-1].text == first.text
+    assert handed.manifest.diagnostics["continuation"] == {
+        "used": True, "prefix_lyric_id": first.lyric_id, "handoff": True}
+
+    # Not kept (never rendered here, evicted) or rendered at another tempo: synthesized alone, and said so.
+    for prefix_id, tempo in (("d" * 64, 90.0), (first.lyric_id, 120.0)):
+        missed = renderer.render(second, tempo_bpm=tempo, prefix_lyric_id=prefix_id)
+        assert source.prefixes[-1] is None
+        assert missed.manifest.diagnostics["continuation"] == {
+            "used": False, "reason": "handoff_not_cached", "prefix_lyric_id": prefix_id}
+
+    # A previous bar in the same session always wins over a handed-over line.
+    third = _record_for_continuation(1, "third line here now")
+    within = renderer.render(third, tempo_bpm=90.0, previous=second, prefix_lyric_id="d" * 64)
+    assert within.manifest.diagnostics["continuation"] == {"used": True, "prefix_lyric_id": second.lyric_id}
+
+    disabled = MossBarAudioRenderer(_SourceRenderer(), PcmBarPackageEncoder(), workspace_root=tmp_path,
+                                    continuation=False)
+    assert disabled.render(second, tempo_bpm=90.0, prefix_lyric_id=first.lyric_id).manifest.diagnostics[
+        "continuation"] == {"used": False, "reason": "disabled"}
+
+
+def _first_bar_package(client, websocket, session_id):
+    seen = _receive_until(websocket, lambda m, s: m["type"] == "lyric")
+    record = BarLyricRecord.from_payload(seen[-1]["record"])
+    response = client.get(
+        f"/v1/rap/sessions/{session_id}/bars/{record.bar}/audio?lyric_id={record.lyric_id}&wait_ms=5000")
+    assert response.status_code == 200
+    return record, decode_bar_package(response.content, expected_lyric_id=record.lyric_id).manifest
+
+
+def test_new_session_continues_the_line_named_in_start(tmp_path) -> None:
+    client, service, source = _client(tmp_path)
+    try:
+        assert "continuation_handoff_v1" in client.get("/v1/rap/capabilities").json()["capabilities"]
+        with client.websocket_connect("/v1/rap/sessions/turn-1") as websocket:
+            websocket.send_json(_start("turn-1"))
+            previous, manifest = _first_bar_package(client, websocket, "turn-1")
+            assert manifest.diagnostics["continuation"] == {"used": False, "reason": "no_previous_line"}
+            websocket.send_json({"type": "stop"})
+        with client.websocket_connect("/v1/rap/sessions/turn-2") as websocket:
+            websocket.send_json(_start("turn-2", capabilities=["continuation_handoff_v1"],
+                                       continue_from={"lyric_id": previous.lyric_id}))
+            started = websocket.receive_json()
+            assert started["type"] == "started" and started["capabilities"] == ["continuation_handoff_v1"]
+            _, manifest = _first_bar_package(client, websocket, "turn-2")
+            assert manifest.diagnostics["continuation"] == {
+                "used": True, "prefix_lyric_id": previous.lyric_id, "handoff": True}
+            assert source.prefixes[-1].text == previous.text
+            websocket.send_json({"type": "stop"})
+        with client.websocket_connect("/v1/rap/sessions/turn-3") as websocket:
+            websocket.send_json(_start("turn-3", capabilities=["continuation_handoff_v1"],
+                                       continue_from={"lyric_id": "e" * 64}))
+            _, manifest = _first_bar_package(client, websocket, "turn-3")
+            assert manifest.diagnostics["continuation"]["reason"] == "handoff_not_cached"
+            websocket.send_json({"type": "stop"})
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("overrides, message", [
+    ({"continue_from": {"lyric_id": "a" * 64}}, "continuation handoff capability"),
+    ({"continue_from": {"lyric_id": "nope"}, "capabilities": ["continuation_handoff_v1"]}, "continue_from"),
+])
+def test_continue_from_needs_the_capability_and_a_valid_id(tmp_path, overrides, message) -> None:
+    client, service, _ = _client(tmp_path)
+    try:
+        with client.websocket_connect("/v1/rap/sessions/bad") as websocket:
+            websocket.send_json(_start("bad", **overrides))
+            error = websocket.receive_json()
+            assert error["type"] == "error" and message in error["message"]
+            assert service.session("bad") is None
+    finally:
+        service.close()

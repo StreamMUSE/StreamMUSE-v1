@@ -40,7 +40,16 @@ TEMPO_UPDATES_CAPABILITY = "tempo_updates_v1"
 TEMPO_RESCHEDULE_CAPABILITY = "tempo_reschedule_v1"
 BOUNDED_TURNS_CAPABILITY = "bounded_turns_v1"
 STORY_CONTEXT_CAPABILITY = "story_context_v1"
-LYRIC_STREAM_CAPABILITIES = (TEMPO_UPDATES_CAPABILITY, BOUNDED_TURNS_CAPABILITY, TEMPO_RESCHEDULE_CAPABILITY, STORY_CONTEXT_CAPABILITY)
+# ``start`` may name the lyric a session's first bar continues from: a line
+# rendered by an earlier session, e.g. the previous turn's last bar.
+CONTINUATION_HANDOFF_CAPABILITY = "continuation_handoff_v1"
+# What the continuous-playback controller declares in ``start``. It runs one long
+# session and never hands a continuation over, so its message stays as it was.
+PLAYBACK_CLIENT_CAPABILITIES = (
+    TEMPO_UPDATES_CAPABILITY, BOUNDED_TURNS_CAPABILITY, TEMPO_RESCHEDULE_CAPABILITY, STORY_CONTEXT_CAPABILITY,
+)
+# What the server offers.
+LYRIC_STREAM_CAPABILITIES = (*PLAYBACK_CLIENT_CAPABILITIES, CONTINUATION_HANDOFF_CAPABILITY)
 # A one-bar MOSS source is about 2.7 s at 90 BPM; a generous bound still keeps
 # a corrupt manifest from claiming a huge buffer.
 MAX_BAR_SOURCE_SECONDS = 15.0
@@ -50,6 +59,16 @@ _SHA256_HEX = frozenset("0123456789abcdef")
 
 def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _SHA256_HEX
+
+
+def continuation_handoff_lyric_id(start: Mapping[str, object]) -> str | None:
+    """The lyric id a ``start`` message asks its first bar to continue from, if any."""
+    value = start.get("continue_from")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {"lyric_id"} or not _is_sha256(value["lyric_id"]):
+        raise ValueError("continue_from must be an object with one lowercase SHA-256 lyric_id")
+    return value["lyric_id"]  # type: ignore[return-value]
 
 
 def _require_4_4(template: FlowTemplate) -> FlowTemplate:

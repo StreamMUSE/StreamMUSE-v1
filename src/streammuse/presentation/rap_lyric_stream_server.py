@@ -3,7 +3,9 @@
 ``WS /v1/rap/sessions/{session_id}`` carries JSON messages:
 
 client → server
-  ``start``      tempo, start bar, seed, the scheduled segments, any edits, recent history
+  ``start``      tempo, start bar, seed, the scheduled segments, any edits, recent history;
+                 with ``continuation_handoff_v1``, ``continue_from: {"lyric_id": …}`` names
+                 the line (rendered by an earlier session) that the first bar continues
   ``update``     one :class:`PlanEdit` (theme and/or flow from a bar onward)
   ``committed``  the bar the client just committed: lyric id (or null), source, text
   ``stop``       end the session
@@ -49,7 +51,8 @@ from streammuse.application.rap.lyric_writer import SequentialLyricWriter
 from streammuse.domain.rap import FlowTemplate
 from streammuse.domain.rap.lyric_stream import (
     LYRIC_STREAM_SCHEMA_VERSION, LYRIC_STREAM_CAPABILITIES, BOUNDED_TURNS_CAPABILITY,
-    TEMPO_UPDATES_CAPABILITY, TEMPO_RESCHEDULE_CAPABILITY, BarLyricRecord, PlanEdit, TempoUpdate,
+    CONTINUATION_HANDOFF_CAPABILITY, TEMPO_UPDATES_CAPABILITY, TEMPO_RESCHEDULE_CAPABILITY,
+    BarLyricRecord, PlanEdit, TempoUpdate, continuation_handoff_lyric_id,
 )
 from streammuse.domain.rap.remote_chunk import _flow_from_payload
 
@@ -186,6 +189,9 @@ class LyricStreamService:
         if (payload.get("end_bar_exclusive") is not None or payload.get("turn_id") is not None
                 ) and BOUNDED_TURNS_CAPABILITY not in capabilities:
             raise ValueError("bounded turn capability must be negotiated")
+        handoff = continuation_handoff_lyric_id(payload)
+        if handoff is not None and CONTINUATION_HANDOFF_CAPABILITY not in capabilities:
+            raise ValueError("continuation handoff capability must be negotiated")
         with self._lock:
             existing = self._sessions.get(session_id)
             if existing is not None:
@@ -216,6 +222,7 @@ class LyricStreamService:
                 history=history,
                 end_bar_exclusive=payload.get("end_bar_exclusive"),
                 turn_id=payload.get("turn_id"),
+                continue_from_lyric_id=handoff,
             )
         except Exception:
             close_writer()

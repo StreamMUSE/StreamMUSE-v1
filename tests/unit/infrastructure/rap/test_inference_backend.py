@@ -71,6 +71,7 @@ class Harness:
         self.connect_gate = None
         self.stale_handshakes = set()
         self.warmed = []
+        self.continuation = None
         self.backend = RealInferenceBackend(
             stream_factory=self.stream_factory, source_factory=self.source_factory,
             preparer_factory=self.preparer_factory, templates={"test": TEMPLATE},
@@ -151,10 +152,11 @@ class Harness:
                     assert gate.wait(3)
                 record = harness.records[lyric_id]
                 source = wav()
+                diagnostics = {} if harness.continuation is None else {"continuation": harness.continuation}
                 manifest = BarAudioManifest(
                     lyric_id, bar, harness.current.bpm, 24000, hashlib.sha256(source).hexdigest(),
                     tuple(0.1 * (i + 1) for i in range(len(record.scheduled))),
-                    (0.9,) * len(record.scheduled), {"moss": 11.0, "aligner": 3.0})
+                    (0.9,) * len(record.scheduled), {"moss": 11.0, "aligner": 3.0}, diagnostics)
                 return BarAudioFetch(harness.fetch_status,
                                      lyric_id="wrong" if harness.wrong_audio else lyric_id,
                                      manifest=manifest, source_wav=source, request_ms=7.0)
@@ -212,20 +214,20 @@ class Harness:
         for future in list(self.backend._preparing.values()):
             future.result(timeout=3)
 
-    def record(self, bar, *, revision=0, stream=None):
+    def record(self, bar, *, revision=0, stream=None, text="test line"):
         stream = stream or self.opened()
         segment = next(s for s in stream.start["segments"]
                        if s["start_bar"] <= bar < s["start_bar"] + s["bars"])
         flow = _flow_from_payload(segment["flow_template"])
         return BarLyricRecord(
-            stream.session_id, bar, revision, self.current.topic, flow, "test line",
+            stream.session_id, bar, revision, self.current.topic, flow, text,
             tuple(ScheduledSyllable(slot, Syllable("test", i, len(flow.slots), 1, ("AH1",), "test"))
                   for i, slot in enumerate(materialize_flow(flow, bar))), 0.5,
             {"candidates_requested": 32, "candidates_valid": 7})
 
-    def emit(self, bar, *, record=None, stream=None):
+    def emit(self, bar, *, record=None, stream=None, text="test line"):
         stream = stream or self.opened()
-        record = record or self.record(bar, stream=stream)
+        record = record or self.record(bar, stream=stream, text=text)
         self.records[record.lyric_id] = record
         stream.handler({"type": "lyric", "record": record.to_payload()})
         return record
@@ -629,8 +631,7 @@ def turn(harness, request_id, **changes):
     before = harness.open_count
     harness.submit(request(request_id=request_id, **changes))
     stream = harness.opened(before)
-    for bar in (0, 1):
-        harness.emit(bar, stream=stream)
+    stream.records = [harness.emit(bar, stream=stream, text=f"{request_id} line {bar}") for bar in (0, 1)]
     harness.wait(lambda: any(e["type"] == "complete" and e["request_id"] == request_id
                              for e in harness.events))
     return stream
@@ -764,3 +765,71 @@ def test_prepare_failures_are_silent_and_the_request_still_runs(harness):
     harness.backend._stream_factory = original
     turn(harness, "turn-1")
     assert not any(e["type"] == "error" for e in harness.events)
+
+
+HANDOFF = "continuation_handoff_v1"
+
+
+def test_next_turn_names_the_last_performed_line_for_the_server_to_continue(harness):
+    harness.capabilities.add(HANDOFF)
+    first = turn(harness, "turn-1")
+    assert "continue_from" not in first.start and first.start["capabilities"] == ["bounded_turns_v1"]
+    second = turn(harness, "turn-2", history=("older line", "turn-1 line 1"))
+    assert second.start["continue_from"] == {"lyric_id": first.records[1].lyric_id}
+    assert second.start["capabilities"] == ["bounded_turns_v1", HANDOFF]
+    # The id is the server's (its session and bar), not the relocated local record's.
+    assert first.records[1].session_id == first.session_id
+
+
+def test_server_without_the_handoff_capability_gets_the_old_start_message(harness):
+    turn(harness, "turn-1")
+    second = turn(harness, "turn-2", history=("turn-1 line 1",))
+    assert "continue_from" not in second.start
+    assert second.start["capabilities"] == ["bounded_turns_v1"]
+
+
+@pytest.mark.parametrize("history", [(), ("a line this backend never delivered",)])
+def test_unknown_previous_line_sends_no_handoff(harness, history):
+    harness.capabilities.add(HANDOFF)
+    turn(harness, "turn-1")
+    second = turn(harness, "turn-2", history=history)
+    assert "continue_from" not in second.start
+
+
+def test_steering_request_continues_the_bar_delivered_just_before_it_even_if_unperformed(harness):
+    harness.capabilities.add(HANDOFF)
+    steering = dict(flow_ticks=(), config={"mode": "steering"})
+    first = turn(harness, "extend-1", **steering)
+    # History still ends with an older line: the bar before this request has not played yet.
+    second = turn(harness, "extend-2", start_tick=32, history=("extend-1 line 0",), **steering)
+    assert second.start["continue_from"] == {"lyric_id": first.records[1].lyric_id}
+    # Another epoch restarts its ticks; position no longer identifies the line, text does.
+    third = turn(harness, "restart", start_tick=32, epoch=9, history=("extend-2 line 0",), **steering)
+    assert third.start["continue_from"] == {"lyric_id": second.records[0].lyric_id}
+
+
+def test_run_after_a_silent_bar_continues_the_same_request_earlier_line(harness):
+    harness.capabilities.add(HANDOFF)
+    harness.submit(request(duration_ticks=48, flow_ticks=(2, 6, 10, 14, 34, 38, 42, 46),
+                           history=("some earlier turn",)))
+    first = harness.opened(0)
+    record = harness.emit(0, stream=first)
+    second = harness.opened(1)
+    assert second.start["continue_from"] == {"lyric_id": record.lyric_id}
+
+
+def test_server_continuation_diagnostics_are_reported_with_the_bar_timings(harness):
+    harness.continuation = {"used": True, "prefix_lyric_id": "f" * 64, "handoff": True}
+    harness.submit(request(duration_ticks=16, flow_ticks=(2, 6, 10, 14)))
+    harness.emit(0)
+    harness.wait(lambda: any(e["type"] == "stage_timings" for e in harness.events))
+    event = next(e for e in harness.events if e["type"] == "stage_timings")
+    assert event["continuation"] == harness.continuation
+    assert "continuation" not in harness.spans[0].stage_timings  # span timings stay numeric
+
+
+def test_bars_without_server_diagnostics_report_no_continuation_field(harness):
+    harness.submit(request(duration_ticks=16, flow_ticks=(2, 6, 10, 14)))
+    harness.emit(0)
+    harness.wait(lambda: any(e["type"] == "stage_timings" for e in harness.events))
+    assert "continuation" not in next(e for e in harness.events if e["type"] == "stage_timings")

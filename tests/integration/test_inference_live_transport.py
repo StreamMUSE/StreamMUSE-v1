@@ -181,3 +181,37 @@ def test_over_a_slow_link_a_prepared_turn_saves_the_connection_round_trips(serve
     finally:
         client.close()
         proxy.close()
+
+
+def bar_continuations(client, request_id):
+    stages = sorted((e for e in client.events if e["type"] == "stage_timings" and e["request_id"] == request_id),
+                    key=lambda e: e["bar"])
+    return [e["continuation"] for e in stages]
+
+
+def test_second_turn_first_bar_continues_the_first_turn_last_line(server, client):
+    client.submit(cycle_request("turn-1"))
+    client.finished("turn-1")
+    last_line = max((s for s in client.spans), key=lambda s: s.start_tick).text
+    first = bar_continuations(client, "turn-1")
+    assert first[0] == {"used": False, "reason": "no_previous_line"}
+    assert first[1]["used"] is True and "handoff" not in first[1]
+
+    client.submit(cycle_request("turn-2", history=(last_line,)))
+    client.finished("turn-2")
+    second = bar_continuations(client, "turn-2")
+    assert second[0]["used"] is True and second[0]["handoff"] is True
+    # The server synthesized turn 2's first bar with turn 1's last line as its prefix.
+    prefixes = [None if prefix is None else prefix.text for prefix in server.source.prefixes]
+    assert prefixes[2] == last_line
+    assert second[1]["used"] is True
+
+
+def test_turn_at_another_tempo_reports_the_missing_handoff_and_still_plays(server, client):
+    client.submit(cycle_request("turn-1"))
+    client.finished("turn-1")
+    last_line = max((s for s in client.spans), key=lambda s: s.start_tick).text
+    client.submit(cycle_request("turn-2", bpm=90, history=(last_line,)))
+    client.finished("turn-2")
+    assert bar_continuations(client, "turn-2")[0]["reason"] == "handoff_not_cached"
+    assert len(client.spans) == 4

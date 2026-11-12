@@ -28,10 +28,44 @@ import numpy as np
 from streammuse.application.rap.monitoring_payloads import scheduled_syllables_payload
 from streammuse.domain.rap import FlowProvenance, FlowSlot, FlowTemplate, materialize_flow
 from streammuse.domain.rap.inference import AudioSpan, InferenceRequest
-from streammuse.domain.rap.lyric_stream import BarLyricRecord, LYRIC_STREAM_SCHEMA_VERSION
-from streammuse.domain.rap.remote_chunk import _flow_payload
+from streammuse.domain.rap.lyric_stream import (
+    BarLyricRecord, CONTINUATION_HANDOFF_CAPABILITY, LYRIC_STREAM_SCHEMA_VERSION,
+)
+from streammuse.domain.rap.remote_chunk import _flow_payload, _thaw
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class ContinuationIndex:
+    """Which server lyric each delivered line was, so a later session can continue from it.
+
+    The server keeps the source audio of its recent lines by lyric id. A new
+    session names the line just before its first bar; this index finds that id
+    either by position (the bar ending where the session starts, for a timeline
+    that only moves forward) or by the text of the last performed line.
+    """
+
+    def __init__(self, limit=64):
+        self._lock, self._limit = Lock(), limit
+        self._by_text, self._by_end = OrderedDict(), OrderedDict()
+
+    def remember(self, request, end_tick, text, lyric_id):
+        with self._lock:
+            for table, key in ((self._by_text, text), (self._by_end, (request.session_id, request.epoch, end_tick))):
+                table.pop(key, None)
+                table[key] = lyric_id
+                while len(table) > self._limit:
+                    table.popitem(last=False)
+
+    def before(self, request, start_tick):
+        with self._lock:
+            if request.config.get("mode") == "steering":
+                # Ticks only grow within an epoch here, so position is exact; it also
+                # finds a bar that was delivered but has not been performed yet.
+                found = self._by_end.get((request.session_id, request.epoch, start_tick))
+                if found is not None:
+                    return found
+            return self._by_text.get(request.history[-1]) if request.history else None
 
 
 @dataclass
@@ -52,6 +86,7 @@ class _RequestWork:
     deadline: float
     canceled: Event = field(default_factory=Event)
     delivered: set = field(default_factory=set)
+    lyric_ids: dict = field(default_factory=dict)  # request-relative bar -> server lyric id
 
 
 class RealInferenceBackend:
@@ -82,7 +117,7 @@ three, so the request after it connects from scratch as before.
     def __init__(self, *, stream_factory, source_factory, preparer_factory, templates,
                  clock=time.monotonic, silence_factory=None, request_timeout_seconds=90,
                  max_requests=4, fetch_workers=3, spare_max_age_seconds=30.0,
-                 warm_connections=2):
+                 warm_connections=2, continuation_index=None):
         if (type(request_timeout_seconds) not in (int, float)
                 or not isfinite(request_timeout_seconds) or request_timeout_seconds <= 0):
             raise ValueError("request timeout must be finite and positive")
@@ -102,6 +137,7 @@ three, so the request after it connects from scratch as before.
         self._workers = ThreadPoolExecutor(max_workers=max_requests, thread_name_prefix="inference-v3")
         self._fetchers = ThreadPoolExecutor(max_workers=fetch_workers, thread_name_prefix="inference-v3-audio")
         self._spare_max_age, self._warm_connections = spare_max_age_seconds, warm_connections
+        self._continuations = continuation_index or ContinuationIndex()
         self._server_capabilities = None
         self._source = None
         self._spare = None  # (stream, remote session id, handshake time)
@@ -399,6 +435,7 @@ three, so the request after it connects from scratch as before.
         latest, futures, delivered = {}, [], set()
         stream = holder = None
         opened = failed = False
+        handoff, handoff_capability = {}, ()
 
         def enqueue(kind, value):
             if work.canceled.is_set() or stopped.is_set():
@@ -411,7 +448,8 @@ three, so the request after it connects from scratch as before.
         def start_payload():
             return {
                 "type": "start", "schema_version": LYRIC_STREAM_SCHEMA_VERSION,
-                "capabilities": ["bounded_turns_v1"], "tempo_bpm": request.bpm,
+                "capabilities": ["bounded_turns_v1", *handoff_capability], "tempo_bpm": request.bpm,
+                **handoff,
                 "start_bar": start, "end_bar_exclusive": end, "turn_id": session_id,
                 "seed": request.config.get("seed", 0), "loop": False,
                 "segments": [{"start_bar": bar, "bars": 1, "topic": request.topic,
@@ -431,10 +469,18 @@ three, so the request after it connects from scratch as before.
                 stream, session_id = spare
             else:
                 stream, session_id = self._stream_factory(), "inference-" + uuid.uuid4().hex
-            if "bounded_turns_v1" not in self._capabilities_from(stream):
+            capabilities = self._capabilities_from(stream)
+            if "bounded_turns_v1" not in capabilities:
                 raise ValueError("renderer must support bounded_turns_v1")
             if not self._check(work):
                 return
+            # A new session has no previous bar to continue from. Name the line that
+            # was delivered just before this one so the voice carries over; a server
+            # without the capability gets the same start message as before.
+            previous_lyric = self._previous_lyric(work, start)
+            if previous_lyric is not None and CONTINUATION_HANDOFF_CAPABILITY in capabilities:
+                handoff = {"continue_from": {"lyric_id": previous_lyric}}
+                handoff_capability = (CONTINUATION_HANDOFF_CAPABILITY,)
             holder = self._acquire_source()
             source = holder.source
             on_message = lambda message: enqueue("message", message)
@@ -457,11 +503,11 @@ three, so the request after it connects from scratch as before.
                 except queue.Empty:
                     continue
                 if kind == "prepared":
-                    record, prepared, timings = value
+                    record, prepared, timings, continuation = value
                     if latest.get(record.bar) != record.lyric_id:
                         continue
                     self._deliver(work, record.bar, prepared.audio, record=record,
-                                  timings=timings)
+                                  timings=timings, continuation=continuation)
                     delivered.add(record.bar)
                     continue
                 if kind == "failure":
@@ -575,12 +621,22 @@ three, so the request after it connects from scratch as before.
                 warp_ms = getattr(prepared, "render_latency_ms", None)
                 if type(warp_ms) in (int, float) and isfinite(warp_ms) and warp_ms >= 0:
                     timings["client_warp_ms"] = float(warp_ms)
-                enqueue("prepared", (record, prepared, timings))
+                continuation = _thaw(fetched.manifest.diagnostics).get("continuation")
+                enqueue("prepared", (record, prepared, timings,
+                                     continuation if isinstance(continuation, dict) else None))
                 return
         except Exception as error:
             enqueue("failure", (record, error))
 
-    def _deliver(self, work, bar, audio, *, record=None, timings=None, declared_silence=False):
+    def _previous_lyric(self, work, start):
+        """The server lyric id of the line just before request-relative bar ``start``, if known."""
+        earlier = [bar for bar in work.lyric_ids if bar < start]
+        if earlier:
+            return work.lyric_ids[max(earlier)]
+        return self._continuations.before(work.request, work.request.start_tick + start * 16)
+
+    def _deliver(self, work, bar, audio, *, record=None, timings=None, declared_silence=False,
+                 continuation=None):
         if not self._check(work):
             return
         request = work.request
@@ -616,7 +672,13 @@ three, so the request after it connects from scratch as before.
             work.canceled.set()
             return
         work.delivered.add(bar)
+        if record is not None:
+            # ``record`` is the server's line; its id is what the server's source cache is keyed by.
+            work.lyric_ids[bar] = record.lyric_id
+            self._continuations.remember(request, start + 16, record.text, record.lyric_id)
         if timings:
+            # ``continuation`` is the server's own account of whether this bar continued a line.
+            extra = {} if continuation is None else {"continuation": continuation}
             self._event(work, "stage_timings", bar=bar, output_id=span.output_id,
                         timings_ms=timings, clock_domains={"client": "client_monotonic_duration",
-                                                          "server": "server_reported_duration"})
+                                                          "server": "server_reported_duration"}, **extra)
