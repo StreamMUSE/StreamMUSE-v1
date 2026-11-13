@@ -372,6 +372,7 @@ Andrew 11-11 在他的机器上测的 WAIT 中位数是 5.34 s（5 个回合）�
 
 - 四个提交都已推送到 `origin/feature/rap_optimization`。
 - H200 从 11-11 起一直连不上。第 0 阶段剩下的 steering 基线、第 1 到 3 阶段的全部验收都没有做。上面各节里的延迟数字，除了 11-11 的基线表，都是本机模拟。
+- 完整的实施报告见 [2026-11-12 的报告](../reports/2026-11-12-rap-inference-optimization-phase1-3-report.md)。
 - 验收步骤写在 [H200 验收手册](2026-11-12-inference-opt-h200-acceptance-runbook.md)，可以交给能连上 H200 的人照着做。手册里的命令在本机对着替身服务器逐条跑过。
 - 验收通过之前：不要把 `--inference-steering-adapter` 的默认值改成 `session`；这份计划里第 1 到 3 阶段的“验收”小节保持未勾选。
 
